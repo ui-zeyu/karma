@@ -1,6 +1,7 @@
 // Evidence saving: each check's raw text is written into the --save directory as
 // <aspect>/<check id>.txt. Only checks with a body are written; a repeated run
 // overwrites files of the same name.
+
 package cli
 
 import (

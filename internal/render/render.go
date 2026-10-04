@@ -1,5 +1,5 @@
-// Presentation: the report header, check panels released in catalog order, and
-// aspect banners.
+// Package render is the presentation layer: the report header, check panels
+// released in catalog order, and aspect banners.
 //
 // Presentation only reads the Document, the outcome, and the structured skip
 // reasons; the budget, source titles, and right-hand annotations are decisions
@@ -47,10 +47,6 @@ var commentLine = regexp.MustCompile(`^[ \t]*#`)
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// severityNames gives each severity its display name, indexed by Severity
-// (Critical..Low); the legend and the trailing reasons share it.
-var severityNames = [...]string{"critical", "high", "medium", "low"}
-
 // RenderHeader draws the report header: the only rounded box in the whole
 // report, followed by one blank line.
 func RenderHeader(w io.Writer, sessionName string, facts model.HostFacts, width int) {
@@ -76,25 +72,27 @@ func RenderHeader(w io.Writer, sessionName string, facts model.HostFacts, width 
 
 func legend() string {
 	var parts []string
-	for severity := range severityNames {
-		parts = append(parts, severityStyle(model.Severity(severity)).seq().Render(
-			"● "+severityNames[severity]))
+	for severity := range severityTheme {
+		level := model.Severity(severity)
+		parts = append(parts, severityStyle(level).seq().Render("● "+level.String()))
 	}
 	return strings.Join(parts, "  ")
 }
 
 // aspectBanner is the aspect banner: one band filling the full width, bold
-// white uppercase text. Filling is done by handing the pad spaces to lipgloss
-// (the spaces Width pads with carry no background).
+// white uppercase text.
 func aspectBanner(name string, term int) string {
-	width := lineWidth(term)
-	label := " " + strings.ToUpper(name)
+	return fillBand(" "+strings.ToUpper(name), lineWidth(term), bandStyle)
+}
+
+// fillBand fills the line with a band: the label is truncated when it does not
+// fit, and the pad spaces are handed to lipgloss so they carry the band's
+// background (the spaces Width pads with would not).
+func fillBand(label string, width int, st lipgloss.Style) string {
 	if lipgloss.Width(label) > width {
 		label = xansi.Truncate(label, width, "…")
 	}
-	band := label + strings.Repeat(" ", width-lipgloss.Width(label))
-	return lipgloss.NewStyle().Bold(true).
-		Background(bannerColor).Foreground(bannerTextColor).Render(band)
+	return st.Render(label + strings.Repeat(" ", width-lipgloss.Width(label)))
 }
 
 // roundedBox is the report header's box. lipgloss draws the border and one
@@ -143,7 +141,8 @@ func headerBlock(term int, title, meta string, lines []string) string {
 // color for signals and muted otherwise. lipgloss draws the rail; inside it the
 // first line sits against the padding and the body is indented two more
 // columns; over-long lines are soft-wrapped by lipgloss's Width, with
-// continuation lines sharing the body indent and the rail unbroken.
+// continuation lines sharing the body indent and the rail unbroken. Rows are
+// bounded first (see boundRow), so nothing reaches the terminal's last column.
 func checkBlock(severity model.Severity, head string, body []string, term int) string {
 	st := lipgloss.NewStyle().BorderLeft(true).
 		BorderStyle(lipgloss.OuterHalfBlockBorder())
@@ -153,12 +152,32 @@ func checkBlock(severity model.Severity, head string, body []string, term int) s
 		st = st.BorderForeground(MutedColor)
 	}
 	inner := railInner(term)
-	text := lipgloss.NewStyle().Padding(0, rightPad, 0, headPad).Width(inner).Render(head)
+	text := lipgloss.NewStyle().Padding(0, rightPad, 0, headPad).Width(inner).
+		Render(boundRow(head, headTextWidth(term)))
 	if len(body) > 0 {
+		rows := lo.Map(body, func(row string, _ int) string { return boundRow(row, textWidth(term)) })
 		box := lipgloss.NewStyle().Padding(0, rightPad, 0, bodyPad).Width(inner)
-		text += "\n" + box.Render(strings.Join(body, "\n"))
+		text += "\n" + box.Render(strings.Join(rows, "\n"))
 	}
 	return st.Render(text)
+}
+
+// boundRow keeps a row inside the given width before lipgloss wraps it. A row
+// that already fits is returned untouched (the common case, so the established
+// layout is unchanged). Otherwise it is broken between words and after slashes,
+// and a token that survives that — a base64 argument, a path with no
+// separators — is broken by character: lipgloss's own wrap cannot split such a
+// token, and one of them would widen the whole panel past the terminal's last
+// column.
+func boundRow(row string, width int) string {
+	if lipgloss.Width(row) <= width {
+		return row
+	}
+	wrapped := xansi.Wordwrap(row, width, "/")
+	if lipgloss.Width(wrapped) <= width {
+		return wrapped
+	}
+	return xansi.Hardwrap(wrapped, width, false)
 }
 
 // spread lays a left and a right piece out on one line; if the right piece does
@@ -207,9 +226,8 @@ func checkPanel(result *model.CheckResult, maxLines, width int) string {
 // the right, the id in bold.
 func checkHead(result *model.CheckResult, width int) string {
 	left := style{bold: true}.seq().Render(result.Check.ID)
-	meta, _ := metaParts(result)
 	right := ""
-	if meta != "" {
+	if meta := metaParts(result); meta != "" {
 		right = mutedStyle.seq().Render(meta)
 	}
 	return spread(headTextWidth(width), left, right)
@@ -301,7 +319,7 @@ func topSeverity(document model.Document) model.Severity {
 // metaParts is the metadata on the right of the panel's first line: the probe
 // chain when a fallback happened, the number of filtered lines, and the
 // truncation mark.
-func metaParts(result *model.CheckResult) (string, style) {
+func metaParts(result *model.CheckResult) string {
 	var parts []string
 	if len(result.SkippedLabels) > 0 {
 		chain := slices.Concat(result.SkippedLabels, []string{result.ProbeLabel})
@@ -313,7 +331,7 @@ func metaParts(result *model.CheckResult) (string, style) {
 	if result.Document.Truncated {
 		parts = append(parts, "truncated")
 	}
-	return strings.Join(parts, " · "), mutedStyle
+	return strings.Join(parts, " · ")
 }
 
 // stderrRows appends the stderr of a non-zero exit after the body, in the

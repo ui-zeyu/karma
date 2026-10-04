@@ -1,4 +1,5 @@
-// SshSession: one established SSH connection. Concurrent requests share the connection, each opening a channel.
+// SSHSession: one established SSH connection. Concurrent requests share the connection, each opening a channel.
+
 package session
 
 import (
@@ -13,22 +14,18 @@ import (
 	"karma/internal/model"
 )
 
-// SshSession is one established SSH connection. agent is an optional ssh-agent
+// SSHSession is one established SSH connection. agent is an optional ssh-agent
 // connection; the signers also dial back during the handshake, so it is closed with the session.
-type SshSession struct {
+type SSHSession struct {
 	client *ssh.Client
-	target string
 	agent  io.Closer
 }
 
 // Name is the channel display name.
-func (s *SshSession) Name() string { return "ssh" }
-
-// Target is the destination description: user@host[:port].
-func (s *SshSession) Target() string { return s.target }
+func (s *SSHSession) Name() string { return "ssh" }
 
 // Run sends the command string rendered through /bin/sh -c to the channel for execution.
-func (s *SshSession) Run(inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
+func (s *SSHSession) Run(inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
 	script := RenderShell(inv)
 	sess, err := s.client.NewSession()
 	if err != nil {
@@ -53,13 +50,10 @@ func (s *SshSession) Run(inv model.Invocation, timeout time.Duration, lineLimit 
 	// The decoding strategy matches the local channel: line reads clean bad bytes, stderr switches to U+FFFD after draining.
 	// stop closes the channel directly: a hung channel that never sees EOF is finished off by harvest's grace period.
 	return harvestCapped(source{
-		wait:     func() error { waitErr = sess.Wait(); return waitErr },
+		wait:     func() { waitErr = sess.Wait() },
 		stop:     func() { _ = sess.Close() },
 		readLine: lineReader(reader),
-		readAll: func() string {
-			raw, _ := io.ReadAll(io.LimitReader(errReader, maxHarvestBytes))
-			return validText(string(raw))
-		},
+		readAll:  func() string { return drainText(errReader) },
 		exitCode: func() int { return commandExitCode(waitErr) },
 	}, timeout, lineLimit)
 }
@@ -83,7 +77,7 @@ func commandExitCode(err error) int {
 }
 
 // Close closes the connection. A hung Close does not wait past closeGrace, so the whole collection does not stall on teardown.
-func (s *SshSession) Close() error {
+func (s *SSHSession) Close() error {
 	done := make(chan struct{})
 	go func() {
 		_ = s.client.Close()

@@ -1,5 +1,6 @@
-// Windows check catalog: system information, accounts, processes, network, persistence, logs and other
-// system surfaces, plus user behavior artifacts in the registry and user profiles.
+// Package windows is the Windows check catalog: system information, accounts,
+// processes, network, persistence, logs and other system surfaces, plus user
+// behavior artifacts in the registry and user profiles.
 //
 // The artifact list and live-collection mapping come from the digest of HTB Academy module 248
 // "User Behavior Forensics" and from common Chinese incident-response lists. All probes are one

@@ -1,5 +1,6 @@
 // filesystem: disks and files: mounts, temp directories, SUID, recent changes and
 // content signatures under web directories.
+
 package linux
 
 import (
@@ -69,6 +70,10 @@ var gtfobinsSu = []string{
 var gtfobinsPattern = `/(?:[\w.]+/)*(?:` + strings.Join(slices.Sorted(slices.Values(gtfobinsSu)), "|") + `)[0-9.]*$`
 
 var tmpDirs = []string{"/tmp", "/var/tmp", "/dev/shm"}
+
+// standardBinPath: the distribution's own binary trees, where a SUID/SGID bit is
+// expected; anywhere else the bit is worth a look.
+const standardBinPath = `^/(?:usr/)?(?:local/)?s?bin/`
 
 var tmpRecentFind = "find " + strings.Join(tmpDirs, " ") + " -xdev -type f -mtime -7 2>/dev/null"
 
@@ -175,11 +180,11 @@ var FilesystemChecks = []*model.Check{
 			Rules: []model.Rule{
 				model.NewRule("suid-gtfobins", gtfobinsPattern, model.Critical,
 					"SUID privilege-escalation program in GTFOBins"),
-				model.NewRule("suid-standard", `^/(?:usr/)?(?:local/)?s?bin/`, model.Benign,
+				model.NewRule("suid-standard", standardBinPath, model.Benign,
 					"SUID file in a standard path"),
 				model.NewRule("suid-unusual", `^\S+`, model.Medium,
 					"SUID file in a non-standard path (common privilege-escalation backdoor spot)").
-					WithExclude(`^/(?:usr/)?(?:local/)?s?bin/`),
+					WithExclude(standardBinPath),
 			},
 			Timeout: suidTimeout,
 		}),
@@ -189,11 +194,11 @@ var FilesystemChecks = []*model.Check{
 		[]model.Probe{{Label: "find", Inv: model.Shell{Script: sgidFind}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
-				model.NewRule("sgid-standard", `^/(?:usr/)?(?:local/)?s?bin/`, model.Benign,
+				model.NewRule("sgid-standard", standardBinPath, model.Benign,
 					"SGID file in a standard path"),
 				model.NewRule("sgid-unusual", `^\S+`, model.Medium,
 					"SGID file in a non-standard path (common group-escalation backdoor spot)").
-					WithExclude(`^/(?:usr/)?(?:local/)?s?bin/`),
+					WithExclude(standardBinPath),
 			},
 			Timeout: suidTimeout,
 		}),
@@ -212,7 +217,7 @@ var FilesystemChecks = []*model.Check{
 		[]model.Probe{{Label: "find", Inv: model.Shell{Script: webScriptFind}, LineLimit: 200}},
 		define.CheckOpt{
 			Rules: []model.Rule{
-				model.NewRule("web-script", `\.(?:php|jsp|jspx)$`, model.Medium,
+				model.NewRule("web-script", `\.(?:php[3-5]?|phtml|jsp|jspx|sh|py)$`, model.Medium,
 					"recently changed web script (webshell investigation entry point)"),
 				define.KeywordRule,
 			},

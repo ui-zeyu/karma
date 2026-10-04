@@ -3,9 +3,11 @@
 // Get-WinEvent filters by Id via the event index, capped by MaxEvents; when auditing is off for the
 // Security log the probe fails silently. Message extraction uses bilingual field names so both
 // Chinese and English systems yield the key lines: account name, source address, service name.
+
 package windows
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -19,16 +21,43 @@ const winlogTimeout = 60 * time.Second
 const winlogHelper = `function Fmt-Ev($e) { $t = $e.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'); ` +
 	`$f = ($e.Message -split '\r?\n' | Where-Object { $_ -match '帐户名|源网络地址|工作站|服务名|服务文件|Account Name\s*[::]|Source Network Address|Workstation Name\s*[::]|Service Name|Service File' }) -join ' | '; $t + '  ' + $f }`
 
+// Event ids live in different logs: logon failure, account creation, and audit
+// clearing are Security log events; 7045 (service installed) is written to the
+// System log by the Service Control Manager and never appears in Security.
+const (
+	logonFailedEvent   = 4625
+	userCreatedEvent   = 4720
+	serviceInstallEvt  = 7045
+	auditClearedEvent  = 1102
+	scriptBlockEvent   = 4104
+	secLogName         = "Security"
+	systemLogName      = "System"
+	scriptBlockLogName = "Microsoft-Windows-PowerShell/Operational"
+)
+
+// winlogQuery is one Get-WinEvent probe fragment: filter by log and id, project
+// each event with project, and print the `== title` header only when events came
+// back (a title-only section would light up title-matching rules on nothing).
+func winlogQuery(log string, id, maxEvents int, title, project string) string {
+	return fmt.Sprintf(
+		"$o = Get-WinEvent -FilterHashtable @{LogName='%s'; Id=%d} -MaxEvents %d -ErrorAction SilentlyContinue | ForEach-Object { %s }; if ($o) { '== %s'; $o }",
+		log, id, maxEvents, project, title)
+}
+
+const eventLine = "Fmt-Ev $_"
+const messageLine = `$_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + '  ' + $_.Message`
+
 var secLogScript = winlogHelper + "\n" + strings.Join([]string{
-	`$o = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625} -MaxEvents 15 -ErrorAction SilentlyContinue | ForEach-Object { Fmt-Ev $_ }; if ($o) { '== 4625 Logon Failed'; $o }`,
-	`$o = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4720} -MaxEvents 15 -ErrorAction SilentlyContinue | ForEach-Object { Fmt-Ev $_ }; if ($o) { '== 4720 User Created'; $o }`,
-	`$o = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=7045} -MaxEvents 15 -ErrorAction SilentlyContinue | ForEach-Object { Fmt-Ev $_ }; if ($o) { '== 7045 Service Installed'; $o }`,
-	`$o = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=1102} -MaxEvents 5 -ErrorAction SilentlyContinue | ForEach-Object { $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + '  ' + $_.Message }; if ($o) { '== 1102 Audit Log Cleared'; $o }`,
+	winlogQuery(secLogName, logonFailedEvent, 15, "4625 Logon Failed", eventLine),
+	winlogQuery(secLogName, userCreatedEvent, 15, "4720 User Created", eventLine),
+	winlogQuery(systemLogName, serviceInstallEvt, 15, "7045 Service Installed", eventLine),
+	winlogQuery(secLogName, auditClearedEvent, 5, "1102 Audit Log Cleared", messageLine),
 }, "\n")
 
 const logClearedRule = `^1102\s`
 
-const scriptBlockScript = `$o = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-PowerShell/Operational'; Id=4104} -MaxEvents 25 -ErrorAction SilentlyContinue | ForEach-Object { $m = $_.Message -replace '\r?\n', ' '; $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + '  ' + $m.Substring(0, [Math]::Min(240, $m.Length)) }; if ($o) { '== 4104 Script Block'; $o }`
+var scriptBlockScript = winlogQuery(scriptBlockLogName, scriptBlockEvent, 25, "4104 Script Block",
+	"$m = $_.Message -replace '\\r?\\n', ' '; $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + '  ' + $m.Substring(0, [Math]::Min(240, $m.Length))")
 
 // scriptBlockSelf: karma's own probe scripts also get logged by 4104 on the target; filter lines by
 // features unique to karma (our function names, the artifact names we collect, property GUIDs).

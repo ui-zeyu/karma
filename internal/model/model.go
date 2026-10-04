@@ -9,8 +9,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/samber/lo"
 )
 
 // Platform is the target platform. The second catalog besides Linux is
@@ -21,6 +19,11 @@ const (
 	Linux   Platform = "linux"
 	Windows Platform = "windows"
 )
+
+// platformOrder is the declaration order of all platforms: the same single
+// source as aspectOrder, used for grouping and as the selector vocabulary (a
+// platform name selects every check of that platform).
+var platformOrder = []Platform{Linux, Windows}
 
 // Aspect is the group a check belongs to; it sets the grouping and order in
 // the report.
@@ -54,33 +57,48 @@ var aspectOrder = []Aspect{
 	AspectDevices, AspectTimeline,
 }
 
-// aspectNames is every aspect name, used to suggest close matches for a
-// selector.
-var aspectNames = func() []string {
-	out := make([]string, 0, len(aspectOrder))
-	for _, aspect := range aspectOrder {
-		out = append(out, string(aspect))
+// enumNames and enumByName turn an enum's declaration order into its name list
+// and its name lookup: every vocabulary in this package comes from one of them,
+// so the report grouping and the selector accept the same words.
+func enumNames[T ~string](values []T) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, string(value))
 	}
 	return out
-}()
+}
+
+func enumByName[T ~string](values []T) map[string]T {
+	out := make(map[string]T, len(values))
+	for _, value := range values {
+		out[string(value)] = value
+	}
+	return out
+}
+
+var (
+	aspectNames     = enumNames(aspectOrder)
+	aspectsByName   = enumByName(aspectOrder)
+	platformNames   = enumNames(platformOrder)
+	platformsByName = enumByName(platformOrder)
+)
 
 // AspectNames returns every aspect name in declaration order.
 func AspectNames() []string { return slices.Clone(aspectNames) }
-
-// aspectsByName maps aspect names to their enum value; names equal enum values
-// and come from aspectOrder, the single source. Read-only within the package.
-var aspectsByName = func() map[string]Aspect {
-	out := make(map[string]Aspect, len(aspectOrder))
-	for _, aspect := range aspectOrder {
-		out[string(aspect)] = aspect
-	}
-	return out
-}()
 
 // AspectByName resolves an aspect name; ok is false for an unknown name.
 func AspectByName(name string) (Aspect, bool) {
 	aspect, ok := aspectsByName[name]
 	return aspect, ok
+}
+
+// PlatformNames returns every platform name in declaration order.
+func PlatformNames() []string { return slices.Clone(platformNames) }
+
+// PlatformByName resolves a platform name; ok is false for an unknown name.
+func PlatformByName(name string) (Platform, bool) {
+	platform, ok := platformsByName[name]
+	return platform, ok
 }
 
 // Severity is the severity of a hit line. Declaration order is severity order:
@@ -192,9 +210,15 @@ type HostFacts struct {
 // IsRoot reports whether the uid is 0.
 func (f HostFacts) IsRoot() bool { return f.UID == 0 }
 
-// Missing returns the binary names absent from the fact list.
-func (f HostFacts) Missing(wanted []string) []string {
-	return lo.Filter(wanted, func(name string, _ int) bool { return !f.AvailableBins[name] })
+// HasAll reports whether the capability probe found every wanted binary. An
+// empty list is trivially available.
+func (f HostFacts) HasAll(wanted []string) bool {
+	for _, name := range wanted {
+		if !f.AvailableBins[name] {
+			return false
+		}
+	}
+	return true
 }
 
 // Rule is one highlight rule: text matching pattern is painted.
@@ -365,7 +389,7 @@ type Check struct {
 	ID        string
 	Title     string
 	Aspect    Aspect
-	Platform  Platform // catalog platform, used by list's platform column
+	Platform  Platform // catalog platform: the list group banner and the platform selector
 	Probes    []Probe
 	Filters   []LineFilter
 	Rules     []Rule
@@ -376,17 +400,15 @@ type Check struct {
 }
 
 // CheckResult is the outcome of one check. Outcome separates "not collected"
-// (missing command, environment fact) from "failed" (execution error, signal).
-// Document is the reading result, computed once when the report is built; the
-// presentation layer only reads it. Missing / NotFound have values only for
-// Skipped; Note describes execution problems only.
+// (missing command, environment fact) from "failed" (execution error, signal);
+// document decides visibility on its own, so the presentation layer needs
+// nothing else. Document is the reading result, computed once when the report
+// is built, and the presentation layer only reads it.
 type CheckResult struct {
 	Check         *Check
 	ProbeLabel    string
 	Outcome       Outcome
 	SkippedLabels []string
-	Missing       []string
-	NotFound      []string
 	Output        string // full text for saving; empty for none
 	Stderr        string
 	Note          string

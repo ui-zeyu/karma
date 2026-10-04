@@ -4,6 +4,7 @@
 // string-extraction fallback: read bytes as UTF-8 and extract printable strings. The database file is
 // locked while in use, so it is opened with FileShare.ReadWrite; ActivitiesCache output is narrowed
 // by a keep filter to path- and URL-shaped lines, and SQL schema words are removed by a drop filter.
+
 package windows
 
 import (

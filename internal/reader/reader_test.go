@@ -8,6 +8,11 @@ import (
 	"karma/internal/reader"
 )
 
+// readDocument is the reading shortcut the tests use: only the document.
+func readDocument(text string, rules []model.Rule, filters []model.LineFilter, normalize model.Normalizer) model.Document {
+	return reader.Analyze(text, rules, filters, normalize, 0).Document
+}
+
 func rule(id, pattern string, severity model.Severity) model.Rule {
 	return model.NewRule(id, pattern, severity, id+" reason")
 }
@@ -22,7 +27,7 @@ func keep(pattern string) model.LineFilter {
 func TestAnalyzeMatchesAndSections(t *testing.T) {
 	text := "== /etc/passwd\nroot:x:0:0:root:/root:/bin/bash\nplain line\n== beyond preamble\nanother\n"
 	rules := []model.Rule{rule("root-line", `^root:`, model.High)}
-	document := reader.Read(text, rules, nil, nil)
+	document := readDocument(text, rules, nil, nil)
 	if len(document.Sections) != 2 {
 		t.Fatalf("section count: %d, want 2", len(document.Sections))
 	}
@@ -45,7 +50,7 @@ func TestAnalyzeMatchesAndSections(t *testing.T) {
 func TestAnalyzeTitleMatches(t *testing.T) {
 	text := "== /root/authorized_keys\nssh-ed25519 AAAA comment\n"
 	rules := []model.Rule{rule("authkeys", `authorized_keys`, model.Medium)}
-	document := reader.Read(text, rules, nil, nil)
+	document := readDocument(text, rules, nil, nil)
 	if len(document.Sections) != 1 || len(document.Sections[0].TitleMatches) != 1 {
 		t.Fatalf("title should match the rule: %+v", document.Sections)
 	}
@@ -53,7 +58,7 @@ func TestAnalyzeTitleMatches(t *testing.T) {
 
 func TestExcludeSuppressesMatch(t *testing.T) {
 	rule := rule("uid0", `^[^:]+:[^:]*:0:0:`, model.Critical).WithExclude(`^root:`)
-	document := reader.Read("root:x:0:0:r:/root:/bin/sh\nbackdoor:x:0:0::/:/bin/sh\n", []model.Rule{rule}, nil, nil)
+	document := readDocument("root:x:0:0:r:/root:/bin/sh\nbackdoor:x:0:0::/:/bin/sh\n", []model.Rule{rule}, nil, nil)
 	lines := document.Sections[0].Lines
 	if len(lines[0].Matches) != 0 {
 		t.Fatalf("root line should be excluded: %v", lines[0].Matches)
@@ -65,7 +70,7 @@ func TestExcludeSuppressesMatch(t *testing.T) {
 
 func TestDropFilterCountsHiddenLines(t *testing.T) {
 	text := "keep me\nhide this\nhide that\nvisible\n"
-	document := reader.Read(text, nil, []model.LineFilter{drop(`^hide `)}, nil)
+	document := readDocument(text, nil, []model.LineFilter{drop(`^hide `)}, nil)
 	if len(document.Sections[0].Lines) != 2 {
 		t.Fatalf("should keep two lines: %d", len(document.Sections[0].Lines))
 	}
@@ -80,7 +85,7 @@ func TestDropFilterCountsHiddenLines(t *testing.T) {
 
 func TestKeepFilterWhitelists(t *testing.T) {
 	text := "one\ntarget line\nthree\nalso target\n"
-	document := reader.Read(text, nil, []model.LineFilter{keep(`target`)}, nil)
+	document := readDocument(text, nil, []model.LineFilter{keep(`target`)}, nil)
 	rows := document.Sections[0].Lines
 	if len(rows) != 2 || rows[0].Text != "target line" || rows[1].Text != "also target" {
 		t.Fatalf("keep should leave only matching lines: %+v", rows)
@@ -93,7 +98,7 @@ func TestKeepFilterWhitelists(t *testing.T) {
 func TestSignalLineSurvivesKeepFilter(t *testing.T) {
 	rules := []model.Rule{rule("boom", `boom`, model.High)}
 	text := "noise\nboom found\nnoise\n"
-	document := reader.Read(text, rules, []model.LineFilter{keep(`target`)}, nil)
+	document := readDocument(text, rules, []model.LineFilter{keep(`target`)}, nil)
 	// lines with a signal match are exempt from keep filtering
 	if len(document.Sections[0].Lines) != 1 || document.Sections[0].Lines[0].Text != "boom found" {
 		t.Fatalf("signal line should stay: %+v", document.Sections[0].Lines)
@@ -109,7 +114,7 @@ func TestNormalizeProducesNotes(t *testing.T) {
 			},
 		}
 	}
-	document := reader.Read("== section\noriginal\n", nil, nil, normalize)
+	document := readDocument("== section\noriginal\n", nil, nil, normalize)
 	lines := document.Sections[0].Lines
 	if len(lines) != 1 || lines[0].Text != "rewritten" {
 		t.Fatalf("normalize should rewrite the body: %+v", lines)
@@ -126,7 +131,7 @@ func TestNormalizePanicFallsBackToRawSection(t *testing.T) {
 		}
 		return &model.Shaped{Text: "rewritten"}
 	}
-	document := reader.Read("== ok\nfine\n== bad\nboom line\n", nil, nil, normalize)
+	document := readDocument("== ok\nfine\n== bad\nboom line\n", nil, nil, normalize)
 	if len(document.Sections) != 2 {
 		t.Fatalf("both sections should be kept: %d", len(document.Sections))
 	}
@@ -140,7 +145,7 @@ func TestNormalizePanicFallsBackToRawSection(t *testing.T) {
 
 func TestEmptySectionsDropped(t *testing.T) {
 	text := "== empty\n\n\n== full\ncontent\n"
-	document := reader.Read(text, nil, []model.LineFilter{drop(`^\s*$`)}, nil)
+	document := readDocument(text, nil, []model.LineFilter{drop(`^\s*$`)}, nil)
 	if len(document.Sections) != 1 || document.Sections[0].Title != "full" {
 		t.Fatalf("empty sections should be dropped: %+v", document.Sections)
 	}
@@ -162,7 +167,7 @@ func TestSeverityTakesMinimum(t *testing.T) {
 		rule("low", `hit`, model.Low),
 		rule("benign", `hit`, model.Benign),
 	}
-	document := reader.Read("hit\n", rules, nil, nil)
+	document := readDocument("hit\n", rules, nil, nil)
 	if got := document.Sections[0].Lines[0].Severity; got != model.Low {
 		t.Fatalf("multiple matches take the most severe: %v", got)
 	}

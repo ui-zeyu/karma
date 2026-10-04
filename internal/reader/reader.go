@@ -90,11 +90,6 @@ func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normal
 	}
 }
 
-// Read is a convenience entry point when only the document is needed.
-func Read(text string, rules []model.Rule, filters []model.LineFilter, normalize model.Normalizer) model.Document {
-	return Analyze(text, rules, filters, normalize, 0).Document
-}
-
 // capBytes truncates by UTF-8 bytes when over the reading limit, dropping the
 // partial character at the cut point. A limit of 0 uses MaxScanBytes.
 func capBytes(text string, limit int) (string, bool) {
@@ -231,12 +226,22 @@ func lineSeverity(matches []model.Match) model.Severity {
 	return lo.Min(append(effective, model.Benign))
 }
 
-// lineMatches is the first match of each rule within a line; each rule counts at most once per line.
+// lineMatches is the first match of each rule within a line; each rule counts at
+// most once per line. The result is nil when nothing matched — the common case
+// on a normal host — so a quiet line allocates nothing for the rules that did
+// not hit.
 func lineMatches(line string, rules []model.Rule) []model.Match {
-	return lo.FilterMap(rules, func(r model.Rule, _ int) (model.Match, bool) {
+	var matches []model.Match
+	for _, r := range rules {
 		start, end, ok := r.Find(line)
-		return model.Match{ID: r.ID, Severity: r.Severity, Message: r.Message, Start: start, End: end}, ok
-	})
+		if !ok {
+			continue
+		}
+		matches = append(matches, model.Match{
+			ID: r.ID, Severity: r.Severity, Message: r.Message, Start: start, End: end,
+		})
+	}
+	return matches
 }
 
 // counter is a filter hit count that preserves insertion order. Value semantics: add returns the updated count table.

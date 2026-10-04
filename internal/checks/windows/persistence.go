@@ -1,4 +1,5 @@
 // persistence persistence surface: autoruns, services, scheduled tasks, WMI event subscriptions.
+
 package windows
 
 import (

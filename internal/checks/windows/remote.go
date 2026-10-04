@@ -1,4 +1,5 @@
 // remote remote interaction: PuTTY sessions and host keys, RDP connection history.
+
 package windows
 
 import (

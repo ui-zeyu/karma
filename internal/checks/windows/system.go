@@ -1,4 +1,5 @@
 // system system information: software inventory, patches, environment variables, shares, RDP switches.
+
 package windows
 
 import (

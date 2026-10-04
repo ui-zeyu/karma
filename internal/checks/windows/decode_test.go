@@ -52,7 +52,7 @@ func checkByID(id string) *model.Check {
 }
 
 func hitIDs(text string, check *model.Check) []string {
-	document := reader.Read(text, check.Rules, check.Filters, check.Normalize)
+	document := reader.Analyze(text, check.Rules, check.Filters, check.Normalize, 0).Document
 	var ids []string
 	for _, section := range document.Sections {
 		for _, match := range section.TitleMatches {

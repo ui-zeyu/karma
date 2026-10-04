@@ -2,6 +2,7 @@
 //
 // From the full --all listing only rows whose ACTIVE column is active/failed are
 // kept: stopped-but-enabled services are covered by persistence.enabled-units.
+
 package linux
 
 import (

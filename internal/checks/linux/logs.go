@@ -3,6 +3,7 @@
 // System logs (auth, cron, etc.) are not collected: formats and priorities differ
 // and they are bulky, so reading them uniformly has little value -- log-dirs lists
 // /var/log and highlights relevant entries, pointing you to read them individually.
+
 package linux
 
 import (

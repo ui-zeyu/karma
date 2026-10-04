@@ -32,9 +32,9 @@ dist/karma list
 dist/karma list network
 ```
 
-A selector word is an aspect name or a check id; with none given, everything runs. An unknown word is an error. The first positional argument of `karma ssh` is the target. mtime hangs below `local` and `ssh` and clusters directory change times; over SSH the connection parameters (-p/-i/-o/--password) are written after the target as usual.
+A selector word is a platform name, an aspect name, or a check id; with none given, everything runs. A platform or aspect word counts only if the catalog carries it, so `karma list windows` selects one platform's catalog and `karma list persistence` selects that aspect on both; an unknown word is an error with close matches. The first positional argument of `karma ssh` is the target. mtime hangs below `local` and `ssh` and clusters directory change times; over SSH the connection parameters (-p/-i/-o/--password) are written after the target as usual.
 
-Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log` `kernel` `package` (70 checks). Windows aspects: `system` `identity` `process` `network` `persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (37 checks). `karma list` lists every check of both platforms, told apart by the platform column, and selector words filter by aspect name or check id; the table fills the terminal width and over-long titles and probe chains wrap inside their cells.
+Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log` `kernel` `package` (70 checks). Windows aspects: `system` `identity` `process` `network` `persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (37 checks). `karma list` lists both platforms' catalogs as a two-level heading tree — one band per platform, one band per aspect — and every row carries the check id, the title, and the probe chain. Column widths are measured over the whole selection, so the groups line up and a long title wraps inside its own column.
 
 Shared options: `--concurrency` defaults to 6, `--timeout` to 30 seconds, `--max-lines` to 400. With `--save DIR`, every check that collected a body writes its raw text to `<DIR>/<aspect>/<check id>.txt`, one directory per aspect, overwriting same-named files on a repeated run.
 
@@ -62,7 +62,11 @@ Collection is read-only: it reads files, lists processes, lists sockets, and rea
 ## Development
 
 ```bash
-go test ./...
+go test ./...                                              # all packages
+go test -race ./internal/render/ ./internal/session/ ./internal/runner/ ./internal/cli/
+gofmt -l . && go vet ./...
+staticcheck -checks=all ./...                              # when installed
+go test ./internal/reader/ -bench . -run XXX               # reading-pipeline benchmark
 ```
 
-The code lives in `cmd/karma` and `internal/`. Collection, reading, and presentation are separate: `runner` runs the checks, `reader` reads the `== ` sections into a document, and `render` only reads that document.
+The code lives in `cmd/karma` and `internal/`. Collection, reading, and presentation are separate: `runner` runs the checks, `reader` reads the `== ` sections into a document, and `render` only reads that document. The catalog vocabulary (platform, aspect, check id) is also the selector vocabulary, so what `karma list` shows is what the positional arguments accept.

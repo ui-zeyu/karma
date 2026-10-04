@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -12,15 +13,28 @@ type deadObserver struct{}
 func (deadObserver) CheckStarted(*model.Check)                      { panic("progress line blew up") }
 func (deadObserver) CheckFinished(*model.Check, *model.CheckResult) { panic("panel blew up") }
 
-type stubSession struct{ runs int }
+// stubSession counts runs; checks run concurrently, so the counter is guarded.
+type stubSession struct {
+	mu   sync.Mutex
+	runs int
+}
 
-func (s *stubSession) Name() string   { return "stub" }
-func (s *stubSession) Target() string { return "stub" }
+func (s *stubSession) Name() string { return "stub" }
+
 func (s *stubSession) Run(model.Invocation, time.Duration, int) model.RunResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.runs++
 	return model.RunResult{ExitCode: 0, Stdout: "out\n"}
 }
+
 func (s *stubSession) Close() error { return nil }
+
+func (s *stubSession) runCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runs
+}
 
 func TestObserverPanicDoesNotKillRun(t *testing.T) {
 	sess := &stubSession{}
@@ -32,7 +46,7 @@ func TestObserverPanicDoesNotKillRun(t *testing.T) {
 	}
 	facts := model.HostFacts{AvailableBins: map[string]bool{"true": true}}
 	RunCatalog(sess, facts, checks, model.RunOptions{Concurrency: 2}, deadObserver{})
-	if sess.runs != len(checks) {
-		t.Fatalf("both checks should finish after an observer panic: ran %d/%d", sess.runs, len(checks))
+	if got := sess.runCount(); got != len(checks) {
+		t.Fatalf("both checks should finish after an observer panic: ran %d/%d", got, len(checks))
 	}
 }

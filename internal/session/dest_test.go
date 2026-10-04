@@ -7,14 +7,14 @@ import (
 func TestParseSSHDestination(t *testing.T) {
 	cases := []struct {
 		in   string
-		want SshDestination
+		want SSHDestination
 	}{
-		{"10.0.0.8", SshDestination{Host: "10.0.0.8", Port: 22}},
-		{"root@10.0.0.8", SshDestination{User: "root", Host: "10.0.0.8", Port: 22}},
-		{"ssh://root@10.0.0.8:2222", SshDestination{User: "root", Host: "10.0.0.8", Port: 2222}},
-		{"ssh://10.0.0.8", SshDestination{Host: "10.0.0.8", Port: 22}},
-		{"ssh://[::1]:22", SshDestination{Host: "::1", Port: 22}},
-		{"ssh://root@[2001:db8::1]", SshDestination{User: "root", Host: "2001:db8::1", Port: 22}},
+		{"10.0.0.8", SSHDestination{Host: "10.0.0.8", Port: 22}},
+		{"root@10.0.0.8", SSHDestination{User: "root", Host: "10.0.0.8", Port: 22}},
+		{"ssh://root@10.0.0.8:2222", SSHDestination{User: "root", Host: "10.0.0.8", Port: 2222}},
+		{"ssh://10.0.0.8", SSHDestination{Host: "10.0.0.8", Port: 22}},
+		{"ssh://[::1]:22", SSHDestination{Host: "::1", Port: 22}},
+		{"ssh://root@[2001:db8::1]", SSHDestination{User: "root", Host: "2001:db8::1", Port: 22}},
 	}
 	for _, c := range cases {
 		got, err := ParseSSHDestination(c.in)
@@ -47,12 +47,12 @@ func TestParseSSHDestinationErrors(t *testing.T) {
 
 func TestDestinationDisplay(t *testing.T) {
 	cases := []struct {
-		in   SshDestination
+		in   SSHDestination
 		want string
 	}{
-		{SshDestination{User: "root", Host: "10.0.0.8", Port: 22}, "root@10.0.0.8"},
-		{SshDestination{User: "root", Host: "10.0.0.8", Port: 2222}, "root@10.0.0.8:2222"},
-		{SshDestination{Host: "10.0.0.8", Port: 22}, "10.0.0.8"},
+		{SSHDestination{User: "root", Host: "10.0.0.8", Port: 22}, "root@10.0.0.8"},
+		{SSHDestination{User: "root", Host: "10.0.0.8", Port: 2222}, "root@10.0.0.8:2222"},
+		{SSHDestination{Host: "10.0.0.8", Port: 22}, "10.0.0.8"},
 	}
 	for _, c := range cases {
 		if got := c.in.Display(); got != c.want {

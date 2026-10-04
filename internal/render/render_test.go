@@ -141,10 +141,9 @@ func TestCheckPanelQuietRailAndSkippedLine(t *testing.T) {
 	}
 
 	skipped := &model.CheckResult{
-		Check:    &model.Check{ID: "last-log", Aspect: model.AspectIdentity},
-		Outcome:  model.Skipped,
-		Missing:  []string{"last"},
-		NotFound: []string{"lastlog"},
+		Check:         &model.Check{ID: "last-log", Aspect: model.AspectIdentity},
+		Outcome:       model.Skipped,
+		SkippedLabels: []string{"last", "lastlog"},
 	}
 	if got := checkPanel(skipped, 40, 80); got != "" {
 		t.Fatalf("a check that was never collected should stay silent: %q", plain(got))
@@ -175,6 +174,29 @@ func TestAspectBanner(t *testing.T) {
 	}
 	if narrow := aspectBanner("identity", 12); lipgloss.Width(narrow) != 11 {
 		t.Fatalf("a narrow terminal should still be filled: %d", lipgloss.Width(narrow))
+	}
+}
+
+// A body row carrying a token lipgloss cannot break (a base64 argument with no
+// separator) must not widen the panel past the line: the row is broken by
+// character, and no part of the token is dropped.
+func TestCheckPanelBoundsUnbreakableTokens(t *testing.T) {
+	blob := strings.Repeat("QUJD", 40) // 160 cells, no break point
+	result := &model.CheckResult{
+		Check:   &model.Check{ID: "ps", Aspect: model.AspectProcess},
+		Outcome: model.Collected,
+		Document: model.Document{Sections: []model.Section{{Lines: []model.Line{
+			{Text: "501 1 0 0 Tue09AM ?? 0:00 x " + blob, Severity: model.Info},
+		}}}},
+	}
+	panel := checkPanel(result, 40, 100)
+	for index, line := range strings.Split(panel, "\n") {
+		if got := lipgloss.Width(line); got > lineWidth(100) {
+			t.Fatalf("line %d is %d cells wide: %q", index, got, plain(line))
+		}
+	}
+	if !strings.Contains(plain(panel), "QUJDQUJD") {
+		t.Fatal("the token should be broken across lines, not dropped")
 	}
 }
 

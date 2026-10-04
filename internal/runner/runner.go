@@ -1,6 +1,6 @@
-// Execution orchestration: run checks concurrently and fall back through
-// probe tiers. Results travel back through the Observer on completion; the
-// presentation layer places the panels in catalog order itself.
+// Package runner orchestrates execution: run checks concurrently and fall back
+// through probe tiers. Results travel back through the Observer on completion;
+// the presentation layer places the panels in catalog order itself.
 //
 // Runner only depends on session.Session's Run callback: it knows neither SSH
 // nor any concrete command. The tier that wins is sent to the target as a
@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samber/lo"
 	"golang.org/x/sync/errgroup"
 
 	"karma/internal/model"
@@ -91,20 +90,21 @@ type probeFailure struct {
 // Exit code 0 or existing stdout stays. 127, and a non-zero exit with empty
 // stdout, moves to the next tier. A timeout keeps the output that was cut off
 // and does not move on. If the last tier has both streams empty it stays
-// silent; error text alone goes into the panel.
+// silent; error text alone goes into the panel. A chain whose tiers were all
+// unavailable (binary absent from the capability probe, or 127 at run time) is
+// Skipped: the target's environment lacks the command, which is not a finding.
 func runCheck(sess session.Session, facts model.HostFacts, check *model.Check, options model.RunOptions) *model.CheckResult {
 	timeout := cmp.Or(check.Timeout, options.Timeout)
 
 	var (
-		missing  []string
-		skipped  []string
-		notFound []string
-		failure  *probeFailure
+		unavailable bool
+		skipped     []string
+		failure     *probeFailure
 	)
 	for i := range check.Probes {
 		probe := &check.Probes[i]
-		if lacks := facts.Missing(probe.RequiredBins()); len(lacks) > 0 {
-			missing = lo.Uniq(append(missing, lacks...))
+		if !facts.HasAll(probe.RequiredBins()) {
+			unavailable = true
 			skipped = append(skipped, probe.Label)
 			continue
 		}
@@ -120,7 +120,7 @@ func runCheck(sess session.Session, facts model.HostFacts, check *model.Check, o
 			truncated := result.Truncated && probe.Head == 0
 			return commandResult(check, probe, result, skipped, timeout, noteOptions{truncated: truncated})
 		case result.ExitCode == 127:
-			notFound = append(notFound, probe.Label)
+			unavailable = true
 		case strings.TrimSpace(result.Stderr) != "" && failure == nil:
 			failure = &probeFailure{probe: *probe, result: result, skipped: slices.Clone(skipped)}
 		}
@@ -131,13 +131,11 @@ func runCheck(sess session.Session, facts model.HostFacts, check *model.Check, o
 		return commandResult(check, &failure.probe, failure.result, failure.skipped, timeout,
 			noteOptions{failure: true})
 	}
-	if len(missing) > 0 || len(notFound) > 0 {
+	if unavailable {
 		return &model.CheckResult{
 			Check:         check,
 			Outcome:       model.Skipped,
 			SkippedLabels: skipped,
-			Missing:       missing,
-			NotFound:      notFound,
 		}
 	}
 	return &model.CheckResult{Check: check, Outcome: model.Collected, SkippedLabels: skipped}

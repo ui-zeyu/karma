@@ -11,6 +11,7 @@
 // with a trailing `\`, continuation lines indented 8 or more spaces. All decoding happens locally:
 // the probe only brings back hex and text, while ROT-13, UTF-16 extraction, FILETIME conversion, and
 // MRUListEx list reconstruction are the job of the check's normalize.
+
 package windows
 
 import (
@@ -72,6 +73,13 @@ func RegValueQuery(key string, value string) string {
 // RegScript joins multiple fragments into one script; the exit code of the last fragment is the script's exit code.
 func RegScript(fragments ...string) string {
 	return strings.Join(fragments, "; ")
+}
+
+// RegQueryAll is RegScript over a key list: one query fragment per key, so a
+// multi-key check (Adobe DC/Reader, the two BagMRU hives) stays one probe.
+func RegQueryAll(keys []string, recurse bool) string {
+	fragments := lo.Map(keys, func(key string, _ int) string { return RegQuery(key, recurse) })
+	return RegScript(fragments...)
 }
 
 var printable = regexp.MustCompile(`[\x20-\x7E\x{4E00}-\x{9FFF}]{3,}`)
@@ -155,9 +163,10 @@ func FiletimeStr(data []byte) string {
 	return moment.Format("2006-01-02 15:04:05")
 }
 
-// MRUListExOrder: MRUListEx is a linked-list array where the first element is the index of the most
-// recent item and each subsequent element points to the next. Terminated by 0xFFFFFFFF; out-of-range
-// values and cycles truncate the order obtained so far.
+// MRUListExOrder returns the access order held by an MRUListEx array: the first
+// element is the index of the most recent item and each subsequent element points
+// to the next. The array is terminated by 0xFFFFFFFF; an out-of-range value or a
+// cycle truncates the order obtained so far.
 func MRUListExOrder(values []regout.Value) []int {
 	raw, ok := lo.Find(values, func(v regout.Value) bool {
 		return v.Name == "MRUListEx" && v.Type == "REG_BINARY"

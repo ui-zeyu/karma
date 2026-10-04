@@ -55,7 +55,7 @@ func ChecksFor(platform model.Platform) []*model.Check {
 }
 
 // AllChecks is the union of both platforms' catalogs: karma list shows all of
-// them by default, told apart by the platform column.
+// them by default, grouped under one banner per platform and aspect.
 func AllChecks() []*model.Check {
 	return slices.Concat(linux.All, windows.All)
 }

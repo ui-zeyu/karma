@@ -3,6 +3,7 @@
 // fake CJK noise of sliding-window string extraction. The field layout follows [MS-SHLLINK] and the
 // Velociraptor Windows.Forensics.Lnk profile; in an FAT time the low 16 bits are the date and the
 // high 16 bits are the time (same as vtypes' FatTimestamp).
+
 package windows
 
 import (
@@ -60,11 +61,9 @@ func parseRootItem(data []byte) shellItem {
 }
 
 // parseVolumeItem 0x20 volume entry: offset 3 is flags, 0x80 means a 16-byte GUID starts at offset 4;
-// the ANSI volume label follows the GUID (or starts at offset 4 when there is no GUID).
+// the ANSI volume label follows the GUID (or starts at offset 4 when there is no GUID). The caller
+// has established the 4-byte header.
 func parseVolumeItem(data []byte) shellItem {
-	if len(data) < 4 {
-		return shellItem{kind: "unknown"}
-	}
 	name, labelAt := "", 4
 	if data[3]&0x80 != 0 {
 		name = guidName(data, 4)
@@ -180,13 +179,14 @@ func guidText(raw []byte) string {
 
 // fatTime MS-DOS date/time: low 16 bits are the date (15-9 year-1980, 8-5 month, 4-0 day),
 // high 16 bits are the time (15-11 hour, 10-5 minute, 4-0 half-second). Absurd fields (month 0,
-// day 0, etc.) are treated as a zero time.
+// day 0, etc.) are treated as a zero time; the year and day fields cannot leave their range,
+// the masks already bound them.
 func fatTime(v uint32) time.Time {
 	date, clock := v&0xFFFF, v>>16
 	year := int(date>>9) + 1980
 	month := int(date>>5) & 0xF
 	day := int(date & 0x1F)
-	if year < 1980 || month < 1 || month > 12 || day < 1 || day > 31 {
+	if month < 1 || month > 12 || day < 1 {
 		return time.Time{}
 	}
 	return time.Date(year, time.Month(month), day,

@@ -1,5 +1,6 @@
 // The execution flow shared by local and ssh: select checks, connect, collect
 // facts, collect live, summarize.
+
 package cli
 
 import (

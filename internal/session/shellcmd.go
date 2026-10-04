@@ -6,6 +6,7 @@
 // share this rendering so both behave the same. The collecting identity is the
 // login user. Word quoting lives in internal/script (sharing one escaping
 // implementation with the collection scripts).
+
 package session
 
 import (

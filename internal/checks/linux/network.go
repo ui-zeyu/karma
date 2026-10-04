@@ -2,11 +2,11 @@
 //
 // The listen check's last fallback parses /proc/net/* directly, covering minimal
 // containers where both ss and netstat are missing.
+
 package linux
 
 import (
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net"
 	"slices"
@@ -43,9 +43,9 @@ echo "== nft"
 nft list ruleset 2>/dev/null
 `
 
-// procNetStates: /proc/net state codes (lowercase hex). UDP state translation
-// happens in parseProcNet: the kernel marks connectionless sockets TCP_CLOSE(07),
-// the 00 placeholder never appears, and translating by the table would yield CLOSE.
+// procNetStates: /proc/net state codes (uppercase hex). UDP state translation
+// happens in parseProcNet: the kernel marks a connectionless socket TCP_CLOSE(07),
+// so a UDP section reads that code as UNCONN instead of the table's CLOSE.
 var procNetStates = map[string]string{
 	"00": "UNCONN",
 	"01": "ESTAB",
@@ -104,13 +104,21 @@ func parseProcNet(title string, text string) *model.Shaped {
 		if len(fields) < 4 || strings.TrimSuffix(fields[0], ":") == "sl" {
 			return "", false
 		}
-		local, err1 := decodeEndpoint(fields[1])
-		remote, err2 := decodeEndpoint(fields[2])
-		if errors.Join(err1, err2) != nil {
+		local, err := decodeEndpoint(fields[1])
+		if err != nil {
 			return "", false
 		}
+		remote, err := decodeEndpoint(fields[2])
+		if err != nil {
+			return "", false
+		}
+		// A UDP socket is connectionless: the kernel reports TCP_CLOSE(07) for it,
+		// so the TCP table would print CLOSE; the section says UDP, so the state
+		// reads UNCONN.
 		state := strings.ToUpper(fields[3])
-		if mapped, ok := procNetStates[state]; ok && !(udp && (state == "00" || state == "07")) {
+		if udp && (state == "00" || state == "07") {
+			state = "UNCONN"
+		} else if mapped, ok := procNetStates[state]; ok {
 			state = mapped
 		}
 		return state + "  " + local + "  " + remote, true

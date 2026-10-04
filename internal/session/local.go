@@ -2,11 +2,11 @@
 // subprocess spawn point. Command goes through exec without a shell; Shell goes
 // through /bin/sh -c (rendering shared with SSH via shellcmd, POSIX only). A
 // timeout kills the whole process tree; output already produced is kept.
+
 package session
 
 import (
 	"bufio"
-	"io"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -32,21 +32,18 @@ func (LocalTransport) Platform() model.Platform {
 	return model.Linux
 }
 
-// Open: the local channel needs no connection.
+// Open is the local channel's connection step: there is nothing to connect.
 func (LocalTransport) Open() (Session, error) { return LocalSession{}, nil }
 
 // Name is the channel display name.
 func (LocalSession) Name() string { return "local" }
-
-// Target is the destination description.
-func (LocalSession) Target() string { return "local" }
 
 // Run sends the invocation to run locally.
 func (s LocalSession) Run(inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
 	return runLocal(ArgvFor(inv), timeout, lineLimit)
 }
 
-// Close: the local channel has no resources to release.
+// Close releases the local channel's resources: there are none.
 func (LocalSession) Close() error { return nil }
 
 func runLocal(argv []string, timeout time.Duration, lineLimit int) model.RunResult {
@@ -67,13 +64,10 @@ func runLocal(argv []string, timeout time.Duration, lineLimit int) model.RunResu
 	reader := bufio.NewReader(stdout)
 	errReader := bufio.NewReader(stderrPipe)
 	return harvestCapped(source{
-		wait:     cmd.Wait,
+		wait:     func() { _ = cmd.Wait() },
 		stop:     func() { stop(cmd.Process.Pid) },
 		readLine: lineReader(reader),
-		readAll: func() string {
-			raw, _ := io.ReadAll(io.LimitReader(errReader, maxHarvestBytes))
-			return validText(string(raw))
-		},
+		readAll:  func() string { return drainText(errReader) },
 		exitCode: func() int {
 			if cmd.ProcessState == nil {
 				return -1

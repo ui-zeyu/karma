@@ -39,6 +39,10 @@ func TestEnvPathDot(t *testing.T) {
 		{"PATH=", true},                              // empty PATH
 		{"LD_LIBRARY_PATH=/x:/y", false},             // only PATH= is targeted
 		{"PYTHONPATH=/usr/local/lib", false},
+		{"LD_LIBRARY_PATH=/x::/y", false}, // another variable's empty component is not PATH
+		{"MANPATH=/usr/share/man::/opt/man", false},
+		{"SOMEVAR=a::b", false},
+		{"PATH=/usr/bin:/bin/", false}, // a trailing slash is not an empty component
 	}
 	for _, c := range cases {
 		if _, _, ok := rule.Find(c.line); ok != c.want {

@@ -11,7 +11,6 @@ package cluster
 
 import (
 	"cmp"
-	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -226,10 +225,16 @@ func ParseFindRow(line string) *FindRow {
 	if len(parts) != 6 {
 		return nil
 	}
-	mtime, err1 := strconv.ParseFloat(parts[0], 64)
-	ctime, err2 := strconv.ParseFloat(parts[1], 64)
-	nbytes, err3 := strconv.Atoi(parts[4])
-	if errors.Join(err1, err2, err3) != nil {
+	mtime, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return nil
+	}
+	ctime, err := strconv.ParseFloat(parts[1], 64)
+	if err != nil {
+		return nil
+	}
+	nbytes, err := strconv.Atoi(parts[4])
+	if err != nil {
 		return nil
 	}
 	stamp, date, clock := parts[2], parts[2], parts[3]
@@ -259,15 +264,20 @@ func ParseEntry(line string) *Entry {
 	if len(parts) != 3 {
 		return nil
 	}
-	mtime, err1 := strconv.ParseFloat(parts[0], 64)
-	ctime, err2 := strconv.ParseFloat(parts[1], 64)
-	if errors.Join(err1, err2) != nil {
+	mtime, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return nil
+	}
+	ctime, err := strconv.ParseFloat(parts[1], 64)
+	if err != nil {
 		return nil
 	}
 	return &Entry{Mtime: mtime, Ctime: ctime, Row: parts[2]}
 }
 
-// EntryPath: the row shape is %M %n %u %g %s %Tb %Td %TH:%TM followed by the path; the path is only for tie ordering.
+// EntryPath returns the path of one listing row: the row shape is
+// %M %n %u %g %s %Tb %Td %TH:%TM followed by the path, which is used for tie
+// ordering. A row that does not split into that many fields is returned whole.
 func EntryPath(e *Entry) string {
 	if fields := strings.SplitN(e.Row, " ", 9); len(fields) == 9 {
 		return fields[8]

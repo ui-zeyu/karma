@@ -4,6 +4,7 @@
 // not appear there. Loadable modules have a sections/ directory under
 // /sys/module/<name>/ (built-ins do not); cross-checking finds modules that exist
 // but are not registered. The taint bit reflects a tainted kernel.
+
 package linux
 
 import (
@@ -72,7 +73,7 @@ var KernelChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("modules-hidden", "Hidden module cross-check (/sys/module vs /proc/modules)", model.AspectKernel,
-		[]model.Probe{{Label: "shell", Inv: model.Shell{Script: hiddenModuleScript}}},
+		[]model.Probe{{Label: "proc-modules-diff", Inv: model.Shell{Script: hiddenModuleScript}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("module-hidden", `^HIDDEN `, model.Critical,

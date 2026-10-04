@@ -1,4 +1,5 @@
 // system: basic facts: distro and kernel, boot time, clock, environment variables.
+
 package linux
 
 import (
@@ -36,11 +37,15 @@ var SystemChecks = []*model.Check{
 			Rules: []model.Rule{
 				model.NewRule("env-ld-preload", `^LD_PRELOAD=`, model.High, "environment-level dynamic library preload"),
 				model.NewRule("env-ld-library-path", `^LD_LIBRARY_PATH=`, model.Medium, "non-standard library search path"),
-				// An empty component (::, leading/trailing colon, trailing PATH colon) means
-				// the current directory just like a bare dot; RE2 has no lookahead, so `(?=$|:)`
-				// is rewritten as an equivalent disjunction consuming the delimiter, and the
-				// trailing empty component is caught by the `$` arm.
-				model.NewRule("env-path-dot", `(^PATH=|:)(?:\.($|:)|:$|:|$)`, model.Medium,
+				// An empty component (a leading or trailing colon, or `::`) means the
+				// current directory just like a bare dot. RE2 has no lookahead, so the
+				// test is a disjunction anchored right after `PATH=`: leading colon,
+				// any `::`, trailing colon, a leading dot component, a dot component
+				// after a colon, an empty value. Anchoring matters: an unanchored
+				// colon arm also fires on other variables' empty components
+				// (MANPATH=/a::/b, LD_LIBRARY_PATH=/x:/y:), which the message does not
+				// describe.
+				model.NewRule("env-path-dot", `^PATH=(?::|.*::|.*:$|\.(?::|$)|.*:\.(?::|$)|$)`, model.Medium,
 					"PATH contains the current directory or an empty component (hijackable via a same-named program)"),
 				model.NewRule("env-python-path", `^PYTHONPATH=`, model.Medium,
 					"Python module search path set (watch for malicious module injection)"),

@@ -4,6 +4,7 @@
 // changed keys, to fit contest targets reinstalled repeatedly); accept-new
 // accepts new hosts and rejects recorded but changed keys (matching OpenSSH
 // semantics); yes strictly verifies known_hosts.
+
 package session
 
 import (
@@ -70,9 +71,9 @@ func ParseHostKeyMode(text string) (HostKeyMode, error) {
 	return HostKeyNo, fmt.Errorf("StrictHostKeyChecking must be no|accept-new|yes (got: %s)", text)
 }
 
-// SshTransport is the SSH channel factory. A successful Open returns an SshSession that reuses the connection.
-type SshTransport struct {
-	Destination SshDestination
+// SSHTransport is the SSH channel factory. A successful Open returns an SSHSession that reuses the connection.
+type SSHTransport struct {
+	Destination SSHDestination
 	Port        int // 0 uses Destination.Port
 	Identities  []string
 	HostKey     HostKeyMode
@@ -80,35 +81,15 @@ type SshTransport struct {
 }
 
 // Name is the channel display name.
-func (t *SshTransport) Name() string { return "ssh" }
+func (t *SSHTransport) Name() string { return "ssh" }
 
-// Platform: the SSH channel is always the Linux directory.
-func (t *SshTransport) Platform() model.Platform { return model.Linux }
-
-// Session is the channel protocol shared with Transport. Runner depends only on
-// the interface here: swapping channels on the same platform = implement another Session.
-type Session interface {
-	Name() string
-	Target() string
-	Run(inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult
-	Close() error
-}
-
-// Transport is the channel factory: a successful Open returns a usable Session.
-type Transport interface {
-	Name() string
-	Platform() model.Platform
-	Open() (Session, error)
-}
+// Platform is always the Linux directory: the SSH channel never targets Windows.
+func (t *SSHTransport) Platform() model.Platform { return model.Linux }
 
 // Open establishes the connection. The password comes only from --password;
 // without it only public key auth is used, and rejection fails immediately with no interactive input.
-func (t *SshTransport) Open() (Session, error) {
-	knownHosts, err := loadKnownHosts()
-	if err != nil {
-		return nil, err
-	}
-	callback, err := t.hostKeyCallback(knownHosts)
+func (t *SSHTransport) Open() (Session, error) {
+	callback, err := t.hostKeyCallback()
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +98,7 @@ func (t *SshTransport) Open() (Session, error) {
 		return nil, err
 	}
 	// On auth failure or a mid-way error, close the agent connection; a successful session hands it to Close.
-	var opened *SshSession
+	var opened *SSHSession
 	defer func() {
 		if opened == nil && agentConn != nil {
 			_ = agentConn.Close()
@@ -128,7 +109,7 @@ func (t *SshTransport) Open() (Session, error) {
 		if err != nil {
 			return nil, err
 		}
-		opened = &SshSession{client: client, target: t.Destination.Display(), agent: agentConn}
+		opened = &SSHSession{client: client, agent: agentConn}
 		return opened, nil
 	}
 	// The password comes only from --password; without it, use public keys only and error directly on auth failure
@@ -138,9 +119,7 @@ func (t *SshTransport) Open() (Session, error) {
 	return open(keys)
 }
 
-var errAuthFailed = errors.New("ssh authentication failed")
-
-func (t *SshTransport) connect(auth []ssh.AuthMethod, callback ssh.HostKeyCallback) (*ssh.Client, error) {
+func (t *SSHTransport) connect(auth []ssh.AuthMethod, callback ssh.HostKeyCallback) (*ssh.Client, error) {
 	port := t.Port
 	if port == 0 {
 		port = t.Destination.Port
@@ -163,7 +142,7 @@ func (t *SshTransport) connect(auth []ssh.AuthMethod, callback ssh.HostKeyCallba
 	if err != nil {
 		_ = conn.Close()
 		if isAuthFailure(err) {
-			return nil, fmt.Errorf("%w (use --password or allow a public key): %v", errAuthFailed, err)
+			return nil, fmt.Errorf("ssh authentication failed (use --password or allow a public key): %v", err)
 		}
 		return nil, err
 	}
@@ -182,7 +161,7 @@ func isAuthFailure(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "unable to authenticate")
 }
 
-func (t *SshTransport) user() string {
+func (t *SSHTransport) user() string {
 	if t.Destination.User != "" {
 		return t.Destination.User
 	}
@@ -190,7 +169,7 @@ func (t *SshTransport) user() string {
 }
 
 // publicKeyAuth gathers available public keys: agent signers + explicit key files + default keys.
-func (t *SshTransport) publicKeyAuth() ([]ssh.AuthMethod, io.Closer, error) {
+func (t *SSHTransport) publicKeyAuth() ([]ssh.AuthMethod, io.Closer, error) {
 	var methods []ssh.AuthMethod
 	var agentConn io.Closer
 	fail := func(err error) ([]ssh.AuthMethod, io.Closer, error) {
@@ -245,35 +224,39 @@ func passwordAuth(password string) []ssh.AuthMethod {
 	}
 }
 
-// hostKeyCallback returns the verification callback for the mode.
-func (t *SshTransport) hostKeyCallback(known knownHostsDB) (ssh.HostKeyCallback, error) {
+// hostKeyCallback returns the verification callback for the mode. known_hosts is
+// only read when the mode consults it: the default mode accepts anything and
+// never opens the file.
+func (t *SSHTransport) hostKeyCallback() (ssh.HostKeyCallback, error) {
 	switch t.HostKey {
 	case HostKeyNo:
 		return ssh.InsecureIgnoreHostKey(), nil
 	case HostKeyYes:
-		return knownhosts.New(known.paths...)
+		return knownhosts.New(knownHostsPaths()...)
 	default:
-		return known.acceptNew(), nil
+		return acceptNew(loadKnownHostEntries(knownHostsPaths())), nil
 	}
 }
 
 // --- known_hosts: accept-new must decide "recorded or not, key matches or not" itself ---
 
-type knownHostsDB struct {
-	paths   []string
-	entries []knownHostEntry
-}
-
+// knownHostEntry is one parsed known_hosts line: its host patterns (which may be
+// negated with a leading `!`) and the keys recorded for it by key type.
 type knownHostEntry struct {
 	patterns []string
 	keys     map[string][]ssh.PublicKey // type name -> all records of that type
 }
 
-// loadKnownHosts loads the default known_hosts; a missing file is treated as an empty table.
-func loadKnownHosts() (knownHostsDB, error) {
+// knownHostsPaths are the files OpenSSH reads, in its order.
+func knownHostsPaths() []string {
 	home, _ := os.UserHomeDir()
-	paths := []string{filepath.Join(home, ".ssh", "known_hosts"), "/etc/ssh/ssh_known_hosts"}
-	db := knownHostsDB{paths: paths}
+	return []string{filepath.Join(home, ".ssh", "known_hosts"), "/etc/ssh/ssh_known_hosts"}
+}
+
+// loadKnownHostEntries parses every readable known_hosts file into an entry
+// table; a missing file contributes nothing and leaves the table empty.
+func loadKnownHostEntries(paths []string) []knownHostEntry {
+	var entries []knownHostEntry
 	for _, path := range paths {
 		file, err := os.Open(path)
 		if err != nil {
@@ -282,12 +265,12 @@ func loadKnownHosts() (knownHostsDB, error) {
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
 			if entry, ok := parseKnownHostLine(scanner.Text()); ok {
-				db.entries = append(db.entries, entry)
+				entries = append(entries, entry)
 			}
 		}
 		file.Close()
 	}
-	return db, nil
+	return entries
 }
 
 // parseKnownHostLine parses one known_hosts line (@cert/@revoked marker lines are
@@ -303,11 +286,11 @@ func parseKnownHostLine(line string) (knownHostEntry, bool) {
 }
 
 // acceptNew allows a new host, rejects a changed key, and allows a recorded key.
-func (db knownHostsDB) acceptNew() ssh.HostKeyCallback {
+func acceptNew(entries []knownHostEntry) ssh.HostKeyCallback {
 	return func(host string, _ net.Addr, key ssh.PublicKey) error {
 		names := hostNamesFor(host)
 		var recorded []ssh.PublicKey
-		for _, entry := range db.entries {
+		for _, entry := range entries {
 			if !entry.matchesAny(names) {
 				continue
 			}

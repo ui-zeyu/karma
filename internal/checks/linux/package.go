@@ -1,5 +1,6 @@
 // package: container instances, package integrity verification (with forensics on
 // changed files), auth-chain binary forensics.
+
 package linux
 
 import (
@@ -12,20 +13,26 @@ import (
 
 const dockerScript = "docker ps -a 2>/dev/null; echo; docker images 2>/dev/null"
 
-// forensicsTail: column 3 of a dpkg -V / rpm -Va output line is the md5 check
-// flag, where '5' means the check failed. After verification, gather forensics in
-// place: feed the named files to file (type) and ls -l (mtime).
-const forensicsTail = `
-changed=$(printf '%s\n' "$verify" | awk 'substr($1, 3, 1) == "5" {print $NF}')
-if [ -n "$changed" ]; then
+// forensicsBlock gathers in-place forensics for one file list: file (type) and
+// ls -l (attributes and mtime) for the files the shell variable names.
+func forensicsBlock(variable string) string {
+	return fmt.Sprintf(`
+if [ -n "$%[1]s" ]; then
   if command -v file >/dev/null 2>&1; then
     echo "== file"
-    file $changed 2>/dev/null
+    file $%[1]s 2>/dev/null
   fi
   echo "== ls"
-  LC_ALL=C ls -l $changed 2>/dev/null
+  LC_ALL=C ls -l $%[1]s 2>/dev/null
 fi
-`
+`, variable)
+}
+
+// forensicsTail: column 3 of a dpkg -V / rpm -Va output line is the md5 check
+// flag, where '5' means the check failed; the files that failed go to the shared
+// forensics block.
+var forensicsTail = "\nchanged=$(printf '%s\\n' \"$verify\" | awk 'substr($1, 3, 1) == \"5\" {print $NF}')\n" +
+	forensicsBlock("changed")
 
 // verifyScript stores the package-verify output in $verify, prints it only when
 // non-empty, then gathers forensics in place. The verifier has already run: no
@@ -45,22 +52,14 @@ const pkgVerifyTimeout = 180 * time.Second // a full package verify takes a minu
 
 // authBinScript: the programs most often replaced in the login auth chain; once
 // pkg-verify points at one, type and mtime close the loop in place.
-const authBinScript = `
+var authBinScript = `
 list=
 for f in /usr/sbin/sshd /usr/bin/login /usr/bin/su /usr/bin/sudo /usr/bin/passwd \
          /usr/sbin/unix_chkpwd /sbin/unix_chkpwd \
          /usr/lib*/security/pam_unix.so /lib*/security/pam_unix.so; do
   [ -f "$f" ] && list="$list $f"
 done
-if [ -n "$list" ]; then
-  if command -v file >/dev/null 2>&1; then
-    echo "== file"
-    file $list 2>/dev/null
-  fi
-  echo "== ls"
-  LC_ALL=C ls -l $list 2>/dev/null
-fi
-`
+` + forensicsBlock("list")
 
 var binNotElfRule = model.NewRule("bin-not-elf",
 	`(?i)^.*(?:\bscript\b|\b(?:ASCII|Unicode) text\b)`, model.High,

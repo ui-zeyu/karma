@@ -33,7 +33,7 @@ func TestBuildSSHTransport(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ssh := transport.(*session.SshTransport)
+		ssh := transport.(*session.SSHTransport)
 		if ssh.HostKey != session.HostKeyNo || ssh.Port != 0 || ssh.Password != "" {
 			t.Fatalf("wrong defaults: %+v", ssh)
 		}
@@ -53,7 +53,7 @@ func TestBuildSSHTransport(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: %v", raw, err)
 			}
-			if got := transport.(*session.SshTransport).HostKey; got != want {
+			if got := transport.(*session.SSHTransport).HostKey; got != want {
 				t.Fatalf("StrictHostKeyChecking=%s mapped to %v, want %v", raw, got, want)
 			}
 		}
@@ -98,7 +98,7 @@ func TestBuildSSHTransport(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := transport.(*session.SshTransport).Password; got != "clipw" {
+		if got := transport.(*session.SSHTransport).Password; got != "clipw" {
 			t.Fatalf("password = %q", got)
 		}
 	})

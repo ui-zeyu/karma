@@ -2,6 +2,7 @@
 
 // POSIX process-tree stop: Setpgid creates an independent process group; on timeout SIGKILL the whole group.
 // Windows branch: see stop_windows.go.
+
 package session
 
 import (

@@ -4,6 +4,7 @@
 // (installed, last connected, last removed); some property values are unreadable by regular users
 // and left blank, complete only from an administrator's view. The one-line-per-device shape is
 // assembled in the remote PowerShell.
+
 package windows
 
 import (

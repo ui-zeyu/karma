@@ -11,10 +11,12 @@
 // stop the source and count the body as this tier's answer; the byte safety
 // valve (maxHarvestBytes) likewise stops the source at the limit and counts as
 // truncated.
+
 package session
 
 import (
 	"bufio"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -45,12 +47,19 @@ func lineReader(reader *bufio.Reader) func() (string, bool) {
 	}
 }
 
+// drainText reads the rest of one stream (stderr) and cleans bad bytes with the
+// same U+FFFD policy as lineReader.
+func drainText(reader *bufio.Reader) string {
+	raw, _ := io.ReadAll(io.LimitReader(reader, maxHarvestBytes))
+	return validText(string(raw))
+}
+
 // source is the data source of one call, provided by the channel implementation.
 // wait waits for the call to end; stop stops the data source (kill the process
 // tree / close the channel); readLine reads one stdout line (ok=false is EOF);
 // readAll drains stderr; exitCode returns the exit code (-1 when undetermined).
 type source struct {
-	wait     func() error
+	wait     func()
 	stop     func()
 	readLine func() (string, bool)
 	readAll  func() string
@@ -61,24 +70,14 @@ type source struct {
 // waits for exit within the grace period; both paths carry back the output read
 // so far; if it still cannot stop within the grace period it ends as a timeout and discards the read output.
 func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
+	// Each reader owns one builder, and every snapshot happens only after done
+	// closes (reads drained, source reaped): the channel close orders all of it, so
+	// the line-by-line path needs no lock.
 	var (
-		mu        sync.Mutex
 		out, errS strings.Builder
 		truncated bool
 	)
-	appendOut := func(chunk string) {
-		mu.Lock()
-		defer mu.Unlock()
-		out.WriteString(chunk)
-	}
-	appendErr := func(chunk string) {
-		mu.Lock()
-		defer mu.Unlock()
-		errS.WriteString(chunk)
-	}
 	snapshot := func() (string, string, bool) {
-		mu.Lock()
-		defer mu.Unlock()
 		return out.String(), errS.String(), truncated
 	}
 
@@ -105,7 +104,7 @@ func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
 			}
 			chunk, ok := src.readLine()
 			if chunk != "" {
-				appendOut(chunk)
+				out.WriteString(chunk)
 				lines++
 				buffered += int64(len(chunk))
 			}
@@ -118,18 +117,14 @@ func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
 				// partial line has more=false but non-empty content and likewise
 				// counts as "more content".
 				if extra, _ := src.readLine(); extra != "" {
-					mu.Lock()
 					truncated = true
-					mu.Unlock()
 				}
 				stopSource()
 				return
 			}
 			// Byte safety valve: a runaway output can fill memory before the timeout, so stop at the limit
 			if buffered >= maxHarvestBytes {
-				mu.Lock()
 				truncated = true
-				mu.Unlock()
 				stopSource()
 				return
 			}
@@ -137,7 +132,7 @@ func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
 	}()
 	go func() {
 		defer readers.Done()
-		appendErr(src.readAll())
+		errS.WriteString(src.readAll())
 	}()
 
 	done := make(chan struct{})
@@ -178,7 +173,7 @@ func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
 func harvestCapped(src source, timeout time.Duration, limit int) model.RunResult {
 	result := harvest(src, timeout, limit)
 	if result.Truncated && !result.TimedOut {
-		return model.RunResult{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: 0, Truncated: true}
+		result.ExitCode = 0
 	}
 	return result
 }

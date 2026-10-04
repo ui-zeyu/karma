@@ -14,7 +14,7 @@ type fakeChunk struct {
 func fakeSource(chunks []fakeChunk) source {
 	index := 0
 	return source{
-		wait: func() error { return nil },
+		wait: func() {},
 		stop: func() {},
 		readLine: func() (string, bool) {
 			if index >= len(chunks) {

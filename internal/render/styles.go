@@ -6,6 +6,7 @@
 // same severity colors; syntax coloring stays low-saturation to keep clear of
 // the red/yellow/cyan/green severity semantics. Syntax highlighting uses chroma
 // (bash), and line-shaped output uses the built-in pseudo-lexers.
+
 package render
 
 import (
@@ -87,43 +88,61 @@ var (
 	accentStyle   = style{fg: "14"}                      // bright_cyan
 	dimStyle      = style{faint: true}
 
-	// Aspect banner: a neutral dark background with white text, keeping clear
-	// of the severity colors.
-	bannerColor     = lipgloss.Color("236")
-	bannerTextColor = lipgloss.Color("15")
+	// listIDColor: the catalog's id column (karma list), plain blue so the
+	// listing's selector vocabulary stands out from the titles without taking
+	// one of the severity colors.
+	listIDColor = lipgloss.Color("4")
+
+	// Heading bands: a neutral dark background with white text, keeping clear
+	// of the severity colors. The report's aspect banner and the listing's
+	// platform band use the first step; the listing's aspect band steps down to
+	// a lighter grey with regular light-grey text, so the heading tree's two
+	// levels read apart at a glance.
+	bannerColor      = lipgloss.Color("236")
+	bannerTextColor  = lipgloss.Color("15")
+	subBandColor     = lipgloss.Color("238")
+	subBandTextColor = lipgloss.Color("250")
 )
+
+// bandStyle is the level-one heading band: the report's aspect banners and the
+// listing's platform bands. subBandStyle is the level-two band behind the
+// listing's aspect headings.
+var (
+	bandStyle = lipgloss.NewStyle().Bold(true).
+			Background(bannerColor).Foreground(bannerTextColor)
+	subBandStyle = lipgloss.NewStyle().
+			Background(subBandColor).Foreground(subBandTextColor)
+)
+
+// severityTheme is the single source of the severity color language: the hit
+// span and the rail hue of each signal level, indexed by Severity
+// (Critical..Low). The quiet levels have neither.
+var severityTheme = [...]struct {
+	span   style
+	border lipgloss.Color
+}{
+	{criticalStyle, "1"},
+	{highStyle, "9"},
+	{mediumStyle, "11"},
+	{lowStyle, "14"},
+}
 
 // severityStyle is shared by hit spans and the legend; it covers the four
 // signal severities only — benign and no-hit are both quiet lines.
 func severityStyle(severity model.Severity) style {
-	switch severity {
-	case model.Critical:
-		return criticalStyle
-	case model.High:
-		return highStyle
-	case model.Medium:
-		return mediumStyle
-	case model.Low:
-		return lowStyle
+	if severity < 0 || int(severity) >= len(severityTheme) {
+		return style{}
 	}
-	return style{}
+	return severityTheme[severity].span
 }
 
 // severityBorder is the border hue. A critical hit span is white on red, so the
 // border takes the red itself.
 func severityBorder(severity model.Severity) lipgloss.Color {
-	switch severity {
-	case model.Critical:
-		return "1"
-	case model.High:
-		return "9"
-	case model.Medium:
-		return "11"
-	case model.Low:
-		return "14"
-	default:
+	if severity < 0 || int(severity) >= len(severityTheme) {
 		return ""
 	}
+	return severityTheme[severity].border
 }
 
 // Syntax coloring uses low-saturation dark colors and is applied before hit

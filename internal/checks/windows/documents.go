@@ -3,6 +3,7 @@
 //
 // JumpLists is a degraded fallback: it does not parse the OLE structure of .automaticDestinations-ms,
 // instead extracting UTF-16 strings from the file to recover "which paths this app touched".
+
 package windows
 
 import (
@@ -35,9 +36,7 @@ const winrarKey = `HKCU\Software\WinRAR\ArcHistory`
 
 var recentDocsScript = RegQuery(recentDocsKey, true)
 var comdlg32Script = RegQuery(comdlg32Key, true)
-var adobeScript = RegScript(lo.Map(adobeKeys, func(key string, _ int) string {
-	return RegQuery(key, true)
-})...)
+var adobeScript = RegQueryAll(adobeKeys, true)
 var archiveScript = RegScript(
 	RegQuery(winzipKey, true),
 	RegQuery(winzipLegacyKey, true),

@@ -5,6 +5,7 @@
 // only renders the timeline and file lines. Deploys and installs are large,
 // contiguous clusters, while a dropped trojan is often a small handful of files
 // isolated in time from the main group.
+
 package linux
 
 import (
@@ -30,6 +31,10 @@ const barWidth = 30 // max cells in the timeline bar
 // scanBytes: a large directory's metadata stream can reach tens of MB, so this
 // check raises its own read limit (about 400k files).
 const scanBytes = 64 * 1024 * 1024
+
+// huntTimeout: a large tree's metadata stream takes longer to collect than the
+// default per-command timeout allows.
+const huntTimeout = 60 * time.Second
 
 // findPrintf: mtime, ctime (epoch seconds), target-local date and time, bytes,
 // path, tab-separated.
@@ -182,6 +187,6 @@ func HuntCheck(dirs []string) *model.Check {
 		define.CheckOpt{
 			Normalize: huntNormalize(time.Now),
 			ScanBytes: scanBytes,
-			Timeout:   60 * time.Second,
+			Timeout:   huntTimeout,
 		})
 }

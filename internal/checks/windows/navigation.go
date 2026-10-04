@@ -3,6 +3,7 @@
 // Shellbags are parsed by shell item structure (internal/checks/windows/shellitem.go):
 // the key tree is joined into full paths, yielding a timestamped browsing timeline; unrecognized
 // entries fall back to sliding-window string extraction.
+
 package windows
 
 import (
@@ -32,14 +33,14 @@ var shellbagKeys = []string{
 
 const searchSensitive = `(?i)(?:password|passwd|pwd|secret|credential|salary|\.kdbx|\.ppk|id_rsa` +
 	`|密码|口令|凭据|工资|薪资)`
-const typedNonlocal = `(?i)(?:ftp://|\\\\[A-Za-z0-9_.-]+\\)`
-const shellbagNonlocal = `(?i)(?:ftp://|\\\\[A-Za-z0-9_.-]+\\)`
+
+// nonlocalPath: an FTP URL or a UNC share (\\host\) appearing in a search term or
+// a browsed folder -- the shape both navigation checks look for.
+const nonlocalPath = `(?i)(?:ftp://|\\\\[A-Za-z0-9_.-]+\\)`
 
 var wordwheelScript = RegQuery(wordwheelKey, true)
 var typedpathsScript = RegQuery(typedpathsKey, false)
-var shellbagScript = RegScript(lo.Map(shellbagKeys, func(key string, _ int) string {
-	return RegQuery(key, true)
-})...)
+var shellbagScript = RegQueryAll(shellbagKeys, true)
 
 var guidOnly = regexp.MustCompile(`^\{[0-9A-Fa-f-]{36}\}$`)
 
@@ -187,7 +188,7 @@ var NavigationChecks = []*model.Check{
 		define.CheckOpt{
 			Syntax: "reg",
 			Rules: []model.Rule{
-				model.NewRule("typedpaths-nonlocal", typedNonlocal, model.Medium,
+				model.NewRule("typedpaths-nonlocal", nonlocalPath, model.Medium,
 					"FTP or network share path typed in address bar"),
 				define.KeywordRule,
 			},
@@ -201,7 +202,7 @@ var NavigationChecks = []*model.Check{
 		define.CheckOpt{
 			Normalize: shellbagNormalize,
 			Rules: []model.Rule{
-				model.NewRule("shellbags-nonlocal", shellbagNonlocal, model.Medium, "FTP or network location browsed"),
+				model.NewRule("shellbags-nonlocal", nonlocalPath, model.Medium, "FTP or network location browsed"),
 			},
 		}),
 }
