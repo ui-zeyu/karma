@@ -202,10 +202,13 @@ func lineSeverity(matches []model.Match) model.Severity {
 	if len(matches) == 0 {
 		return model.Info
 	}
-	effective := lo.FilterMap(matches, func(m model.Match, _ int) (model.Severity, bool) {
-		return m.Severity, m.Severity != model.Benign
-	})
-	return lo.Min(append(effective, model.Benign))
+	severity := model.Benign
+	for _, match := range matches {
+		if match.Severity != model.Benign && match.Severity < severity {
+			severity = match.Severity
+		}
+	}
+	return severity
 }
 
 // lineMatches is the first match of each rule within a line; each rule counts at

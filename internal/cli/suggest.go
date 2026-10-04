@@ -38,7 +38,18 @@ func closeMatches(word string, names []string) string {
 	if len(candidates) == 0 {
 		return ""
 	}
+	slices.SortStableFunc(candidates, func(a, b string) int {
+		return prefixRank(word, a) - prefixRank(word, b)
+	})
 	return ". Did you mean: " + strings.Join(candidates[:min(3, len(candidates))], ", ")
+}
+
+// prefixRank orders candidates: a prefix hit (rank 0) sorts before the rest.
+func prefixRank(word, name string) int {
+	if strings.HasPrefix(name, word) {
+		return 0
+	}
+	return 1
 }
 
 // editDistance is the Levenshtein distance with two rolling rows: prev is the

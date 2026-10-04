@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -131,7 +132,11 @@ func (t *SSHTransport) connect(auth []ssh.AuthMethod, callback ssh.HostKeyCallba
 		HostKeyCallback: callback,
 		Timeout:         sshTimeout,
 	}
-	conn, err := net.DialTimeout("tcp", addr, sshTimeout)
+	// Keepalive on: a collection run holds the connection for minutes, and a
+	// NAT or firewall that silently drops idle TCP would otherwise leave the
+	// next command hanging until its timeout
+	dialer := &net.Dialer{Timeout: sshTimeout, KeepAlive: 30 * time.Second}
+	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		if isTimeout(err) {
 			return nil, fmt.Errorf("connection timed out (%gs): %s", sshTimeout.Seconds(), t.Destination.Display())
@@ -216,7 +221,10 @@ func (t *SSHTransport) publicKeyAuth() ([]ssh.AuthMethod, io.Closer, error) {
 func loadIdentity(path string, password string) (ssh.Signer, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("private key file does not exist: %s", path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("private key file does not exist: %s", path)
+		}
+		return nil, fmt.Errorf("cannot read private key %s: %v", path, err)
 	}
 	key, err := ssh.ParsePrivateKey(raw)
 	if err == nil {

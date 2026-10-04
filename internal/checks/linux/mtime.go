@@ -66,6 +66,7 @@ func huntScript(dirs []string) string {
 // ⟨reason⟩ annotation, the text carries no prefix.
 func huntNormalize(now func() time.Time) model.Normalizer {
 	return func(_ string, text string) *model.Shaped {
+		moment := now()
 		var files []*cluster.FindRow
 		var raw []string
 		for line := range textutil.Lines(text) {
@@ -90,7 +91,7 @@ func huntNormalize(now func() time.Time) model.Normalizer {
 		// In the main group only marked lines are printed (mtime in the future); signals
 		// come first, marked lines are always printed
 		flagged := lo.Filter(files, func(item *cluster.FindRow, _ int) bool {
-			return !outliers[item] && cluster.OutlierMarker(item.Mtime, item.Ctime, false, now()) != ""
+			return !outliers[item] && cluster.OutlierMarker(item.Mtime, item.Ctime, false, moment) != ""
 		})
 
 		sized := slices.Concat(lo.Keys(outliers), flagged)
@@ -102,7 +103,7 @@ func huntNormalize(now func() time.Time) model.Normalizer {
 		// Outlier lines first, then future-timestamp lines from the main group, each with
 		// the most recent first
 		for _, item := range slices.Concat(byRecency(lo.Keys(outliers)), byRecency(flagged)) {
-			marker := cluster.OutlierMarker(item.Mtime, item.Ctime, outliers[item], now())
+			marker := cluster.OutlierMarker(item.Mtime, item.Ctime, outliers[item], moment)
 			line := fmt.Sprintf("%s  %*s  %s", item.Stamp, width, human(item.Nbytes), item.Path)
 			lines = append(lines, line)
 			if verdict := cluster.OutlierMatch(item.Path, marker, len(line)); verdict != nil {

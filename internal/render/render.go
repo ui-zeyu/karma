@@ -320,7 +320,8 @@ func fallbackPanel(result *model.CheckResult, maxLines, width int) (text string)
 func plainRows(raw, stderr string, limit int) []string {
 	limit = max(limit, 1)
 	var rows []string
-	if body := strings.Split(strings.Trim(raw, "\n"), "\n"); raw != "" {
+	if raw != "" {
+		body := strings.Split(strings.Trim(raw, "\n"), "\n")
 		cut := min(len(body), limit)
 		rows = append(rows, body[:cut]...)
 		if cut < len(body) {
@@ -338,36 +339,30 @@ func plainRows(raw, stderr string, limit int) []string {
 // sectionSeverity is one section's highest hit severity, counting hits on the
 // section title; Info when there is no signal.
 func sectionSeverity(section model.Section) model.Severity {
-	var signals []model.Severity
+	severity := model.Info
 	for _, match := range section.TitleMatches {
-		if match.Severity.IsSignal() {
-			signals = append(signals, match.Severity)
+		if match.Severity.IsSignal() && match.Severity < severity {
+			severity = match.Severity
 		}
 	}
 	for _, line := range section.Lines {
-		if line.Severity.IsSignal() {
-			signals = append(signals, line.Severity)
+		if line.Severity.IsSignal() && line.Severity < severity {
+			severity = line.Severity
 		}
 	}
-	if len(signals) == 0 {
-		return model.Info
-	}
-	return lo.Min(signals)
+	return severity
 }
 
 // topSeverity is the whole panel's highest hit severity; Info when there is no
 // hit.
 func topSeverity(document model.Document) model.Severity {
-	signals := lo.FilterMap(document.Sections, func(section model.Section, _ int) (model.Severity, bool) {
-		if severity := sectionSeverity(section); severity.IsSignal() {
-			return severity, true
+	severity := model.Info
+	for _, section := range document.Sections {
+		if section := sectionSeverity(section); section.IsSignal() && section < severity {
+			severity = section
 		}
-		return model.Info, false
-	})
-	if len(signals) == 0 {
-		return model.Info
 	}
-	return lo.Min(signals)
+	return severity
 }
 
 // metaParts is the metadata on the right of the panel's first line: the probe
@@ -481,15 +476,15 @@ func plannedRows(lines []model.Line, sequence []linePlan, lineStyler LineStyler,
 // out. Consecutive omitted rows collapse into one counted gap. It returns nil
 // when no row is kept.
 func plan(lines []model.Line, budget int) ([]linePlan, int) {
-	keep := map[int]bool{}
+	keep := make([]bool, len(lines))
+	kept := 0
 	for index, line := range lines {
 		if line.Severity.IsSignal() {
-			if index > 0 {
-				keep[index-1] = true
-			}
-			keep[index] = true
-			if index+1 < len(lines) {
-				keep[index+1] = true
+			for _, around := range [3]int{index - 1, index, index + 1} {
+				if 0 <= around && around < len(lines) && !keep[around] {
+					keep[around] = true
+					kept++
+				}
 			}
 		}
 	}
@@ -499,9 +494,10 @@ func plan(lines []model.Line, budget int) ([]linePlan, int) {
 			continue
 		}
 		keep[index] = true
+		kept++
 		used++
 	}
-	if len(keep) == 0 {
+	if kept == 0 {
 		return nil, 0
 	}
 	var sequence []linePlan
@@ -558,14 +554,23 @@ func lineText(line model.Line, lineStyler LineStyler) string {
 // withReason appends the reason ⟨…⟩ of the highest hit severity at the end of
 // the row; when it does not fit it goes on its own line aligned with the body.
 func withReason(row string, matches []model.Match, width int) []string {
-	signals := lo.Filter(matches, func(m model.Match, _ int) bool { return m.Severity.IsSignal() })
-	if len(signals) == 0 {
+	var top model.Match
+	signals := 0
+	for _, match := range matches {
+		if !match.Severity.IsSignal() {
+			continue
+		}
+		if signals == 0 || match.Severity < top.Severity {
+			top = match
+		}
+		signals++
+	}
+	if signals == 0 {
 		return []string{row}
 	}
-	top := lo.MinBy(signals, func(a, b model.Match) bool { return a.Severity < b.Severity })
 	reason := "⟨" + top.Message + "⟩"
-	if len(signals) > 1 {
-		reason += fmt.Sprintf(" +%d", len(signals)-1)
+	if signals > 1 {
+		reason += fmt.Sprintf(" +%d", signals-1)
 	}
 	reasonSt := style{faint: true}.seq().Render(reason)
 	if lipgloss.Width(row)+2+lipgloss.Width(reason) <= width {

@@ -311,6 +311,7 @@ func ListingNormalize(now func() time.Time) model.Normalizer {
 		if len(entries) == 0 {
 			return nil
 		}
+		moment := now()
 
 		groups := ClusterByMtime(entries, entryMtime, EntryPath)
 		limit := OutlierSizeLimit(len(entries))
@@ -329,7 +330,7 @@ func ListingNormalize(now func() time.Time) model.Normalizer {
 				lines = append(lines, r.text)
 				continue
 			}
-			marker := OutlierMarker(r.entry.Mtime, r.entry.Ctime, outliers[r.entry], now())
+			marker := OutlierMarker(r.entry.Mtime, r.entry.Ctime, outliers[r.entry], moment)
 			lines = append(lines, r.entry.Row)
 			if verdict := OutlierMatch(EntryPath(r.entry), marker, len(r.entry.Row)); verdict != nil {
 				notes = append(notes, model.LineMatch{Line: index, Match: *verdict})

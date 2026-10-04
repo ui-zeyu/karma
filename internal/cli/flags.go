@@ -9,7 +9,9 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -107,8 +109,14 @@ func buildSSHTransport(flags *pflag.FlagSet, target string) (session.Transport, 
 	}
 	identities := stringSliceFlag(flags, "identity")
 	for _, path := range identities {
-		if info, err := os.Stat(path); err != nil || info.IsDir() {
+		info, err := os.Stat(path)
+		switch {
+		case err != nil && errors.Is(err, fs.ErrNotExist):
 			return nil, fmt.Errorf("identity file not found: %s", path)
+		case err != nil:
+			return nil, fmt.Errorf("cannot access identity file %s: %v", path, err)
+		case info.IsDir():
+			return nil, fmt.Errorf("identity file is a directory: %s", path)
 		}
 	}
 	rawOptions := stringSliceFlag(flags, "ssh-option")
