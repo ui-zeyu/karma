@@ -169,15 +169,15 @@ func (t *SSHTransport) user() string {
 }
 
 // publicKeyAuth gathers available public keys: agent signers + explicit key files + default keys.
+//
+// A candidate that cannot be used is skipped, not fatal: a passphrase-protected
+// ~/.ssh/id_rsa is common, and dropping it must not discard the ssh-agent signers
+// or the other key files that could answer. The first failure is remembered and
+// returned only when no candidate at all is left, so a run with nothing to
+// authenticate with still says why.
 func (t *SSHTransport) publicKeyAuth() ([]ssh.AuthMethod, io.Closer, error) {
 	var methods []ssh.AuthMethod
 	var agentConn io.Closer
-	fail := func(err error) ([]ssh.AuthMethod, io.Closer, error) {
-		if agentConn != nil {
-			_ = agentConn.Close()
-		}
-		return nil, nil, err
-	}
 	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
 		if conn, err := net.Dial("unix", sock); err == nil {
 			signers, err := agent.NewClient(conn).Signers()
@@ -193,24 +193,47 @@ func (t *SSHTransport) publicKeyAuth() ([]ssh.AuthMethod, io.Closer, error) {
 	if len(identities) == 0 {
 		identities = defaultIdentities()
 	}
+	var skipped error
 	for _, path := range identities {
-		raw, err := os.ReadFile(path)
+		key, err := loadIdentity(path, t.Password)
 		if err != nil {
-			return fail(fmt.Errorf("private key file does not exist: %s", path))
-		}
-		key, err := ssh.ParsePrivateKey(raw)
-		if err != nil {
-			var missing *ssh.PassphraseMissingError
-			if errors.As(err, &missing) && t.Password != "" {
-				key, err = ssh.ParsePrivateKeyWithPassphrase(raw, []byte(t.Password))
+			if skipped == nil {
+				skipped = err
 			}
-			if err != nil {
-				return fail(fmt.Errorf("failed to parse private key %s: %w", path, err))
-			}
+			continue
 		}
 		methods = append(methods, ssh.PublicKeys(key))
 	}
+	if len(methods) == 0 && skipped != nil {
+		return nil, agentConn, skipped
+	}
 	return methods, agentConn, nil
+}
+
+// loadIdentity reads one private key file. A passphrase-protected key is unlocked
+// with the command-line password when one was given; without it the error names
+// the one flag that can help.
+func loadIdentity(path string, password string) (ssh.Signer, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("private key file does not exist: %s", path)
+	}
+	key, err := ssh.ParsePrivateKey(raw)
+	if err == nil {
+		return key, nil
+	}
+	var missing *ssh.PassphraseMissingError
+	if errors.As(err, &missing) {
+		if password == "" {
+			return nil, fmt.Errorf("private key %s is passphrase protected: pass --password to unlock it", path)
+		}
+		unlocked, retryErr := ssh.ParsePrivateKeyWithPassphrase(raw, []byte(password))
+		if retryErr != nil {
+			return nil, fmt.Errorf("cannot use private key %s: %w", path, retryErr)
+		}
+		return unlocked, nil
+	}
+	return nil, fmt.Errorf("cannot use private key %s: %w", path, err)
 }
 
 // passwordAuth offers two password paths: password and keyboard-interactive each

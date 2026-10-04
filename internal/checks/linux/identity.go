@@ -80,9 +80,12 @@ var pamDirs = []string{
 var IdentityChecks = []*model.Check{
 	define.LinuxCheck("accounts", "Accounts", model.AspectIdentity,
 		[]model.Probe{
-			// Two probes: getent covers NSS (LDAP etc.), cat /etc/passwd catches minimal systems
+			// Two probes: getent covers NSS (LDAP etc.), the files catch minimal systems.
+			// The dash-suffixed copy is what user tools leave behind; one that changed
+			// while the live file did not is a tamper sign.
 			{Label: "getent", Inv: model.NewCommand("getent", "passwd")},
-			{Label: "cat", Inv: model.Shell{Script: "cat /etc/passwd 2>/dev/null"}},
+			{Label: "cat", Inv: model.Shell{Script: script.ReadFiles(
+				[]string{"/etc/passwd", "/etc/passwd-"}, `cat "$f"`, true)}},
 		},
 		// passwd/group are colon-separated tables; color fields in a cycle to separate columns
 		define.CheckOpt{
@@ -110,7 +113,8 @@ var IdentityChecks = []*model.Check{
 	// password, so after filtering the body holds only live hashes and anomalies.
 	// An empty root password is its own CRITICAL, matching the uid0 wording.
 	define.LinuxCheck("shadow", "Shadow passwords (/etc/shadow)", model.AspectIdentity,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: "cat /etc/shadow 2>/dev/null"}}},
+		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: script.ReadFiles(
+			[]string{"/etc/shadow", "/etc/shadow-"}, `cat "$f"`, true)}}},
 		define.CheckOpt{
 			Syntax: "colon",
 			// Ubuntu locks with !*, RedHat with !; only entries whose field 2 is entirely
@@ -127,9 +131,10 @@ var IdentityChecks = []*model.Check{
 		}),
 	// group and gshadow are read in one pass (gshadow holds the real group passwords,
 	// readable only by root); both are colon-separated, so filters and rules are shared.
+	// The dash-suffixed copies go along for the same reason as passwd-.
 	define.LinuxCheck("groups", "Groups (/etc/group, /etc/gshadow)", model.AspectIdentity,
 		[]model.Probe{{Label: "cat", Inv: model.Shell{
-			Script: script.ReadFiles([]string{"/etc/group", "/etc/gshadow"}, `cat "$f"`, true),
+			Script: script.ReadFiles([]string{"/etc/group", "/etc/gshadow", "/etc/group-", "/etc/gshadow-"}, `cat "$f"`, true),
 		}}},
 		define.CheckOpt{
 			Syntax: "colon",

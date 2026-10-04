@@ -1,6 +1,8 @@
-// Evidence saving: each check's raw text is written into the --save directory as
-// <aspect>/<check id>.txt. Only checks with a body are written; a repeated run
-// overwrites files of the same name.
+// Evidence saving: each check's raw output is written into the --save directory as
+// <aspect>/<check id>.txt. The text is the channel's stdout exactly as collected —
+// before the reading layer's byte cap, section split, and normalization — so the
+// files are the evidence, not the presentation. Only checks that collected output
+// are written; a repeated run overwrites files of the same name.
 
 package cli
 
@@ -26,8 +28,8 @@ func (s *saveObserver) CheckStarted(check *model.Check) { s.next.CheckStarted(ch
 // CheckFinished saves first and passes through after; a failed write is reported
 // on stderr and does not block presentation.
 func (s *saveObserver) CheckFinished(check *model.Check, result *model.CheckResult) {
-	if result.Output != "" {
-		s.write(check, result.Output)
+	if result.Raw != "" {
+		s.write(check, result.Raw)
 	}
 	s.next.CheckFinished(check, result)
 }

@@ -8,9 +8,9 @@ import (
 	"karma/internal/reader"
 )
 
-// readDocument is the reading shortcut the tests use: only the document.
+// readDocument is the reading shortcut the tests use.
 func readDocument(text string, rules []model.Rule, filters []model.LineFilter, normalize model.Normalizer) model.Document {
-	return reader.Analyze(text, rules, filters, normalize, 0).Document
+	return reader.Analyze(text, rules, filters, normalize, 0)
 }
 
 func rule(id, pattern string, severity model.Severity) model.Rule {
@@ -153,11 +153,12 @@ func TestEmptySectionsDropped(t *testing.T) {
 
 func TestCapBytesTruncatesOnRuneBoundary(t *testing.T) {
 	text := strings.Repeat("a", reader.MaxScanBytes) + "→"
-	reading := reader.Analyze(text, nil, nil, nil, 0)
-	if !reading.Document.Truncated {
+	document := reader.Analyze(text, nil, nil, nil, 0)
+	if !document.Truncated {
 		t.Fatal("over limit should mark truncated")
 	}
-	if strings.Contains(reading.Source, "\uFFFD") {
+	lines := document.Sections[0].Lines
+	if body := lines[len(lines)-1].Text; strings.Contains(body, "\uFFFD") {
 		t.Fatal("partial bytes at the cut point should be dropped entirely")
 	}
 }

@@ -37,18 +37,21 @@ var shellRcScript = script.ReadFiles([]string{
 	"/etc/bash.bash_logout",
 	"/etc/zsh/zshrc",
 	"/etc/zprofile",
+	"/etc/fish/config.fish",
 	"/root/.bashrc",
 	"/root/.bash_profile",
 	"/root/.bash_login",
 	"/root/.profile",
 	"/root/.bash_logout",
 	"/root/.zshrc",
+	"/root/.config/fish/config.fish",
 	"/home/*/.bashrc",
 	"/home/*/.bash_profile",
 	"/home/*/.bash_login",
 	"/home/*/.profile",
 	"/home/*/.bash_logout",
 	"/home/*/.zshrc",
+	"/home/*/.config/fish/config.fish",
 }, `cat "$f"`, true)
 
 // skelScript: a new user's home is copied wholesale from /etc/skel, so poisoning a
@@ -177,9 +180,11 @@ var PersistenceChecks = []*model.Check{
 			},
 		}),
 	// Trailing slash dereferences: on RedHat-family systems /etc/init.d is a symlink
-	// to rc.d/init.d
+	// to rc.d/init.d. The runlevel directories (rc0.d…rc6.d) hold the same links
+	// multiplied by runlevel, so they would flood the report for little extra signal;
+	// the dropped script itself lands in init.d and the boot-time layer is rcS.d.
 	define.ListingCheck("sysv-init", "SysV init scripts", model.AspectPersistence,
-		[]string{"/etc/init.d/"}, 100, []model.Rule{define.KeywordRule}),
+		[]string{"/etc/init.d/", "/etc/rc.d", "/etc/rcS.d"}, 100, []model.Rule{define.KeywordRule}),
 	define.ListingCheck("xinetd", "xinetd service directory", model.AspectPersistence,
 		[]string{"/etc/xinetd.d"}, 100, []model.Rule{define.KeywordRule}),
 	define.LinuxCheck("ld-preload", "Dynamic library preload (ld.so.preload)", model.AspectPersistence,
@@ -201,7 +206,7 @@ var PersistenceChecks = []*model.Check{
 		}),
 	define.LinuxCheck("shell-rc", "Shell startup files", model.AspectPersistence,
 		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: shellRcScript}}},
-		define.CheckOpt{Rules: []model.Rule{define.KeywordRule}, Syntax: "bash"}),
+		define.CheckOpt{Rules: []model.Rule{historyOffRule, define.KeywordRule}, Syntax: "bash"}),
 	define.LinuxCheck("skel", "Home directory templates (/etc/skel)", model.AspectPersistence,
 		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: skelScript}}},
 		define.CheckOpt{

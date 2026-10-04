@@ -88,11 +88,14 @@ func addSSHFlags(cmd *cobra.Command) { sshFlags(cmd.Flags()) }
 // tests share one list.
 func sshFlags(flags *pflag.FlagSet) {
 	flags.IntP("port", "p", 0, "port, overriding the URI's port")
-	flags.StringSliceP("identity", "i", nil, "private key path, repeatable; falls back to ssh-agent and the default keys")
+	flags.StringSliceP("identity", "i", nil,
+		"private key path, repeatable; without it the default ~/.ssh keys are tried (ssh-agent signers are always offered)")
 	flags.StringSliceP("ssh-option", "o", nil,
-		"only -o StrictHostKeyChecking=no|accept-new|yes is supported (default no, accept anything)")
+		"only -o StrictHostKeyChecking=no|accept-new|yes is supported (default no, accept anything); "+
+			"accept-new accepts a new host without recording it")
 	flags.String("password", "",
-		"password authentication; without it karma uses public keys only and exits when authentication fails")
+		"password authentication, and the passphrase of an encrypted private key; "+
+			"without it karma uses public keys only and exits when authentication fails")
 }
 
 // buildSSHTransport does destination parsing, connection-parameter validation,

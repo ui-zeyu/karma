@@ -52,7 +52,7 @@ func checkByID(id string) *model.Check {
 }
 
 func hitIDs(text string, check *model.Check) []string {
-	document := reader.Analyze(text, check.Rules, check.Filters, check.Normalize, 0).Document
+	document := reader.Analyze(text, check.Rules, check.Filters, check.Normalize, 0)
 	var ids []string
 	for _, section := range document.Sections {
 		for _, match := range section.TitleMatches {
@@ -318,7 +318,7 @@ func TestRegistryChecksCarryRegFallback(t *testing.T) {
 		}
 	}
 	want := []string{
-		"adobe-recent", "archive-history", "env-vars", "opensave-mru", "putty",
+		"adobe-recent", "archive-history", "env-vars", "ifeo", "opensave-mru", "putty",
 		"rdp-config", "rdp-history", "recent-docs", "run-keys", "runmru",
 		"shellbags", "typedpaths", "userassist", "userassist-track",
 		"wordwheel-query",

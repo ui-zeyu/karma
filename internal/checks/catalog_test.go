@@ -13,12 +13,12 @@ import (
 
 func TestCatalogShape(t *testing.T) {
 	linux := checks.ChecksFor(model.Linux)
-	if len(linux) != 70 {
-		t.Fatalf("the Linux catalog should hold 70 checks, got %d", len(linux))
+	if len(linux) != 71 {
+		t.Fatalf("the Linux catalog should hold 71 checks, got %d", len(linux))
 	}
 	windows := checks.ChecksFor(model.Windows)
-	if len(windows) != 37 {
-		t.Fatalf("the Windows catalog should hold 37 checks, got %d", len(windows))
+	if len(windows) != 42 {
+		t.Fatalf("the Windows catalog should hold 42 checks, got %d", len(windows))
 	}
 	aspects := map[model.Aspect]bool{}
 	for _, check := range windows {
@@ -45,6 +45,59 @@ func TestCatalogShape(t *testing.T) {
 	}
 	if len(aspects) != 12 {
 		t.Fatalf("number of Windows aspects: %d", len(aspects))
+	}
+}
+
+// A platform with no registered catalog would silently collect the wrong
+// platform's evidence, so the registry stops there instead.
+func TestChecksForUnknownPlatformPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("an unregistered platform should stop here")
+		}
+	}()
+	checks.ChecksFor("plan9")
+}
+
+// Catalog invariants, locked here instead of in an init(): probe labels are
+// unique within a fallback chain (the fallback note joins `skipped → current`,
+// and a repeated label would present two indistinguishable tiers), head and
+// line_limit are mutually exclusive (their truncation semantics differ), and
+// rule and filter ids are unique within a check (a repeated filter id would fold
+// two filters' hidden-line counts into one).
+func TestCatalogInvariants(t *testing.T) {
+	for _, catalog := range [][]*model.Check{checks.ChecksFor(model.Linux), checks.ChecksFor(model.Windows)} {
+		ids := map[string]bool{}
+		for _, check := range catalog {
+			if ids[check.ID] {
+				t.Errorf("duplicate check id: %s", check.ID)
+			}
+			ids[check.ID] = true
+			labels := map[string]bool{}
+			for _, probe := range check.Probes {
+				if labels[probe.Label] {
+					t.Errorf("check %s has a duplicate probe label: %s", check.ID, probe.Label)
+				}
+				labels[probe.Label] = true
+				if probe.Head > 0 && probe.LineLimit > 0 {
+					t.Errorf("check %s probe %s: Head and LineLimit are mutually exclusive", check.ID, probe.Label)
+				}
+			}
+			rules := map[string]bool{}
+			for _, rule := range check.Rules {
+				if rules[rule.ID] {
+					t.Errorf("check %s repeats rule id %s", check.ID, rule.ID)
+				}
+				rules[rule.ID] = true
+			}
+			filters := map[string]bool{}
+			for _, filter := range check.Filters {
+				if filters[filter.ID] {
+					t.Errorf("check %s repeats filter id %s", check.ID, filter.ID)
+				}
+				filters[filter.ID] = true
+			}
+		}
 	}
 }
 

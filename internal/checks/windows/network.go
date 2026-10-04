@@ -10,6 +10,12 @@ import (
 // High-confidence remote-control/reverse-shell ports; common service ports like 8888 and 5555 are not listed, too many false positives.
 const connEvilPort = `(?i):(?:4444|4445|31337|44444)\s+ESTABLISHED`
 
+// A data row of `netsh interface portproxy show all`: listen address+port, then the
+// forwarded address+port. The header text follows the system locale, the column
+// shape does not.
+const portproxyRow = `^\s*(?:\*|\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f:]{2,})\s+\d{1,5}\s+` +
+	`(?:\*|\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f:]{2,})\s+\d{1,5}\s*$`
+
 // Only a hosts mapping to a dotted domain counts as a hijack surface; the default 127.0.0.1 localhost has no dot and does not match.
 const hostsMapRule = `(?i)^\s*[0-9A-Fa-f:.]+\s+\S+\.\S+(?:\s|$)`
 
@@ -24,6 +30,15 @@ var NetworkChecks = []*model.Check{
 			Rules: []model.Rule{
 				model.NewRule("conn-evil-port", connEvilPort, model.High,
 					"connection to a common remote-control/reverse-shell port"),
+				define.KeywordRule,
+			},
+		}),
+	define.WindowsCheck("portproxy", "Port Forwarding (netsh portproxy)", model.AspectNetwork,
+		[]model.Probe{{Label: "netsh", Inv: model.NewCommand("netsh", "interface", "portproxy", "show", "all")}},
+		define.CheckOpt{
+			Rules: []model.Rule{
+				model.NewRule("portproxy-forward", portproxyRow, model.High,
+					"port forwarding configured (netsh portproxy tunnel, confirm it is expected)"),
 				define.KeywordRule,
 			},
 		}),

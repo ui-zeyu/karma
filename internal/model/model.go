@@ -395,21 +395,23 @@ type Check struct {
 	Rules     []Rule
 	Timeout   time.Duration // 0 means the global timeout from the run options
 	Syntax    string        // syntax declaration for the presentation layer; empty for none
-	Normalize Normalizer    // normalizes the winning text per section; section titles do not enter it
+	Normalize Normalizer    // normalizes the winning body per section; the section title is passed and only dialect alignment (Probe.Adapt) reads it
 	ScanBytes int           // 0 means the default read cap, reader.MaxScanBytes
 }
 
 // CheckResult is the outcome of one check. Outcome separates "not collected"
 // (missing command, environment fact) from "failed" (execution error, signal);
 // document decides visibility on its own, so the presentation layer needs
-// nothing else. Document is the reading result, computed once when the report
-// is built, and the presentation layer only reads it.
+// nothing else. Raw is the channel's stdout exactly as collected — the
+// evidence --save writes, before the reading layer caps or shapes anything.
+// Document is the reading result, computed once when the report is built, and
+// the presentation layer only reads it.
 type CheckResult struct {
 	Check         *Check
 	ProbeLabel    string
 	Outcome       Outcome
 	SkippedLabels []string
-	Output        string // full text for saving; empty for none
+	Raw           string
 	Stderr        string
 	Note          string
 	Document      Document
@@ -428,7 +430,7 @@ type RunOptions struct {
 	Concurrency int
 	Timeout     time.Duration
 	MaxLines    int
-	// SaveDir is the evidence directory; an empty string saves nothing. Raw
-	// text is written per file as <aspect>/<check id>.txt.
+	// SaveDir is the evidence directory; an empty string saves nothing. The
+	// channel's raw output is written per file as <aspect>/<check id>.txt.
 	SaveDir string
 }

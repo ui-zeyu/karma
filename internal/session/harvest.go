@@ -16,6 +16,7 @@ package session
 
 import (
 	"bufio"
+	"cmp"
 	"io"
 	"strings"
 	"sync"
@@ -30,8 +31,9 @@ const stopGrace = 5 * time.Second
 
 // maxHarvestBytes is the output safety valve for a single call: past the limit,
 // stop the source and count as truncated. The reading layer caps by ScanBytes
-// anyway, so collecting more is pointless; it is a var so tests can tighten the valve.
-var maxHarvestBytes = int64(64) << 20
+// anyway, so collecting more is pointless. A source can tighten it through
+// source.byteLimit (the tests do).
+const maxHarvestBytes = int64(64) << 20
 
 // lineReader reads line by line and cleans bad bytes: stray output from the
 // target (GBK lines, binary leaking into stdout) is replaced with U+FFFD;
@@ -57,13 +59,15 @@ func drainText(reader *bufio.Reader) string {
 // source is the data source of one call, provided by the channel implementation.
 // wait waits for the call to end; stop stops the data source (kill the process
 // tree / close the channel); readLine reads one stdout line (ok=false is EOF);
-// readAll drains stderr; exitCode returns the exit code (-1 when undetermined).
+// readAll drains stderr; exitCode returns the exit code (-1 when undetermined);
+// byteLimit overrides maxHarvestBytes when positive.
 type source struct {
-	wait     func()
-	stop     func()
-	readLine func() (string, bool)
-	readAll  func() string
-	exitCode func() int
+	wait      func()
+	stop      func()
+	readLine  func() (string, bool)
+	readAll   func() string
+	exitCode  func() int
+	byteLimit int64
 }
 
 // harvest waits for the call to end or the timeout. On timeout it stops first and
@@ -93,6 +97,7 @@ func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
 
 	var readers sync.WaitGroup
 	readers.Add(2)
+	byteLimit := cmp.Or(src.byteLimit, maxHarvestBytes)
 	go func() {
 		defer readers.Done()
 		var lines, buffered int64
@@ -123,7 +128,7 @@ func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
 				return
 			}
 			// Byte safety valve: a runaway output can fill memory before the timeout, so stop at the limit
-			if buffered >= maxHarvestBytes {
+			if buffered >= byteLimit {
 				truncated = true
 				stopSource()
 				return

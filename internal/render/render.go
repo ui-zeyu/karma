@@ -217,7 +217,7 @@ func checkPanel(result *model.CheckResult, maxLines, width int) string {
 		note := style{fg: "9", bold: true}.seq().Render(result.Note)
 		head := spread(headTextWidth(width), style{bold: true}.seq().Render(result.Check.ID), note)
 		return checkBlock(model.Info, head,
-			plainRows(result.Output, result.Stderr, maxLines), width)
+			plainRows(result.Raw, result.Stderr, maxLines), width)
 	}
 	return ""
 }
@@ -258,15 +258,15 @@ func fallbackPanel(result *model.CheckResult, maxLines, width int) (text string)
 	note := style{fg: "9", bold: true}.seq().Render("render failed, showing raw output")
 	head := spread(headTextWidth(width), style{bold: true}.seq().Render(result.Check.ID), note)
 	return checkBlock(model.Info, head,
-		plainRows(result.Output, result.Stderr, maxLines), width)
+		plainRows(result.Raw, result.Stderr, maxLines), width)
 }
 
 // plainRows are raw rows: the final fallback for a failed render, folded to the
 // budget.
-func plainRows(output, stderr string, limit int) []string {
+func plainRows(raw, stderr string, limit int) []string {
 	limit = max(limit, 1)
 	var rows []string
-	if body := strings.Split(strings.Trim(output, "\n"), "\n"); output != "" {
+	if body := strings.Split(strings.Trim(raw, "\n"), "\n"); raw != "" {
 		cut := min(len(body), limit)
 		rows = append(rows, body[:cut]...)
 		if cut < len(body) {
@@ -637,7 +637,7 @@ func (o *LiveObserver) emit(result *model.CheckResult) {
 		// Not even the fallback panel can be drawn: bare text with the check
 		// name, rather than silently swallowing this check
 		fmt.Fprintln(o.w, result.Check.ID+"  render failed")
-		for _, row := range plainRows(result.Output, result.Stderr, o.maxLines) {
+		for _, row := range plainRows(result.Raw, result.Stderr, o.maxLines) {
 			fmt.Fprintln(o.w, row)
 		}
 	} else {

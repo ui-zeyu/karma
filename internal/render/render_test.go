@@ -97,7 +97,7 @@ func TestCheckPanelNoteBlock(t *testing.T) {
 		Check:   &model.Check{ID: "dmesg", Aspect: model.AspectKernel},
 		Outcome: model.Failed,
 		Note:    "timeout (30s), partial output kept",
-		Output:  "line one\nline two\n",
+		Raw:     "line one\nline two\n",
 	}
 	got := checkPanel(result, 400, 80)
 	if got == "" {
@@ -322,7 +322,7 @@ func TestPanelRenderPanicFallsBackToPlainBlock(t *testing.T) {
 	result := &model.CheckResult{
 		Check:   &model.Check{ID: "listen", Aspect: model.AspectNetwork},
 		Outcome: model.Collected,
-		Output:  "tcp 0.0.0.0:22\n",
+		Raw:     "tcp 0.0.0.0:22\n",
 	}
 	text, failed := renderPanel(result, 400, 100)
 	if !failed || text == "" {
@@ -497,7 +497,7 @@ func TestFallbackPanelKeepsRawText(t *testing.T) {
 	result := &model.CheckResult{
 		Check:   &model.Check{ID: "listen", Aspect: model.AspectNetwork},
 		Outcome: model.Collected,
-		Output:  "tcp 0.0.0.0:22\n",
+		Raw:     "tcp 0.0.0.0:22\n",
 	}
 	text := fallbackPanel(result, 400, 100)
 	for _, line := range strings.Split(text, "\n") {

@@ -159,9 +159,7 @@ func commandResult(check *model.Check, probe *model.Probe, result model.RunResul
 	}
 	reading := reader.Analyze(result.Stdout, check.Rules, check.Filters,
 		readingTransform(probe, check.Normalize), check.ScanBytes)
-	document := reading.Document
-	// The byte cap and the line cap share the same "truncated" mark
-	document.Truncated = document.Truncated || opt.truncated
+	reading.Truncated = reading.Truncated || opt.truncated
 	// Stderr from a zero exit is incidental noise; only a non-zero exit keeps
 	// it alongside the body
 	stderr := result.Stderr
@@ -173,10 +171,12 @@ func commandResult(check *model.Check, probe *model.Probe, result model.RunResul
 		ProbeLabel:    probe.Label,
 		Outcome:       model.Collected,
 		SkippedLabels: skipped,
-		Output:        reading.Source,
-		Stderr:        stderr,
-		Note:          note,
-		Document:      document,
+		// Evidence is what the target actually sent: the raw stdout, before the
+		// reading layer's byte cap, section split, and normalization
+		Raw:      result.Stdout,
+		Stderr:   stderr,
+		Note:     note,
+		Document: reading,
 	}
 }
 

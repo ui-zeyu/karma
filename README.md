@@ -32,13 +32,13 @@ dist/karma list
 dist/karma list network
 ```
 
-A selector word is a platform name, an aspect name, or a check id; with none given, everything runs. A platform or aspect word counts only if the catalog carries it, so `karma list windows` selects one platform's catalog and `karma list persistence` selects that aspect on both; an unknown word is an error with close matches. The first positional argument of `karma ssh` is the target. mtime hangs below `local` and `ssh` and clusters directory change times; over SSH the connection parameters (-p/-i/-o/--password) are written after the target as usual.
+A selector word is a platform name, an aspect name, or a check id; with none given, everything runs. A platform or aspect word counts only if the catalog carries it, so `karma list windows` selects one platform's catalog and `karma list persistence` selects that aspect on both; an unknown word is an error with close matches. The first positional argument of `karma ssh` is the target. mtime hangs below `local` and `ssh` and clusters directory change times (the walk stays on each directory's own filesystem and skips `/proc`, `/sys` and `/dev`); over SSH the connection parameters (-p/-i/-o/--password) are written after the target as usual.
 
-Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log` `kernel` `package` (70 checks). Windows aspects: `system` `identity` `process` `network` `persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (37 checks). `karma list` lists both platforms' catalogs as a two-level heading tree — one band per platform, one band per aspect — and every row carries the check id, the title, and the probe chain. Column widths are measured over the whole selection, so the groups line up and a long title wraps inside its own column.
+Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log` `kernel` `package` (71 checks). Windows aspects: `system` `identity` `process` `network` `persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (42 checks). `karma list` lists both platforms' catalogs as a two-level heading tree — one band per platform, one band per aspect — and every row carries the check id, the title, and the probe chain. Column widths are measured over the whole selection, so the groups line up and a long title wraps inside its own column.
 
-Shared options: `--concurrency` defaults to 6, `--timeout` to 30 seconds, `--max-lines` to 400. With `--save DIR`, every check that collected a body writes its raw text to `<DIR>/<aspect>/<check id>.txt`, one directory per aspect, overwriting same-named files on a repeated run.
+Shared options: `--concurrency` defaults to 6, `--timeout` to 30 seconds, `--max-lines` to 400. With `--save DIR`, every check that collected output writes the target's raw stdout to `<DIR>/<aspect>/<check id>.txt` — the bytes exactly as the channel delivered them, before any reading, filtering, or normalization — one directory per aspect, overwriting same-named files on a repeated run.
 
-SSH: `-p` port, `-i` private key (repeatable), `--password` for password authentication. The password comes from that flag alone; without it karma uses public keys and exits when authentication fails. `-o` accepts only `StrictHostKeyChecking=no|accept-new|yes`, defaulting to `no`. A failed connection exits 2.
+SSH: `-p` port, `-i` private key (repeatable), `--password` for password authentication (it also unlocks an encrypted private key). The password comes from that flag alone; without it karma uses public keys and exits when authentication fails. An identity that cannot be used (say, a passphrase-protected key with no `--password`) is skipped; that failure surfaces only when nothing is left to authenticate with. `-o` accepts only `StrictHostKeyChecking=no|accept-new|yes`, defaulting to `no`. A failed connection exits 2.
 
 Errors always go to stderr with the `karma: ` prefix and one plain sentence: an unknown command gets close commands (`lst` → `list`), a name mounted elsewhere (`mtime`) gets the way to write it, an unknown flag gets that command's flag list, and a bad value gets one line. Usage and help text is cobra's standard English. Exit codes: 0 for a run that finished and for a mistake the message already explained, 2 for a run that could not happen (a failed connection).
 
@@ -62,11 +62,11 @@ Collection is read-only: it reads files, lists processes, lists sockets, and rea
 ## Development
 
 ```bash
-go test ./...                                              # all packages
-go test -race ./internal/render/ ./internal/session/ ./internal/runner/ ./internal/cli/
-gofmt -l . && go vet ./...
-staticcheck -checks=all ./...                              # when installed
+make fmt vet test                                          # the gates, or each one alone
+make race                                                  # the concurrent packages under -race
+make staticcheck                                           # when installed
 go test ./internal/reader/ -bench . -run XXX               # reading-pipeline benchmark
+make dist                                                  # dist/ binaries for both platforms
 ```
 
 The code lives in `cmd/karma` and `internal/`. Collection, reading, and presentation are separate: `runner` runs the checks, `reader` reads the `== ` sections into a document, and `render` only reads that document. The catalog vocabulary (platform, aspect, check id) is also the selector vocabulary, so what `karma list` shows is what the positional arguments accept.

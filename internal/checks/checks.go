@@ -3,59 +3,47 @@
 package checks
 
 import (
-	"slices"
-
 	"karma/internal/checks/linux"
 	"karma/internal/checks/windows"
 	"karma/internal/model"
 )
 
-func init() {
-	// Catalog invariants: check ids are globally unique and probe labels are
-	// unique within a fallback chain. The fallback note joins `skipped → current`,
-	// and a repeated label in the chain would present two indistinguishable tiers.
-	for _, catalog := range [][]*model.Check{linux.All, windows.All} {
-		validate(catalog)
-	}
+// platformCatalog is one registered platform catalog.
+type platformCatalog struct {
+	platform model.Platform
+	checks   []*model.Check
 }
 
-func validate(catalog []*model.Check) {
-	seen := map[string]bool{}
-	for _, check := range catalog {
-		if seen[check.ID] {
-			panic("duplicate check id: " + check.ID)
-		}
-		seen[check.ID] = true
-		labels := map[string]bool{}
-		for _, probe := range check.Probes {
-			if labels[probe.Label] {
-				panic("check " + check.ID + " has a duplicate probe label: " + probe.Label)
-			}
-			labels[probe.Label] = true
-			// head is the shape this tier wants (stopping once it has enough rows
-			// counts as success), and line_limit caps an open scan and marks
-			// "truncated"; with both set the truncation semantics are unclear, so
-			// construction stops here
-			if probe.Head > 0 && probe.LineLimit > 0 {
-				panic("check " + check.ID + " probe " + probe.Label + ": Head and LineLimit are mutually exclusive")
-			}
-		}
-	}
+// catalogs is the single registry of platform catalogs: ChecksFor resolves a
+// platform through it and AllChecks concatenates it in declaration order, so a
+// platform is registered once. The catalog's own invariants (unique check ids,
+// unique probe labels within a chain, Head and LineLimit mutually exclusive,
+// unique rule and filter ids within a check) are locked by the tests; nothing
+// validates at run time.
+var catalogs = []platformCatalog{
+	{model.Linux, linux.All},
+	{model.Windows, windows.All},
 }
 
-// ChecksFor returns one platform's check catalog. A new platform registers its
-// catalog here.
+// ChecksFor returns one platform's check catalog. Running another platform's
+// checks against a target would produce misleading evidence, so a platform with
+// no registered catalog stops here.
 func ChecksFor(platform model.Platform) []*model.Check {
-	switch platform {
-	case model.Windows:
-		return windows.All
-	default:
-		return linux.All
+	for _, catalog := range catalogs {
+		if catalog.platform == platform {
+			return catalog.checks
+		}
 	}
+	panic("no check catalog registered for platform " + string(platform))
 }
 
-// AllChecks is the union of both platforms' catalogs: karma list shows all of
-// them by default, grouped under one banner per platform and aspect.
+// AllChecks is the union of every platform's catalog in registry order: karma
+// list shows all of them by default, grouped under one banner per platform and
+// aspect.
 func AllChecks() []*model.Check {
-	return slices.Concat(linux.All, windows.All)
+	var all []*model.Check
+	for _, catalog := range catalogs {
+		all = append(all, catalog.checks...)
+	}
+	return all
 }

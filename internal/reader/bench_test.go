@@ -40,8 +40,7 @@ func BenchmarkAnalyzeListing(b *testing.B) {
 	b.SetBytes(int64(len(text)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		reading := reader.Analyze(text, rules, filters, nil, 0)
-		if len(reading.Document.Sections) == 0 {
+		if len(reader.Analyze(text, rules, filters, nil, 0).Sections) == 0 {
 			b.Fatal("no sections")
 		}
 	}

@@ -5,10 +5,12 @@ package linux
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"karma/internal/define"
 	"karma/internal/model"
+	"karma/internal/script"
 )
 
 const dockerScript = "docker ps -a 2>/dev/null; echo; docker images 2>/dev/null"
@@ -50,6 +52,24 @@ const (
 
 const pkgVerifyTimeout = 180 * time.Second // a full package verify takes a minute or two on a small VPS, so the timeout is raised here
 
+// pkgHistoryScript: what was installed, upgraded, or removed recently. apt and dpkg
+// keep live text logs; the RedHat family answers from its transaction database, so
+// both surfaces go into one sectioned script (the empty branch on the other family
+// is an empty section the reader drops).
+var pkgHistoryScript = strings.Join([]string{
+	script.ReadFiles([]string{"/var/log/apt/history.log", "/var/log/dpkg.log"}, `tail -n 300 "$f"`, true),
+	`echo "== dnf history"; dnf history 2>/dev/null || yum history 2>/dev/null | head -n 300`,
+}, "\n")
+
+var pkgHistoryRules = []model.Rule{
+	model.NewRule("pkg-changed", `^\d{4}-\d{2}-\d{2}\s+\S+\s+(?:install|upgrade|remove|purge|update)\b`,
+		model.Low, "package record (what changed recently)"),
+	model.NewRule("pkg-apt-record", `^(?:Commandline|Install|Upgrade|Remove|Purge):`, model.Low,
+		"apt transaction record"),
+	model.NewRule("pkg-dnf-record", `^\s*\d+\s+\|`, model.Low, "dnf transaction (recent installs and upgrades)"),
+	define.KeywordRule,
+}
+
 // authBinScript: the programs most often replaced in the login auth chain; once
 // pkg-verify points at one, type and mtime close the loop in place.
 var authBinScript = `
@@ -86,6 +106,9 @@ var PackageChecks = []*model.Check{
 			Syntax:  "ls-l",
 			Timeout: pkgVerifyTimeout,
 		}),
+	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
+		[]model.Probe{{Label: "log", Inv: model.Shell{Script: pkgHistoryScript}}},
+		define.CheckOpt{Rules: pkgHistoryRules}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
 		[]model.Probe{{Label: "file", Inv: model.Shell{Script: authBinScript}}},
 		define.CheckOpt{

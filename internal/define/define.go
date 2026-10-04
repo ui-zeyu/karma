@@ -98,34 +98,38 @@ var GlobalFilters = []model.LineFilter{
 	model.NewFilter("blank", `^[ \t\r]*$`, model.FilterDrop),
 }
 
+// globalRules is the platform → default rule pack table: every check carries its
+// platform's pack plus its own rules. Windows' pack is empty today (Linux's
+// regexes target dash text and are not applied to Windows output), so a Windows
+// check carries its own rules alone.
+var globalRules = map[model.Platform][]model.Rule{
+	model.Linux:   GlobalRules,
+	model.Windows: WindowsGlobalRules,
+}
+
 // LinuxCheck builds one Linux check and merges in the Linux global rule pack by
 // default.
 func LinuxCheck(id, title string, aspect model.Aspect, probes []model.Probe, opt CheckOpt) *model.Check {
-	check := build(id, title, aspect, probes, opt, GlobalRules)
-	check.Platform = model.Linux
-	return check
+	return build(model.Linux, id, title, aspect, probes, opt)
 }
 
-// WindowsCheck builds one Windows check. Linux's global rules target dash text
-// and are not applied to Windows output; a Windows check merges in only its own
-// rules and the Windows global pack.
+// WindowsCheck builds one Windows check.
 func WindowsCheck(id, title string, aspect model.Aspect, probes []model.Probe, opt CheckOpt) *model.Check {
-	check := build(id, title, aspect, probes, opt, WindowsGlobalRules)
-	check.Platform = model.Windows
-	return check
+	return build(model.Windows, id, title, aspect, probes, opt)
 }
 
-// build is the shared construction path of both platforms: the check's own
-// rules first, the platform's default pack after. slices.Concat allocates a
-// new slice and never writes through the caller's shared array.
-func build(id, title string, aspect model.Aspect, probes []model.Probe, opt CheckOpt, pack []model.Rule) *model.Check {
+// build is the shared construction path of both platforms: the check's own rules
+// first, the platform's default pack after. slices.Concat allocates a new slice
+// and never writes through the caller's shared array.
+func build(platform model.Platform, id, title string, aspect model.Aspect, probes []model.Probe, opt CheckOpt) *model.Check {
 	return &model.Check{
 		ID:        id,
 		Title:     title,
 		Aspect:    aspect,
+		Platform:  platform,
 		Probes:    probes,
 		Filters:   slices.Concat(opt.Filters, GlobalFilters),
-		Rules:     slices.Concat(opt.Rules, pack),
+		Rules:     slices.Concat(opt.Rules, globalRules[platform]),
 		Timeout:   opt.Timeout,
 		Syntax:    opt.Syntax,
 		Normalize: opt.Normalize,

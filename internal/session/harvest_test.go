@@ -12,6 +12,12 @@ type fakeChunk struct {
 }
 
 func fakeSource(chunks []fakeChunk) source {
+	return fakeSourceCapped(0, chunks)
+}
+
+// fakeSourceCapped is a source with the byte safety valve tightened, so the cap
+// is reachable in a test.
+func fakeSourceCapped(byteLimit int64, chunks []fakeChunk) source {
 	index := 0
 	return source{
 		wait: func() {},
@@ -24,8 +30,9 @@ func fakeSource(chunks []fakeChunk) source {
 			index++
 			return chunk.text, chunk.ok
 		},
-		readAll:  func() string { return "" },
-		exitCode: func() int { return 0 },
+		readAll:   func() string { return "" },
+		exitCode:  func() int { return 0 },
+		byteLimit: byteLimit,
 	}
 }
 
@@ -67,11 +74,7 @@ func TestHarvestLineLimitPartialTail(t *testing.T) {
 }
 
 func TestHarvestByteCap(t *testing.T) {
-	original := maxHarvestBytes
-	maxHarvestBytes = 8
-	defer func() { maxHarvestBytes = original }()
-
-	src := fakeSource([]fakeChunk{line("12345678\n"), line("x\n")})
+	src := fakeSourceCapped(8, []fakeChunk{line("12345678\n"), line("x\n")})
 	result := harvest(src, 2*time.Second, 0)
 	if !result.Truncated {
 		t.Errorf("exceeding the byte safety valve should mark truncated")

@@ -135,7 +135,8 @@ func newMtimeCmd() *cobra.Command {
 		Use:   "mtime DIR...",
 		Short: "Cluster change times for the given directories",
 		Long: "Cluster change times for the given directories: deployments and installs form big clusters, " +
-			"while a dropped trojan stands out as isolated files. Under local it reads this host; over SSH " +
+			"while a dropped trojan stands out as isolated files. The walk stays on each directory's own " +
+			"filesystem and skips /proc, /sys and /dev. Under local it reads this host; over SSH " +
 			"it is written karma ssh TARGET mtime DIR...",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if runtime.GOOS == "windows" {

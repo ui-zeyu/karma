@@ -1,10 +1,9 @@
-// Package reader is the reading pipeline: split sections, shape the body, decide
-// per-line visibility, and produce a Document and the full text to persist. Pure
+// Package reader is the reading pipeline: split sections, shape the body, and decide
+// per-line visibility, producing the Document the presentation layer renders. Pure
 // functions, with no dependency on the executor or terminal. Checks compose rules
 // and filters at construction time; this consumes only the already-assembled slices.
-// Filtered lines are not shown but are counted per filter; Analyze computes the
-// document for rendering and the full text for persistence in one pass, sharing the
-// same section split and normalize.
+// Filtered lines are not shown but are counted per filter. Evidence is kept elsewhere:
+// the text written by --save is the channel's raw output, so nothing here touches it.
 package reader
 
 import (
@@ -23,19 +22,13 @@ import (
 // MaxScanBytes is the output cap for a single check's reading input, preventing huge files from bogging down the terminal.
 const MaxScanBytes = 2 * 1024 * 1024
 
-// Reading is one read's output: the document for rendering and the full text to persist (empty string when none).
-type Reading struct {
-	Document model.Document
-	Source   string
-}
-
-// Analyze reads one command output into a document and returns the full text to persist.
+// Analyze reads one command output into a document.
 //
 // Order is fixed: byte-cap by the check's scan limit (0 uses MaxScanBytes), split
 // sections by `== `, normalize each body (with the section title), rule matches,
 // then line filtering decides whether a body line stays. Titles run rules but are
 // not filtered.
-func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normalize model.Normalizer, scanBytes int) Reading {
+func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normalize model.Normalizer, scanBytes int) model.Document {
 	capped, truncated := capBytes(text, scanBytes)
 	keepFilters, dropFilters := lo.FilterReject(filters, func(f model.LineFilter, _ int) bool {
 		return f.Mode == model.FilterKeep
@@ -43,17 +36,13 @@ func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normal
 
 	var (
 		sections []model.Section
-		source   []string
 		filtered counter
 		number   int
 	)
 	for piece := range pieces(capped, normalize) {
 		if piece.titleSet {
 			number++
-			source = append(source, "== "+piece.title)
 		}
-		source = append(source, piece.lines...)
-
 		titleMatches := lineMatches(piece.title, rules)
 		kept := make([]model.Line, 0, len(piece.lines))
 		for index, line := range piece.lines {
@@ -80,14 +69,7 @@ func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normal
 		})
 	}
 
-	joined := strings.Join(source, "\n")
-	if strings.TrimSpace(joined) == "" {
-		joined = ""
-	}
-	return Reading{
-		Document: model.Document{Sections: sections, Truncated: truncated, Filtered: filtered},
-		Source:   joined,
-	}
+	return model.Document{Sections: sections, Truncated: truncated, Filtered: filtered}
 }
 
 // capBytes truncates by UTF-8 bytes when over the reading limit, dropping the

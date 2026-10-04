@@ -72,10 +72,23 @@ var historyScript = script.ReadFiles([]string{
 	"/home/*/.bash_history",
 	"/root/.zsh_history",
 	"/home/*/.zsh_history",
+	// fish stores its history as YAML (`- cmd: …`) under the data directory
+	"/root/.local/share/fish/fish_history",
+	"/home/*/.local/share/fish/fish_history",
 }, `tail -n 400 "$f"`, true)
 
 var viminfoScript = script.ReadFiles([]string{"/root/.viminfo", "/home/*/.viminfo"},
 	`tail -n 200 "$f"`, true)
+
+// historyOff: the settings and commands that silence command history. The file
+// keeps earlier lines, so this is a present-tense signal.
+var historyOffRule = model.NewRule("history-off",
+	`\b(?:HISTFILE=/dev/null|HISTSIZE=0|HISTFILESIZE=0)\b|(?i)\bunset\s+HISTFILE\b`,
+	model.Medium, "command history recording turned off")
+
+// historyClear: wiped only in the current shell; the file still holds what came before.
+var historyClearRule = model.NewRule("history-clear", `\bhistory\s+-c\b`, model.Medium,
+	"history cleared in this shell (the file keeps earlier lines)")
 
 // LogsChecks covers logs.
 var LogsChecks = []*model.Check{
@@ -84,7 +97,7 @@ var LogsChecks = []*model.Check{
 		define.CheckOpt{
 			Syntax:    "bash",
 			Normalize: collapseRepeats,
-			Rules:     []model.Rule{define.KeywordRule},
+			Rules:     []model.Rule{historyOffRule, historyClearRule, define.KeywordRule},
 		}),
 	define.LinuxCheck("lastb", "Failed login records", model.AspectLog,
 		[]model.Probe{{Label: "lastb", Inv: model.NewCommand("lastb", "-n", "400")}},
