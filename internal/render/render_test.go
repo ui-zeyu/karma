@@ -295,6 +295,47 @@ func TestTableAndKeyvalStylersStayInsideTheLine(t *testing.T) {
 	}
 }
 
+// top -b opens with a summary block (banner, Tasks, %Cpu, MiB Mem) that is
+// prose, not columns: the top styler has no cycle fallback, so it stays plain
+// until the all-caps process header anchors the table.
+func TestTopStylerKeepsTheSummaryPlain(t *testing.T) {
+	top := buildLineStyler("top")
+	preamble := []string{
+		"top - 21:39:12 up 95 days,  3:12,  1 user,  load average: 0.12, 0.34, 0.56",
+		"Tasks: 112 total,   1 running, 111 sleeping,   0 stopped,   0 zombie",
+		"%Cpu(s):  0.7 us,  0.3 sy,  0.0 ni, 98.9 id,  0.1 wa,  0.0 hi,  0.0 si,  0.0 st",
+		"MiB Mem :   7964.0 total,   1234.5 free,   2345.6 used,   4383.9 buff/cache",
+		"MiB Swap:   2048.0 total,   2048.0 free,      0.0 used.   5618.4 avail Mem",
+		"Mem: 12345K used, 6789K free, 0K shrd, 123K buff, 4567K cached",
+		"CPU:  0.0% usr  0.0% sys  0.0% nic 99.7% idle  0.0% io  0.0% irq  0.0% sirq",
+	}
+	for _, line := range preamble {
+		if spans := top(line); spans != nil {
+			t.Fatalf("a summary line should stay plain: %q -> %v", line, spans)
+		}
+	}
+	header := "    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND"
+	if spans := top(header); spans != nil {
+		t.Fatalf("the process header only records anchors: %v", spans)
+	}
+	row := "  1234 root      20   0  1621236 458880  10240 S   0.0  0.3   0:05.32  sshd"
+	spans := top(row)
+	if len(spans) == 0 {
+		t.Fatal("a process row should get column colors")
+	}
+	if spans[0].Start != strings.Index(row, "1234") {
+		t.Fatalf("the first span should color the PID cell: %+v in %q", spans[0], row)
+	}
+	if last := spans[len(spans)-1]; row[last.Start:last.End] != "0:05.32" {
+		t.Fatalf("the last span should color the TIME+ cell: %+v in %q", last, row)
+	}
+	for _, span := range spans {
+		if span.Start < 0 || span.End > len(row) || span.Start >= span.End {
+			t.Fatalf("span out of range: %+v line length %d", span, len(row))
+		}
+	}
+}
+
 func TestPaintLineOverlaysLaterSpans(t *testing.T) {
 	got := paintLine("0123456789", []Span{
 		{Start: 0, End: 10, Style: mutedStyle},

@@ -61,7 +61,7 @@ var ProcessChecks = []*model.Check{
 			{Label: "ps-cpu", Inv: model.NewCommand("ps", "aux", "--sort=-%cpu"), Head: 10},
 			{Label: "ps-mem", Inv: model.NewCommand("ps", "aux", "--sort=-%mem"), Head: 10},
 		},
-		define.CheckOpt{Syntax: "table", Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Syntax: "top", Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("deleted-exe", "Deleted binaries still running", model.AspectProcess,
 		[]model.Probe{{Label: "proc-exe", Inv: model.Shell{Script: deletedExeScript}}},
 		define.CheckOpt{}),

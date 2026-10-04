@@ -221,6 +221,11 @@ func buildLineStyler(syntax string) LineStyler {
 		return styleIPAddr
 	case "table":
 		return newTableStyler(nil, true).style
+	case "top":
+		// Cycle off: top -b's summary lines (banner, Tasks, %Cpu, MiB Mem) are
+		// prose, not columns. The process table anchors on its all-caps header;
+		// everything before it stays plain.
+		return newTableStyler(nil, false).style
 	case "df":
 		return newTableStyler([]*regexp.Regexp{dfHeader}, true).style
 	case "units":
