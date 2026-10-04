@@ -37,9 +37,9 @@ func renderList(checks []*model.Check, width int) []string {
 }
 
 // The catalog is folded into consecutive platform/aspect groups under two levels
-// of full-width bands: one platform band per platform, one aspect band per
-// group, so a platform is announced once instead of once per group, and the rows
-// keep catalog order.
+// of bands: one full-width platform band per platform, one rail-wearing aspect
+// band per group, so a platform is announced once instead of once per group,
+// and the rows keep catalog order.
 func TestRenderListTableGroupsByPlatformAndAspect(t *testing.T) {
 	lines := renderList(testCatalog(), 100)
 	// The band color tells the levels apart: 236 is a platform, 238 an aspect.
@@ -61,7 +61,7 @@ func TestRenderListTableGroupsByPlatformAndAspect(t *testing.T) {
 			t.Errorf("band %d: got %q, want %q", i, band, wantBands[i])
 		}
 	}
-	wantHeadings := []string{" SYSTEM", " IDENTITY", " PERSISTENCE"}
+	wantHeadings := []string{"▌ SYSTEM", "▌ IDENTITY", "▌ PERSISTENCE"}
 	if len(headings) != len(wantHeadings) {
 		t.Fatalf("headings: got %q, want %q", headings, wantHeadings)
 	}
@@ -104,19 +104,25 @@ func TestRenderListTableWrappedTitleKeepsColumns(t *testing.T) {
 	const width = 80
 	idColWidth, _, _ := listLayout(testCatalog(), width)
 	lines := renderList(testCatalog(), width)
+	// Every group line starts at the rail, and rows sit bodyPad deeper in,
+	// like a report panel's body. Indexes are taken after the rail glyph: its
+	// three UTF-8 bytes would skew byte offsets away from cell columns.
+	left := bodyPad + idColWidth + listGap
 	var idColumn, chainColumns []int
 	for _, line := range lines {
 		text := strings.TrimRight(plain(line), " ")
 		switch {
-		case strings.HasPrefix(text, "  os-release"):
+		case strings.HasPrefix(text, "▌   os-release"):
+			text = strings.TrimPrefix(text, "▌")
 			idColumn = append(idColumn, strings.Index(text, "Distro"))
 			chainColumns = append(chainColumns, strings.Index(text, "cat"))
-		case strings.HasPrefix(text, "  run-keys"):
+		case strings.HasPrefix(text, "▌   run-keys"):
+			text = strings.TrimPrefix(text, "▌")
 			chainColumns = append(chainColumns, strings.Index(text, "reg"))
 		}
 	}
-	if len(idColumn) == 0 || idColumn[0] != listRowIndent+idColWidth+listGap {
-		t.Fatalf("the title column should start after the id cell: %v", idColumn)
+	if len(idColumn) == 0 || idColumn[0] != left {
+		t.Fatalf("the title column should start after the id cell (col %d): %v", left, idColumn)
 	}
 	if len(chainColumns) < 2 || chainColumns[0] != chainColumns[1] {
 		t.Fatalf("the chain column should not move between rows: %v", chainColumns)
@@ -134,17 +140,18 @@ func TestRenderListTableSizesToSelection(t *testing.T) {
 	if text := strings.TrimSpace(plain(lines[0])); text != "LINUX" {
 		t.Fatalf("band: %q", text)
 	}
-	if text := strings.TrimSpace(plain(lines[1])); text != "IDENTITY" {
+	if text := strings.TrimSpace(plain(lines[1])); text != "▌ IDENTITY" {
 		t.Fatalf("heading: %q", text)
 	}
-	if text := plain(lines[2]); !strings.HasPrefix(text, "  authorized-keys") {
+	if text := plain(lines[2]); !strings.HasPrefix(text, "▌   authorized-keys") {
 		t.Fatalf("row: %q", text)
 	}
 }
 
 // The heading tree and the id column carry their own colors: the platform band
-// and the aspect band are two shades of the band background, and the ids are
-// blue.
+// and the aspect band are two shades of the band background, the aspect
+// heading wears the panel's muted rail (the platform band wears none), and the
+// ids are blue.
 func TestRenderListTableColors(t *testing.T) {
 	var out bytes.Buffer
 	RenderListTable(&out, testCatalog(), 100)
@@ -152,6 +159,14 @@ func TestRenderListTableColors(t *testing.T) {
 	for _, want := range []string{"48;5;236m", "48;5;238m"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the heading bands should carry %s", want)
+		}
+	}
+	if !strings.Contains(text, mutedStyle.seq().Render("▌")) {
+		t.Error("the aspect heading should wear the muted rail")
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "48;5;236m") && strings.Contains(line, "▌") {
+			t.Errorf("the platform band should carry no rail: %q", line)
 		}
 	}
 	if !strings.Contains(text, "\x1b[34m") {

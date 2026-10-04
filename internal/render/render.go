@@ -6,10 +6,11 @@
 // of this layer and are never written back to the document. A finished check
 // is taken into a table first, and only written back once the catalog prefix
 // is complete, so the on-screen order is always the aspect order. Layout is
-// entirely drawn by lipgloss: an aspect is a full-width banner, a check is a
-// left rail (a thick rail in the severity color for signals, a grey rail
-// otherwise) with the first line against the rail and the body indented two
-// more columns, and over-long lines are soft-wrapped by lipgloss — continuation
+// entirely drawn by lipgloss: an aspect is a full-width banner and a check
+// title is a second-level band — the same two heading steps as the listing —
+// while the panel is a left rail (a thick rail in the severity color for
+// signals, a grey rail otherwise) with the body indented two more columns, and
+// over-long lines are soft-wrapped by lipgloss — continuation
 // lines share the body indent and the rail never breaks. All target text is
 // shown as it is; hits come from painted spans and a trailing reason, with the
 // palette in styles.
@@ -139,12 +140,13 @@ func headerBlock(term int, title, meta string, lines []string) string {
 }
 
 // checkBlock is a check panel's rail: a half-block rail, carrying the severity
-// color for signals and muted otherwise. lipgloss draws the rail; inside it the
-// first line sits against the padding and the body is indented two more
+// color for signals and muted otherwise. lipgloss draws the rail; inside it
+// the head rows form the check title band (level two of the heading tree,
+// filled to the inner width by bandHead) and the body is indented two more
 // columns; over-long lines are soft-wrapped by lipgloss's Width, with
 // continuation lines sharing the body indent and the rail unbroken. Rows are
 // bounded first (see boundRow), so nothing reaches the terminal's last column.
-func checkBlock(severity model.Severity, head string, body []string, term int) string {
+func checkBlock(severity model.Severity, head []string, body []string, term int) string {
 	st := lipgloss.NewStyle().BorderLeft(true).
 		BorderStyle(lipgloss.OuterHalfBlockBorder())
 	if severity.IsSignal() {
@@ -153,8 +155,7 @@ func checkBlock(severity model.Severity, head string, body []string, term int) s
 		st = st.BorderForeground(MutedColor)
 	}
 	inner := railInner(term)
-	text := lipgloss.NewStyle().Padding(0, rightPad, 0, headPad).Width(inner).
-		Render(boundRow(head, headTextWidth(term)))
+	text := strings.Join(head, "\n")
 	if len(body) > 0 {
 		rows := lo.Map(body, func(row string, _ int) string { return boundRow(row, textWidth(term)) })
 		box := lipgloss.NewStyle().Padding(0, rightPad, 0, bodyPad).Width(inner)
@@ -220,24 +221,56 @@ func checkPanel(result *model.CheckResult, maxLines, width int) string {
 	return ""
 }
 
-// thinRailPanel is the quiet grey rail: check id on the left, one red note on the
-// right, raw text underneath — the shape shared by a failed check and a failed
-// render.
+// thinRailPanel is the quiet grey rail: the check id as the band label on the
+// left, one red note on the right, raw text underneath — the shape shared by a
+// failed check and a failed render.
 func thinRailPanel(result *model.CheckResult, note string, maxLines, width int) string {
-	head := spread(headTextWidth(width), style{bold: true}.seq().Render(result.Check.ID),
-		style{fg: "9", bold: true}.seq().Render(note))
+	head := bandHead(subBandStyle.Render(strings.ToUpper(result.Check.ID)), note,
+		style{fg: "9", bold: true, bg: subBandColor}, width)
 	return checkBlock(model.Info, head, plainRows(result.Raw, result.Stderr, maxLines), width)
 }
 
-// checkHead is the panel's first line: the check id on the left, metadata on
-// the right, the id in bold.
-func checkHead(result *model.CheckResult, width int) string {
-	left := style{bold: true}.seq().Render(result.Check.ID)
-	right := ""
-	if meta := metaParts(result); meta != "" {
-		right = mutedStyle.seq().Render(meta)
+// checkHead is the panel's title band: the check id as the level-two heading
+// label (uppercase, the same step as the listing's aspect bands), metadata on
+// the right.
+func checkHead(result *model.CheckResult, width int) []string {
+	return bandHead(subBandStyle.Render(strings.ToUpper(result.Check.ID)), metaParts(result),
+		style{fg: subBandMetaColor, bg: subBandColor}, width)
+}
+
+// bandHead lays a panel head on the level-two band: the label on the left,
+// metadata on the right, every cell painted onto the band so the strip reads
+// solid from the rail to the right edge (a Width pad would stay unpainted —
+// see fillBand). Metadata that does not fit beside the label drops to its own
+// band row, aligned with the label.
+func bandHead(label, meta string, metaStyle style, term int) []string {
+	text := headTextWidth(term)
+	labelCell := subBandFill.Render(strings.Repeat(" ", headPad) + label)
+	if meta == "" {
+		return []string{filledRow(labelCell, term)}
 	}
-	return spread(headTextWidth(width), left, right)
+	if lipgloss.Width(label)+2+lipgloss.Width(meta) <= text {
+		gap := text - lipgloss.Width(label) - lipgloss.Width(meta)
+		row := labelCell + subBandFill.Render(strings.Repeat(" ", gap)) +
+			metaStyle.seq().Render(meta)
+		return []string{filledRow(row, term)}
+	}
+	rows := []string{filledRow(labelCell, term)}
+	for _, line := range strings.Split(boundRow(meta, text), "\n") {
+		rows = append(rows, filledRow(
+			subBandFill.Render(strings.Repeat(" ", headPad))+metaStyle.seq().Render(line), term))
+	}
+	return rows
+}
+
+// filledRow pads a band row out to the panel's inner width with painted
+// spaces, so the band runs edge to edge under the rail.
+func filledRow(row string, term int) string {
+	pad := railInner(term) - lipgloss.Width(row)
+	if pad > 0 {
+		row += subBandFill.Render(strings.Repeat(" ", pad))
+	}
+	return row
 }
 
 // renderPanel renders one check panel, falling back step by step on a
@@ -720,7 +753,7 @@ func (o *LiveObserver) drawProgress() {
 	o.frame++
 	line := fmt.Sprintf("\r\033[K%s %d/%d %s %s",
 		accentStyle.seq().Render(frame),
-		o.done, o.total,
+		o.finished, o.total,
 		mutedStyle.seq().Render(o.current),
 		mutedStyle.seq().Render(time.Since(o.started).Round(time.Second).String()))
 	fmt.Fprint(o.w, line)

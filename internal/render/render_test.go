@@ -5,6 +5,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -28,9 +29,9 @@ func TestMain(m *testing.M) {
 }
 
 // A check panel is a half-block left rail: the severity color for signals,
-// muted otherwise, the id left and metadata right on the first line, and
-// over-long lines soft-wrapped — not one word lost, continuation lines sharing
-// the body indent, the rail unbroken.
+// muted otherwise, the id as the level-two band label and metadata right on
+// the first line, and over-long lines soft-wrapped — not one word lost,
+// continuation lines sharing the body indent, the rail unbroken.
 func TestCheckPanelSignalRail(t *testing.T) {
 	const width = 48
 	long := strings.Repeat("allow from 203.0.113.0/24 ", 8)
@@ -57,10 +58,10 @@ func TestCheckPanelSignalRail(t *testing.T) {
 	if !strings.HasPrefix(head, "▌ ") {
 		t.Fatalf("a signal panel should start with the half-block rail: %q", head)
 	}
-	if !strings.Contains(head, "listen") {
+	if !strings.Contains(head, "LISTEN") {
 		t.Fatalf("the first line should carry the check id: %q", head)
 	}
-	if !strings.Contains(head, "filtered 3") || strings.Index(head, "listen") > strings.Index(head, "filtered 3") {
+	if !strings.Contains(head, "filtered 3") || strings.Index(head, "LISTEN") > strings.Index(head, "filtered 3") {
 		t.Fatalf("metadata should be on the right: %q", head)
 	}
 	for i, line := range lines {
@@ -104,11 +105,12 @@ func TestCheckPanelNoteBlock(t *testing.T) {
 		t.Fatal("a check with a note must not stay silent")
 	}
 	lines := strings.Split(got, "\n")
-	if !strings.HasPrefix(plain(lines[0]), "▌ dmesg") || !strings.Contains(plain(lines[0]), "timeout (30s), partial output kept") {
+	if !strings.HasPrefix(plain(lines[0]), "▌ DMESG") || !strings.Contains(plain(lines[0]), "timeout (30s), partial output kept") {
 		t.Fatalf("the first line should carry the id and the note: %q", plain(lines[0]))
 	}
-	if !strings.Contains(lines[0], highStyle.seq().Render("timeout (30s), partial output kept")) {
-		t.Fatalf("the note should be lit: %q", lines[0])
+	noteStyle := style{fg: "9", bold: true, bg: subBandColor}
+	if !strings.Contains(lines[0], noteStyle.seq().Render("timeout (30s), partial output kept")) {
+		t.Fatalf("the note should be lit on the band: %q", lines[0])
 	}
 	if body := plain(strings.Join(lines[1:], "\n")); !strings.Contains(body, "line one") ||
 		!strings.Contains(body, "line two") {
@@ -136,7 +138,7 @@ func TestCheckPanelQuietRailAndSkippedLine(t *testing.T) {
 			t.Fatalf("the quiet panel's rail should be muted (line %d): %q", i, line)
 		}
 	}
-	if head := plain(lines[0]); !strings.HasPrefix(head, "▌ passwd") {
+	if head := plain(lines[0]); !strings.HasPrefix(head, "▌ PASSWD") {
 		t.Fatalf("the first line should start with the id: %q", head)
 	}
 
@@ -174,6 +176,58 @@ func TestAspectBanner(t *testing.T) {
 	}
 	if narrow := aspectBanner("identity", 12); lipgloss.Width(narrow) != 11 {
 		t.Fatalf("a narrow terminal should still be filled: %d", lipgloss.Width(narrow))
+	}
+}
+
+// The check title is the heading tree's second step (the listing's aspect
+// band): the band fills the panel from the rail to the right edge as one
+// solid strip, the label is the uppercase id, and body rows carry no band.
+func TestCheckPanelHeadIsASubBand(t *testing.T) {
+	const width = 60
+	result := &model.CheckResult{
+		Check:   &model.Check{ID: "listen", Aspect: model.AspectNetwork},
+		Outcome: model.Collected,
+		Document: model.Document{Sections: []model.Section{{Lines: []model.Line{
+			{Text: "tcp 0.0.0.0:22", Severity: model.Info},
+		}}}},
+	}
+	panel := checkPanel(result, 40, width)
+	lines := strings.Split(panel, "\n")
+	head := lines[0]
+	if got := lipgloss.Width(head); got != railInner(width)+1 {
+		t.Fatalf("the head band should fill rail + inner width (%d), got %d", railInner(width)+1, got)
+	}
+	if !strings.Contains(head, "48;5;238") {
+		t.Fatalf("the head should sit on the level-two band: %q", head)
+	}
+	bandPaintedSpaces := regexp.MustCompile(`\x1b\[[0-9;]*48;5;238[0-9;]*m {2,}`)
+	if !bandPaintedSpaces.MatchString(head) {
+		t.Fatalf("the band's padding should be painted (solid strip): %q", head)
+	}
+	if label := plain(head); !strings.Contains(label, " LISTEN") {
+		t.Fatalf("the band label should be the uppercase id: %q", label)
+	}
+	for i, line := range lines[1:] {
+		if strings.Contains(line, "48;5;238") {
+			t.Fatalf("body line %d should carry no band: %q", i+1, plain(line))
+		}
+	}
+
+	// Metadata that does not fit beside the label drops to its own band row,
+	// aligned with the label, both rows filled edge to edge.
+	long := result
+	long.Document.Truncated = true
+	long.Document.Filtered = []model.FilterCount{{ID: "quiet", Count: 12}}
+	long.Check.ID = "last-log"
+	narrow := checkPanel(long, 40, 20)
+	narrowLines := strings.Split(narrow, "\n")
+	if plain(narrowLines[0]) == plain(narrowLines[1]) {
+		t.Fatalf("the metadata should sit on its own band row:\n%s", plain(narrow))
+	}
+	for i := 0; i < 2; i++ {
+		if got := lipgloss.Width(narrowLines[i]); got != railInner(20)+1 {
+			t.Fatalf("narrow band row %d should still fill the panel: %d", i, got)
+		}
 	}
 }
 
@@ -328,18 +382,21 @@ func TestPanelRenderPanicFallsBackToPlainBlock(t *testing.T) {
 	if !failed || text == "" {
 		t.Fatalf("a failed render should fall back to the grey block: failed=%v text=%q", failed, plain(text))
 	}
-	if !strings.Contains(plain(text), "listen") || !strings.Contains(plain(text), "tcp 0.0.0.0:22") {
+	if !strings.Contains(plain(text), "LISTEN") || !strings.Contains(plain(text), "tcp 0.0.0.0:22") {
 		t.Fatalf("the fallback block should keep the id and the raw text: %q", plain(text))
 	}
 }
 
 func TestProgressDoesNotStickToPanels(t *testing.T) {
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	check := &model.Check{ID: "listen", Aspect: model.AspectNetwork}
 	obs := NewLiveObserver(&buf, []*model.Check{check}, 40, 48, true)
 	obs.Start()
 	obs.CheckStarted(check)
 	time.Sleep(150 * time.Millisecond)
+	if !strings.Contains(buf.String(), " 0/1 ") {
+		t.Fatalf("the progress line should show 0/1 while the check runs: %q", buf.String())
+	}
 	obs.CheckFinished(check, &model.CheckResult{
 		Check:   check,
 		Outcome: model.Collected,
@@ -353,10 +410,13 @@ func TestProgressDoesNotStickToPanels(t *testing.T) {
 		}}},
 	})
 	time.Sleep(150 * time.Millisecond)
+	if !strings.Contains(buf.String(), " 1/1 ") {
+		t.Fatalf("the progress line should count the finished check (a channel address would print here): %q", buf.String())
+	}
 	obs.Close()
 
 	visible := strings.Join(screen(buf.String()), "\n")
-	if !strings.Contains(visible, "listen") || !strings.Contains(visible, "▌") {
+	if !strings.Contains(visible, "LISTEN") || !strings.Contains(visible, "▌") {
 		t.Fatalf("the check panel should remain:\n%s", visible)
 	}
 	for _, line := range strings.Split(visible, "\n") {
@@ -369,6 +429,25 @@ func TestProgressDoesNotStickToPanels(t *testing.T) {
 			}
 		}
 	}
+}
+
+// lockedBuffer is a bytes.Buffer the test may read while the observer loop
+// writes: the loop goroutine owns the writes, and String takes the same lock.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // screen replays terminal semantics: \r returns to column 0, CSI K clears to
@@ -505,7 +584,7 @@ func TestFallbackPanelKeepsRawText(t *testing.T) {
 			t.Fatalf("the fallback block should be a grey rail: %q", plain(line))
 		}
 	}
-	if joined := plain(text); !strings.Contains(joined, "listen") || !strings.Contains(joined, "tcp 0.0.0.0:22") {
+	if joined := plain(text); !strings.Contains(joined, "LISTEN") || !strings.Contains(joined, "tcp 0.0.0.0:22") {
 		t.Fatalf("the fallback block should keep the id and the raw text: %q", joined)
 	}
 }

@@ -1,12 +1,14 @@
-// The `karma list` catalog view: a two-level heading tree — one band per
-// platform, one band per aspect — over rows that carry aligned id, title, and
-// probe-chain columns.
+// The `karma list` catalog view: a two-level heading tree — one full-width band
+// per platform, one rail panel per aspect — over rows that carry aligned id,
+// title, and probe-chain columns.
 //
 // The headings replace the platform/aspect cells of a plain grid: the platform
-// is said once per platform, the aspect once per group, and every row keeps the
-// rest of the line for its title. Column widths are measured over the whole
-// selection, so the groups line up with each other; an over-long title wraps
-// inside its own column and the columns to its right stay put.
+// is said once per platform, the aspect once per group. Each aspect group is
+// drawn as the same panel as a report check — the muted half-block rail and the
+// level-two title band — so the heading tree reads as the same element in both
+// views. Column widths are measured over the whole selection, so the groups
+// line up with each other; an over-long title wraps inside its own column and
+// the columns to its right stay put.
 
 package render
 
@@ -21,12 +23,12 @@ import (
 	"karma/internal/model"
 )
 
-// Column geometry: the rows' indent under the heading bands, two columns of gap
-// between columns, a title floor, and the probe chain's floor (its natural
-// width is driven by the longest fallback chain in the catalog, which would
-// otherwise starve the title column).
+// Column geometry: two columns of gap between columns, a title floor, and the
+// probe chain's floor (its natural width is driven by the longest fallback
+// chain in the catalog, which would otherwise starve the title column). Rows
+// live inside the group panel's body, so their available line is the panel's
+// text width.
 const (
-	listRowIndent  = 2 // rows sit one level in from the heading bands
 	listGap        = 2
 	listTitleFloor = 24
 	listTitleShare = 5 // the title targets two fifths of the line
@@ -55,16 +57,17 @@ func RenderListTable(w io.Writer, selected []*model.Check, width int) {
 			}
 			fmt.Fprintln(w, bandHeading(string(group.platform), width, bandStyle))
 		}
-		fmt.Fprintln(w, bandHeading(string(group.aspect), width, subBandStyle))
+		rows := make([]string, 0, len(group.checks))
 		for _, check := range group.checks {
-			fmt.Fprintln(w, listRow(check, idW, titleW, chainW))
+			rows = append(rows, listRow(check, idW, titleW, chainW))
 		}
+		head := []string{fillBand(" "+strings.ToUpper(string(group.aspect)), railInner(width), subBandStyle)}
+		fmt.Fprintln(w, checkBlock(model.Info, head, rows, width))
 	}
 }
 
-// bandHeading is one heading of the listing's tree: a full-width band in the
-// given step, so the platform and the aspect are each said once instead of once
-// per group.
+// bandHeading is the level-one heading band (the platform): a full-width band,
+// so the platform is said once instead of once per group.
 func bandHeading(name string, term int, st lipgloss.Style) string {
 	return fillBand(" "+strings.ToUpper(name), lineWidth(term), st)
 }
@@ -74,9 +77,9 @@ func bandHeading(name string, term int, st lipgloss.Style) string {
 // chain gets the rest. A line too narrow for both drops the chain, which is
 // metadata; nothing ever exceeds the line.
 func listLayout(selected []*model.Check, width int) (idW, titleW, chainW int) {
-	line := lineWidth(width)
+	line := textWidth(width)
 	idW, chainNat := listColumnWidths(selected)
-	rest := line - (listRowIndent + idW + listGap)
+	rest := line - (idW + listGap)
 	titleW = min(max(line*2/listTitleShare, listTitleFloor), rest)
 	if rest-titleW-listGap < listChainFloor {
 		return idW, max(rest, 1), 0
@@ -118,13 +121,14 @@ func probeChain(check *model.Check) string {
 	return strings.Join(labels, " → ")
 }
 
-// listRow is one catalog row: indented blue id, title in the default color, and
-// the muted probe chain starting at a fixed column. Only the two sized cells
+// listRow is one catalog row: blue id, title in the default color, and the
+// muted probe chain starting at a fixed column. The group panel's body box
+// provides the indent, so the row starts at its id. Only the two sized cells
 // carry a width (the id pads to its column, the title and chain wrap inside
 // theirs), and the padding after the last visible character is trimmed.
 func listRow(check *model.Check, idW, titleW, chainW int) string {
 	id := lipgloss.NewStyle().Foreground(listIDColor).
-		Padding(0, listGap, 0, listRowIndent).Width(listRowIndent + idW + listGap).
+		Padding(0, listGap, 0, 0).Width(idW + listGap).
 		Render(check.ID)
 	title := lipgloss.NewStyle().Width(titleW).Render(wordWrap(check.Title, titleW))
 	if chainW == 0 {
