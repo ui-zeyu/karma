@@ -35,11 +35,11 @@ import (
 )
 
 // Layout constants inside a rail panel: one column of padding on each side,
-// and two more columns of indent for the body. The right edge keeps one column
-// of slack so no line reaches the terminal's last column.
+// and the body one column deeper than the head. The right edge keeps one
+// column of slack so no line reaches the terminal's last column.
 const (
 	headPad  = 1
-	bodyPad  = 3
+	bodyPad  = 2
 	rightPad = 1
 )
 

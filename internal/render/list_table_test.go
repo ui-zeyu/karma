@@ -112,11 +112,11 @@ func TestRenderListTableWrappedTitleKeepsColumns(t *testing.T) {
 	for _, line := range lines {
 		text := strings.TrimRight(plain(line), " ")
 		switch {
-		case strings.HasPrefix(text, "▌   os-release"):
+		case strings.HasPrefix(text, "▌  os-release"):
 			text = strings.TrimPrefix(text, "▌")
 			idColumn = append(idColumn, strings.Index(text, "Distro"))
 			chainColumns = append(chainColumns, strings.Index(text, "cat"))
-		case strings.HasPrefix(text, "▌   run-keys"):
+		case strings.HasPrefix(text, "▌  run-keys"):
 			text = strings.TrimPrefix(text, "▌")
 			chainColumns = append(chainColumns, strings.Index(text, "reg"))
 		}
@@ -143,7 +143,7 @@ func TestRenderListTableSizesToSelection(t *testing.T) {
 	if text := strings.TrimSpace(plain(lines[1])); text != "▌ IDENTITY" {
 		t.Fatalf("heading: %q", text)
 	}
-	if text := plain(lines[2]); !strings.HasPrefix(text, "▌   authorized-keys") {
+	if text := plain(lines[2]); !strings.HasPrefix(text, "▌  authorized-keys") {
 		t.Fatalf("row: %q", text)
 	}
 }
