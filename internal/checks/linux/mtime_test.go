@@ -18,7 +18,7 @@ func findRow(mtime float64, stamp string, nbytes int, path string) string {
 }
 
 // A lone file isolated from a big cluster is the outlier shape; the timeline leads
-// and the marked line carries its verdict as a span. The full listing stays out of
+// and the outlier line carries its verdict as a span. The full listing stays out of
 // the body — the evidence is one find away on the target.
 func TestHuntNormalizeMarksOutliers(t *testing.T) {
 	hunt := HuntCheck([]string{"/srv"})
@@ -45,8 +45,8 @@ func TestHuntNormalizeMarksOutliers(t *testing.T) {
 	for _, line := range lines {
 		if strings.Contains(line.Text, "/srv/blob.bin") {
 			marked = true
-			if !strings.HasPrefix(line.Text, "!  ") {
-				t.Fatalf("the outlier should carry the ! marker: %q", line.Text)
+			if !strings.HasPrefix(line.Text, "2023-12-24 10:20:30") {
+				t.Fatalf("the outlier line carries no textual marker: %q", line.Text)
 			}
 			for _, match := range line.Matches {
 				if match.ID == "mtime-outlier" {
@@ -72,8 +72,8 @@ func TestHuntNormalizeFlagsFutureTimestamp(t *testing.T) {
 
 	document := reader.Analyze(text, hunt.Rules, hunt.Filters, hunt.Normalize, 0)
 	lines := document.Sections[0].Lines
-	if !strings.HasPrefix(lines[len(lines)-1].Text, "!!") {
-		t.Fatalf("a future mtime should carry !!: %q", lines[len(lines)-1].Text)
+	if !strings.HasPrefix(lines[len(lines)-1].Text, "2099-01-01") {
+		t.Fatalf("the flagged line carries no textual marker: %q", lines[len(lines)-1].Text)
 	}
 	if len(lines[len(lines)-1].Matches) == 0 || lines[len(lines)-1].Matches[0].ID != "mtime-stamp-anomaly" {
 		t.Fatalf("the anomaly should be stated as a span: %+v", lines[len(lines)-1].Matches)

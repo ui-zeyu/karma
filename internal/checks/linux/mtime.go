@@ -62,7 +62,8 @@ func huntScript(dirs []string) string {
 // the job of checks like key-dirs and tmp-listing, so only the cluster shape and
 // signal lines remain, and the evidence can be reproduced with one find on the
 // target. An outlier line's severity and reason become a span right here during
-// normalization (OutlierMatch); the leading marker is just presentation.
+// normalization (OutlierMatch); the verdict shows as the line's color plus its
+// ⟨reason⟩ annotation, the text carries no prefix.
 func huntNormalize(now func() time.Time) model.Normalizer {
 	return func(_ string, text string) *model.Shaped {
 		var files []*cluster.FindRow
@@ -102,7 +103,7 @@ func huntNormalize(now func() time.Time) model.Normalizer {
 		// the most recent first
 		for _, item := range slices.Concat(byRecency(lo.Keys(outliers)), byRecency(flagged)) {
 			marker := cluster.OutlierMarker(item.Mtime, item.Ctime, outliers[item], now())
-			line := fmt.Sprintf("%-3s%s  %*s  %s", marker, item.Stamp, width, human(item.Nbytes), item.Path)
+			line := fmt.Sprintf("%s  %*s  %s", item.Stamp, width, human(item.Nbytes), item.Path)
 			lines = append(lines, line)
 			if verdict := cluster.OutlierMatch(item.Path, marker, len(line)); verdict != nil {
 				notes = append(notes, model.LineMatch{Line: len(lines) - 1, Match: *verdict})

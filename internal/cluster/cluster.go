@@ -1,17 +1,17 @@
 // Package cluster does mtime clustering: parse the find metadata stream, break
 // clusters at silences, and grade outlier lines on the spot. mtime-hunt and the
 // directory listing checks (key-dirs, tmp-listing, pam, etc.) share the same
-// thresholds and marker semantics: file lines time-isolated from the main cluster get
-// "!" (MEDIUM, scripts/hidden files upgraded by path), and mtimes in the future or
-// over a day before ctime get "!!" (CRITICAL, where touch-forged old timestamps show
+// thresholds and verdict semantics: file lines time-isolated from the main cluster
+// rate MEDIUM (scripts/hidden files upgraded by path), and mtimes in the future or
+// over a day before ctime rate CRITICAL (where touch-forged old timestamps show
 // up). Severity and reason are fixed at cluster time from the parsed path
-// (OutlierMatch); the leading marker is just the presentation of that verdict. The
-// collection rows are built in internal/script; this only consumes the retrieved text.
+// (OutlierMatch) and surface as the line's color plus its ⟨reason⟩ annotation; the
+// text itself carries no prefix. The collection rows are built in internal/script;
+// this only consumes the retrieved text.
 package cluster
 
 import (
 	"cmp"
-	"fmt"
 	"math"
 	"regexp"
 	"slices"
@@ -41,11 +41,11 @@ var (
 )
 
 // OutlierMatch is the verdict for an outlier line: severity and reason are fixed at
-// cluster time from the parsed path. marker is the leading marker from
+// cluster time from the parsed path. marker is the internal verdict code from
 // OutlierMarker; span is the displayed line length, and the range covers the whole
-// line (a marked line is colored entirely by severity). At most one per line: `!!`
-// timestamp anomaly is heaviest, otherwise the higher of hidden file, script, plain
-// outlier is taken.
+// line (a flagged line is colored entirely by severity and carries the ⟨reason⟩
+// annotation). At most one per line: `!!` timestamp anomaly is heaviest, otherwise
+// the higher of hidden file, script, plain outlier is taken.
 func OutlierMatch(path, marker string, span int) *model.Match {
 	verdict := func(id string, severity model.Severity, message string) *model.Match {
 		return &model.Match{ID: id, Severity: severity, Message: message, Start: 0, End: span}
@@ -65,8 +65,9 @@ func OutlierMatch(path, marker string, span int) *model.Match {
 	}
 }
 
-// OutlierMarker is the leading marker: mtime in the future, or (when outlying) over a
-// day before ctime, records `!!`; an outlier records `!`; otherwise empty.
+// OutlierMarker is the internal verdict code: mtime in the future, or (when
+// outlying) over a day before ctime, is `!!`; an outlier is `!`; otherwise empty.
+// It is never printed; the verdict shows as the line's severity color and annotation.
 func OutlierMarker(mtime, ctime float64, outlier bool, now time.Time) string {
 	future := mtime > float64(now.Unix())+futureSlack
 	forged := outlier && ctime-mtime > forgedGap
@@ -292,14 +293,14 @@ type row struct {
 }
 
 // ListingNormalize shapes a directory listing section (key-dirs/unit-dirs etc.):
-// cluster and mark outliers, strip the collection prefix. The title parameter comes
+// cluster and grade outliers, strip the collection prefix. The title parameter comes
 // from the reading layer's section split; clustering looks only at body lines. Same
 // clustering thresholds as mtime-hunt: file lines time-isolated from the main cluster
-// get "!", and mtimes in the future or over a day before ctime get "!!"; severity and
-// reason are laid down as ranges on the spot at cluster time (OutlierMatch), and the
-// reading layer no longer recognizes markers back with a regex. A section with sparse
-// small clusters and no dominant main cluster is the environment's daily write
-// cadence; marking everything would only flood the screen, so it stays quiet;
+// rate MEDIUM (hidden files and scripts upgraded by path), and mtimes in the future
+// or over a day before ctime rate CRITICAL; severity and reason are laid down as
+// ranges on the spot at cluster time (OutlierMatch). A section with sparse small
+// clusters and no dominant main cluster is the environment's daily write
+// cadence; flagging everything would only flood the screen, so it stays quiet;
 // non-collection rows pass through as-is.
 func ListingNormalize(now func() time.Time) model.Normalizer {
 	return func(_ string, text string) *model.Shaped {
@@ -329,12 +330,8 @@ func ListingNormalize(now func() time.Time) model.Normalizer {
 				continue
 			}
 			marker := OutlierMarker(r.entry.Mtime, r.entry.Ctime, outliers[r.entry], now())
-			line := r.entry.Row
-			if marker != "" {
-				line = fmt.Sprintf("%-3s%s", marker, line)
-			}
-			lines = append(lines, line)
-			if verdict := OutlierMatch(EntryPath(r.entry), marker, len(line)); verdict != nil {
+			lines = append(lines, r.entry.Row)
+			if verdict := OutlierMatch(EntryPath(r.entry), marker, len(r.entry.Row)); verdict != nil {
 				notes = append(notes, model.LineMatch{Line: index, Match: *verdict})
 			}
 		}

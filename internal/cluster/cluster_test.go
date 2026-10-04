@@ -84,12 +84,16 @@ func TestListingNormalizeMarksOutliers(t *testing.T) {
 	}
 	marked := 0
 	for _, line := range strings.Split(shaped.Text, "\n") {
-		if strings.HasPrefix(line, "!") {
+		// rows keep the bare ls shape: no leading marker, no gutter
+		if !strings.HasPrefix(line, "-rw-r--r-- 1 root root 100 ") {
+			t.Fatalf("collection rows carry no textual prefix: %q", line)
+		}
+		if strings.Contains(line, "/tmp/.evil") {
 			marked++
 		}
 	}
 	if marked != 2 {
-		t.Fatalf("both outlier files should be marked, got %d:\n%s", marked, shaped.Text)
+		t.Fatalf("both outlier files should be flagged, got %d:\n%s", marked, shaped.Text)
 	}
 	if len(shaped.Notes) != 2 {
 		t.Fatalf("outlier verdicts should become ranges at shaping time: %+v", shaped.Notes)
@@ -106,10 +110,8 @@ func TestListingNormalizeQuietWithoutMainCluster(t *testing.T) {
 	}
 	normalize := cluster.ListingNormalize(func() time.Time { return time.Unix(base+60*86400, 0) })
 	shaped := normalize("", strings.Join(rows, "\n"))
-	for _, line := range strings.Split(shaped.Text, "\n") {
-		if strings.HasPrefix(line, "!") {
-			t.Fatalf("no dominant main cluster should stay quiet: %q", line)
-		}
+	if len(shaped.Notes) != 0 {
+		t.Fatalf("no dominant main cluster should stay quiet: %+v", shaped.Notes)
 	}
 }
 
