@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -48,10 +49,23 @@ func usagef(cmd *cobra.Command, format string, args ...any) error {
 // the command's usage block appended, a coded error returns its own code, and
 // anything else — a mistake the message has already explained — returns 0.
 func reportError(w io.Writer, err error) int {
-	fmt.Fprintf(w, "karma: %v\n", err)
+	return reportErrorWith(w, err, stylesFor(w))
+}
+
+// reportErrorWith renders at a fixed set of styles; tests use it to force color
+// on a capture buffer.
+func reportErrorWith(w io.Writer, err error, st streamStyles) int {
+	msg := "karma: " + err.Error()
+	// A suggestion tail ("Did you mean: …") is guidance, not the failure, so it
+	// takes the hint color while the failure itself stays red.
+	if i := strings.Index(msg, "Did you mean:"); i > 0 {
+		fmt.Fprintf(w, "%s%s\n", st.err(msg[:i]), st.hint(msg[i:]))
+	} else {
+		fmt.Fprintln(w, st.err(msg))
+	}
 	var usage usageError
 	if errors.As(err, &usage) {
-		fmt.Fprint(w, usage.cmd.UsageString())
+		styledUsageWith(w, usage.cmd, st)
 	}
 	var coded exitError
 	if errors.As(err, &coded) {

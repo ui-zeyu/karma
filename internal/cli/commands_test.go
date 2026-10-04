@@ -176,7 +176,7 @@ func TestReportError(t *testing.T) {
 		t.Fatalf("a usage error should return 0, got %d", code)
 	}
 	if got := buf.String(); !strings.HasPrefix(got, "karma: unknown command \"zzz\"\n") ||
-		!strings.Contains(got, "Usage:") || !strings.Contains(got, "Available Commands:") {
+		!strings.Contains(got, "USAGE") || !strings.Contains(got, "COMMANDS") {
 		t.Fatalf("a usage error should print the message then the usage: %q", got)
 	}
 
@@ -209,11 +209,11 @@ func TestCommandLineErrors(t *testing.T) {
 		{"unknown command gets a suggestion", []string{"lst"}, []string{`unknown command "lst"`, "Did you mean: list"}},
 		{"a typo only gets the closest", []string{"locl"}, []string{"Did you mean: local"}},
 		{"a subcommand mounted elsewhere gets its placement", []string{"mtime", "/tmp"}, []string{`unknown command "mtime"`, "karma local mtime"}},
-		{"unknown flag", []string{"local", "--typo"}, []string{"unknown flag --typo", "Flags:"}},
+		{"unknown flag", []string{"local", "--typo"}, []string{"unknown flag --typo", "FLAGS"}},
 		{"unknown shorthand flag", []string{"local", "-x"}, []string{"unknown shorthand flag -x"}},
 		{"flag needs a value", []string{"local", "--timeout"}, []string{"flag --timeout needs a value"}},
 		{"invalid flag value", []string{"local", "--timeout", "abc"}, []string{"invalid value abc for flag --timeout"}},
-		{"ssh needs a target", []string{"ssh"}, []string{"ssh needs a target", "Usage:"}},
+		{"ssh needs a target", []string{"ssh"}, []string{"ssh needs a target", "USAGE"}},
 		{"value out of range", []string{"local", "--concurrency", "0"}, []string{"--concurrency must be >= 1"}},
 		{"misspelled selector", []string{"list", "sysem"}, []string{`unknown selector "sysem"`, "system"}},
 		{"help with an unknown target", []string{"help", "zzz"}, []string{`unknown command "zzz"`}},
@@ -277,7 +277,7 @@ func TestUsageAndHelpAreEnglish(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.String()
-	for _, want := range []string{"Usage:", "Available Commands:", "Flags:", "Show the usage of any command"} {
+	for _, want := range []string{"USAGE", "COMMANDS", "FLAGS", "Show the usage of any command"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("the help is missing %q: %q", want, got)
 		}

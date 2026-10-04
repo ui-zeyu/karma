@@ -43,6 +43,11 @@ func newRootCmd(version string) *cobra.Command {
 	}
 	root.SetOut(os.Stdout)
 	root.SetErr(os.Stderr)
+	// Help and errors render through the skeleton styles; the help func set on
+	// the root is inherited by every subcommand.
+	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		styledHelp(cmd)
+	})
 	// Flag errors come from pflag; wrap them so Main appends the usage block
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		return usagef(cmd, "%s", flagErrorText(err))

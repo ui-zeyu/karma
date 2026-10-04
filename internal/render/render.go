@@ -97,6 +97,23 @@ func fillBand(label string, width int, st lipgloss.Style) string {
 	return st.Render(label + strings.Repeat(" ", width-lipgloss.Width(label)))
 }
 
+// Band and Panel expose the heading tree to callers outside the report: the
+// CLI skeleton's help and error usage blocks reuse the exact report surfaces,
+// so both sides stay one visual language. Band is the level-one full-width
+// strip the aspect banners use; Panel is the quiet muted rail with a sub-band
+// head, the list's aspect-group shape.
+
+// Band renders name as a level-one heading band.
+func Band(name string, term int) string {
+	return aspectBanner(name, term)
+}
+
+// Panel renders label as a quiet rail panel head over the body rows.
+func Panel(label string, rows []string, term int) string {
+	head := []string{fillBand(" "+strings.ToUpper(label), railInner(term), subBandStyle)}
+	return checkBlock(model.Info, head, rows, term)
+}
+
 // roundedBox is the report header's box. lipgloss draws the border and one
 // column of padding on each side, and Width then measures content width
 // including padding and excluding the border.
