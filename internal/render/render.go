@@ -19,6 +19,7 @@ import (
 	"cmp"
 	"fmt"
 	"io"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -356,10 +357,16 @@ func stderrRows(stderr string) []string {
 // to the text width inside the rail.
 func bodyRows(result *model.CheckResult, maxLines, term int) []string {
 	width := textWidth(term)
-	lineStyler := newLineStyler(result.Check.Syntax)
+	base := newLineStyler(result.Check.Syntax)
 	var rows []string
 	budget := maxLines
 	for _, section := range result.Document.Sections {
+		// A section override builds its own instance: cross-line state (table
+		// anchors) must not leak across sections or shapes.
+		lineStyler := base
+		if syntax := sectionSyntax(result.Check, section.Title); syntax != result.Check.Syntax {
+			lineStyler = newLineStyler(syntax)
+		}
 		planned, used := plan(section.Lines, budget)
 		if planned == nil {
 			continue
@@ -374,6 +381,17 @@ func bodyRows(result *model.CheckResult, maxLines, term int) []string {
 		rows = append(rows, plannedRows(section.Lines, planned, lineStyler, width)...)
 	}
 	return rows
+}
+
+// sectionSyntax resolves one section's syntax: the first SectionSyntax entry
+// whose title glob matches wins, other sections keep the check's syntax.
+func sectionSyntax(check *model.Check, title string) string {
+	for _, override := range check.SectionSyntax {
+		if ok, _ := path.Match(override.Title, title); ok {
+			return override.Syntax
+		}
+	}
+	return check.Syntax
 }
 
 // sourceTitle is a source title row: bold plain (default color), hit spans in
@@ -510,29 +528,50 @@ func withReason(row string, matches []model.Match, width int) []string {
 // released in catalog order, with an aspect banner drawn first when the aspect
 // changes.
 //
+// One goroutine owns the terminal and all of the observer's state: the runner's
+// workers only send events (CheckStarted and CheckFinished enqueue and never
+// touch the writer), the ticker feeds the same queue, and nothing needs a lock.
 // A finished check is taken into a table first and written back only when the
 // catalog prefix is complete; a slow check ahead of it lets later ones pile up.
 type LiveObserver struct {
 	w        io.Writer
-	mu       sync.Mutex
 	maxLines int
 	width    int
 	tty      bool
 
 	order    map[*model.Check]int
+	events   chan observerEvent
+	stop     chan struct{}
+	stopOnce sync.Once
+	done     chan struct{}
+
 	received map[int]*model.CheckResult
 	next     int
 	aspect   string
 
-	total   int
-	done    int
-	current string
-	started time.Time
-	ticker  *time.Ticker
-	stopCh  chan struct{}
-	frame   int
-	stopped bool
+	total    int
+	finished int
+	current  string
+	started  time.Time
+	frame    int
 }
+
+// observerEvent is one message to the render loop.
+type observerEvent struct {
+	kind   eventKind
+	check  *model.Check
+	result *model.CheckResult
+}
+
+type eventKind int
+
+const (
+	startedEvent eventKind = iota
+	finishedEvent
+)
+
+// progressInterval is the progress line's refresh cadence.
+const progressInterval = 100 * time.Millisecond
 
 // NewLiveObserver builds the observer. With tty false no progress line is
 // drawn and panels are emitted in order.
@@ -547,67 +586,90 @@ func NewLiveObserver(w io.Writer, checks []*model.Check, maxLines, width int, tt
 		width:    width,
 		tty:      tty,
 		order:    order,
+		events:   make(chan observerEvent, 2*len(checks)+1),
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
 		received: map[int]*model.CheckResult{},
 		total:    len(checks),
 		started:  time.Now(),
-		stopCh:   make(chan struct{}),
 	}
 }
 
-// Start begins refreshing the progress line. The progress line is transient:
-// it is erased before a check panel is written and leaves nothing behind at the
-// end.
+// Start launches the render loop.
 func (o *LiveObserver) Start() {
-	if !o.tty {
-		return
-	}
-	o.ticker = time.NewTicker(100 * time.Millisecond)
-	go func() {
-		for {
-			select {
-			case <-o.stopCh:
-				return
-			case <-o.ticker.C:
-				o.mu.Lock()
-				o.drawProgress()
-				o.mu.Unlock()
-			}
+	go o.loop()
+}
+
+// loop is the single owner of the terminal and the observer state: events
+// apply here and nowhere else, so there is nothing to lock.
+func (o *LiveObserver) loop() {
+	defer func() {
+		if o.tty { // the progress line leaves nothing behind
+			fmt.Fprint(o.w, "\r\033[K")
 		}
+		close(o.done)
 	}()
-}
-
-// Close stops the progress line and clears it.
-func (o *LiveObserver) Close() {
-	if o.ticker != nil {
-		o.ticker.Stop()
-	}
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if !o.stopped {
-		o.stopped = true
-		close(o.stopCh)
-	}
+	var ticks <-chan time.Time
 	if o.tty {
-		fmt.Fprint(o.w, "\r\033[K")
+		ticker := time.NewTicker(progressInterval)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
+	for {
+		select {
+		case <-o.stop:
+			o.drain()
+			return
+		case event := <-o.events:
+			o.apply(event)
+		case <-ticks:
+			o.drawProgress()
+		}
 	}
 }
 
-// CheckStarted updates the progress line with the current check.
-func (o *LiveObserver) CheckStarted(check *model.Check) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.current = string(check.Aspect) + " · " + check.ID
-	o.drawProgress()
+// drain applies everything still queued: Close may fire while panels wait,
+// and those panels are still due.
+func (o *LiveObserver) drain() {
+	for {
+		select {
+		case event := <-o.events:
+			o.apply(event)
+		default:
+			return
+		}
+	}
 }
 
-// CheckFinished takes the result and releases the panels that are ready in
-// catalog order.
+func (o *LiveObserver) apply(event observerEvent) {
+	switch event.kind {
+	case startedEvent:
+		o.current = string(event.check.Aspect) + " · " + event.check.ID
+		o.drawProgress()
+	case finishedEvent:
+		o.finished++
+		o.received[o.order[event.check]] = event.result
+		o.flush()
+	}
+}
+
+// CheckStarted queues the progress update.
+func (o *LiveObserver) CheckStarted(check *model.Check) {
+	o.events <- observerEvent{kind: startedEvent, check: check}
+}
+
+// CheckFinished queues the result; the loop releases the panels that are ready
+// in catalog order.
 func (o *LiveObserver) CheckFinished(check *model.Check, result *model.CheckResult) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.done++
-	o.received[o.order[check]] = result
-	o.flush()
+	o.events <- observerEvent{kind: finishedEvent, check: check, result: result}
+}
+
+// Close stops the loop and waits until every queued panel is on the wire. Call
+// it after the run has joined, when no more events can arrive — the queue
+// holds two events per check, so the send side never blocks.
+func (o *LiveObserver) Close() {
+	o.stopOnce.Do(func() { close(o.stop) })
+	<-o.done
 }
 
 func (o *LiveObserver) flush() {
@@ -651,7 +713,7 @@ func (o *LiveObserver) emit(result *model.CheckResult) {
 }
 
 func (o *LiveObserver) drawProgress() {
-	if !o.tty || o.stopped {
+	if !o.tty {
 		return
 	}
 	frame := spinnerFrames[o.frame%len(spinnerFrames)]

@@ -18,12 +18,13 @@ import (
 // normalization, presentation, and run parameters. The zero value is usable
 // (no own rules, no normalization, the global timeout and read cap).
 type CheckOpt struct {
-	Filters   []model.LineFilter
-	Rules     []model.Rule
-	Normalize model.Normalizer
-	Syntax    string
-	Timeout   time.Duration
-	ScanBytes int
+	Filters       []model.LineFilter
+	Rules         []model.Rule
+	Normalize     model.Normalizer
+	Syntax        string
+	SectionSyntax []model.SectionSyntax
+	Timeout       time.Duration
+	ScanBytes     int
 }
 
 // PrivateKeyRule is the same on every platform: it joins the global pack on
@@ -123,17 +124,18 @@ func WindowsCheck(id, title string, aspect model.Aspect, probes []model.Probe, o
 // and never writes through the caller's shared array.
 func build(platform model.Platform, id, title string, aspect model.Aspect, probes []model.Probe, opt CheckOpt) *model.Check {
 	return &model.Check{
-		ID:        id,
-		Title:     title,
-		Aspect:    aspect,
-		Platform:  platform,
-		Probes:    probes,
-		Filters:   slices.Concat(opt.Filters, GlobalFilters),
-		Rules:     slices.Concat(opt.Rules, globalRules[platform]),
-		Timeout:   opt.Timeout,
-		Syntax:    opt.Syntax,
-		Normalize: opt.Normalize,
-		ScanBytes: opt.ScanBytes,
+		ID:            id,
+		Title:         title,
+		Aspect:        aspect,
+		Platform:      platform,
+		Probes:        probes,
+		Filters:       slices.Concat(opt.Filters, GlobalFilters),
+		Rules:         slices.Concat(opt.Rules, globalRules[platform]),
+		Timeout:       opt.Timeout,
+		Syntax:        opt.Syntax,
+		SectionSyntax: opt.SectionSyntax,
+		Normalize:     opt.Normalize,
+		ScanBytes:     opt.ScanBytes,
 	}
 }
 

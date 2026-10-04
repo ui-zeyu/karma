@@ -1,5 +1,5 @@
-// filesystem: disks and files: mounts, temp directories, SUID, recent changes and
-// content signatures under web directories.
+// filesystem: disks and files: mounts, temp directories, SUID/SGID and content
+// signatures under web directories.
 
 package linux
 
@@ -71,14 +71,6 @@ var gtfobinsPattern = `/(?:[\w.]+/)*(?:` + strings.Join(slices.Sorted(slices.Val
 
 var tmpDirs = []string{"/tmp", "/var/tmp", "/dev/shm"}
 
-// standardBinPath: the distribution's own binary trees, where a SUID/SGID bit is
-// expected; anywhere else the bit is worth a look.
-const standardBinPath = `^/(?:usr/)?(?:local/)?s?bin/`
-
-var tmpRecentFind = "find " + strings.Join(tmpDirs, " ") + " -xdev -type f -mtime -7 2>/dev/null"
-
-const tmpRecentTimeout = 15 * time.Second
-
 const webScriptFind = "find /var/www /usr/local/nginx /opt -xdev -maxdepth 3 -type f" +
 	` \( -name '*.php' -o -name '*.jsp' -o -name '*.jspx' -o -name '*.sh' -o -name '*.py' \)` +
 	" -mtime -14 2>/dev/null"
@@ -138,10 +130,10 @@ var tunnelToolRule = model.NewRule("tunnel-tool",
 var FilesystemChecks = []*model.Check{
 	define.LinuxCheck("df", "Disk usage", model.AspectFilesystem,
 		[]model.Probe{{Label: "df", Inv: model.NewCommand("df", "-h")}},
-		define.CheckOpt{Syntax: "table"}),
+		define.CheckOpt{Syntax: "df"}),
 	define.LinuxCheck("fstab", "Filesystem mount config (fstab)", model.AspectFilesystem,
 		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: "cat /etc/fstab 2>/dev/null"}}},
-		define.CheckOpt{Rules: []model.Rule{mountRemoteFsRule}}),
+		define.CheckOpt{Syntax: "fstab", Rules: []model.Rule{mountRemoteFsRule}}),
 	define.LinuxCheck("mounts", "Mount points", model.AspectFilesystem,
 		[]model.Probe{
 			{Label: "findmnt", Inv: model.NewCommand("findmnt")},
@@ -154,15 +146,6 @@ var FilesystemChecks = []*model.Check{
 			Syntax: "table",
 			Rules:  []model.Rule{mountRemoteFsRule},
 		}),
-	define.LinuxCheck("tmp-recent", "Temp directory files changed in the last 7 days", model.AspectFilesystem,
-		[]model.Probe{{Label: "find", Inv: model.Shell{Script: tmpRecentFind}, LineLimit: 200}},
-		define.CheckOpt{
-			Rules: []model.Rule{
-				model.NewRule("tmp-recent-script", `\.(?:sh|py|php)$`, model.Medium,
-					"recently changed script in a temp directory"),
-			},
-			Timeout: tmpRecentTimeout,
-		}),
 	define.ListingCheck("tmp-listing", "Temp directory listing", model.AspectFilesystem, tmpDirs, 200,
 		[]model.Rule{
 			// RE2 has no lookahead: standard system hidden entries (socket directories like
@@ -174,31 +157,25 @@ var FilesystemChecks = []*model.Check{
 			tunnelToolRule,
 			define.KeywordRule,
 		}),
+	// GTFOBins is the only verdict surface on these listings: a documented
+	// escalation program under SUID/SGID is critical/high, everything else is
+	// quiet evidence (GTFOBins has no separate sgid list, so the suid names
+	// stand in).
 	define.LinuxCheck("suid", "SUID files", model.AspectFilesystem,
 		[]model.Probe{{Label: "find", Inv: model.Shell{Script: suidFind}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("suid-gtfobins", gtfobinsPattern, model.Critical,
 					"SUID privilege-escalation program in GTFOBins"),
-				model.NewRule("suid-standard", standardBinPath, model.Benign,
-					"SUID file in a standard path"),
-				model.NewRule("suid-unusual", `^\S+`, model.Medium,
-					"SUID file in a non-standard path (common privilege-escalation backdoor spot)").
-					WithExclude(standardBinPath),
 			},
 			Timeout: suidTimeout,
 		}),
-	// SGID is checked like SUID: legitimate SGID files are mostly in /usr/bin
-	// (wall/write etc.), so standard paths are benign and other locations medium.
 	define.LinuxCheck("sgid", "SGID files", model.AspectFilesystem,
 		[]model.Probe{{Label: "find", Inv: model.Shell{Script: sgidFind}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
-				model.NewRule("sgid-standard", standardBinPath, model.Benign,
-					"SGID file in a standard path"),
-				model.NewRule("sgid-unusual", `^\S+`, model.Medium,
-					"SGID file in a non-standard path (common group-escalation backdoor spot)").
-					WithExclude(standardBinPath),
+				model.NewRule("sgid-gtfobins", gtfobinsPattern, model.High,
+					"SGID of a GTFOBins privilege-escalation program (group escalation)"),
 			},
 			Timeout: suidTimeout,
 		}),

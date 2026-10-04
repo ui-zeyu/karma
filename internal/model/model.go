@@ -397,6 +397,18 @@ type Check struct {
 	Syntax    string        // syntax declaration for the presentation layer; empty for none
 	Normalize Normalizer    // normalizes the winning body per section; the section title is passed and only dialect alignment (Probe.Adapt) reads it
 	ScanBytes int           // 0 means the default read cap, reader.MaxScanBytes
+	// SectionSyntax overrides Syntax per section: the first entry whose Title
+	// glob (path.Match) matches the section title wins, other sections keep
+	// Syntax. A section usually carries one source's shape, so mixed-output
+	// checks (a listing followed by the files' contents) declare one override
+	// per shape instead of one combined lexer.
+	SectionSyntax []SectionSyntax
+}
+
+// SectionSyntax is one title-syntax override of Check.Syntax.
+type SectionSyntax struct {
+	Title  string // glob against the section title (path.Match)
+	Syntax string
 }
 
 // CheckResult is the outcome of one check. Outcome separates "not collected"

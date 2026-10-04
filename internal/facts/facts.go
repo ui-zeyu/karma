@@ -153,12 +153,16 @@ func runPS(sess session.Session, script string, timeout time.Duration) model.Run
 // never drift onto the wrong fact; a failed path falls back to an empty answer.
 func gather(jobs map[string]func() model.RunResult) map[string]model.RunResult {
 	results := make(map[string]model.RunResult, len(jobs))
+	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for name, job := range jobs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[name] = job()
+			result := job()
+			mu.Lock()
+			defer mu.Unlock()
+			results[name] = result
 		}()
 	}
 	wg.Wait()

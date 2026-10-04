@@ -30,7 +30,7 @@ var ServiceChecks = []*model.Check{
 			Filters: []model.LineFilter{
 				model.NewFilter("unit-state", unitStateKeep, model.FilterKeep),
 			},
-			Syntax: "table",
+			Syntax: "units",
 			Rules: []model.Rule{
 				model.NewRule("unit-crashloop", `\bauto-restart\b`, model.Medium,
 					"service in a crash loop (common malware dwell shape)"),

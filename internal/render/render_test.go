@@ -600,3 +600,183 @@ func TestPowershellStyler(t *testing.T) {
 		}
 	}
 }
+
+// The unit table's ACTIVE and SUB cells are repainted by meaning once the
+// header anchors the columns: alive (active/running) green, finished
+// (exited/inactive) faint. A state word inside DESCRIPTION keeps the plain
+// table color.
+func TestUnitStateCellsPaintedByMeaning(t *testing.T) {
+	pad := func(text string, width int) string { return text + strings.Repeat(" ", width-len(text)) }
+	header := pad("UNIT", 16) + pad("LOAD", 7) + pad("ACTIVE", 9) + pad("SUB", 11) + "DESCRIPTION"
+	styler := newLineStyler("units")
+	if spans := styler(header); spans != nil {
+		t.Fatalf("the header should only record anchors: %v", spans)
+	}
+	hasSpan := func(spans []Span, line, word string, want style) bool {
+		start := strings.Index(line, word)
+		for _, span := range spans {
+			if span.Start == start && span.End == start+len(word) && span.Style == want {
+				return true
+			}
+		}
+		return false
+	}
+	covered := func(spans []Span, start, end int) bool {
+		for _, span := range spans {
+			if span.Start <= start && span.End >= end {
+				return true
+			}
+		}
+		return false
+	}
+
+	running := pad("nginx.service", 16) + pad("loaded", 7) + pad("active", 9) + pad("running", 11) +
+		"A high performance web server"
+	spans := styler(running)
+	if !hasSpan(spans, running, "active", style{fg: "2"}) ||
+		!hasSpan(spans, running, "running", style{fg: "2"}) {
+		t.Fatalf("active/running should be painted green: %+v", spans)
+	}
+	exited := pad("certbot.service", 16) + pad("loaded", 7) + pad("active", 9) + pad("exited", 11) +
+		"Certbot renewal"
+	spans = styler(exited)
+	if !hasSpan(spans, exited, "active", style{fg: "2"}) || !hasSpan(spans, exited, "exited", dimStyle) {
+		t.Fatalf("active should stay green and exited should go faint: %+v", spans)
+	}
+	desc := pad("sshd.service", 16) + pad("loaded", 7) + pad("active", 9) + pad("running", 11) +
+		"daemon that keeps users running"
+	spans = styler(desc)
+	at := strings.LastIndex(desc, "running")
+	if covered(spans, at, at+len("running")) {
+		t.Fatalf("a state word inside DESCRIPTION should stay default: %+v", spans)
+	}
+}
+
+// A section override styles that section with its own rule; the rest keep the
+// check syntax. Glob titles let dynamic per-file sections match too.
+func TestSectionSyntaxOverridesByTitle(t *testing.T) {
+	check := &model.Check{
+		ID: "skel", Syntax: "bash",
+		SectionSyntax: []model.SectionSyntax{
+			{Title: "/etc/skel", Syntax: "ls-l"},
+			{Title: "/home/*/.*_history", Syntax: "colon"},
+		},
+	}
+	if got := sectionSyntax(check, "/etc/skel"); got != "ls-l" {
+		t.Fatalf("the listing section should take the override: %q", got)
+	}
+	if got := sectionSyntax(check, "/etc/skel/.bashrc"); got != "bash" {
+		t.Fatalf("other sections keep the check syntax: %q", got)
+	}
+	if got := sectionSyntax(check, "/home/deploy/.zsh_history"); got != "colon" {
+		t.Fatalf("a glob should match dynamic titles: %q", got)
+	}
+	if got := sectionSyntax(&model.Check{Syntax: "bash"}, "/etc/skel"); got != "bash" {
+		t.Fatalf("no overrides means the check syntax everywhere: %q", got)
+	}
+}
+
+// End to end through the panel: a services document rendered under the units
+// syntax paints the state cells by meaning.
+func TestUnitsPanelPaintsStateCells(t *testing.T) {
+	result := &model.CheckResult{
+		Check:   &model.Check{ID: "services", Aspect: model.AspectService, Syntax: "units"},
+		Outcome: model.Collected,
+		Document: model.Document{Sections: []model.Section{{Lines: []model.Line{
+			{Text: "UNIT             LOAD   ACTIVE   SUB        DESCRIPTION", Severity: model.Info},
+			{Text: "sshd.service     loaded active   running    OpenBSD server", Severity: model.Info},
+			{Text: "certbot.service  loaded active   exited     Certbot renewal", Severity: model.Info},
+		}}}},
+	}
+	panel := checkPanel(result, 40, 120)
+	if !strings.Contains(panel, style{fg: "2"}.seq().Render("running")) {
+		t.Fatalf("running should be green in the panel:\n%s", plain(panel))
+	}
+	if !strings.Contains(panel, dimStyle.seq().Render("exited")) {
+		t.Fatalf("exited should be faint in the panel:\n%s", plain(panel))
+	}
+}
+
+// End to end through the panel: one panel, two section rules — the skel
+// listing keeps the ls -l colors while the collected shell file keeps the
+// bash lexer.
+func TestSkelPanelKeepsLsColorsForTheListing(t *testing.T) {
+	result := &model.CheckResult{
+		Check: &model.Check{
+			ID: "skel", Aspect: model.AspectPersistence, Syntax: "bash",
+			SectionSyntax: []model.SectionSyntax{{Title: "/etc/skel", Syntax: "ls-l"}},
+		},
+		Outcome: model.Collected,
+		Document: model.Document{Sections: []model.Section{
+			{Title: "/etc/skel", Lines: []model.Line{
+				{Text: "-rw-r--r-- 1 root root 921 Jan 01 12:34 /etc/skel/.bashrc", Severity: model.Info},
+			}},
+			{Title: "/etc/skel/.bashrc", Lines: []model.Line{
+				{Text: "export EDITOR=vim", Severity: model.Info},
+			}},
+		}},
+	}
+	panel := checkPanel(result, 40, 120)
+	if !strings.Contains(panel, style{fg: "2"}.seq().Render("Jan 01 12:34")) {
+		t.Fatalf("the listing should keep the ls -l colors:\n%s", plain(panel))
+	}
+	if !strings.Contains(panel, keywordColor.seq().Render("export")) {
+		t.Fatalf("the shell section should keep the bash lexer:\n%s", plain(panel))
+	}
+}
+
+// df's header ends in the two-word "Mounted on": the capture-group header
+// regex keeps it one column, so data rows line up and the mount point (the
+// last column) stays plain.
+func TestDfHeaderAnchorsMultiWordLastColumn(t *testing.T) {
+	styler := newLineStyler("df")
+	header := "Filesystem      Size  Used Avail Use% Mounted on"
+	if spans := styler(header); spans != nil {
+		t.Fatalf("the header should only record anchors: %v", spans)
+	}
+	row := "/dev/vda1        40G   15G   25G  38% /"
+	spans := styler(row)
+	painted := paintLine(row, spans)
+	for i, want := range []string{"40G", "15G", "25G", "38%"} {
+		if !strings.Contains(painted, tableColumnStyles[i+1].seq().Render(want)) {
+			t.Fatalf("column %d should have its column color (%q): %q", i+1, want, plain(painted))
+		}
+	}
+	for _, span := range spans {
+		if span.Start <= len(row)-1 && span.End > len(row)-1 {
+			t.Fatalf("the mount point (last column) should stay plain: %+v", spans)
+		}
+	}
+}
+
+// fstab rows are colored by column: device blue, mount point green, filesystem
+// type magenta, options default, dump and pass dimmed; comments stay with the
+// reader's comment muting.
+func TestFstabColumns(t *testing.T) {
+	styler := newLineStyler("fstab")
+	if spans := styler("# <file system> <mount point> <type> <options> <dump> <pass>"); spans != nil {
+		t.Fatalf("a comment should not be painted here: %v", spans)
+	}
+	row := "UUID=1a2b  /  ext4  errors=remount-ro  0  1"
+	painted := paintLine(row, styler(row))
+	if !strings.Contains(painted, style{fg: "4"}.seq().Render("UUID=1a2b")) {
+		t.Fatalf("the device should be blue: %q", plain(painted))
+	}
+	if !strings.Contains(painted, style{fg: "2"}.seq().Render("/")) {
+		t.Fatalf("the mount point should be green: %q", plain(painted))
+	}
+	if !strings.Contains(painted, style{fg: "5"}.seq().Render("ext4")) {
+		t.Fatalf("the filesystem type should be magenta: %q", plain(painted))
+	}
+	if !strings.Contains(painted, dimStyle.seq().Render("0")) ||
+		!strings.Contains(painted, dimStyle.seq().Render("1")) {
+		t.Fatalf("dump and pass should be dimmed: %q", plain(painted))
+	}
+	if at := strings.Index(row, "errors=remount-ro"); at >= 0 {
+		for _, span := range styler(row) {
+			if span.Start <= at && span.End >= at+len("errors=remount-ro") {
+				t.Fatalf("options should stay default: %+v", span)
+			}
+		}
+	}
+}

@@ -53,7 +53,7 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"key-dirs", `-rw------- 1 root root 1679 Jun  1 10:00 /root/.ssh/authorized_keys`, "ssh-material"},
 		{"key-dirs", `drwxr-xr-x 1 root root 4096 Jun  1 10:00 /opt/chisel`, "tunnel-tool"},
 		{"suid", `/home/deploy/find`, "suid-gtfobins"},
-		{"suid", `/usr/bin/passwd`, "suid-standard"},
+		{"sgid", `/home/deploy/find`, "sgid-gtfobins"},
 		{"web-dirs", `/var/www/html/shell.php`, "web-script"},
 		{"webshell-grep", `<?php @eval($_POST['c']); ?>`, "webshell-direct"},
 		{"caps", `/usr/bin/x cap_setuid=ep`, "caps-setuid"},

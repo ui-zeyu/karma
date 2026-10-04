@@ -28,15 +28,10 @@ var cronScript = script.Lines(
 	"crontab -l 2>/dev/null",
 )
 
+// shellRcPaths: home files lead and the global profile layer trails — the
+// per-user startup files are the productive surface, the /etc sections are
+// usually stock; within each group the shell read order is kept.
 var shellRcPaths = []string{
-	"/etc/profile",
-	"/etc/profile.d/*",
-	"/etc/bashrc",
-	"/etc/bash.bashrc",
-	"/etc/bash.bash_logout",
-	"/etc/zsh/zshrc",
-	"/etc/zprofile",
-	"/etc/fish/config.fish",
 	"/root/.bashrc",
 	"/root/.bash_profile",
 	"/root/.bash_login",
@@ -51,6 +46,14 @@ var shellRcPaths = []string{
 	"/home/*/.bash_logout",
 	"/home/*/.zshrc",
 	"/home/*/.config/fish/config.fish",
+	"/etc/profile",
+	"/etc/profile.d/*",
+	"/etc/bashrc",
+	"/etc/bash.bashrc",
+	"/etc/bash.bash_logout",
+	"/etc/zsh/zshrc",
+	"/etc/zprofile",
+	"/etc/fish/config.fish",
 }
 
 // skelScript: a new user's home is copied wholesale from /etc/skel, so poisoning a
@@ -212,6 +215,8 @@ var PersistenceChecks = []*model.Check{
 			Syntax:    "bash",
 			Normalize: cluster.ListingNormalize(time.Now),
 			Rules:     []model.Rule{define.KeywordRule},
+			// the listing section speaks ls -l, the collected files speak shell
+			SectionSyntax: []model.SectionSyntax{{Title: "/etc/skel", Syntax: "ls-l"}},
 		}),
 	define.LinuxCheck("at", "at one-shot job queue", model.AspectPersistence,
 		[]model.Probe{{Label: "at", Inv: model.NewCommand("atq")}},

@@ -25,8 +25,8 @@ import (
 )
 
 // Observer is the run-progress callback, provided by the presentation layer.
-// Callbacks may enter from different goroutines; implementations bring their
-// own lock.
+// Callbacks may enter from different goroutines; implementations must be safe
+// for that (the live observer funnels everything into one render goroutine).
 type Observer interface {
 	CheckStarted(check *model.Check)
 	CheckFinished(check *model.Check, result *model.CheckResult)
