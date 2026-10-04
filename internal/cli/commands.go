@@ -30,12 +30,10 @@ func newRootCmd(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "karma",
 		Short:         "Read-only incident-response collection: Linux over local or SSH, Windows on the local host.",
-		Version:       version,
 		Args:          rootArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.SetVersionTemplate("karma {{.Version}}\n")
 	// cobra only fills this default in its own "unknown command" hint, and
 	// rootArgs calls SuggestionsFor directly, so set it explicitly (2 is
 	// cobra's own convention)
@@ -56,6 +54,7 @@ func newRootCmd(version string) *cobra.Command {
 		newLocalCmd(),
 		newSSHCmd(),
 		newListCmd(),
+		newVersionCmd(version),
 	)
 	root.SetHelpCommand(helpCommand(root))
 	return root
@@ -154,6 +153,19 @@ func newMtimeCmd() *cobra.Command {
 	}
 	addRunFlags(cmd)
 	return cmd
+}
+
+// newVersionCmd prints the release version; the build stamps it with -X main.version.
+func newVersionCmd(version string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the karma version",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.Printf("karma %s\n", version)
+			return nil
+		},
+	}
 }
 
 func newListCmd() *cobra.Command {
