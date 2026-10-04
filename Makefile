@@ -27,13 +27,15 @@ race:
 staticcheck:
 	staticcheck -checks=all ./...
 
+# Release binaries strip the symbol table and DWARF (-s -w) and drop local
+# paths (-trimpath) to cut the transfer size; -X still stamps the version.
 build:
-	$(GO) build -ldflags "-X main.version=$(VERSION)" -o dist/karma ./cmd/karma
+	$(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/karma ./cmd/karma
 
 # dist builds the release binaries for the two supported platforms.
 dist: build
-	GOOS=linux GOARCH=amd64 $(GO) build -ldflags "-X main.version=$(VERSION)" -o dist/karma-linux-amd64 ./cmd/karma
-	GOOS=windows GOARCH=amd64 $(GO) build -ldflags "-X main.version=$(VERSION)" -o dist/karma-windows-amd64.exe ./cmd/karma
+	GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/karma-linux-amd64 ./cmd/karma
+	GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/karma-windows-amd64.exe ./cmd/karma
 
 clean:
 	rm -rf dist
