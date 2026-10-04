@@ -144,14 +144,14 @@ var NetworkChecks = []*model.Check{
 				// the connection table; the process holding the socket is the signal, lit by the
 				// critical rules below. ESTABLISHED also covers the netstat probe.
 				model.NewRule("net-established", `\bESTAB(?:LISHED)?\b`, model.Benign,
-					"established connection (confirm origin against process and remote address)"),
+					"established connection"),
 				// ss: users:(("bash",pid=..)); netstat: trailing pid/program column
 				model.NewRule("net-interpreter-socket-ss",
 					`\(\("[^"\n]*(?:sh|python[0-9.]*|perl|nc[^"\n]*|socat|php|ruby|busybox)"`,
-					model.Critical, "interpreter/tool process holds a socket (common reverse-shell and dwell shape)"),
+					model.Critical, "interpreter holds a socket (reverse shell)"),
 				model.NewRule("net-interpreter-socket-netstat",
 					`\d+/(?:[^\s|]*sh|python[0-9.]*|perl|nc[^\s|]*|socat|php|ruby|busybox)(?:\s|$)`,
-					model.Critical, "interpreter/tool process holds a socket (common reverse-shell and dwell shape)"),
+					model.Critical, "interpreter holds a socket (reverse shell)"),
 			},
 		}),
 	define.LinuxCheck("addr", "Network addresses", model.AspectNetwork,
@@ -181,7 +181,7 @@ var NetworkChecks = []*model.Check{
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
-				model.NewRule("firewall-active", `^-A `, model.Medium, "active firewall rule (confirm it is expected)"),
+				model.NewRule("firewall-active", `^-A `, model.Medium, "active firewall rule"),
 			},
 		}),
 	// The spawn/twist options in hosts.allow/deny run a command on match, a classic
@@ -192,9 +192,9 @@ var NetworkChecks = []*model.Check{
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("wrappers-exec", `\b(?:spawn|twist)\b`, model.High,
-					"runs a command on match (TCP Wrappers backdoor vector)"),
+					"command runs on match (backdoor vector)"),
 				model.NewRule("wrappers-active", `^[^#\s][^:]*:`, model.Medium,
-					"active access-control rule (confirm it is expected)"),
+					"access-control rule active"),
 			},
 		}),
 	define.LinuxCheck("hosts-file", "hosts and DNS config", model.AspectNetwork,
@@ -203,7 +203,7 @@ var NetworkChecks = []*model.Check{
 			Rules: []model.Rule{
 				// "maps to a non-loopback address" becomes an exclusion (RE2 has no lookahead)
 				model.NewRule("hosts-nonlocal", `^\s*[0-9a-fA-F:.]+\s+\S`, model.Medium,
-					"hosts entry maps to a non-loopback address (hijack/redirect investigation)").
+					"hosts maps a non-loopback address").
 					WithExclude(`^\s*(?:127\.|::1|0\.0\.0\.0|fe|ff)`),
 				define.KeywordRule,
 			},

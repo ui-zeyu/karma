@@ -64,18 +64,18 @@ var winlogonKeys = []RegKey{
 // the switch is worth its own line.
 var (
 	winlogonShellRule = model.NewRule("winlogon-shell", `(?i)^\s+Shell\s+REG_\w+\s+\S`, model.High,
-		"logon shell replaced (runs on every interactive logon)").
+		"logon shell replaced").
 		WithExclude(`(?i)^\s+Shell\s+REG_\w+\s+explorer\.exe\s*$`)
 	winlogonUserinitRule = model.NewRule("winlogon-userinit", `(?i)^\s+Userinit\s+REG_\w+\s+\S`, model.High,
-		"logon userinit replaced (runs on every interactive logon)").
+		"logon userinit replaced").
 		// only the stock value is quiet, so an appended program is flagged too
 		WithExclude(`(?i)^\s+Userinit\s+REG_\w+\s+C:\\Windows\\system32\\userinit\.exe,\s*$`)
 	winlogonNotifyRule = model.NewRule("winlogon-notify", `(?i)^\s+Notify\s+REG_\w+\s+\S`, model.Medium,
-		"Winlogon notification package registered (runs at logon)")
+		"Winlogon notify package registered")
 	winlogonAppSetupRule = model.NewRule("winlogon-appsetup", `(?i)^\s+AppSetup\s+REG_\w+\s+\S`, model.Medium,
-		"AppSetup command registered (runs at logon)")
+		"AppSetup command registered")
 	appinitDllRule = model.NewRule("appinit-dlls", `(?i)^\s+AppInit_DLLs\s+REG_\w+\s+\S`, model.High,
-		"AppInit_DLLs set (injected into every process that loads user32)")
+		"AppInit_DLLs set (injects into processes)")
 	appinitLoadRule = model.NewRule("appinit-load", `(?i)^\s+LoadAppInit_DLLs\s+REG_DWORD\s+0x1\b`, model.Medium,
 		"AppInit_DLLs loading enabled")
 )
@@ -90,12 +90,12 @@ var appPatchFragment = psSection("'AppPatch Custom'",
 
 var (
 	appcompatLayerRule = model.NewRule("appcompat-layer", `(?i)^\s+[A-Za-z]:\\\S*\s+REG_\w+\s+~`, model.Low,
-		"per-executable compatibility layer set (confirm it is expected)")
+		"compatibility layer set")
 	appcompatTempRule = model.NewRule("appcompat-userpath",
 		`(?i)^\s+[A-Za-z]:.*(?:\\Temp\\|\\Users\\Public\\|\\AppData\\).*\.exe\s+REG_\w+\s+~`, model.High,
-		"compatibility layer applied to an executable in a user-writable directory")
+		"shim on user-writable executable")
 	appcompatSdbRule = model.NewRule("appcompat-sdb", `(?i)^C:\\Windows\\AppPatch\\Custom(?:64)?\\`,
-		model.Medium, "custom compatibility shim database present")
+		model.Medium, "custom shim database present")
 )
 
 // serviceDllScript lists the DLL each svchost service loads: a ServiceDll outside
@@ -106,9 +106,9 @@ const serviceDllScript = `Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services
 var (
 	serviceDllTempRule = model.NewRule("svcdll-temp",
 		`(?i)\s[A-Za-z]:\\(?:Windows\\Temp|Users\\Public|Users\\[^\\]+\\AppData)\\.*\.dll\s*$`, model.High,
-		"svchost service loads a DLL from a user-writable directory (DLL hijack)")
+		"svchost DLL from user-writable dir")
 	serviceDllOutsideRule = model.NewRule("svcdll-outside-system", `(?i)\s[A-Za-z]:.*\.dll\s*$`, model.Medium,
-		"svchost service DLL outside the system directories (confirm it is expected)").
+		"svchost DLL outside system dirs").
 		// reg.exe prints the unexpanded REG_EXPAND_SZ, PowerShell the expanded one
 		WithExclude(`(?i)\s(?:C:\\Windows|%SystemRoot%)\\(?:System32|SysWOW64)\\`)
 )

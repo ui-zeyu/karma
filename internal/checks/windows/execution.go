@@ -172,7 +172,7 @@ var ExecutionChecks = []*model.Check{
 				model.NewRule("psreadline-suspicious", historySuspicious, model.High,
 					"history command with payload execution traits"),
 				model.NewRule("psreadline-clear-history", `\bClear-History\b`, model.High,
-					"history cleared (still recorded in file)"),
+					"history cleared (file still records)"),
 				define.KeywordRule,
 			},
 		}),

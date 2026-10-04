@@ -67,7 +67,7 @@ var KernelChecks = []*model.Check{
 				// up as a module entry, otherwise a comment-only /etc/modules would produce an
 				// empty box by matching the title
 				model.NewRule("modules-boot-entry", `^[^#\n/]\S+`, model.Low,
-					"module loaded at boot (compare lsmod and modinfo to judge origin)"),
+					"module loaded at boot"),
 			},
 		}),
 	define.LinuxCheck("modules-hidden", "Hidden module cross-check (/sys/module vs /proc/modules)", model.AspectKernel,
@@ -75,7 +75,7 @@ var KernelChecks = []*model.Check{
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("module-hidden", `^HIDDEN `, model.Critical,
-					"loadable module missing from /proc/modules (hidden-module sign, LKM rootkit hunt)"),
+					"module hidden from /proc/modules"),
 			},
 		}),
 	define.ListingCheck("module-files", "Out-of-tree kernel modules (updates/dkms, extra, etc.)", model.AspectKernel,
@@ -85,14 +85,14 @@ var KernelChecks = []*model.Check{
 			// the rule ends with \s|$); modules.* metadata in the root and entries under the
 			// kernel/ subdirectory are official content and are not flagged
 			model.NewRule("module-files-out-of-tree", `\.ko(?:\.[a-z0-9]+)?(?:\s|$)`, model.Medium,
-				"module file in an out-of-tree or module-root directory (check package ownership for origin)"),
+				"out-of-tree module file"),
 		}),
 	define.LinuxCheck("tainted", "Kernel tainted flags", model.AspectKernel,
 		[]model.Probe{{Label: "tainted", Inv: model.Shell{Script: "cat /proc/sys/kernel/tainted 2>/dev/null"}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("kernel-tainted", `^[1-9]`, model.Medium,
-					"tainted non-zero: kernel is tainted (bad unload/out-of-tree code; proprietary drivers set it too)"),
+					"kernel tainted (non-zero)"),
 			},
 		}),
 	define.LinuxCheck("module-sig-config", "Kernel module signature config", model.AspectKernel,
@@ -102,7 +102,7 @@ var KernelChecks = []*model.Check{
 			Rules: []model.Rule{
 				model.NewRule("module-sig-off", `^CONFIG_MODULE_SIG=(?:n|m)`, model.Medium, "module signing not enabled"),
 				model.NewRule("module-sig-not-forced", `^CONFIG_MODULE_SIG_FORCE=n`, model.Medium,
-					"unsigned modules still load (warned but not blocked)"),
+					"unsigned modules still load"),
 			},
 		}),
 	// dmesg's module lines are the evidence surface for load activity; placed last,
@@ -119,7 +119,7 @@ var KernelChecks = []*model.Check{
 			},
 			Rules: []model.Rule{
 				model.NewRule("dmesg-taint", `(?i)\btaint`, model.Medium,
-					"kernel tainted (out-of-tree/unsigned modules etc.)"),
+					"kernel tainted (dmesg)"),
 			},
 		}),
 	// lsmod is a big all-modules table with little signal; placed at the end of the

@@ -33,7 +33,7 @@ var ServiceChecks = []*model.Check{
 			Syntax: "units",
 			Rules: []model.Rule{
 				model.NewRule("unit-crashloop", `\bauto-restart\b`, model.Medium,
-					"service in a crash loop (common malware dwell shape)"),
+					"service crash loop (dwell sign)"),
 			},
 		}),
 	define.LinuxCheck("timers", "systemd timers", model.AspectService,

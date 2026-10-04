@@ -155,7 +155,7 @@ var PersistenceChecks = []*model.Check{
 			Rules: []model.Rule{
 				model.NewRule("cron-reboot", `@reboot\b`, model.High, "cron job run on reboot"),
 				model.NewRule("cron-every-minute", `^\s*\*(?:/1)?\s+\*\s+\*\s+\*\s+\*`, model.Medium,
-					"cron job running every minute (a common malware dwell cadence)"),
+					"cron runs every minute (dwell cadence)"),
 				define.KeywordRule,
 			},
 		}),
@@ -175,7 +175,7 @@ var PersistenceChecks = []*model.Check{
 			Syntax: "bash",
 			Rules: []model.Rule{
 				model.NewRule("rc-b64-shell", `\bbase64\b[^|\n]*\|\s*[^|\n]*\b(?:ba|z|da|k)?sh\b`,
-					model.High, "base64 decode piped into shell (runs at boot)"),
+					model.High, "base64 piped to shell (at boot)"),
 				model.NewRule("rc-b64-decode", `\bbase64\s+(?:-[A-Za-z]+\s+)*-d\b`, model.Medium,
 					"base64 decode execution trace"),
 				define.KeywordRule,
@@ -203,7 +203,7 @@ var PersistenceChecks = []*model.Check{
 		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: ldConfScript}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
-				model.NewRule("ld-conf-entry", `^[^#\n]\S+`, model.Low, "library search path entry (watch for suspicious directories)"),
+				model.NewRule("ld-conf-entry", `^[^#\n]\S+`, model.Low, "library search path entry"),
 			},
 		}),
 	define.LinuxCheck("shell-rc", "Shell startup files", model.AspectPersistence,
@@ -237,7 +237,7 @@ var PersistenceChecks = []*model.Check{
 			Normalize: cluster.ListingNormalize(time.Now),
 			Rules: []model.Rule{
 				model.NewRule("udev-exec-key", `(?:RUN|PROGRAM|IMPORT)(?:\+=|\{|=)`, model.Medium,
-					"udev rule references an external program (runs on device events; confirm it is expected)"),
+					"udev rule runs external program"),
 			},
 		}),
 	define.LinuxCheck("motd", "motd login banner", model.AspectPersistence,
@@ -250,7 +250,7 @@ var PersistenceChecks = []*model.Check{
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("pth-import", `\.pth:[0-9]+:import`, model.High,
-					".pth file contains import (runs at Python startup)"),
+					".pth import (runs at python startup)"),
 			},
 		}),
 }

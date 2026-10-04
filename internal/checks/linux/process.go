@@ -63,7 +63,7 @@ var ProcessChecks = []*model.Check{
 			Syntax: "table",
 			Rules: []model.Rule{
 				model.NewRule("ps-tmp-path", `\s/(?:tmp|var/tmp|dev/shm)/\S*`, model.Medium,
-					"command line references a temp-directory path (drop-and-exec investigation)"),
+					"command line references temp path"),
 				// A web service account spawning a shell/interpreter is webshell execution in
 				// progress; normal web process names (php-fpm, httpd, gunicorn) do not contain
 				// these words
@@ -115,7 +115,7 @@ var ProcessChecks = []*model.Check{
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("proc-not-in-ps", `^[0-9]+$`, model.High,
-					"present in /proc but not seen by ps (process-hiding sign; occasional false positive from a just-exited process)"),
+					"in /proc but not in ps (or just exited)"),
 			},
 		}),
 }

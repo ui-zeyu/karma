@@ -62,10 +62,10 @@ var pkgHistoryScript = script.Lines(
 
 var pkgHistoryRules = []model.Rule{
 	model.NewRule("pkg-changed", `^\d{4}-\d{2}-\d{2}\s+\S+\s+(?:install|upgrade|remove|purge|update)\b`,
-		model.Low, "package record (what changed recently)"),
+		model.Low, "package transaction record"),
 	model.NewRule("pkg-apt-record", `^(?:Commandline|Install|Upgrade|Remove|Purge):`, model.Low,
 		"apt transaction record"),
-	model.NewRule("pkg-dnf-record", `^\s*\d+\s+\|`, model.Low, "dnf transaction (recent installs and upgrades)"),
+	model.NewRule("pkg-dnf-record", `^\s*\d+\s+\|`, model.Low, "dnf transaction record"),
 	define.KeywordRule,
 }
 
@@ -82,7 +82,7 @@ done
 
 var binNotElfRule = model.NewRule("bin-not-elf",
 	`(?i)^.*(?:\bscript\b|\b(?:ASCII|Unicode) text\b)`, model.High,
-	"file is a script/text (expected ELF binary)").WithExclude(`^/etc/`)
+	"script/text where ELF expected").WithExclude(`^/etc/`)
 
 // PackageChecks covers packages.
 var PackageChecks = []*model.Check{
@@ -97,7 +97,7 @@ var PackageChecks = []*model.Check{
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("pkg-checksum", `^..5`, model.High,
-					"file md5 differs from the package database (binary may be replaced)"),
+					"checksum differs from package db"),
 				binNotElfRule,
 			},
 			// The `== ls` forensics section is ls -l shape; dpkg -V and file lines do not fit

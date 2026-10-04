@@ -88,7 +88,7 @@ var historyOffRule = model.NewRule("history-off",
 
 // historyClear: wiped only in the current shell; the file still holds what came before.
 var historyClearRule = model.NewRule("history-clear", `\bhistory\s+-c\b`, model.Medium,
-	"history cleared in this shell (the file keeps earlier lines)")
+	"history cleared (earlier lines kept)")
 
 // LogsChecks covers logs.
 var LogsChecks = []*model.Check{
@@ -121,8 +121,8 @@ var LogsChecks = []*model.Check{
 					`|memcached|docker|containerd)\b|\b(?:access|error)\.log\b`,
 				model.Low, "common middleware logs (entry point for webshell and intrusion traces)"),
 			model.NewRule("logdir-auth", `\b(?:auth\.log|secure|btmp|wtmp|lastlog|faillog|sshd)\b`,
-				model.Low, "login and auth records (SSH investigation entry point)"),
-			model.NewRule("logdir-cron", `\bcron`, model.Low, "cron logs (persistence investigation)"),
+				model.Low, "login/auth records (SSH entry point)"),
+			model.NewRule("logdir-cron", `\bcron`, model.Low, "cron logs (persistence trail)"),
 			define.KeywordRule,
 		}),
 }

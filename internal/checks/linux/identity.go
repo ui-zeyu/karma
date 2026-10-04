@@ -96,15 +96,15 @@ var IdentityChecks = []*model.Check{
 				model.NewRule("acct-root-uid0", `^root:[^:]*:0:0:`, model.Benign, "the root account itself"),
 				// RE2 has no lookahead: "UID 0 that isn't root" becomes an exclusion
 				model.NewRule("acct-other-uid0", `^[^:\n]+:[^:]*:0:0:`, model.Critical,
-					"non-root account with UID 0 (common backdoor)").WithExclude(`^root:`),
+					"non-root account with UID 0").WithExclude(`^root:`),
 				model.NewRule("acct-password-field", `^[^:\n]+:.`, model.Medium,
-					"password field is not x (password set directly or empty)").WithExclude(`^[^:\n]+:[x*!]`),
+					"password field not x (hash or empty)").WithExclude(`^[^:\n]+:[x*!]`),
 				// Unusual accounts with a login shell: by convention system accounts (uid<1000)
 				// should not have one (mysql with bash is a persistence signal); human accounts
 				// (uid>=1000) and root with a normal shell are expected, so they are not flagged.
 				model.NewRule("acct-login-shell",
 					`^[^:\n]+:[^:]*:[0-9]{1,3}:[^:]*:[^:]*:[^:]*:/(?:usr/)?bin/(?:ba|z|da|k)?sh$`,
-					model.Medium, "system account (uid<1000) has a login shell").WithExclude(`^root:`),
+					model.Medium, "system account has a login shell").WithExclude(`^root:`),
 			},
 		}),
 	// Only shadow proves an empty password; locked entries (!*) cannot log in by
@@ -120,9 +120,9 @@ var IdentityChecks = []*model.Check{
 				model.NewFilter("shadow-locked", `^[^:\n]+:[!*]+:`, model.FilterDrop),
 			},
 			Rules: []model.Rule{
-				model.NewRule("shadow-empty-root", `^root::`, model.Critical, "empty root password (passwordless login)"),
+				model.NewRule("shadow-empty-root", `^root::`, model.Critical, "empty root password"),
 				model.NewRule("shadow-empty", `^[^:\n]+::`, model.High,
-					"empty-password account (passwordless login)").WithExclude(`^root:`),
+					"empty-password account").WithExclude(`^root:`),
 				model.NewRule("shadow-md5", `^[^:\n]+:\$1\$`, model.Low, "MD5 password hash (weak algorithm)"),
 			},
 		}),
@@ -143,9 +143,9 @@ var IdentityChecks = []*model.Check{
 			Rules: []model.Rule{
 				model.NewRule("group-privileged",
 					`^(?:sudo|wheel|admin|staff|root|docker|lxd|disk|shadow|adm):[^:]*:[^:]*:.+`,
-					model.Medium, "member of a dangerous group; watch for anomalous users"),
+					model.Medium, "member of a privileged group"),
 				model.NewRule("group-password", `^[^:\n]+:[^:]+:`, model.Medium,
-					"group password set (anyone with it can newgrp into a privileged group)").WithExclude(`^[^:\n]+:[*!x]`),
+					"group password set (newgrp escalation)").WithExclude(`^[^:\n]+:[*!x]`),
 			},
 		}),
 	define.LinuxCheck("logins", "Current logins", model.AspectIdentity,
@@ -174,7 +174,7 @@ var IdentityChecks = []*model.Check{
 			Rules: []model.Rule{
 				model.NewRule("sudo-nopasswd", `NOPASSWD`, model.High, "passwordless sudo grant"),
 				model.NewRule("sudoers-user-all", `^[^#%\n][^=\n]*\bALL\s*=`, model.Low,
-					"explicit sudo grant to a non-root user").WithExclude(`^(?:root\s|Defaults\b)`),
+					"sudo grant to non-root user").WithExclude(`^(?:root\s|Defaults\b)`),
 				define.KeywordRule,
 			},
 		}),
@@ -186,7 +186,7 @@ var IdentityChecks = []*model.Check{
 			Syntax: "ssh-pubkey",
 			Rules: []model.Rule{
 				model.NewRule("authkeys-force-command", `\bcommand="[^"\n]*"`, model.Medium,
-					"authorized_keys forced command (confirm it is expected)"),
+					"authorized_keys forced command"),
 				define.KeywordRule,
 			},
 		}),
@@ -198,11 +198,11 @@ var IdentityChecks = []*model.Check{
 			Syntax: "sshd-config",
 			Rules: []model.Rule{
 				model.NewRule("sshd-authorized-keys-file", `^\s*AuthorizedKeysFile\b`, model.Medium,
-					"AuthorizedKeysFile set explicitly (check whether it points somewhere unusual)"),
+					"AuthorizedKeysFile overridden"),
 				model.NewRule("sshd-permit-root-login", `^\s*PermitRootLogin\s+(?:yes|prohibit-password)\b`,
 					model.Low, "root SSH login allowed"),
 				model.NewRule("sshd-password-auth", `^\s*PasswordAuthentication\s+yes\b`,
-					model.Low, "password login enabled (confirm it is expected)"),
+					model.Low, "password login enabled"),
 			},
 		}),
 	// Client-side ProxyCommand/LocalCommand are backdoor vectors too: a login runs the
@@ -213,9 +213,9 @@ var IdentityChecks = []*model.Check{
 			Syntax: "sshd-config",
 			Rules: []model.Rule{
 				model.NewRule("ssh-client-proxy-command", `^\s*ProxyCommand\b`, model.Medium,
-					"ProxyCommand connection proxy (confirm it is expected)"),
+					"ProxyCommand configured"),
 				model.NewRule("ssh-client-local-command", `^\s*(?:LocalCommand|PermitLocalCommand)\b`,
-					model.Medium, "LocalCommand runs a local command after login (confirm it is expected)"),
+					model.Medium, "LocalCommand runs after login"),
 			},
 		}),
 }

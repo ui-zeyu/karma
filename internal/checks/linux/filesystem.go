@@ -114,7 +114,7 @@ var homeTreeFind = "LC_ALL=C find /home -xdev -maxdepth 4 -printf '" + script.LS
 const mountNoise = `\b(?:squashfs|overlay)\b|/dev/loop\d+`
 
 var mountRemoteFsRule = model.NewRule("mount-remote-fs", `\b(?:nfs\d?|cifs|sshfs)\b`,
-	model.Low, "network filesystem mount (watch for a data-exfiltration channel)")
+	model.Low, "network filesystem mount")
 
 // sshMaterialRule is shared entry highlighting for listing-style checks: SSH key
 // material and tunnel/proxy tools.
@@ -124,7 +124,7 @@ var sshMaterialRule = model.NewRule("ssh-material",
 
 var tunnelToolRule = model.NewRule("tunnel-tool",
 	`\bfrps?c?\b|\bnps\b|\bnpc\b|\bchisel\b|\bgost\b|\biox\b|\bngrok\b|\bsuo5\b`,
-	model.Medium, "tunnel/proxy tool entry (frp/ngrok/chisel etc.)")
+	model.Medium, "tunnel/proxy tool (frp/ngrok/chisel)")
 
 // FilesystemChecks covers disks and files.
 var FilesystemChecks = []*model.Check{
@@ -151,7 +151,7 @@ var FilesystemChecks = []*model.Check{
 			// RE2 has no lookahead: standard system hidden entries (socket directories like
 			// .X11-unix, display locks) become an exclusion
 			model.NewRule("tmp-hidden-entry", `\s\.[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\s|$)`,
-				model.High, "hidden entry in a temp directory listing").
+				model.High, "hidden entry in temp directory").
 				WithExclude(`\s\.(?:(?:X11|ICE|font|XIM|Test)-unix|X[0-9]+-lock)[A-Za-z0-9_.-]*(?:\s|$)`),
 			sshMaterialRule,
 			tunnelToolRule,
@@ -195,7 +195,7 @@ var FilesystemChecks = []*model.Check{
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("web-script", `\.(?:php[3-5]?|phtml|jsp|jspx|sh|py)$`, model.Medium,
-					"recently changed web script (webshell investigation entry point)"),
+					"recently changed web script"),
 				define.KeywordRule,
 			},
 			Timeout: webTimeout,
@@ -222,8 +222,8 @@ var FilesystemChecks = []*model.Check{
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("caps-setuid", `cap_setuid[+=]`, model.Critical,
-					"cap_setuid capability (equivalent to SUID, can switch to any UID directly)"),
-				model.NewRule("caps-present", `\bcap_[a-z_]+`, model.Low, "file granted a Linux capability (watch the escalation surface)"),
+					"cap_setuid (SUID-equivalent)"),
+				model.NewRule("caps-present", `\bcap_[a-z_]+`, model.Low, "file has Linux capabilities"),
 			},
 			Timeout: suidTimeout,
 		}),
