@@ -1,0 +1,247 @@
+// documents file access artifacts: RecentDocs, ComDlg32, Office/Adobe MRU, LNK,
+// archives, JumpLists.
+//
+// JumpLists is a degraded fallback: it does not parse the OLE structure of .automaticDestinations-ms,
+// instead extracting UTF-16 strings from the file to recover "which paths this app touched".
+package windows
+
+import (
+	"strconv"
+	"strings"
+
+	"github.com/samber/lo"
+
+	"karma/internal/define"
+	"karma/internal/model"
+	"karma/internal/regout"
+)
+
+const recentDocsKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs`
+const comdlg32Key = `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32`
+
+// adobeKeys: each of Adobe's two product generations has a cRecentFiles (DC and Acrobat Reader);
+// query one of each when both are present.
+var adobeKeys = []string{
+	`HKCU\Software\Adobe\Adobe Acrobat\DC\AVGeneral\cRecentFiles`,
+	`HKCU\Software\Adobe\Acrobat Reader\DC\AVGeneral\cRecentFiles`,
+}
+
+// The winzip key pair is the old and new version key names of the same vendor (the old RegRipper
+// plugin pointed to Nico Mak, the new one changed to WinZip Computing); the parent key /s covers
+// extract and mru\archives at once.
+const winzipKey = `HKCU\SOFTWARE\WinZip Computing\WinZip`
+const winzipLegacyKey = `HKCU\SOFTWARE\Nico Mak Computing\WinZip`
+const winrarKey = `HKCU\Software\WinRAR\ArcHistory`
+
+var recentDocsScript = RegQuery(recentDocsKey, true)
+var comdlg32Script = RegQuery(comdlg32Key, true)
+var adobeScript = RegScript(lo.Map(adobeKeys, func(key string, _ int) string {
+	return RegQuery(key, true)
+})...)
+var archiveScript = RegScript(
+	RegQuery(winzipKey, true),
+	RegQuery(winzipLegacyKey, true),
+	RegQuery(winrarKey, true),
+)
+
+// officeScript enumerates File/Place MRU per app under version directories (16.0 etc.); User MRU
+// (Microsoft account paths) alongside.
+const officeScript = `foreach ($ver in Get-ChildItem 'HKCU:\SOFTWARE\Microsoft\Office' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d' }) {
+  foreach ($app in 'Word','Excel','PowerPoint') {
+    foreach ($mru in 'File MRU','Place MRU','User MRU') {
+      $p = 'HKCU:\SOFTWARE\Microsoft\Office\' + $ver.PSChildName
+      $p = $p + '\' + $app + '\' + $mru
+      $out = reg query $p /s 2>$null
+      if ($out) { "== " + $ver.PSChildName + "\" + $app + "\" + $mru; $out }
+    }
+  }
+}`
+
+// lnkScript reads shortcut targets via COM: TargetPath/Arguments/WorkingDirectory cover the
+// initial-access lure (mshta+URL) shape; deeper blocks like tracker/MAC need an LNK parser, phase two.
+const lnkScript = `$sh = New-Object -ComObject WScript.Shell
+foreach ($f in Get-ChildItem 'C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\*.lnk' -File -ErrorAction SilentlyContinue) {
+  try {
+    $l = $sh.CreateShortcut($f.FullName)
+    "== " + $f.Name
+    "Target: " + $l.TargetPath
+    if ($l.Arguments) { "Arguments: " + $l.Arguments }
+    if ($l.WorkingDirectory) { "Working Directory: " + $l.WorkingDirectory }
+  } catch {}
+}`
+
+// jumplistScript extracts strings from the whole OLE compound document as UTF-16: paths and file
+// names are stored as UTF-16LE, with a minimum length of 5 to filter noise. The foreach header and
+// pipelines are kept on one line (for PS 5.1 a newline separates statements).
+const jumplistScript = `foreach ($d in Get-ChildItem 'C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations','C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations' -Directory -ErrorAction SilentlyContinue) {
+  foreach ($f in Get-ChildItem $d.FullName -File -ErrorAction SilentlyContinue) {
+    try {
+      $fs = [IO.File]::Open($f.FullName, 'Open', 'Read', 'ReadWrite')
+      $ms = New-Object IO.MemoryStream
+      $fs.CopyTo($ms); $fs.Close()
+      $t = [Text.Encoding]::Unicode.GetString($ms.ToArray())
+      $s = [regex]::Matches($t, '[\x20-\x7E\u4E00-\u9FFF]{5,}') | ForEach-Object { $_.Value } | Select-Object -Unique
+      if ($s) { "== " + $f.Name; $s }
+    } catch {}
+  }
+}`
+
+const tempExecutable = `(?i)(?:\\(?:Temp|Downloads)\\|\\AppData\\Local\\Temp\\).*\.(?:ps1|exe|bat|cmd|vbs|js|hta)\b`
+const lnkURL = `(?i)Arguments:.*(?:https?://|ftp://)`
+const lnkMshta = `(?i)Arguments:.*\bmshta\b`
+
+// officeMruNormalize: in the Item N binary the first 8 bytes are a FILETIME, followed by the UTF-16
+// path; output time plus path.
+func officeMruNormalize(_ string, body string) *model.Shaped {
+	lines := lo.FilterMap(regout.ParseRegValues(body), func(value regout.Value, _ int) (string, bool) {
+		if value.Type != "REG_BINARY" {
+			return "", false
+		}
+		data := regout.HexBytes(value.Data)
+		found := UTF16Strings(data, 3)
+		if len(found) == 0 {
+			return "", false
+		}
+		path := lo.MaxBy(found, func(a, b string) bool { return len(a) < len(b) })
+		if when := FiletimeStr(data); when != "" {
+			return when + "  " + path, true
+		}
+		return path, true
+	})
+	return &model.Shaped{Text: strings.Join(lines, "\n")}
+}
+
+// opensaveNormalize classifies the full /s body of ComDlg32 by subkey block: app name list,
+// exe→directory, full paths.
+//
+// In the real pipeline the whole dump lands in one section (one section for PS, the preamble section
+// for direct-run); the structure is recovered from flush-left key path lines in the body, and the
+// section title is only provenance.
+func opensaveNormalize(_ string, body string) *model.Shaped {
+	var lines []string
+	for _, block := range regout.RegBlocks(body) {
+		values := regout.ParseRegValues(block.Body)
+		binStrings := make(map[int][]string)
+		var indexes []int
+		for _, value := range values {
+			index, err := strconv.Atoi(value.Name)
+			if value.Type != "REG_BINARY" || err != nil {
+				continue
+			}
+			binStrings[index] = UTF16Strings(regout.HexBytes(value.Data), 3)
+			indexes = append(indexes, index)
+		}
+		ordered := lo.Map(blockOrder(MRUListExOrder(values), indexes),
+			func(index int, _ int) []string { return binStrings[index] })
+
+		switch {
+		case strings.HasSuffix(block.Key, "CIDSizeMRU"):
+			lines = append(lines, lo.FilterMap(ordered, func(strs []string, _ int) (string, bool) {
+				return lo.FirstOr(strs, ""), len(strs) > 0
+			})...)
+		case strings.HasSuffix(block.Key, "LastVisitedPidlMRU"):
+			for _, strs := range ordered {
+				exe, _ := lo.Find(strs, func(s string) bool { return strings.HasSuffix(strings.ToLower(s), ".exe") })
+				folders := lo.Filter(strs, func(s string, _ int) bool { return strings.Contains(s, "\\") })
+				folder := lo.MaxBy(folders, func(a, b string) bool { return len(a) < len(b) })
+				if exe != "" || folder != "" {
+					lines = append(lines, strings.TrimSuffix(exe+" → "+folder, " → "))
+				}
+			}
+		case strings.Contains(block.Key, "OpenSavePidlMRU"):
+			// full path inside the PIDL, take the longest one
+			for _, strs := range ordered {
+				paths := lo.Filter(strs, func(s string, _ int) bool {
+					return strings.Contains(s, "\\") || strings.Contains(s, "/")
+				})
+				if len(paths) > 0 {
+					lines = append(lines, lo.MaxBy(paths, func(a, b string) bool { return len(a) < len(b) }))
+				}
+			}
+		}
+	}
+	return &model.Shaped{Text: strings.Join(lines, "\n")}
+}
+
+// recentDocsNormalize expands each subkey block (by extension, Folder, root block) in MRUListEx order.
+func recentDocsNormalize(_ string, body string) *model.Shaped {
+	lines := lo.FlatMap(regout.RegBlocks(body), func(block regout.Block, _ int) []string {
+		return MRUTerms(block.Body, 2)
+	})
+	return &model.Shaped{Text: strings.Join(lines, "\n")}
+}
+
+// archiveNormalize for archive tool keys: extract strings from binary values (file names inside
+// WinZip archives) and keep named values as-is.
+func archiveNormalize(_ string, body string) *model.Shaped {
+	var lines []string
+	for _, value := range regout.ParseRegValues(body) {
+		switch {
+		case value.Type == "REG_BINARY":
+			lines = append(lines, lo.Uniq(UTF16Strings(regout.HexBytes(value.Data), 3))...)
+		case value.Data != "" && isDigits(value.Name):
+			lines = append(lines, value.Data)
+		case value.Data != "":
+			lines = append(lines, value.Name+" = "+value.Data)
+		}
+	}
+	return &model.Shaped{Text: strings.Join(lines, "\n")}
+}
+
+func isDigits(text string) bool {
+	return text != "" && strings.IndexFunc(text, func(r rune) bool { return r < '0' || r > '9' }) < 0
+}
+
+// DocumentsChecks is the file access artifacts aspect.
+var DocumentsChecks = []*model.Check{
+	define.WindowsCheck("recent-docs", "Recent Documents (RecentDocs)", model.AspectDocuments,
+		[]model.Probe{
+			PSProbe("reg", recentDocsScript),
+			RegDirectProbe("reg-direct", recentDocsKey, true, ""),
+		},
+		define.CheckOpt{Normalize: recentDocsNormalize, Rules: []model.Rule{define.KeywordRule}}),
+	define.WindowsCheck("opensave-mru", "Open/Save Dialog History (ComDlg32)", model.AspectDocuments,
+		[]model.Probe{
+			PSProbe("reg", comdlg32Script),
+			RegDirectProbe("reg-direct", comdlg32Key, true, ""),
+		},
+		define.CheckOpt{
+			Normalize: opensaveNormalize,
+			Rules: []model.Rule{
+				model.NewRule("opensave-temp-exec", tempExecutable, model.High,
+					"executable from temp/download directory in dialog"),
+				define.KeywordRule,
+			},
+		}),
+	define.WindowsCheck("office-mru", "Office Recent Files (File/Place MRU)", model.AspectDocuments,
+		[]model.Probe{PSProbe("reg", officeScript)},
+		define.CheckOpt{Normalize: officeMruNormalize, Rules: []model.Rule{define.KeywordRule}}),
+	define.WindowsCheck("adobe-recent", "Adobe Recent PDFs (cRecentFiles)", model.AspectDocuments,
+		[]model.Probe{
+			PSProbe("reg", adobeScript),
+			RegDirectProbe("dc", adobeKeys[0], true, ""),
+			RegDirectProbe("reader", adobeKeys[1], true, ""),
+		},
+		define.CheckOpt{Syntax: "reg", Rules: []model.Rule{define.KeywordRule}}),
+	define.WindowsCheck("lnk-recent", "Shortcut Targets (Recent LNK)", model.AspectDocuments,
+		[]model.Probe{PSProbe("com", lnkScript)},
+		define.CheckOpt{
+			Rules: []model.Rule{
+				model.NewRule("lnk-mshta", lnkMshta, model.Critical,
+					"shortcut executes remote content via mshta (lure)"),
+				model.NewRule("lnk-url-argument", lnkURL, model.High, "shortcut arguments carry a network address"),
+				define.KeywordRule,
+			},
+		}),
+	define.WindowsCheck("archive-history", "Archive History (WinZip/WinRAR)", model.AspectDocuments,
+		[]model.Probe{
+			PSProbe("reg", archiveScript),
+			RegDirectProbe("winzip", winzipKey, true, ""),
+			RegDirectProbe("winzip-old", winzipLegacyKey, true, ""),
+			RegDirectProbe("winrar", winrarKey, true, ""),
+		},
+		define.CheckOpt{Normalize: archiveNormalize, Rules: []model.Rule{define.KeywordRule}}),
+	define.WindowsCheck("jumplists", "Jump Lists (JumpLists, String Extraction)", model.AspectDocuments,
+		[]model.Probe{PSProbe("strings", jumplistScript)},
+		define.CheckOpt{Timeout: stringsTimeout, Rules: []model.Rule{define.KeywordRule}}),
+}

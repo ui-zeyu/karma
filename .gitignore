@@ -1,0 +1,9 @@
+# Build products (local and cross-compiled binaries land in dist/)
+/dist
+*.exe
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
