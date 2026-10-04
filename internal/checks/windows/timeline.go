@@ -9,7 +9,11 @@ package windows
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/samber/lo"
 
 	"karma/internal/define"
 	"karma/internal/model"
@@ -23,25 +27,30 @@ const stickyGlob = `C:\Users\*\AppData\Local\Packages` +
 // and a full regex scan may hit the default 30s and leave only half (same as jumplists).
 const stringsTimeout = 60 * time.Second
 
-// stringsScript string-extraction script: read bytes as UTF-8, extract printable strings, deduplicate, output.
-// The section title is printed only when there is body text (or a read failure): a readable file with
-// zero hits leaves no ghost section. The foreach header stays on one line and pipelines do not trail
-// at line end: PS 5.1 treats a newline inside a statement as a separator, and a trailing pipe is a
-// straight parse error (hit on a real Server 2025 box).
-func stringsScript(glob string, minRun int) string {
-	return fmt.Sprintf(`foreach ($f in Get-ChildItem '%s' -File -ErrorAction SilentlyContinue) {
+// stringsScript string-extraction script: read each file matching the globs,
+// decode it with encoding ("UTF8" or "Unicode"), extract printable runs of minRun
+// or more, deduplicate, one section per file. The section title is printed only
+// when there is body text (or a read failure): a readable file with zero hits
+// leaves no ghost section. The foreach header stays on one line and pipelines do
+// not trail at line end: PS 5.1 treats a newline inside a statement as a
+// separator, and a trailing pipe is a straight parse error (hit on a real Server
+// 2025 box).
+func stringsScript(encoding string, minRun int, globs ...string) string {
+	quoted := strings.Join(lo.Map(globs, func(glob string, _ int) string { return "'" + glob + "'" }), ",")
+	extract := psSection(`"== " + $f.FullName`,
+		`[regex]::Matches($t, '[\x20-\x7E\u4E00-\u9FFF]{`+strconv.Itoa(minRun)+`,}') | ForEach-Object { $_.Value } | Select-Object -Unique`)
+	return fmt.Sprintf(`foreach ($f in Get-ChildItem %s -File -ErrorAction SilentlyContinue) {
   try {
     $fs = [IO.File]::Open($f.FullName, 'Open', 'Read', 'ReadWrite')
     $ms = New-Object IO.MemoryStream
     $fs.CopyTo($ms); $fs.Close()
-    $t = [Text.Encoding]::UTF8.GetString($ms.ToArray())
-    $s = [regex]::Matches($t, '[\x20-\x7E\u4E00-\u9FFF]{%d,}') | ForEach-Object { $_.Value } | Select-Object -Unique
-    if ($s) { "== " + $f.FullName; $s }
+    $t = [Text.Encoding]%s.GetString($ms.ToArray())
+    %s
   } catch {
     "== " + $f.FullName
     "read failed: " + $_.Exception.Message
   }
-}`, glob, minRun)
+}`, quoted, encoding, extract)
 }
 
 // What is forensically interesting in timeline databases is paths and URLs; schema words (table/column names) are suppressed.
@@ -52,7 +61,7 @@ const sqlSchema = `^(?:CREATE|INDEX|TABLE|UNIQUE|PRAGMA|sqlite_|IN\s*\(|NOT\s+NU
 // TimelineChecks is the timeline aspect.
 var TimelineChecks = []*model.Check{
 	define.WindowsCheck("activity-cache", "Activity Timeline (ActivitiesCache, String Extraction)", model.AspectTimeline,
-		[]model.Probe{PSProbe("strings", stringsScript(activityGlob, 8))},
+		[]model.Probe{PSProbe("strings", stringsScript("UTF8", 8, activityGlob))},
 		define.CheckOpt{
 			Timeout: stringsTimeout,
 			Filters: []model.LineFilter{
@@ -61,7 +70,7 @@ var TimelineChecks = []*model.Check{
 			Rules: []model.Rule{define.KeywordRule},
 		}),
 	define.WindowsCheck("sticky-notes", "Sticky Notes Content (String Extraction)", model.AspectTimeline,
-		[]model.Probe{PSProbe("strings", stringsScript(stickyGlob, 6))},
+		[]model.Probe{PSProbe("strings", stringsScript("UTF8", 6, stickyGlob))},
 		define.CheckOpt{
 			Timeout: stringsTimeout,
 			Filters: []model.LineFilter{

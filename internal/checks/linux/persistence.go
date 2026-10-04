@@ -3,7 +3,6 @@
 package linux
 
 import (
-	"strings"
 	"time"
 
 	"karma/internal/cluster"
@@ -12,7 +11,7 @@ import (
 	"karma/internal/script"
 )
 
-var cronScript = strings.Join([]string{
+var cronScript = script.Lines(
 	script.ReadFiles([]string{"/etc/crontab", "/etc/anacrontab"}, `cat "$f"`, true),
 	script.ReadFiles([]string{
 		"/etc/cron.d/*",
@@ -27,9 +26,9 @@ var cronScript = strings.Join([]string{
 	}, `cat "$f"`, true),
 	`echo "== crontab -l"`,
 	"crontab -l 2>/dev/null",
-}, "\n")
+)
 
-var shellRcScript = script.ReadFiles([]string{
+var shellRcPaths = []string{
 	"/etc/profile",
 	"/etc/profile.d/*",
 	"/etc/bashrc",
@@ -52,13 +51,13 @@ var shellRcScript = script.ReadFiles([]string{
 	"/home/*/.bash_logout",
 	"/home/*/.zshrc",
 	"/home/*/.config/fish/config.fish",
-}, `cat "$f"`, true)
+}
 
 // skelScript: a new user's home is copied wholesale from /etc/skel, so poisoning a
 // template once backdoors every new user afterward; the listing section runs
 // find -printf (epoch first) and clusters locally to mark modified templates as
 // outliers.
-var skelScript = strings.Join([]string{
+var skelScript = script.Lines(
 	`echo "== /etc/skel"`,
 	script.ListingFind("/etc/skel/", 100),
 	script.ReadFiles([]string{
@@ -69,7 +68,7 @@ var skelScript = strings.Join([]string{
 		"/etc/skel/.bash_logout",
 		"/etc/skel/.zshrc",
 	}, `cat "$f"`, true),
-}, "\n")
+)
 
 // unitDirs: a freshly dropped malicious unit floats to the top; /run is tmpfs and
 // is cleared on reboot, so malware likes it for volatile persistence. A glob with
@@ -87,26 +86,26 @@ var unitDirs = []string{
 var rcLocalScript = script.ReadFiles([]string{"/etc/rc.local", "/etc/rc.d/rc.local"},
 	`cat "$f"`, false)
 
-var ldConfScript = strings.Join([]string{
+var ldConfScript = script.Lines(
 	script.ReadFiles([]string{"/etc/ld.so.conf"}, `cat "$f"`, true),
 	script.ReadFiles([]string{"/etc/ld.so.conf.d/*"}, `cat "$f"`, true),
-}, "\n")
+)
 
 // udevScript: the writable layers of udev rules: /etc is admin overrides and /run
 // is runtime-generated; the /usr and /lib layer is a sea of official rules and is
 // not scanned. The listing is sorted by mtime and clustered, and grep catches only
 // the three assignment keys that reference external programs.
-var udevScript = strings.Join([]string{
+var udevScript = script.Lines(
 	"for d in /etc/udev/rules.d /run/udev/rules.d; do",
 	`  echo "== $d"`,
-	"  " + script.ListingFind("$d", 40),
+	"  "+script.ListingFind("$d", 40),
 	`  grep -rnIE '(RUN|PROGRAM|IMPORT)(\+=|\{|=)' "$d" 2>/dev/null | head -n 100`,
 	"done",
-}, "\n")
+)
 
 // motdScript: motd and update-motd.d are script surfaces run as root on login
 // (mainly Ubuntu).
-var motdScript = script.ReadFiles([]string{"/etc/motd", "/etc/update-motd.d/*"}, `cat "$f"`, true)
+var motdScript = readFilesProbe("/etc/motd", "/etc/update-motd.d/*")
 
 // pthScript: a .pth in site/dist-packages is processed at Python startup, and a
 // line starting with import is code; setuptools' two legitimate precedence files
@@ -124,7 +123,7 @@ done
 // at boot, and monitoring agents like auditd/sysmon start only after they finish,
 // so the static listing is the only forensics surface; on usrmerge systems /lib and
 // /usr/lib are the same directory, so readlink dedup avoids doubling the whole thing.
-var generatorsScript = strings.Join([]string{
+var generatorsScript = script.Lines(
 	"seen=",
 	"for d in /etc/systemd/system-generators /run/systemd/system-generators \\",
 	"         /usr/local/lib/systemd/system-generators /usr/lib/systemd/system-generators \\",
@@ -138,9 +137,9 @@ var generatorsScript = strings.Join([]string{
 	`  case " $seen " in *" $r "*) continue;; esac`,
 	`  seen="$seen $r"`,
 	`  echo "== $d"`,
-	"  " + script.ListingFind("$d", 100),
+	"  "+script.ListingFind("$d", 100),
 	"done",
-}, "\n")
+)
 
 // PersistenceChecks covers persistence.
 var PersistenceChecks = []*model.Check{
@@ -205,7 +204,7 @@ var PersistenceChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("shell-rc", "Shell startup files", model.AspectPersistence,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: shellRcScript}}},
+		[]model.Probe{readFilesProbe(shellRcPaths...)},
 		define.CheckOpt{Rules: []model.Rule{historyOffRule, define.KeywordRule}, Syntax: "bash"}),
 	define.LinuxCheck("skel", "Home directory templates (/etc/skel)", model.AspectPersistence,
 		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: skelScript}}},
@@ -237,7 +236,7 @@ var PersistenceChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("motd", "motd login banner", model.AspectPersistence,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: motdScript}}},
+		[]model.Probe{motdScript},
 		define.CheckOpt{Syntax: "bash", Rules: []model.Rule{define.KeywordRule}}),
 	// setuptools' two legitimate precedence files are already excluded by the
 	// collection script, so the rule stays minimal

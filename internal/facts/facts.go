@@ -67,19 +67,19 @@ func CollectFor(platform model.Platform, sess session.Session, bins []string) mo
 // Collect concurrently gathers binary presence and host facts (Linux directory).
 func Collect(sess session.Session, bins []string) model.HostFacts {
 	names := probeBins(bins, linuxFactBins)
-	results := gather(
-		func() model.RunResult { return runShell(sess, binProbe(names), 15*time.Second) },
-		func() model.RunResult { return runShell(sess, hostnameScript, 10*time.Second) },
-		func() model.RunResult { return sess.Run(model.NewCommand("uname", "-r"), 10*time.Second, 0) },
-		func() model.RunResult { return runShell(sess, "cat /etc/os-release", 10*time.Second) },
-		func() model.RunResult { return sess.Run(model.NewCommand("id", "-u"), 10*time.Second, 0) },
-	)
+	results := gather(map[string]func() model.RunResult{
+		"bins":     func() model.RunResult { return runShell(sess, binProbe(names), 15*time.Second) },
+		"hostname": func() model.RunResult { return runShell(sess, hostnameScript, 10*time.Second) },
+		"kernel":   func() model.RunResult { return sess.Run(model.NewCommand("uname", "-r"), 10*time.Second, 0) },
+		"os":       func() model.RunResult { return runShell(sess, "cat /etc/os-release", 10*time.Second) },
+		"uid":      func() model.RunResult { return sess.Run(model.NewCommand("id", "-u"), 10*time.Second, 0) },
+	})
 	return model.HostFacts{
-		AvailableBins: availableBins(results[0].Stdout, names),
-		Hostname:      firstLine(results[1].Stdout, "unknown"),
-		Kernel:        firstLine(results[2].Stdout, ""),
-		OsPretty:      prettyName(results[3].Stdout),
-		UID:           parseUID(results[4].Stdout),
+		AvailableBins: availableBins(results["bins"].Stdout, names),
+		Hostname:      firstLine(results["hostname"].Stdout, "unknown"),
+		Kernel:        firstLine(results["kernel"].Stdout, ""),
+		OsPretty:      prettyName(results["os"].Stdout),
+		UID:           parseUID(results["uid"].Stdout),
 	}
 }
 
@@ -110,18 +110,18 @@ func CollectWindows(sess session.Session, bins []string) model.HostFacts {
 
 	// PS absent: reg direct probe + registry facts. One CurrentVersion key fetches
 	// ProductName/CurrentVersion/CurrentBuildNumber/UBR/DisplayVersion
-	results := gather(
-		func() model.RunResult {
+	results := gather(map[string]func() model.RunResult{
+		"version": func() model.RunResult {
 			return sess.Run(model.NewCommand("reg", "query", currentVersionReg), 10*time.Second, 0)
 		},
-		func() model.RunResult {
+		"hostname": func() model.RunResult {
 			return sess.Run(model.NewCommand("reg", "query", computerNameReg, "/v", "ComputerName"), 10*time.Second, 0)
 		},
-		func() model.RunResult {
+		"username": func() model.RunResult {
 			return sess.Run(model.NewCommand("reg", "query", volatileEnvReg, "/v", "USERNAME"), 10*time.Second, 0)
 		},
-	)
-	version := results[0]
+	})
+	version := results["version"]
 	if version.Answered() {
 		available = withBin(available, "reg")
 	}
@@ -133,11 +133,11 @@ func CollectWindows(sess session.Session, bins []string) model.HostFacts {
 	}), ".")
 	return model.HostFacts{
 		AvailableBins: available,
-		Hostname:      regLastData(results[1].Stdout, "unknown"),
+		Hostname:      regLastData(results["hostname"].Stdout, "unknown"),
 		Kernel:        kernel,
 		OsPretty:      cmp.Or(strings.TrimSpace(values["ProductName"]+" "+values["DisplayVersion"]), "unknown version"),
 		UID:           -1,
-		User:          regLastData(results[2].Stdout, ""),
+		User:          regLastData(results["username"].Stdout, ""),
 	}
 }
 
@@ -149,15 +149,16 @@ func runPS(sess session.Session, script string, timeout time.Duration) model.Run
 	return sess.Run(powershell.PowerShell(script), timeout, 0)
 }
 
-// gather runs all fact collection concurrently; a failed path falls back to an empty answer.
-func gather(jobs ...func() model.RunResult) []model.RunResult {
-	results := make([]model.RunResult, len(jobs))
+// gather runs all fact collection concurrently, keyed by job name so a result can
+// never drift onto the wrong fact; a failed path falls back to an empty answer.
+func gather(jobs map[string]func() model.RunResult) map[string]model.RunResult {
+	results := make(map[string]model.RunResult, len(jobs))
 	var wg sync.WaitGroup
-	for i, job := range jobs {
+	for name, job := range jobs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = job()
+			results[name] = job()
 		}()
 	}
 	wg.Wait()

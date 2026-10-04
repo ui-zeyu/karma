@@ -11,6 +11,7 @@ import (
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/regout"
+	"karma/internal/script"
 )
 
 const userassistKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist`
@@ -36,24 +37,26 @@ const psHistoryGlob = `C:\Users\*\AppData\Roaming\Microsoft\Windows\PowerShell` 
 const historySuspicious = `(?i)(?:\bmshta\b|certutil\s+[^|\n]*urlcache|-enc(?:odedcommand)?\b|\b-iex\b` +
 	`|invoke-expression|downloadstring)`
 
-var userassistScript = RegQuery(userassistKey, true)
+var userassistKeys = []RegKey{
+	{Path: userassistKey, Recurse: true, Label: "reg-direct"},
+}
 
-var trackScript = RegScript(
-	RegValueQuery(advancedKey, "Start_TrackEnabled"),
-	RegValueQuery(advancedKey, "Start_TrackProgs"),
-)
+var trackKeys = []RegKey{
+	{Path: advancedKey, Value: "Start_TrackEnabled", Label: "enabled"},
+	{Path: advancedKey, Value: "Start_TrackProgs", Label: "progs"},
+}
 
-var runmruScript = RegQuery(runmruKey, false)
+var runmruKeys = []RegKey{
+	{Path: runmruKey, Label: "reg-direct"},
+}
 
 // The script is fed wholesale into powershell -Command: a newline inside a statement is a statement
 // separator for PS 5.1, so a foreach header must stay on one line and pipeline continuation must
 // be avoided. An empty history file gets no section header, avoiding a ghost section.
-var psHistoryScript = strings.Join([]string{
-	"foreach ($f in Get-ChildItem '" + psHistoryGlob + "' -File -ErrorAction SilentlyContinue) {",
-	`  $c = Get-Content -LiteralPath $f.FullName -ErrorAction SilentlyContinue`,
-	`  if ($c) { "== " + $f.FullName; $c }`,
-	"}",
-}, "\n")
+var psHistoryScript = script.Lines(
+	"foreach ($f in Get-ChildItem '"+psHistoryGlob+"' -File -ErrorAction SilentlyContinue) {",
+	"  "+psSection(`"== " + $f.FullName`, "Get-Content -LiteralPath $f.FullName -ErrorAction SilentlyContinue"),
+	"}")
 
 const clipboardScript = "Get-Clipboard -Raw -ErrorAction SilentlyContinue"
 
@@ -130,11 +133,8 @@ func runmruNormalize(_ string, body string) *model.Shaped {
 
 // ExecutionChecks is the execution-artifacts aspect.
 var ExecutionChecks = []*model.Check{
-	define.WindowsCheck("userassist", "Program Execution History (UserAssist)", model.AspectExecution,
-		[]model.Probe{
-			PSProbe("reg", userassistScript),
-			RegDirectProbe("reg-direct", userassistKey, true, ""),
-		},
+	RegCheck("userassist", "Program Execution History (UserAssist)", model.AspectExecution,
+		userassistKeys,
 		define.CheckOpt{
 			Normalize: userassistNormalize,
 			Rules: []model.Rule{
@@ -145,12 +145,8 @@ var ExecutionChecks = []*model.Check{
 	// Tracking switches are a separate check: the direct-run probe chains /v probes, and the old/new
 	// difference between the two switch names (Win7+ is Start_TrackEnabled, XP only had Start_TrackProgs)
 	// is handled naturally by fallback semantics--a missing probe gives an empty/non-zero body, so it moves to the next
-	define.WindowsCheck("userassist-track", "Program Execution Tracking Switches (Anti-Forensics)", model.AspectExecution,
-		[]model.Probe{
-			PSProbe("reg", trackScript),
-			RegDirectProbe("enabled", advancedKey, false, "Start_TrackEnabled"),
-			RegDirectProbe("progs", advancedKey, false, "Start_TrackProgs"),
-		},
+	RegCheck("userassist-track", "Program Execution Tracking Switches (Anti-Forensics)", model.AspectExecution,
+		trackKeys,
 		define.CheckOpt{
 			Syntax: "reg",
 			Rules: []model.Rule{
@@ -158,11 +154,8 @@ var ExecutionChecks = []*model.Check{
 					"UserAssist program execution tracking disabled"),
 			},
 		}),
-	define.WindowsCheck("runmru", "Run Command History (RunMRU)", model.AspectExecution,
-		[]model.Probe{
-			PSProbe("reg", runmruScript),
-			RegDirectProbe("reg-direct", runmruKey, false, ""),
-		},
+	RegCheck("runmru", "Run Command History (RunMRU)", model.AspectExecution,
+		runmruKeys,
 		define.CheckOpt{
 			Normalize: runmruNormalize,
 			Rules: []model.Rule{

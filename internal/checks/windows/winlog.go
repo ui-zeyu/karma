@@ -8,11 +8,11 @@ package windows
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"karma/internal/define"
 	"karma/internal/model"
+	"karma/internal/script"
 )
 
 // Relaxed event timeout: filtering the Security log by Id may still scan hundreds of thousands of records.
@@ -36,23 +36,23 @@ const (
 )
 
 // winlogQuery is one Get-WinEvent probe fragment: filter by log and id, project
-// each event with project, and print the `== title` header only when events came
-// back (a title-only section would light up title-matching rules on nothing).
+// each event, and carry the `== title` header through psSection's
+// only-when-non-empty convention.
 func winlogQuery(log string, id, maxEvents int, title, project string) string {
-	return fmt.Sprintf(
-		"$o = Get-WinEvent -FilterHashtable @{LogName='%s'; Id=%d} -MaxEvents %d -ErrorAction SilentlyContinue | ForEach-Object { %s }; if ($o) { '== %s'; $o }",
-		log, id, maxEvents, project, title)
+	return psSection("'"+title+"'",
+		fmt.Sprintf("Get-WinEvent -FilterHashtable @{LogName='%s'; Id=%d} -MaxEvents %d -ErrorAction SilentlyContinue | ForEach-Object { %s }",
+			log, id, maxEvents, project))
 }
 
 const eventLine = "Fmt-Ev $_"
 const messageLine = `$_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + '  ' + $_.Message`
 
-var secLogScript = winlogHelper + "\n" + strings.Join([]string{
+var secLogScript = script.Lines(winlogHelper,
 	winlogQuery(secLogName, logonFailedEvent, 15, "4625 Logon Failed", eventLine),
 	winlogQuery(secLogName, userCreatedEvent, 15, "4720 User Created", eventLine),
 	winlogQuery(systemLogName, serviceInstallEvt, 15, "7045 Service Installed", eventLine),
 	winlogQuery(secLogName, auditClearedEvent, 5, "1102 Audit Log Cleared", messageLine),
-}, "\n")
+)
 
 const logClearedRule = `^1102\s`
 

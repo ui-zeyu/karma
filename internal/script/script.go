@@ -24,6 +24,12 @@ const ListingPrintf = `%T@\t%C@\t` + LSBodyPrintf
 
 var unsafeShellChar = regexp.MustCompile(`[^A-Za-z0-9_@%+=:,./-]`)
 
+// Lines joins script fragments into one multi-line script: the shared spelling of
+// every per-section collection script.
+func Lines(parts ...string) string {
+	return strings.Join(parts, "\n")
+}
+
 // Join renders words into a shell word string: only unsafe characters get single quotes.
 func Join(argv []string) string {
 	return strings.Join(lo.Map(argv, func(word string, _ int) string { return Quote(word) }), " ")

@@ -49,14 +49,10 @@ var SystemChecks = []*model.Check{
 	define.WindowsCheck("hotfixes", "Patch List (Get-HotFix)", model.AspectSystem,
 		[]model.Probe{PSProbe("cim", hotfixScript)},
 		define.CheckOpt{Rules: []model.Rule{define.KeywordRule}}),
-	define.WindowsCheck("env-vars", "Environment Variables (System and User)", model.AspectSystem,
-		[]model.Probe{
-			PSProbe("reg", RegScript(
-				RegQuery(`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, false),
-				RegQuery(`HKCU\Environment`, false),
-			)),
-			RegDirectProbe("hklm", `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, false, ""),
-			RegDirectProbe("hkcu", `HKCU\Environment`, false, ""),
+	RegCheck("env-vars", "Environment Variables (System and User)", model.AspectSystem,
+		[]RegKey{
+			{Path: `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, Label: "hklm"},
+			{Path: `HKCU\Environment`, Label: "hkcu"},
 		},
 		define.CheckOpt{
 			Syntax: "reg",
@@ -75,16 +71,11 @@ var SystemChecks = []*model.Check{
 				define.KeywordRule,
 			},
 		}),
-	define.WindowsCheck("rdp-config", "Remote Desktop Switches and Authentication (RDP)", model.AspectSystem,
-		[]model.Probe{
-			PSProbe("reg", RegScript(
-				RegValueQuery(`HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server`, "fDenyTSConnections"),
-				RegValueQuery(`HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server`, "UserAuthentication"),
-				RegValueQuery(`HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp`, "PortNumber"),
-			)),
-			RegDirectProbe("termserver", `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server`, false, "fDenyTSConnections"),
-			RegDirectProbe("nla", `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server`, false, "UserAuthentication"),
-			RegDirectProbe("port", `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp`, false, "PortNumber"),
+	RegCheck("rdp-config", "Remote Desktop Switches and Authentication (RDP)", model.AspectSystem,
+		[]RegKey{
+			{Path: `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server`, Value: "fDenyTSConnections", Label: "termserver"},
+			{Path: `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server`, Value: "UserAuthentication", Label: "nla"},
+			{Path: `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp`, Value: "PortNumber", Label: "port"},
 		},
 		define.CheckOpt{
 			Syntax: "reg",

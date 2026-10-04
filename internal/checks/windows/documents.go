@@ -15,6 +15,7 @@ import (
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/regout"
+	"karma/internal/script"
 )
 
 const recentDocsKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs`
@@ -22,9 +23,9 @@ const comdlg32Key = `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Com
 
 // adobeKeys: each of Adobe's two product generations has a cRecentFiles (DC and Acrobat Reader);
 // query one of each when both are present.
-var adobeKeys = []string{
-	`HKCU\Software\Adobe\Adobe Acrobat\DC\AVGeneral\cRecentFiles`,
-	`HKCU\Software\Adobe\Acrobat Reader\DC\AVGeneral\cRecentFiles`,
+var adobeKeys = []RegKey{
+	{Path: `HKCU\Software\Adobe\Adobe Acrobat\DC\AVGeneral\cRecentFiles`, Recurse: true, Label: "dc"},
+	{Path: `HKCU\Software\Adobe\Acrobat Reader\DC\AVGeneral\cRecentFiles`, Recurse: true, Label: "reader"},
 }
 
 // The winzip key pair is the old and new version key names of the same vendor (the old RegRipper
@@ -34,27 +35,18 @@ const winzipKey = `HKCU\SOFTWARE\WinZip Computing\WinZip`
 const winzipLegacyKey = `HKCU\SOFTWARE\Nico Mak Computing\WinZip`
 const winrarKey = `HKCU\Software\WinRAR\ArcHistory`
 
-var recentDocsScript = RegQuery(recentDocsKey, true)
-var comdlg32Script = RegQuery(comdlg32Key, true)
-var adobeScript = RegQueryAll(adobeKeys, true)
-var archiveScript = RegScript(
-	RegQuery(winzipKey, true),
-	RegQuery(winzipLegacyKey, true),
-	RegQuery(winrarKey, true),
-)
-
 // officeScript enumerates File/Place MRU per app under version directories (16.0 etc.); User MRU
 // (Microsoft account paths) alongside.
-const officeScript = `foreach ($ver in Get-ChildItem 'HKCU:\SOFTWARE\Microsoft\Office' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d' }) {
-  foreach ($app in 'Word','Excel','PowerPoint') {
-    foreach ($mru in 'File MRU','Place MRU','User MRU') {
-      $p = 'HKCU:\SOFTWARE\Microsoft\Office\' + $ver.PSChildName
-      $p = $p + '\' + $app + '\' + $mru
-      $out = reg query $p /s 2>$null
-      if ($out) { "== " + $ver.PSChildName + "\" + $app + "\" + $mru; $out }
-    }
-  }
-}`
+var officeScript = script.Lines(
+	`foreach ($ver in Get-ChildItem 'HKCU:\SOFTWARE\Microsoft\Office' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d' }) {`,
+	`  foreach ($app in 'Word','Excel','PowerPoint') {`,
+	`    foreach ($mru in 'File MRU','Place MRU','User MRU') {`,
+	`      $p = 'HKCU:\SOFTWARE\Microsoft\Office\' + $ver.PSChildName`,
+	`      $p = $p + '\' + $app + '\' + $mru`,
+	"      "+psSection(`"== " + $ver.PSChildName + "\" + $app + "\" + $mru`, `reg query $p /s 2>$null`),
+	`    }`,
+	`  }`,
+	`}`)
 
 // lnkScript reads shortcut targets via COM: TargetPath/Arguments/WorkingDirectory cover the
 // initial-access lure (mshta+URL) shape; deeper blocks like tracker/MAC need an LNK parser, phase two.
@@ -70,20 +62,11 @@ foreach ($f in Get-ChildItem 'C:\Users\*\AppData\Roaming\Microsoft\Windows\Recen
 }`
 
 // jumplistScript extracts strings from the whole OLE compound document as UTF-16: paths and file
-// names are stored as UTF-16LE, with a minimum length of 5 to filter noise. The foreach header and
-// pipelines are kept on one line (for PS 5.1 a newline separates statements).
-const jumplistScript = `foreach ($d in Get-ChildItem 'C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations','C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations' -Directory -ErrorAction SilentlyContinue) {
-  foreach ($f in Get-ChildItem $d.FullName -File -ErrorAction SilentlyContinue) {
-    try {
-      $fs = [IO.File]::Open($f.FullName, 'Open', 'Read', 'ReadWrite')
-      $ms = New-Object IO.MemoryStream
-      $fs.CopyTo($ms); $fs.Close()
-      $t = [Text.Encoding]::Unicode.GetString($ms.ToArray())
-      $s = [regex]::Matches($t, '[\x20-\x7E\u4E00-\u9FFF]{5,}') | ForEach-Object { $_.Value } | Select-Object -Unique
-      if ($s) { "== " + $f.Name; $s }
-    } catch {}
-  }
-}`
+// names are stored as UTF-16LE, with a minimum length of 5 to filter noise. The globs cover the
+// files of both destination directories in one probe.
+var jumplistScript = stringsScript("Unicode", 5,
+	`C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations\*`,
+	`C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations\*`)
 
 const tempExecutable = `(?i)(?:\\(?:Temp|Downloads)\\|\\AppData\\Local\\Temp\\).*\.(?:ps1|exe|bat|cmd|vbs|js|hta)\b`
 const lnkURL = `(?i)Arguments:.*(?:https?://|ftp://)`
@@ -193,17 +176,11 @@ func isDigits(text string) bool {
 
 // DocumentsChecks is the file access artifacts aspect.
 var DocumentsChecks = []*model.Check{
-	define.WindowsCheck("recent-docs", "Recent Documents (RecentDocs)", model.AspectDocuments,
-		[]model.Probe{
-			PSProbe("reg", recentDocsScript),
-			RegDirectProbe("reg-direct", recentDocsKey, true, ""),
-		},
+	RegCheck("recent-docs", "Recent Documents (RecentDocs)", model.AspectDocuments,
+		[]RegKey{{Path: recentDocsKey, Recurse: true, Label: "reg-direct"}},
 		define.CheckOpt{Normalize: recentDocsNormalize, Rules: []model.Rule{define.KeywordRule}}),
-	define.WindowsCheck("opensave-mru", "Open/Save Dialog History (ComDlg32)", model.AspectDocuments,
-		[]model.Probe{
-			PSProbe("reg", comdlg32Script),
-			RegDirectProbe("reg-direct", comdlg32Key, true, ""),
-		},
+	RegCheck("opensave-mru", "Open/Save Dialog History (ComDlg32)", model.AspectDocuments,
+		[]RegKey{{Path: comdlg32Key, Recurse: true, Label: "reg-direct"}},
 		define.CheckOpt{
 			Normalize: opensaveNormalize,
 			Rules: []model.Rule{
@@ -215,12 +192,8 @@ var DocumentsChecks = []*model.Check{
 	define.WindowsCheck("office-mru", "Office Recent Files (File/Place MRU)", model.AspectDocuments,
 		[]model.Probe{PSProbe("reg", officeScript)},
 		define.CheckOpt{Normalize: officeMruNormalize, Rules: []model.Rule{define.KeywordRule}}),
-	define.WindowsCheck("adobe-recent", "Adobe Recent PDFs (cRecentFiles)", model.AspectDocuments,
-		[]model.Probe{
-			PSProbe("reg", adobeScript),
-			RegDirectProbe("dc", adobeKeys[0], true, ""),
-			RegDirectProbe("reader", adobeKeys[1], true, ""),
-		},
+	RegCheck("adobe-recent", "Adobe Recent PDFs (cRecentFiles)", model.AspectDocuments,
+		adobeKeys,
 		define.CheckOpt{Syntax: "reg", Rules: []model.Rule{define.KeywordRule}}),
 	define.WindowsCheck("lnk-recent", "Shortcut Targets (Recent LNK)", model.AspectDocuments,
 		[]model.Probe{PSProbe("com", lnkScript)},
@@ -232,12 +205,11 @@ var DocumentsChecks = []*model.Check{
 				define.KeywordRule,
 			},
 		}),
-	define.WindowsCheck("archive-history", "Archive History (WinZip/WinRAR)", model.AspectDocuments,
-		[]model.Probe{
-			PSProbe("reg", archiveScript),
-			RegDirectProbe("winzip", winzipKey, true, ""),
-			RegDirectProbe("winzip-old", winzipLegacyKey, true, ""),
-			RegDirectProbe("winrar", winrarKey, true, ""),
+	RegCheck("archive-history", "Archive History (WinZip/WinRAR)", model.AspectDocuments,
+		[]RegKey{
+			{Path: winzipKey, Recurse: true, Label: "winzip"},
+			{Path: winzipLegacyKey, Recurse: true, Label: "winzip-old"},
+			{Path: winrarKey, Recurse: true, Label: "winrar"},
 		},
 		define.CheckOpt{Normalize: archiveNormalize, Rules: []model.Rule{define.KeywordRule}}),
 	define.WindowsCheck("jumplists", "Jump Lists (JumpLists, String Extraction)", model.AspectDocuments,

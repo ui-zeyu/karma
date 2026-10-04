@@ -24,11 +24,18 @@ import (
 const wordwheelKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\WordWheelQuery`
 const typedpathsKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths`
 
+var wordwheelKeys = []RegKey{
+	{Path: wordwheelKey, Recurse: true, Label: "reg-direct"},
+}
+var typedpathsKeys = []RegKey{
+	{Path: typedpathsKey, Label: "reg-direct"},
+}
+
 // shellbagKeys: UsrClass.dat (Software\Classes) is where Win10+ actually stores BagMRU;
 // the NTUSER.DAT copy exists on some systems but is often empty, so query both and section each.
-var shellbagKeys = []string{
-	`HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU`,
-	`HKCU\Software\Microsoft\Windows\Shell\BagMRU`,
+var shellbagKeys = []RegKey{
+	{Path: `HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU`, Recurse: true, Label: "usrclass"},
+	{Path: `HKCU\Software\Microsoft\Windows\Shell\BagMRU`, Recurse: true, Label: "ntuser"},
 }
 
 const searchSensitive = `(?i)(?:password|passwd|pwd|secret|credential|salary|\.kdbx|\.ppk|id_rsa` +
@@ -37,10 +44,6 @@ const searchSensitive = `(?i)(?:password|passwd|pwd|secret|credential|salary|\.k
 // nonlocalPath: an FTP URL or a UNC share (\\host\) appearing in a search term or
 // a browsed folder -- the shape both navigation checks look for.
 const nonlocalPath = `(?i)(?:ftp://|\\\\[A-Za-z0-9_.-]+\\)`
-
-var wordwheelScript = RegQuery(wordwheelKey, true)
-var typedpathsScript = RegQuery(typedpathsKey, false)
-var shellbagScript = RegQueryAll(shellbagKeys, true)
 
 var guidOnly = regexp.MustCompile(`^\{[0-9A-Fa-f-]{36}\}$`)
 
@@ -166,11 +169,8 @@ func bagMRUPath(key string) []string {
 
 // NavigationChecks is the browsing and search aspect.
 var NavigationChecks = []*model.Check{
-	define.WindowsCheck("wordwheel-query", "Explorer Search Terms (WordWheelQuery)", model.AspectNavigation,
-		[]model.Probe{
-			PSProbe("reg", wordwheelScript),
-			RegDirectProbe("reg-direct", wordwheelKey, true, ""),
-		},
+	RegCheck("wordwheel-query", "Explorer Search Terms (WordWheelQuery)", model.AspectNavigation,
+		wordwheelKeys,
 		define.CheckOpt{
 			Normalize: func(_ string, body string) *model.Shaped {
 				return &model.Shaped{Text: strings.Join(MRUTerms(body, 2), "\n")}
@@ -180,11 +180,8 @@ var NavigationChecks = []*model.Check{
 				define.KeywordRule,
 			},
 		}),
-	define.WindowsCheck("typedpaths", "Address Bar Typed Paths (TypedPaths)", model.AspectNavigation,
-		[]model.Probe{
-			PSProbe("reg", typedpathsScript),
-			RegDirectProbe("reg-direct", typedpathsKey, false, ""),
-		},
+	RegCheck("typedpaths", "Address Bar Typed Paths (TypedPaths)", model.AspectNavigation,
+		typedpathsKeys,
 		define.CheckOpt{
 			Syntax: "reg",
 			Rules: []model.Rule{
@@ -193,12 +190,8 @@ var NavigationChecks = []*model.Check{
 				define.KeywordRule,
 			},
 		}),
-	define.WindowsCheck("shellbags", "Folder Browsing History (Shellbags, Path Recovery)", model.AspectNavigation,
-		[]model.Probe{
-			PSProbe("reg", shellbagScript),
-			RegDirectProbe("usrclass", shellbagKeys[0], true, ""),
-			RegDirectProbe("ntuser", shellbagKeys[1], true, ""),
-		},
+	RegCheck("shellbags", "Folder Browsing History (Shellbags, Path Recovery)", model.AspectNavigation,
+		shellbagKeys,
 		define.CheckOpt{
 			Normalize: shellbagNormalize,
 			Rules: []model.Rule{

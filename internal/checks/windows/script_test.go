@@ -4,48 +4,24 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"karma/internal/model"
 )
 
-// psScripts are all scripts that must be fed into powershell -Command. PS 5.1 treats a newline inside
-// a statement as a statement separator: a foreach header split across lines is a parse error (hit on a
-// real Server 2025 box), and a trailing pipe is likewise invalid.
+// psScripts collects every probe script in the catalog that is fed into powershell
+// -Command. PS 5.1 treats a newline inside a statement as a statement separator: a
+// foreach header split across lines is a parse error (hit on a real Server 2025
+// box), and a trailing pipe is likewise invalid.
 func psScripts() map[string]string {
-	scripts := map[string]string{
-		"psreadline":    psHistoryScript,
-		"jumplists":     jumplistScript,
-		"office-mru":    officeScript,
-		"lnk-recent":    lnkScript,
-		"usb-devices":   usbScript,
-		"activity":      stringsScript(activityGlob, 8),
-		"sticky":        stringsScript(stickyGlob, 6),
-		"shellbags-reg": shellbagScript,
-		"wordwheel":     wordwheelScript,
-		"typedpaths":    typedpathsScript,
-		"recent-docs":   recentDocsScript,
-		"comdlg32":      comdlg32Script,
-		"adobe":         adobeScript,
-		"archive":       archiveScript,
-		"putty":         puttyScript,
-		"rdp":           rdpScript,
-		"userassist":    userassistScript,
-		"track":         trackScript,
-		"runmru":        runmruScript,
-		"software":      softwareScript,
-		"hotfixes":      hotfixScript,
-		"env-vars":      RegScript(RegQuery(`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, false), RegQuery(`HKCU\Environment`, false)),
-		"shares":        sharesScript,
-		"rdp-config":    RegScript(RegValueQuery(`HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server`, "fDenyTSConnections"), RegValueQuery(`HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server`, "UserAuthentication"), RegValueQuery(`HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp`, "PortNumber")),
-		"local-users":   localUsersScript,
-		"admin-group":   adminGroupScript,
-		"processes":     processesScript,
-		"win-hosts":     winHostsScript,
-		"run-keys":      runKeysScript,
-		"nt-services":   servicesScript,
-		"tasks":         tasksScript,
-		"wmi-sub":       wmiSubscriptionScript,
-		"sec-log":       secLogScript,
-		"scriptblock":   scriptBlockScript,
-		"remote-ctrl":   remoteCtrlScript,
+	scripts := map[string]string{}
+	for _, check := range All {
+		for _, probe := range check.Probes {
+			argv, ok := probe.Inv.(model.Command)
+			if !ok || argv.Argv[0] != "powershell" {
+				continue
+			}
+			scripts[check.ID+"·"+probe.Label] = argv.Argv[len(argv.Argv)-1]
+		}
 	}
 	return scripts
 }
@@ -66,9 +42,9 @@ func TestPowerShellScriptsAreOneStatementPerLine(t *testing.T) {
 
 // String-extraction section titles are printed only with body text: a readable file with zero hits leaves no ghost section.
 func TestStringsScriptsTitleOnlyWithBody(t *testing.T) {
-	for _, script := range []string{stringsScript(activityGlob, 8), stringsScript(stickyGlob, 6)} {
-		if !strings.Contains(script, `if ($s) { "== " + $f.FullName; $s }`) {
-			t.Errorf("section title should be emitted conditionally with $s: %q", script)
+	for _, script := range []string{stringsScript("UTF8", 8, activityGlob), stringsScript("Unicode", 5, `C:\Users\*\Recent\AutomaticDestinations\*`)} {
+		if !strings.Contains(script, `if ($o) { '== ' + "== " + $f.FullName; $o }`) {
+			t.Errorf("section title should be emitted conditionally with $o: %q", script)
 		}
 		if strings.Count(script, `"== " + $f.FullName`) != 2 {
 			t.Errorf("title should appear only for a hit and a read failure: %q", script)

@@ -4,39 +4,8 @@ import (
 	"slices"
 	"testing"
 
-	"karma/internal/model"
-	"karma/internal/reader"
+	"karma/internal/testkit"
 )
-
-// checkByID finds a check by id across the catalog; the test fails if it is missing.
-func checkByID(t *testing.T, id string) *model.Check {
-	t.Helper()
-	for _, check := range All {
-		if check.ID == id {
-			return check
-		}
-	}
-	t.Fatalf("check %s not in catalog", id)
-	return nil
-}
-
-// hitIDs reads one sample line the way the report would and returns the rule ids it lights.
-func hitIDs(t *testing.T, text string, check *model.Check) []string {
-	t.Helper()
-	document := reader.Analyze(text, check.Rules, check.Filters, check.Normalize, 0)
-	var ids []string
-	for _, section := range document.Sections {
-		for _, match := range section.TitleMatches {
-			ids = append(ids, match.ID)
-		}
-		for _, line := range section.Lines {
-			for _, match := range line.Matches {
-				ids = append(ids, match.ID)
-			}
-		}
-	}
-	return ids
-}
 
 // Rule hits for the catalog: each case feeds one line shaped like real target
 // output and names the rule that must light. Cases with want as a negative rule
@@ -102,8 +71,8 @@ func TestLinuxCheckRules(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		check := checkByID(t, tc.check)
-		if !slices.Contains(hitIDs(t, tc.text, check), tc.want) {
+		check := testkit.CheckByID(t, All, tc.check)
+		if !slices.Contains(testkit.HitIDs(t, tc.text, check), tc.want) {
 			t.Errorf("%s should light %s: %q", tc.check, tc.want, tc.text)
 		}
 	}
@@ -124,8 +93,8 @@ func TestLinuxRuleExclusions(t *testing.T) {
 		{"pkg-verify", `..5?????? c /etc/hosts`, "bin-not-elf"},
 	}
 	for _, tc := range cases {
-		check := checkByID(t, tc.check)
-		if slices.Contains(hitIDs(t, tc.text, check), tc.quiet) {
+		check := testkit.CheckByID(t, All, tc.check)
+		if slices.Contains(testkit.HitIDs(t, tc.text, check), tc.quiet) {
 			t.Errorf("%s must stay quiet on: %q (%s)", tc.check, tc.text, tc.quiet)
 		}
 	}

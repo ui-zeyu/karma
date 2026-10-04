@@ -10,8 +10,8 @@ import (
 
 	"karma/internal/model"
 	"karma/internal/powershell"
-	"karma/internal/reader"
 	"karma/internal/regout"
+	"karma/internal/testkit"
 )
 
 func utf16Hex(text string) string {
@@ -40,31 +40,6 @@ func hexOf(raw []byte) string {
 		parts[i] = fmt.Sprintf("%02X", b)
 	}
 	return strings.Join(parts, ",")
-}
-
-func checkByID(id string) *model.Check {
-	for _, check := range All {
-		if check.ID == id {
-			return check
-		}
-	}
-	return nil
-}
-
-func hitIDs(text string, check *model.Check) []string {
-	document := reader.Analyze(text, check.Rules, check.Filters, check.Normalize, 0)
-	var ids []string
-	for _, section := range document.Sections {
-		for _, match := range section.TitleMatches {
-			ids = append(ids, match.ID)
-		}
-		for _, line := range section.Lines {
-			for _, match := range line.Matches {
-				ids = append(ids, match.ID)
-			}
-		}
-	}
-	return ids
 }
 
 func TestParseRegValuesJoinsWrappedBinary(t *testing.T) {
@@ -165,30 +140,30 @@ func TestUserassistNormalize(t *testing.T) {
 }
 
 func TestUserassistTrackLightsUp(t *testing.T) {
-	check := checkByID("userassist-track")
+	check := testkit.CheckByID(t, All, "userassist-track")
 	sectioned := strings.Join([]string{
 		`== HKCU\...\Advanced\Start_TrackEnabled`,
 		`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced`,
 		"    Start_TrackEnabled    REG_DWORD    0x0",
 	}, "\n")
-	if !slices.Contains(hitIDs(sectioned, check), "userassist-track-disabled") {
+	if !slices.Contains(testkit.HitIDs(t, sectioned, check), "userassist-track-disabled") {
 		t.Fatal("section body should match tracking disabled")
 	}
 	direct := "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\n" +
 		"    Start_TrackProgs    REG_DWORD    0x0\n"
-	if !slices.Contains(hitIDs(direct, check), "userassist-track-disabled") {
+	if !slices.Contains(testkit.HitIDs(t, direct, check), "userassist-track-disabled") {
 		t.Fatal("direct-run preamble section should match tracking disabled")
 	}
 }
 
 func TestWordwheelSensitive(t *testing.T) {
-	check := checkByID("wordwheel-query")
+	check := testkit.CheckByID(t, All, "wordwheel-query")
 	text := strings.Join([]string{
 		"== " + wordwheelKey,
 		"    MRUListEx    REG_BINARY    00,00,00,00,FF,FF,FF,FF",
 		"    0    REG_BINARY    " + utf16Hex("*password*.txt") + ",00,00",
 	}, "\n")
-	if !slices.Contains(hitIDs(text, check), "wordwheel-sensitive") {
+	if !slices.Contains(testkit.HitIDs(t, text, check), "wordwheel-sensitive") {
 		t.Fatal("sensitive search term should match")
 	}
 }
@@ -289,6 +264,50 @@ func TestArchiveNormalize(t *testing.T) {
 	}
 }
 
+// RegCheck assembles the PowerShell script from the key list and appends one
+// direct reg.exe fallback per key; pin the composed shape of both tiers.
+func TestRegCheckComposesScripts(t *testing.T) {
+	runKeys := testkit.CheckByID(t, All, "run-keys")
+	composed := runKeys.Probes[0].Inv.(model.Command).Argv[4]
+	// every key queried once in the script, its section title printed only with output
+	const runOnce = `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`
+	if got := strings.Count(composed, "reg query '"+runOnce+"' 2>$null"); got != 1 {
+		t.Fatalf("key queried once: %d in %s", got, composed)
+	}
+	if !strings.Contains(composed, "if ($o) { '== ' + '"+runOnce+"'; $o }") {
+		t.Fatalf("conditional section title missing: %s", composed)
+	}
+	// the extra startup-folder fragment comes after the key fragments
+	if !strings.Contains(composed, `'== ' + 'Startup Folder'`) {
+		t.Fatalf("startup folder fragment missing: %s", composed)
+	}
+	// one direct fallback per key, in key order
+	var fallbacks []string
+	for _, probe := range runKeys.Probes[1:] {
+		fallbacks = append(fallbacks, probe.Inv.(model.Command).Argv[2])
+	}
+	want := []string{
+		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
+		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`,
+		`HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run`,
+		`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
+		runOnce,
+	}
+	if !slices.Equal(fallbacks, want) {
+		t.Fatalf("fallback key order: %v", fallbacks)
+	}
+
+	// value queries: /v on both tiers
+	track := testkit.CheckByID(t, All, "userassist-track")
+	composed = track.Probes[0].Inv.(model.Command).Argv[4]
+	if !strings.Contains(composed, `reg query '`+advancedKey+`' /v Start_TrackEnabled 2>$null`) {
+		t.Fatalf("value query missing: %s", composed)
+	}
+	if argv := track.Probes[1].Inv.(model.Command).Argv; !slices.Equal(argv, []string{"reg", "query", advancedKey, "/v", "Start_TrackEnabled"}) {
+		t.Fatalf("fallback /v argv: %v", argv)
+	}
+}
+
 func TestRegistryChecksCarryRegFallback(t *testing.T) {
 	dual := map[string]bool{}
 	for _, check := range All {
@@ -318,9 +337,9 @@ func TestRegistryChecksCarryRegFallback(t *testing.T) {
 		}
 	}
 	want := []string{
-		"adobe-recent", "archive-history", "env-vars", "ifeo", "opensave-mru", "putty",
-		"rdp-config", "rdp-history", "recent-docs", "run-keys", "runmru",
-		"shellbags", "typedpaths", "userassist", "userassist-track",
+		"adobe-recent", "appcompat", "archive-history", "env-vars", "ifeo", "opensave-mru",
+		"putty", "rdp-config", "rdp-history", "recent-docs", "remote-control", "run-keys",
+		"runmru", "shellbags", "typedpaths", "userassist", "userassist-track", "winlogon",
 		"wordwheel-query",
 	}
 	var got []string

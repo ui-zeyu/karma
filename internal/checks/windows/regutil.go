@@ -27,6 +27,7 @@ import (
 
 	"github.com/samber/lo"
 
+	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/powershell"
 	"karma/internal/regout"
@@ -53,21 +54,28 @@ func RegDirectProbe(label string, key string, recurse bool, value string) model.
 	return model.Probe{Label: label, Inv: model.NewCommand(argv...)}
 }
 
-// RegQuery is a reg query fragment for one key: the `== ` section header is printed only when the
-// query has output. Printing the title unconditionally would leave a "title-only ghost section"
-// for a missing key, and title-matching rules (like remote-ctrl-registry) would light up an empty box.
+// psSection wraps one pipeline in the `== ` section convention: assign the
+// pipeline's output, then print the header only when it is non-empty. Printing a
+// title unconditionally would leave a "title-only ghost section" for a key or
+// event id with no output, and title-matching rules (like remote-ctrl-registry)
+// would light up an empty box. title is the PowerShell expression holding the
+// title (usually a quoted literal, sometimes a variable).
+func psSection(title, pipeline string) string {
+	return fmt.Sprintf("$o = %s; if ($o) { '== ' + %s; $o }", pipeline, title)
+}
+
+// RegQuery is a reg query fragment for one key.
 func RegQuery(key string, recurse bool) string {
 	flag := ""
 	if recurse {
 		flag = " /s"
 	}
-	return fmt.Sprintf("$o = reg query '%s'%s 2>$null; if ($o) { '== %s'; $o }", key, flag, key)
+	return psSection("'"+key+"'", fmt.Sprintf("reg query '%s'%s 2>$null", key, flag))
 }
 
-// RegValueQuery is a single-value reg query fragment: the section header is printed only when the query has output.
+// RegValueQuery is a single-value reg query fragment.
 func RegValueQuery(key string, value string) string {
-	return fmt.Sprintf("$o = reg query '%s' /v %s 2>$null; if ($o) { '== %s\\%s'; $o }",
-		key, value, key, value)
+	return psSection("'"+key+"\\"+value+"'", fmt.Sprintf("reg query '%s' /v %s 2>$null", key, value))
 }
 
 // RegScript joins multiple fragments into one script; the exit code of the last fragment is the script's exit code.
@@ -75,11 +83,38 @@ func RegScript(fragments ...string) string {
 	return strings.Join(fragments, "; ")
 }
 
-// RegQueryAll is RegScript over a key list: one query fragment per key, so a
-// multi-key check (Adobe DC/Reader, the two BagMRU hives) stays one probe.
-func RegQueryAll(keys []string, recurse bool) string {
-	fragments := lo.Map(keys, func(key string, _ int) string { return RegQuery(key, recurse) })
-	return RegScript(fragments...)
+// RegKey is one registry key a check reads: the PowerShell probe queries it inside
+// its composed script, and each key also carries its own direct reg.exe fallback
+// probe, so a PS-less target keeps full coverage.
+type RegKey struct {
+	Path    string // key path, backslash-separated
+	Recurse bool   // query subkeys recursively
+	Value   string // non-empty queries one value instead of the whole key
+	Label   string // fallback probe label, shown in the panel's probe chain
+}
+
+// fragment is the key's slice of the composed PowerShell script.
+func (k RegKey) fragment() string {
+	if k.Value != "" {
+		return RegValueQuery(k.Path, k.Value)
+	}
+	return RegQuery(k.Path, k.Recurse)
+}
+
+// RegCheck builds a registry check: one PowerShell probe over all keys (plus any
+// extra fragments that are not plain reg queries), then one direct reg.exe probe
+// per key. The key list is written once and feeds both tiers, so a key cannot end
+// up in the PowerShell script without its fallback or the other way around.
+func RegCheck(id, title string, aspect model.Aspect, keys []RegKey, opt define.CheckOpt, extra ...string) *model.Check {
+	fragments := make([]string, 0, len(keys)+len(extra))
+	for _, key := range keys {
+		fragments = append(fragments, key.fragment())
+	}
+	probes := []model.Probe{PSProbe("reg", RegScript(append(fragments, extra...)...))}
+	for _, key := range keys {
+		probes = append(probes, RegDirectProbe(key.Label, key.Path, key.Recurse, key.Value))
+	}
+	return define.WindowsCheck(id, title, aspect, probes, opt)
 }
 
 var printable = regexp.MustCompile(`[\x20-\x7E\x{4E00}-\x{9FFF}]{3,}`)

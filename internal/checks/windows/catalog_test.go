@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"karma/internal/model"
+	"karma/internal/testkit"
 )
 
 // Rule hits for the new system-surface checks: each case picks one sample line shaped like real output.
@@ -48,11 +49,11 @@ func TestSystemCheckRules(t *testing.T) {
 		{"svc-dll", `CustomSvc  C:\Program Files\App\svc.dll`, "svcdll-outside-system"},
 	}
 	for _, tc := range cases {
-		check := checkByID(tc.id)
+		check := testkit.CheckByID(t, All, tc.id)
 		if check == nil {
 			t.Fatalf("check %s not in catalog", tc.id)
 		}
-		if !slices.Contains(hitIDs(tc.text, check), tc.want) {
+		if !slices.Contains(testkit.HitIDs(t, tc.text, check), tc.want) {
 			t.Errorf("%s should match %s: %q", tc.id, tc.want, tc.text)
 		}
 	}
@@ -61,7 +62,7 @@ func TestSystemCheckRules(t *testing.T) {
 		`    Path    REG_EXPAND_SZ    C:\Windows\system32;C:\Program Files\App\`,
 		`    Path    REG_EXPAND_SZ    C:\Users\PublicFiles\bin`,
 	} {
-		if slices.Contains(hitIDs(clean, checkByID("env-vars")), "env-path-suspicious") {
+		if slices.Contains(testkit.HitIDs(t, clean, testkit.CheckByID(t, All, "env-vars")), "env-path-suspicious") {
 			t.Errorf("normal PATH should not match: %q", clean)
 		}
 	}
@@ -81,7 +82,7 @@ func TestSystemCheckRules(t *testing.T) {
 		{"svc-dll", `W32Time  %SystemRoot%\system32\w32time.dll`, "svcdll-outside-system"},
 	}
 	for _, tc := range quiet {
-		if slices.Contains(hitIDs(tc.text, checkByID(tc.check)), tc.rule) {
+		if slices.Contains(testkit.HitIDs(t, tc.text, testkit.CheckByID(t, All, tc.check)), tc.rule) {
 			t.Errorf("%s must stay quiet on: %q (%s)", tc.check, tc.text, tc.rule)
 		}
 	}
@@ -89,9 +90,9 @@ func TestSystemCheckRules(t *testing.T) {
 
 // Rule on section titles: 1102 log clearing is a title hit, not a body-line hit.
 func TestSecLogClearedTitleRule(t *testing.T) {
-	check := checkByID("sec-log")
+	check := testkit.CheckByID(t, All, "sec-log")
 	text := "== 1102 Audit Log Cleared\n2025-06-01 03:00:00  已清除审计日志。\n"
-	if !slices.Contains(hitIDs(text, check), "log-cleared") {
+	if !slices.Contains(testkit.HitIDs(t, text, check), "log-cleared") {
 		t.Fatalf("1102 section title should match log-cleared: %q", text)
 	}
 }

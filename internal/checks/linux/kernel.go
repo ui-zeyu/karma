@@ -8,8 +8,6 @@
 package linux
 
 import (
-	"strings"
-
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/script"
@@ -34,14 +32,14 @@ const moduleSigScript = "zcat /proc/config.gz 2>/dev/null | grep '^CONFIG_MODULE
 // modulesLoadScript: boot-time load surface: /etc/modules is the Debian
 // convention and modules-load.d the systemd one; only the writable layers (/etc,
 // /run, /usr/local) are scanned, since /usr and /lib belong to distro packages.
-var modulesLoadScript = strings.Join([]string{
+var modulesLoadScript = script.Lines(
 	script.ReadFiles([]string{"/etc/modules"}, `cat "$f"`, true),
 	script.ReadFiles([]string{
 		"/etc/modules-load.d/*.conf",
 		"/run/modules-load.d/*.conf",
 		"/usr/local/lib/modules-load.d/*.conf",
 	}, `cat "$f"`, true),
-}, "\n")
+)
 
 // moduleDirs lists the out-of-tree drop points directly: distro-owned modules all
 // live under the kernel/ subdirectory (tens of thousands of files), while rootkit

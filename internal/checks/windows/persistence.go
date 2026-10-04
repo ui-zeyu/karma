@@ -8,16 +8,8 @@ import (
 )
 
 // run-keys: five registry autoruns plus two startup folders, produced by one script.
-var runKeyFragments = []string{
-	RegQuery(`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`, false),
-	RegQuery(`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`, false),
-	RegQuery(`HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run`, false),
-	RegQuery(`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`, false),
-	RegQuery(`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`, false),
-	`$o = Get-ChildItem "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup","$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }; if ($o) { '== Startup Folder'; $o }`,
-}
-
-var runKeysScript = RegScript(runKeyFragments...)
+var startupFolderFragment = psSection("'Startup Folder'",
+	`Get-ChildItem "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup","$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }`)
 
 const autorunTempRule = `(?i)\\(?:Temp|Users\\Public)\\[^\s]*\.(?:exe|bat|ps1|vbs|js|hta)\b`
 const autorunPayloadRule = `(?i)(?:\bmshta\b|-enc(?:odedcommand)?\b|\b-iex\b|invoke-expression|downloadstring|-w\s+hidden\b|rundll32\b[^\n]*(?:javascript|vbscript))`
@@ -34,7 +26,9 @@ const serviceUnquotedRule = `(?i)\s[A-Za-z]:\\(?:Program Files|Program Files \(x
 // (the schtasks CSV only has task name and state).
 const tasksScript = `Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object { $a = ($_.Actions | ForEach-Object { $_.Execute + ' ' + $_.Arguments }) -join ' ; '; $_.TaskPath + $_.TaskName + '  ' + $_.State + '  ' + $a }`
 
-const wmiSubscriptionScript = `foreach ($c in '__EventFilter','CommandLineEventConsumer','ActiveScriptEventConsumer','__FilterToConsumerBinding') { $o = Get-CimInstance -Namespace root\subscription -Class $c -ErrorAction SilentlyContinue | Format-List Name,Query,CommandLineTemplate,ScriptText; if ($o) { '== ' + $c; $o } }`
+var wmiSubscriptionScript = `foreach ($c in '__EventFilter','CommandLineEventConsumer','ActiveScriptEventConsumer','__FilterToConsumerBinding') { ` +
+	psSection("$c", `Get-CimInstance -Namespace root\subscription -Class $c -ErrorAction SilentlyContinue | Format-List Name,Query,CommandLineTemplate,ScriptText`) +
+	` }`
 
 // Non-empty CommandLineTemplate or ScriptText means subscription persistence; on a default machine
 // these three are all empty.
@@ -45,13 +39,11 @@ const wmiConsumerRule = `(?i)^(?:CommandLineTemplate|ScriptText)\s*:\s*\S`
 // sethc.exe at cmd.exe); SilentProcessExit does the same for a process that is
 // observed to exit. Both live under keys a stock machine leaves empty of
 // Debugger/MonitorProcess values.
-var ifeoKeys = []string{
-	`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options`,
-	`HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Image File Execution Options`,
-	`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SilentProcessExit`,
+var ifeoKeys = []RegKey{
+	{Path: `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options`, Recurse: true, Label: "ifeo"},
+	{Path: `HKLM\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Image File Execution Options`, Recurse: true, Label: "ifeo-wow64"},
+	{Path: `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SilentProcessExit`, Recurse: true, Label: "silent-process-exit"},
 }
-
-var ifeoScript = RegQueryAll(ifeoKeys, true)
 
 const (
 	ifeoDebuggerRule = `(?i)^\s+Debugger\s+REG_\w+\s+\S`
@@ -61,11 +53,11 @@ const (
 // winlogonKeys: the logon shell, userinit, notification package, and AppSetup
 // command all run inside every interactive logon, and AppInit_DLLs is injected
 // into every process that loads user32.
-var winlogonKeys = []string{
-	`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon`,
-	`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Windows`,
-	`HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Windows`,
-	`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Windows`,
+var winlogonKeys = []RegKey{
+	{Path: `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon`, Label: "winlogon"},
+	{Path: `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Windows`, Label: "windows"},
+	{Path: `HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Windows`, Label: "windows-wow64"},
+	{Path: `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Windows`, Label: "windows-hkcu"},
 }
 
 // AppInit_DLLs only takes effect when LoadAppInit_DLLs is 1 (Win8 and later), so
@@ -89,13 +81,12 @@ var (
 )
 
 // The layers key holds one value per executable (path = flags); the custom shim
-// databases are the other half of shim persistence.
+// databases are the other half of shim persistence, gathered by the AppPatch
+// fragment that is not a plain reg query.
 const appcompatLayersKey = `HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers`
 
-var appcompatScript = RegScript(
-	RegQuery(appcompatLayersKey, false),
-	`$o = Get-ChildItem 'C:\Windows\AppPatch\Custom','C:\Windows\AppPatch\Custom64' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName + '  ' + $_.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') }; if ($o) { '== AppPatch Custom'; $o }`,
-)
+var appPatchFragment = psSection("'AppPatch Custom'",
+	`Get-ChildItem 'C:\Windows\AppPatch\Custom','C:\Windows\AppPatch\Custom64' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName + '  ' + $_.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') }`)
 
 var (
 	appcompatLayerRule = model.NewRule("appcompat-layer", `(?i)^\s+[A-Za-z]:\\\S*\s+REG_\w+\s+~`, model.Low,
@@ -124,14 +115,13 @@ var (
 
 // PersistenceChecks is the persistence aspect.
 var PersistenceChecks = []*model.Check{
-	define.WindowsCheck("run-keys", "Autorun Entries (Run Keys and Startup Folders)", model.AspectPersistence,
-		[]model.Probe{
-			PSProbe("reg", runKeysScript),
-			RegDirectProbe("hklm-run", `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`, false, ""),
-			RegDirectProbe("hklm-runonce", `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`, false, ""),
-			RegDirectProbe("hklm-wow", `HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run`, false, ""),
-			RegDirectProbe("hkcu-run", `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`, false, ""),
-			RegDirectProbe("hkcu-runonce", `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`, false, ""),
+	RegCheck("run-keys", "Autorun Entries (Run Keys and Startup Folders)", model.AspectPersistence,
+		[]RegKey{
+			{Path: `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`, Label: "hklm-run"},
+			{Path: `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`, Label: "hklm-runonce"},
+			{Path: `HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run`, Label: "hklm-wow"},
+			{Path: `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`, Label: "hkcu-run"},
+			{Path: `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`, Label: "hkcu-runonce"},
 		},
 		define.CheckOpt{
 			Syntax: "reg",
@@ -142,7 +132,8 @@ var PersistenceChecks = []*model.Check{
 					"autorun with payload execution traits"),
 				define.KeywordRule,
 			},
-		}),
+		},
+		startupFolderFragment),
 	define.WindowsCheck("nt-services", "Service List (with binPath)", model.AspectPersistence,
 		[]model.Probe{PSProbe("cim", servicesScript)},
 		define.CheckOpt{
@@ -176,11 +167,8 @@ var PersistenceChecks = []*model.Check{
 				define.KeywordRule,
 			},
 		}),
-	define.WindowsCheck("ifeo", "Debugger Hijack (Image File Execution Options, SilentProcessExit)", model.AspectPersistence,
-		[]model.Probe{
-			PSProbe("reg", ifeoScript),
-			RegDirectProbe("ifeo", ifeoKeys[0], true, ""),
-		},
+	RegCheck("ifeo", "Debugger Hijack (Image File Execution Options, SilentProcessExit)", model.AspectPersistence,
+		ifeoKeys,
 		define.CheckOpt{
 			Syntax: "reg",
 			Rules: []model.Rule{
@@ -191,8 +179,8 @@ var PersistenceChecks = []*model.Check{
 				define.KeywordRule,
 			},
 		}),
-	define.WindowsCheck("winlogon", "Logon Hooks and DLL Injection (Winlogon, AppInit_DLLs)", model.AspectPersistence,
-		[]model.Probe{PSProbe("reg", RegQueryAll(winlogonKeys, false))},
+	RegCheck("winlogon", "Logon Hooks and DLL Injection (Winlogon, AppInit_DLLs)", model.AspectPersistence,
+		winlogonKeys,
 		define.CheckOpt{
 			Syntax: "reg",
 			Rules: []model.Rule{
@@ -205,8 +193,8 @@ var PersistenceChecks = []*model.Check{
 				define.KeywordRule,
 			},
 		}),
-	define.WindowsCheck("appcompat", "Compatibility Shims (AppCompatFlags Layers, custom sdb)", model.AspectPersistence,
-		[]model.Probe{PSProbe("reg", appcompatScript)},
+	RegCheck("appcompat", "Compatibility Shims (AppCompatFlags Layers, custom sdb)", model.AspectPersistence,
+		[]RegKey{{Path: appcompatLayersKey, Label: "layers"}},
 		define.CheckOpt{
 			Syntax: "reg",
 			Rules: []model.Rule{
@@ -215,7 +203,8 @@ var PersistenceChecks = []*model.Check{
 				appcompatSdbRule,
 				define.KeywordRule,
 			},
-		}),
+		},
+		appPatchFragment),
 	define.WindowsCheck("svc-dll", "svchost Service DLLs (ServiceDll)", model.AspectPersistence,
 		[]model.Probe{PSProbe("cim", serviceDllScript)},
 		define.CheckOpt{

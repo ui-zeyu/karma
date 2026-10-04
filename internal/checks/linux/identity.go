@@ -5,7 +5,6 @@ package linux
 import (
 	"karma/internal/define"
 	"karma/internal/model"
-	"karma/internal/script"
 )
 
 // sudoers: stop as soon as a file is readable; if none is, exit non-zero and fall
@@ -59,12 +58,12 @@ while read -r spec; do
 done
 `
 
-var sshClientScript = script.ReadFiles([]string{
+var sshClientConfigPaths = []string{
 	"/etc/ssh/ssh_config",
 	"/etc/ssh/ssh_config.d/*.conf",
 	"/root/.ssh/config",
 	"/home/*/.ssh/config",
-}, `cat "$f"`, true)
+}
 
 // pamDirs: module directories differ by distro: multiarch (Debian/Ubuntu), lib64
 // (RedHat family), flat /usr/lib/security (Alpine etc.). The listing is clustered by
@@ -84,8 +83,7 @@ var IdentityChecks = []*model.Check{
 			// The dash-suffixed copy is what user tools leave behind; one that changed
 			// while the live file did not is a tamper sign.
 			{Label: "getent", Inv: model.NewCommand("getent", "passwd")},
-			{Label: "cat", Inv: model.Shell{Script: script.ReadFiles(
-				[]string{"/etc/passwd", "/etc/passwd-"}, `cat "$f"`, true)}},
+			readFilesProbe("/etc/passwd", "/etc/passwd-"),
 		},
 		// passwd/group are colon-separated tables; color fields in a cycle to separate columns
 		define.CheckOpt{
@@ -113,8 +111,7 @@ var IdentityChecks = []*model.Check{
 	// password, so after filtering the body holds only live hashes and anomalies.
 	// An empty root password is its own CRITICAL, matching the uid0 wording.
 	define.LinuxCheck("shadow", "Shadow passwords (/etc/shadow)", model.AspectIdentity,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: script.ReadFiles(
-			[]string{"/etc/shadow", "/etc/shadow-"}, `cat "$f"`, true)}}},
+		[]model.Probe{readFilesProbe("/etc/shadow", "/etc/shadow-")},
 		define.CheckOpt{
 			Syntax: "colon",
 			// Ubuntu locks with !*, RedHat with !; only entries whose field 2 is entirely
@@ -133,9 +130,7 @@ var IdentityChecks = []*model.Check{
 	// readable only by root); both are colon-separated, so filters and rules are shared.
 	// The dash-suffixed copies go along for the same reason as passwd-.
 	define.LinuxCheck("groups", "Groups (/etc/group, /etc/gshadow)", model.AspectIdentity,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{
-			Script: script.ReadFiles([]string{"/etc/group", "/etc/gshadow", "/etc/group-", "/etc/gshadow-"}, `cat "$f"`, true),
-		}}},
+		[]model.Probe{readFilesProbe("/etc/group", "/etc/gshadow", "/etc/group-", "/etc/gshadow-")},
 		define.CheckOpt{
 			Syntax: "colon",
 			// Only entries with no members and a normal placeholder password (x/*/!/!*) are
@@ -198,10 +193,7 @@ var IdentityChecks = []*model.Check{
 	// A modified sshd_config (redirected AuthorizedKeysFile, root access opened) is
 	// the easiest key-based backdoor
 	define.LinuxCheck("sshd-config", "sshd config", model.AspectIdentity,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{
-			Script: script.ReadFiles([]string{"/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/*.conf"},
-				`cat "$f"`, true),
-		}}},
+		[]model.Probe{readFilesProbe("/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/*.conf")},
 		define.CheckOpt{
 			Syntax: "sshd-config",
 			Rules: []model.Rule{
@@ -216,7 +208,7 @@ var IdentityChecks = []*model.Check{
 	// Client-side ProxyCommand/LocalCommand are backdoor vectors too: a login runs the
 	// command. The directive form matches sshd_config, so the lexer is the same.
 	define.LinuxCheck("ssh-client-config", "SSH client config", model.AspectIdentity,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: sshClientScript}}},
+		[]model.Probe{readFilesProbe(sshClientConfigPaths...)},
 		define.CheckOpt{
 			Syntax: "sshd-config",
 			Rules: []model.Rule{

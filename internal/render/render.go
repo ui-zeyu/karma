@@ -214,12 +214,18 @@ func checkPanel(result *model.CheckResult, maxLines, width int) string {
 		return ""
 	}
 	if result.Note != "" {
-		note := style{fg: "9", bold: true}.seq().Render(result.Note)
-		head := spread(headTextWidth(width), style{bold: true}.seq().Render(result.Check.ID), note)
-		return checkBlock(model.Info, head,
-			plainRows(result.Raw, result.Stderr, maxLines), width)
+		return thinRailPanel(result, result.Note, maxLines, width)
 	}
 	return ""
+}
+
+// thinRailPanel is the quiet grey rail: check id on the left, one red note on the
+// right, raw text underneath — the shape shared by a failed check and a failed
+// render.
+func thinRailPanel(result *model.CheckResult, note string, maxLines, width int) string {
+	head := spread(headTextWidth(width), style{bold: true}.seq().Render(result.Check.ID),
+		style{fg: "9", bold: true}.seq().Render(note))
+	return checkBlock(model.Info, head, plainRows(result.Raw, result.Stderr, maxLines), width)
 }
 
 // checkHead is the panel's first line: the check id on the left, metadata on
@@ -255,10 +261,7 @@ func fallbackPanel(result *model.CheckResult, maxLines, width int) (text string)
 			text = ""
 		}
 	}()
-	note := style{fg: "9", bold: true}.seq().Render("render failed, showing raw output")
-	head := spread(headTextWidth(width), style{bold: true}.seq().Render(result.Check.ID), note)
-	return checkBlock(model.Info, head,
-		plainRows(result.Raw, result.Stderr, maxLines), width)
+	return thinRailPanel(result, "render failed, showing raw output", maxLines, width)
 }
 
 // plainRows are raw rows: the final fallback for a failed render, folded to the

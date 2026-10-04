@@ -188,9 +188,7 @@ var NetworkChecks = []*model.Check{
 	// backdoor vector; on a default system both files are all comments, so even a live
 	// line is worth a look.
 	define.LinuxCheck("tcp-wrappers", "TCP Wrappers (hosts.allow/deny)", model.AspectNetwork,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{
-			Script: script.ReadFiles([]string{"/etc/hosts.allow", "/etc/hosts.deny"}, `cat "$f"`, true),
-		}}},
+		[]model.Probe{readFilesProbe("/etc/hosts.allow", "/etc/hosts.deny")},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("wrappers-exec", `\b(?:spawn|twist)\b`, model.High,
@@ -200,9 +198,7 @@ var NetworkChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("hosts-file", "hosts and DNS config", model.AspectNetwork,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{
-			Script: script.ReadFiles([]string{"/etc/hosts", "/etc/resolv.conf"}, `cat "$f"`, true),
-		}}},
+		[]model.Probe{readFilesProbe("/etc/hosts", "/etc/resolv.conf")},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				// "maps to a non-loopback address" becomes an exclusion (RE2 has no lookahead)
