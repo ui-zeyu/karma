@@ -184,13 +184,19 @@ func harvest(ctx context.Context, src source, timeout time.Duration, lineLimit i
 		close(done)
 	}()
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	// A timeout of zero or less is no deadline, the same reading the in-process
+	// tier gives it: only the context then ends the call.
+	var deadline <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		deadline = timer.C
+	}
 	select {
 	case <-done:
 		outText, errText, trunc := state.snapshot()
 		return model.RunResult{Stdout: outText, Stderr: errText, ExitCode: src.exitCode(), Truncated: trunc}
-	case <-timer.C:
+	case <-deadline:
 		return stopAndCollect(done, stopSource, src, &state, false)
 	case <-ctx.Done():
 		return stopAndCollect(done, stopSource, src, &state, true)

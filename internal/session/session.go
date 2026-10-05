@@ -25,8 +25,9 @@ type Session interface {
 	// each probe tier against it while walking the chain.
 	Channel() model.Channel
 	// Run executes one invocation, with a per-command timeout and an optional
-	// line limit, and harvests its output. A cancelled context stops the data
-	// source and keeps the output already produced.
+	// line limit, and harvests its output. A timeout of zero or less is no
+	// deadline; a cancelled context stops the data source and keeps the output
+	// already produced.
 	Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult
 	// Close releases the channel's resources.
 	Close() error

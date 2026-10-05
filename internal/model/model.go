@@ -266,13 +266,23 @@ type Rule struct {
 	Severity Severity
 	Message  string
 	Exclude  *regexp.Regexp
+	// literals is the prefilter of Pattern (see prefilter.go): the strings a
+	// line must contain for Pattern to match it, empty when none could be
+	// proven. It is derived here so no caller can forget it.
+	literals []string
 }
 
 // NewRule compiles the regex and builds a Rule; a bad regex fails during
 // catalog construction.
 // Case insensitivity is written into the pattern itself ((?i)).
 func NewRule(id, pattern string, severity Severity, message string) Rule {
-	return Rule{ID: id, Pattern: regexp.MustCompile(pattern), Severity: severity, Message: message}
+	return Rule{
+		ID:       id,
+		Pattern:  regexp.MustCompile(pattern),
+		Severity: severity,
+		Message:  message,
+		literals: prefilter(pattern),
+	}
 }
 
 // WithExclude attaches a line-level exclusion and returns a copy.
@@ -282,8 +292,12 @@ func (r Rule) WithExclude(exclude string) Rule {
 }
 
 // Find returns the first matching span; a line hitting the exclusion does not
-// count as a hit.
+// count as a hit, and a line missing the pattern's prefilter literals is not
+// run through the engine at all.
 func (r Rule) Find(line string) (start, end int, ok bool) {
+	if !prefilterMatches(r.literals, line) {
+		return 0, 0, false
+	}
 	loc := r.Pattern.FindStringIndex(line)
 	if loc == nil {
 		return 0, 0, false
@@ -302,12 +316,19 @@ type LineFilter struct {
 	Pattern *regexp.Regexp
 	Mode    FilterMode
 	Exclude *regexp.Regexp
+	// literals is Pattern's prefilter, as on Rule.
+	literals []string
 }
 
 // NewFilter compiles the regex and builds a line filter; a bad regex fails
 // during catalog construction.
 func NewFilter(id, pattern string, mode FilterMode) LineFilter {
-	return LineFilter{ID: id, Pattern: regexp.MustCompile(pattern), Mode: mode}
+	return LineFilter{
+		ID:       id,
+		Pattern:  regexp.MustCompile(pattern),
+		Mode:     mode,
+		literals: prefilter(pattern),
+	}
 }
 
 // WithExclude attaches a line-level exclusion and returns a copy.
@@ -317,8 +338,12 @@ func (f LineFilter) WithExclude(exclude string) LineFilter {
 }
 
 // Match reports whether the line is a hit; a line hitting the exclusion does
-// not count.
+// not count, and a line missing the pattern's prefilter literals is not run
+// through the engine at all.
 func (f LineFilter) Match(line string) bool {
+	if !prefilterMatches(f.literals, line) {
+		return false
+	}
 	if !f.Pattern.MatchString(line) {
 		return false
 	}

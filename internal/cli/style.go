@@ -10,7 +10,10 @@ package cli
 import (
 	"io"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"karma/internal/render"
 )
 
 // streamStyles colors one output stream; on the plain profile every style
@@ -29,13 +32,17 @@ func stylesFor(w io.Writer) streamStyles {
 }
 
 // stylesForProfile builds the styles at a fixed profile; tests use it to force
-// color on a capture buffer.
+// color on a capture buffer. The hues come from the report's palette, so the
+// skeleton and the evidence read the same.
 func stylesForProfile(w io.Writer, profile termenv.Profile) streamStyles {
 	out := termenv.NewOutput(w, termenv.WithProfile(profile))
+	foreground := func(color lipgloss.Color) func(string) string {
+		return func(s string) string { return out.String(s).Foreground(out.Color(string(color))).String() }
+	}
 	return streamStyles{
 		bold:  func(s string) string { return out.String(s).Bold().String() },
-		muted: func(s string) string { return out.String(s).Foreground(out.Color("244")).String() },
-		err:   func(s string) string { return out.String(s).Foreground(out.Color("9")).String() },
-		hint:  func(s string) string { return out.String(s).Foreground(out.Color("11")).String() },
+		muted: foreground(render.MutedColor),
+		err:   foreground(render.ErrorColor),
+		hint:  foreground(render.HintColor),
 	}
 }

@@ -136,21 +136,8 @@ const (
 
 // webScriptFind is that shape as the find command the ssh channel runs.
 var webScriptFind = fmt.Sprintf("find %s -maxdepth %d -type f \\( %s \\) -mtime -%d 2>/dev/null",
-	strings.Join(webScriptRoots, " "), webScriptDepth, findNameArgs(webScriptSuffixes),
+	strings.Join(webScriptRoots, " "), webScriptDepth, findNameArgs("-name", webScriptSuffixes),
 	int(webScriptWindow.Hours()/24))
-
-// findNameArgs renders a find -name alternation for a suffix list: .php becomes
-// -name '*.php'.
-func findNameArgs(suffixes []string) string {
-	args := make([]string, 0, 2*len(suffixes)-1)
-	for i, suffix := range suffixes {
-		if i > 0 {
-			args = append(args, "-o")
-		}
-		args = append(args, "-name '*"+suffix+"'")
-	}
-	return strings.Join(args, " ")
-}
 
 // Three webshell signature groups: request superglobals passed straight into an
 // exec/decode/callback function. The same regex feeds both grep -e (target-side

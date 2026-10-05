@@ -149,6 +149,15 @@ func severityBorder(severity model.Severity) lipgloss.Color {
 	return severityTheme[severity].border
 }
 
+// ErrorColor and HintColor are the hues the command-line skeleton (help and
+// error text) shares with the report: the signal hue of a high hit for a
+// failure line, and of a medium hit for the suggestion that follows it, so a
+// failure and its guidance read in the palette the evidence does.
+var (
+	ErrorColor = severityTheme[model.High].border
+	HintColor  = severityTheme[model.Medium].border
+)
+
 // Syntax coloring uses low-saturation dark colors and is applied before hit
 // spans (syntax < hits); bright magenta reads like the severity red in a light
 // terminal, so keywords use dark magenta.

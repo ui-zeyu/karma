@@ -6,7 +6,10 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
+
+	"github.com/samber/lo"
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/cluster"
@@ -28,6 +31,15 @@ func filesTier(label string, shellCmd string, transform func(string) string, pat
 // readFilesCheck is the cat-a-file-list tier pair.
 func readFilesCheck(paths ...string) []model.Probe {
 	return []model.Probe{filesTier("cat", `cat "$f"`, nil, paths)}
+}
+
+// findNameArgs renders a find name test alternation: one -name/-iname word per
+// pattern, joined by -o. The web-script and miner walks each spell their own
+// option and pattern list, and the same helper builds both.
+func findNameArgs(option string, patterns []string) string {
+	return strings.Join(lo.Map(patterns, func(pattern string, _ int) string {
+		return option + " '" + pattern + "'"
+	}), " -o ")
 }
 
 // tailFilesCheck reads the tail of every file in the list.

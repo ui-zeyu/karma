@@ -1,8 +1,10 @@
 // Local channel: turns an Invocation into a subprocess, or runs a Dual tier's
-// in-process body itself. The project's only subprocess spawn point. Command
-// goes through exec without a shell; Shell goes through /bin/sh -c (rendering
-// shared with SSH via shellcmd, POSIX only). A timeout kills the whole process
-// tree; output already produced is kept.
+// in-process body itself. This is the channel's spawn point; the in-process
+// tiers ask a host binary through their own runner (native.runHost), and
+// Windows stops a process tree with taskkill. Command goes through exec
+// without a shell; Shell goes through /bin/sh -c (rendering shared with SSH via
+// shellcmd, POSIX only). A timeout kills the whole process tree; output already
+// produced is kept.
 
 package session
 

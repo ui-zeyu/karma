@@ -157,20 +157,8 @@ echo "== drop paths"
 LC_ALL=C ls -l %s 2>/dev/null
 echo "== temp names"
 find %s -maxdepth 4 -type f \( %s \) -exec ls -l {} + 2>/dev/null
-`, minerPsSource, strings.Join(minerDropPaths, " "), strings.Join(tmpDirs, " "), minerInameArgs(minerNameGlobs))
-
-// minerInameArgs renders the temp-name walk's -iname alternation, the globs
-// joined by -o.
-func minerInameArgs(globs []string) string {
-	args := make([]string, 0, 2*len(globs)-1)
-	for i, glob := range globs {
-		if i > 0 {
-			args = append(args, "-o")
-		}
-		args = append(args, "-iname '"+glob+"'")
-	}
-	return strings.Join(args, " ")
-}
+`, minerPsSource, strings.Join(minerDropPaths, " "), strings.Join(tmpDirs, " "),
+	findNameArgs("-iname", minerNameGlobs))
 
 // hidden-pids (atrk-style brute force, migrated 2026-10): a rootkit that
 // filters the /proc readdir path still cannot hide from the kernel's own

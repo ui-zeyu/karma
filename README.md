@@ -9,7 +9,7 @@ go build -o dist/karma ./cmd/karma
 dist/karma --help
 ```
 
-The version is `0.17.0`; override it with `-ldflags "-X main.version=…"` and print it with `karma version` or `karma --version`.
+The version is `0.18.0`; override it with `-ldflags "-X main.version=…"` and print it with `karma version` or `karma --version`.
 
 ## Usage
 
@@ -75,6 +75,8 @@ make dist                                                  # dist/ binaries for 
 ```
 
 The code lives in `cmd/karma` and `internal/`. Collection, reading, and presentation are separate: `runner` runs the checks, `reader` reads the `== ` sections into a document, and `render` only reads that document. The catalog vocabulary (platform, aspect, check id) is also the selector vocabulary, so what `karma list` shows is what the positional arguments accept.
+
+The reading pass runs every rule against every line, so each rule carries the literals a matching line must contain, derived from its pattern when the catalog is built (`internal/model/prefilter.go`): a line missing all of them never reaches the regexp engine. The derivation is conservative — a pattern whose literal cannot be proven keeps its plain regexp, and a literal of one byte is not worth the scan — and the differential fuzz test holds it to the engine's own verdict. On a twenty-thousand-row listing read against a twelve-rule pack it takes the pass from 180 ms to 7 ms.
 
 A probe tier is normally a host command or a POSIX script; the third kind, `Dual`, carries both a per-channel implementation in one tier: a function karma runs in itself where karma stands on the collected host (`local`), and the POSIX script the target's shell runs over `ssh`. A tier with only one side set exists on that channel alone. Both branches of a tier print the same text shape, so the rules are shared. The Linux catalog is built this way throughout: locally karma reads `/proc`, walks directories, and runs host binaries directly, and the same work travels as the POSIX script over the channel — the hidden-pids check, for instance, is a `kill(pid, 0)` brute force against the `/proc` listing.
 
