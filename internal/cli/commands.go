@@ -1,6 +1,7 @@
 // Package cli is the cobra application: local, ssh, and list hang off the root
-// command, and mtime is a subcommand of local and ssh. Every failure is written
-// to stderr with the `karma: ` prefix by reportError.
+// command, and the mtime mode is written after the channel command (and after the
+// target on ssh). Every failure is written to stderr with the `karma: ` prefix by
+// reportError.
 package cli
 
 import (
@@ -8,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -88,9 +88,37 @@ func runLocalOrSSH(ctx context.Context, transport session.Transport, options mod
 	return Execute(ctx, os.Stdout, transport, options, nil)
 }
 
-// runMtime is the mtime subcommand's body: one dynamic check appended after the
-// directories. The local and ssh entry points share it.
+// mtimeArgs splits the mtime form out of a channel command's positional
+// arguments: they follow the word "mtime" — at the front under local, after the
+// target under ssh — so both channels tell the mode apart the same way.
+func mtimeArgs(args []string) ([]string, bool) {
+	if len(args) == 0 || args[0] != "mtime" {
+		return nil, false
+	}
+	return args[1:], true
+}
+
+// runMtimeMode is the mtime form's entry from either channel: dirs are the words
+// after "mtime" and form is how that channel's command line is spelled, for the
+// usage error when none was given.
+func runMtimeMode(cmd *cobra.Command, transport session.Transport, dirs []string, form string) error {
+	if len(dirs) == 0 {
+		return usagef(cmd, "mtime needs at least one directory: karma %s mtime DIR...", form)
+	}
+	options, err := runOptions(cmd.Flags(), nil)
+	if err != nil {
+		return err
+	}
+	return runMtime(cmd.Context(), transport, dirs, options)
+}
+
+// runMtime is the mtime mode's body: one dynamic check appended after the
+// directories. Clustering walks a Linux tree, so a channel that is not Linux
+// (the local one on Windows) has nothing to walk.
 func runMtime(ctx context.Context, transport session.Transport, dirs []string, options model.RunOptions) error {
+	if transport.Platform() != model.Linux {
+		return fmt.Errorf("mtime clustering is a Linux check; Windows targets are not supported")
+	}
 	return Execute(ctx, os.Stdout, transport, options, []*model.Check{linux.HuntCheck(dirs)})
 }
 
@@ -98,8 +126,12 @@ func newLocalCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "local [selector...]",
 		Short: "Collect read-only evidence from the local host",
-		Long:  "Collect read-only evidence from the local host. Positional arguments are platform, aspect, or check names; all of them run when omitted.",
+		Long: "Collect read-only evidence from the local host. Positional arguments are platform, aspect, or check names; " +
+			"all of them run when omitted. Change-time clustering is written karma local mtime DIR...",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dirs, ok := mtimeArgs(args); ok {
+				return runMtimeMode(cmd, session.LocalTransport{}, dirs, "local")
+			}
 			options, err := runOptions(cmd.Flags(), args)
 			if err != nil {
 				return err
@@ -108,7 +140,6 @@ func newLocalCmd() *cobra.Command {
 		},
 	}
 	addRunFlags(cmd)
-	cmd.AddCommand(newMtimeCmd())
 	return cmd
 }
 
@@ -130,16 +161,8 @@ func newSSHCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(args) > 1 && args[1] == "mtime" {
-				dirs := args[2:]
-				if len(dirs) == 0 {
-					return usagef(cmd, "mtime needs at least one directory: karma ssh TARGET mtime DIR...")
-				}
-				options, err := runOptions(cmd.Flags(), nil)
-				if err != nil {
-					return err
-				}
-				return runMtime(cmd.Context(), transport, dirs, options)
+			if dirs, ok := mtimeArgs(args[1:]); ok {
+				return runMtimeMode(cmd, transport, dirs, "ssh TARGET")
 			}
 			options, err := runOptions(cmd.Flags(), args[1:])
 			if err != nil {
@@ -150,32 +173,6 @@ func newSSHCmd() *cobra.Command {
 	}
 	addRunFlags(cmd)
 	addSSHFlags(cmd)
-	return cmd
-}
-
-func newMtimeCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "mtime DIR...",
-		Short: "Cluster change times for the given directories",
-		Long: "Cluster change times for the given directories: deployments and installs form big clusters, " +
-			"while a dropped trojan stands out as isolated files. The walk stays on each directory's own " +
-			"filesystem and skips /proc, /sys and /dev. Under local it reads this host; over SSH " +
-			"it is written karma ssh TARGET mtime DIR...",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if runtime.GOOS == "windows" {
-				return fmt.Errorf("mtime clustering is a Linux check; Windows targets are not supported")
-			}
-			if len(args) == 0 {
-				return usagef(cmd, "mtime needs at least one directory: karma local mtime DIR...")
-			}
-			options, err := runOptions(cmd.Flags(), nil)
-			if err != nil {
-				return err
-			}
-			return runMtime(cmd.Context(), session.LocalTransport{}, args, options)
-		},
-	}
-	addRunFlags(cmd)
 	return cmd
 }
 

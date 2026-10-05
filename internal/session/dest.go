@@ -16,6 +16,8 @@ var (
 	userAtHost  = regexp.MustCompile(`^(?:(?P<user>[^@]+)@)?(?P<host>[^:@]+)$`)
 	uriForm     = regexp.MustCompile(`^ssh://(?:(?P<user>[^@/]+)@)?(?P<host>[^/]+?)(?::(?P<port>\d+))?$`)
 	bracketedV6 = regexp.MustCompile(`^\[(?P<addr>[0-9a-fA-F:.]+)\]$`)
+	// ipv6Shape is an unbracketed IPv6 address: hex digits, colons and dots only.
+	ipv6Shape = regexp.MustCompile(`^[0-9a-fA-F:.]+$`)
 )
 
 // SSHDestination is a parsed SSH destination. When User is empty the implementation uses the local current user.
@@ -68,13 +70,22 @@ func parseURI(uri string) (SSHDestination, error) {
 		return SSHDestination{}, fmt.Errorf("\"%s\" is not a valid ssh:// URI, expected form ssh://user@host:22", uri)
 	}
 	hostPart := matched[uriForm.SubexpIndex("host")]
+	bracket := bracketedV6.FindStringSubmatch(hostPart)
 	var host string
-	if bracket := bracketedV6.FindStringSubmatch(hostPart); bracket != nil {
+	switch {
+	case bracket != nil:
 		host = bracket[bracketedV6.SubexpIndex("addr")]
-	} else if strings.Contains(hostPart, ":") {
-		return SSHDestination{}, fmt.Errorf("\"%s\": IPv6 address requires brackets, expected form ssh://user@[::1]:22", hostPart)
-	} else {
+	case !strings.Contains(hostPart, ":"):
 		host = hostPart
+	case ipv6Shape.MatchString(hostPart):
+		// The URI's port group only takes digits, so an unbracketed IPv6 address
+		// stays in the host part: "ssh://::1" arrives here.
+		return SSHDestination{}, fmt.Errorf("\"%s\": IPv6 address requires brackets, expected form ssh://user@[::1]:22", hostPart)
+	default:
+		// Likewise a non-numeric port stays in the host part; say which port it
+		// was meant to be rather than blaming brackets.
+		_, portText, _ := strings.Cut(hostPart, ":")
+		return SSHDestination{}, fmt.Errorf("\"%s\": port %q is not a number", uri, portText)
 	}
 	portText := matched[uriForm.SubexpIndex("port")]
 	port := 22

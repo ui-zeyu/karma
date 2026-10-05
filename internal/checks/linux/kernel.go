@@ -8,9 +8,11 @@
 package linux
 
 import (
+	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/script"
+	"regexp"
 )
 
 const hiddenModuleScript = `
@@ -29,17 +31,18 @@ done
 const moduleSigScript = "zcat /proc/config.gz 2>/dev/null | grep '^CONFIG_MODULE_SIG'" +
 	` || grep "^CONFIG_MODULE_SIG" "/boot/config-$(uname -r)" 2>/dev/null`
 
-// modulesLoadScript: boot-time load surface: /etc/modules is the Debian
-// convention and modules-load.d the systemd one; only the writable layers (/etc,
-// /run, /usr/local) are scanned, since /usr and /lib belong to distro packages.
-var modulesLoadScript = script.Lines(
-	script.ReadFiles([]string{"/etc/modules"}, `cat "$f"`, true),
-	script.ReadFiles([]string{
-		"/etc/modules-load.d/*.conf",
-		"/run/modules-load.d/*.conf",
-		"/usr/local/lib/modules-load.d/*.conf",
-	}, `cat "$f"`, true),
-)
+// modulesLoadPaths are the boot-load surfaces the check covers: the Debian
+// /etc/modules file and the systemd modules-load.d layers, of which only the
+// writable ones are scanned (/usr and /lib belong to distro packages). The ssh
+// loop and the local walk read the same list.
+var modulesLoadPaths = []string{
+	"/etc/modules",
+	"/etc/modules-load.d/*.conf",
+	"/run/modules-load.d/*.conf",
+	"/usr/local/lib/modules-load.d/*.conf",
+}
+
+var modulesLoadScript = script.ReadFiles(modulesLoadPaths, `cat "$f"`, true)
 
 // rootkitSyms: symbol-name families leaked into /proc/kallsyms by known LKM
 // rootkits (Diamorphine, Reptile, Heroinn, and the syy/h4x syscall-table
@@ -50,6 +53,10 @@ const rootkitSyms = `diamorphine|reptile|heroin|hide_module|module_hidden|hidden
 	`find_sys_call_tbl|h4x_delete_module|h4x_getdents64|h4x_kill|h4x_tcp4_seq_show|` +
 	`new_getdents|old_getdents|should_hide_file_name|should_hide_task_name|is_invisible|` +
 	`syy_getdents|syy_kill`
+
+// kallsymsRe is the family alternation the local walk filters with — the same
+// text the rule grades and the script greps.
+var kallsymsRe = regexp.MustCompile(rootkitSyms)
 
 // kallsymsScript narrows to the rootkit families before the text leaves the
 // target: the full table is megabytes and its quiet lines carry no evidence.
@@ -75,7 +82,7 @@ var moduleDirs = []string{
 var KernelChecks = []*model.Check{
 	define.LinuxCheck("modules-load", "Boot-loaded modules (/etc/modules, modules-load.d)", model.AspectKernel,
 		[]model.Probe{
-			{Label: "cat", Inv: model.Dual{Run: nativeModulesLoad, Script: modulesLoadScript}},
+			{Label: "cat", Inv: model.Dual{Run: native.ModulesLoad(modulesLoadPaths), Script: modulesLoadScript}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -90,8 +97,8 @@ var KernelChecks = []*model.Check{
 	// aspect so it does not block the targeted checks before it
 	define.LinuxCheck("lsmod", "Kernel modules", model.AspectKernel,
 		[]model.Probe{
-			{Label: "lsmod", Inv: model.Dual{Run: nativeLsmod, Script: "lsmod"}},
-			{Label: "proc-modules", Inv: model.Dual{Run: nativeProcModules, Script: "cat /proc/modules 2>/dev/null"}},
+			{Label: "lsmod", Inv: model.Dual{Run: native.Lsmod, Script: "lsmod"}},
+			{Label: "proc-modules", Inv: model.Dual{Run: native.ProcModules, Script: "cat /proc/modules 2>/dev/null"}},
 		},
 		// The Used by tail can contain spaces, which the generic table word-by-word
 		// coloring would split apart
@@ -107,7 +114,7 @@ var KernelChecks = []*model.Check{
 		}),
 	define.LinuxCheck("modules-hidden", "Hidden module cross-check (/sys/module vs /proc/modules)", model.AspectKernel,
 		[]model.Probe{
-			{Label: "proc-modules-diff", Inv: model.Dual{Run: nativeModulesHidden, Script: hiddenModuleScript}},
+			{Label: "proc-modules-diff", Inv: model.Dual{Run: native.ModulesHidden, Script: hiddenModuleScript}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -117,7 +124,7 @@ var KernelChecks = []*model.Check{
 		}),
 	define.LinuxCheck("module-sig-config", "Kernel module signature config", model.AspectKernel,
 		[]model.Probe{
-			{Label: "zcat", Inv: model.Dual{Run: nativeModuleSig, Script: moduleSigScript}},
+			{Label: "zcat", Inv: model.Dual{Run: native.ModuleSig, Script: moduleSigScript}},
 		},
 		define.CheckOpt{
 			Syntax: "env",
@@ -134,7 +141,10 @@ var KernelChecks = []*model.Check{
 	// which stays silent, exactly like webshell-grep.
 	define.LinuxCheck("kallsyms", "Kernel symbol table rootkit signatures (/proc/kallsyms)", model.AspectKernel,
 		[]model.Probe{
-			{Label: "grep", Inv: model.Dual{Run: nativeKallsyms, Script: kallsymsScript}, LineLimit: 200},
+			{Label: "grep", Inv: model.Dual{
+				Run:    native.Kallsyms(kallsymsRe),
+				Script: kallsymsScript,
+			}, LineLimit: 200},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -144,7 +154,7 @@ var KernelChecks = []*model.Check{
 		}),
 	define.LinuxCheck("tainted", "Kernel tainted flags", model.AspectKernel,
 		[]model.Probe{
-			{Label: "tainted", Inv: model.Dual{Run: nativeTainted, Script: "cat /proc/sys/kernel/tainted 2>/dev/null"}},
+			{Label: "tainted", Inv: model.Dual{Run: native.Tainted, Script: "cat /proc/sys/kernel/tainted 2>/dev/null"}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -156,7 +166,7 @@ var KernelChecks = []*model.Check{
 	// before the big lsmod table. Locally the ring buffer is read through
 	// syslog(2) in-process (native_dmesg_linux).
 	define.LinuxCheck("dmesg", "Kernel module logs", model.AspectKernel,
-		[]model.Probe{{Label: "dmesg", Inv: model.Dual{Run: nativeDmesg, Script: "dmesg"}}},
+		[]model.Probe{{Label: "dmesg", Inv: model.Dual{Run: native.Dmesg, Script: "dmesg"}}},
 		define.CheckOpt{
 			Syntax: "dmesg",
 			// The keep filter leaves only module lines: load/taint records in the kernel ring

@@ -4,20 +4,27 @@
 package linux
 
 import (
-	"context"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 
+	"github.com/samber/lo"
+
+	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
 )
 
-const cwdTmpScript = `
+// tmpGlobs is tmpDirs as the shell case pattern the cwd walk matches: every temp
+// directory and everything below it.
+var tmpGlobs = strings.Join(lo.Map(tmpDirs, func(dir string, _ int) string { return dir + "/*" }), "|")
+
+// cwdTmpScript prints every process whose working directory sits inside a temp
+// directory.
+var cwdTmpScript = `
 for c in /proc/[0-9]*/cwd; do
   t=$(readlink "$c" 2>/dev/null) || continue
-  case "$t" in /tmp/*|/var/tmp/*|/dev/shm/*) printf '%s -> %s\n' "${c%/cwd}" "$t";; esac
+  case "$t" in ` + tmpGlobs + `) printf '%s -> %s\n' "${c%/cwd}" "$t";; esac
 done
 `
 
@@ -69,7 +76,7 @@ const hiddenProcsScript = `command -v ps >/dev/null 2>&1 || exit 127
 // (Podman), the PID 1 cgroup path (docker/containerd/kubepods/libpod/lxc/kata
 // scopes), and systemd-detect-virt. capsh (libcap2-bin, near-universal)
 // decodes the names; the fallback tier reads the /proc/self/status masks and
-// decodeCapMasks decodes them locally.
+// native.DecodeCapMasks decodes them locally.
 const sessionCapsScript = `
 if [ -f /.dockerenv ] || [ -f /run/.containerenv ]` +
 	` || grep -qaE "(docker|containerd|kubepods|libpod|lxc|kata)[/.-]" /proc/1/cgroup 2>/dev/null` +
@@ -88,77 +95,42 @@ else
 fi
 `
 
-// capNames is the Linux capability list by bit number (uapi/linux/capability.h).
-// A newer kernel's bits past the table decode to their number instead of
-// garbage, and a missing capsh never blocks the check.
-var capNames = []string{
-	"cap_chown", "cap_dac_override", "cap_dac_read_search", "cap_fowner",
-	"cap_fsetid", "cap_kill", "cap_setgid", "cap_setuid", "cap_setpcap",
-	"cap_linux_immutable", "cap_net_bind_service", "cap_net_broadcast",
-	"cap_net_admin", "cap_net_raw", "cap_ipc_lock", "cap_ipc_owner",
-	"cap_sys_module", "cap_sys_rawio", "cap_sys_chroot", "cap_sys_ptrace",
-	"cap_sys_pacct", "cap_sys_admin", "cap_sys_boot", "cap_sys_nice",
-	"cap_sys_resource", "cap_sys_time", "cap_sys_tty_config", "cap_mknod",
-	"cap_lease", "cap_audit_write", "cap_audit_control", "cap_setfcap",
-	"cap_mac_override", "cap_mac_admin", "cap_syslog", "cap_wake_alarm",
-	"cap_block_suspend", "cap_audit_read", "cap_perfmon", "cap_bpf",
-	"cap_checkpoint_restore",
+// minerFamilies: cryptominer family names, from the LinuxCheck list plus the
+// 2020+ kdevtmpfsi/kinsing wave and the kthreadd impostors. One list feeds both
+// readings — the process-line alternation the shell probe's grep -E and the local
+// RE2 scan share, and the rule's alternation — so they cannot drift apart.
+var minerFamilies = []string{
+	"xmrig", "xmr-stak", "minerd", "cpuminer", "kworkerds", "kdevtmpfsi", "kinsing",
+	"watchbog", "sustes", "ddgs", "kthreaddi", "kthreaddk", "sysupdate", "sysguard",
+	"networkservice", "cryptonight",
 }
 
-// capMaskLine matches one /proc/self/status capability line: a Cap* key and a
-// hex mask (kallsyms-style leading zeros included).
-var capMaskLine = regexp.MustCompile(`^(Cap\w+:[ \t]+)([0-9a-fA-F]{8,16})[ \t]*$`)
+// minerFamily is minerFamilies as the rule's plain alternation.
+var minerFamily = strings.Join(minerFamilies, "|")
 
-// decodeCapMasks is the Adapt of the status tier: it appends the decoded
-// capability names to each non-zero mask line, so both tiers read as names and
-// the same rules light on either. A body with no set mask is returned as is.
-func decodeCapMasks(_ string, body string) *model.Shaped {
-	lines := strings.Split(body, "\n")
-	changed := false
-	for i, line := range lines {
-		m := capMaskLine.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		value, err := strconv.ParseUint(m[2], 16, 64)
-		if err != nil {
-			continue
-		}
-		names := capBitNames(value)
-		if len(names) == 0 {
-			continue
-		}
-		lines[i] = fmt.Sprintf("%s%s  = %s", m[1], m[2], strings.Join(names, ", "))
-		changed = true
-	}
-	if !changed {
-		return nil
-	}
-	return &model.Shaped{Text: strings.Join(lines, "\n")}
+// minerPsSource is minerFamilies as the process-line alternation, spelled so that
+// both readings work: the target's grep -E and the local RE2 compile it the same
+// way (plain capture groups -- GNU grep parses (?: literally). \b bounds every
+// name so substrings stay out (macOS runs a legit daemon named
+// networkserviceproxy); the Stratum pool protocol is the one non-name branch.
+var minerPsSource = `\b` + strings.Join(minerFamilies, `\b|\b`) + `\b|\bstratum\+?(tcp|ssl):`
+
+var minerPsPattern = regexp.MustCompile(minerPsSource)
+
+// minerDropPaths is the fixed drop-path list the ls section reads.
+var minerDropPaths = []string{
+	"/tmp/.a", "/var/tmp/.a", "/dev/.a", "/dev/shm/.a",
+	"/tmp/xmr", "/tmp/config.json", "/var/tmp/config.json", "/dev/shm/config.json",
+	"/tmp/secure.sh", "/tmp/auth.sh", "/usr/.work/work64",
 }
 
-// capBitNames decodes one mask into capability names, lowest bit first.
-func capBitNames(mask uint64) []string {
-	var names []string
-	for bit := 0; mask>>bit != 0; bit++ {
-		if mask>>bit&1 == 0 {
-			continue
-		}
-		if bit < len(capNames) {
-			names = append(names, capNames[bit])
-		} else {
-			names = append(names, fmt.Sprintf("bit%d", bit))
-		}
-	}
-	return names
+// minerNameGlobs is the temp-name walk's -iname list: the globs are lowercase
+// and the local walk lowercases the name it compares.
+var minerNameGlobs = []string{
+	"*xmrig*", "*minerd*", "*cpuminer*", "kworkerds*", "kdevtmpfsi*",
+	"kinsing*", "watchbog*", "sustes*", "sysupdate*", "sysguard*",
+	"networkservice*", "config.json",
 }
-
-// minerFamily: cryptominer family names, from the LinuxCheck list plus the
-// 2020+ kdevtmpfsi/kinsing wave and the kthreadd impostors. A plain
-// alternation so the same string serves the shell probe's ERE and the rule's
-// RE2. Keep in sync with minerScript below.
-const minerFamily = `xmrig|xmr-stak|minerd|cpuminer|kworkerds|kdevtmpfsi|kinsing|` +
-	`watchbog|sustes|ddgs|kthreaddi|kthreaddk|sysupdate|sysguard|networkservice|cryptonight`
 
 // minerScript hunts cryptominers in place: process lines matched out of a ps
 // snapshot (grep -v drops this pipeline's own lines, which carry the pattern),
@@ -166,21 +138,38 @@ const minerFamily = `xmrig|xmr-stak|minerd|cpuminer|kworkerds|kdevtmpfsi|kinsing
 // temp directories. Every arm is quiet when nothing matches; the deep
 // time-clustered hunt stays with the mtime subcommand.
 //
+// The pattern and the three lists are the same ones the local tier walks, so
+// the two channels hunt for identical things instead of two spellings of the
+// same list drifting apart.
+//
 // Checks run concurrently, so on a clean host the ps check's snapshot still
 // holds this script's own sh line, and the global known-malware-name /
 // hidden-tmp-path rules light on it. Accepted: spelling the names plainly is
 // worth one recognizable karma-owned line, and the split-quote trick to dodge
 // it was reverted as unreadable. \b bounds every name so substrings stay out
 // (macOS runs a legit daemon named networkserviceproxy).
-const minerScript = `
-pat='\bxmrig\b|\bxmr-stak\b|\bminerd\b|\bcpuminer\b|\bkworkerds\b|\bkdevtmpfsi\b|\bkinsing\b|\bwatchbog\b|\bsustes\b|\bddgs\b|\bkthreaddi\b|\bkthreaddk\b|\bsysupdate\b|\bsysguard\b|\bnetworkservice\b|\bcryptonight\b|\bstratum\+?(tcp|ssl):'
+var minerScript = fmt.Sprintf(`
+pat='%s'
 echo "== ps"
-ps auxww | grep -aE "$pat" | grep -av grep
+ps auxwwf | grep -aE "$pat" | grep -av grep
 echo "== drop paths"
-LC_ALL=C ls -l /tmp/.a /var/tmp/.a /dev/.a /dev/shm/.a /tmp/xmr /tmp/config.json /var/tmp/config.json /dev/shm/config.json /tmp/secure.sh /tmp/auth.sh /usr/.work/work64 2>/dev/null
+LC_ALL=C ls -l %s 2>/dev/null
 echo "== temp names"
-find /tmp /var/tmp /dev/shm -xdev -maxdepth 4 -type f \( -iname '*xmrig*' -o -iname '*minerd*' -o -iname '*cpuminer*' -o -iname 'kworkerds*' -o -iname 'kdevtmpfsi*' -o -iname 'kinsing*' -o -iname 'watchbog*' -o -iname 'sustes*' -o -iname 'sysupdate*' -o -iname 'sysguard*' -o -iname 'networkservice*' -o -iname 'config.json' \) -exec ls -l {} + 2>/dev/null
-`
+find %s -xdev -maxdepth 4 -type f \( %s \) -exec ls -l {} + 2>/dev/null
+`, minerPsSource, strings.Join(minerDropPaths, " "), strings.Join(tmpDirs, " "), minerInameArgs(minerNameGlobs))
+
+// minerInameArgs renders the temp-name walk's -iname alternation, the globs
+// joined by -o.
+func minerInameArgs(globs []string) string {
+	args := make([]string, 0, 2*len(globs)-1)
+	for i, glob := range globs {
+		if i > 0 {
+			args = append(args, "-o")
+		}
+		args = append(args, "-iname '"+glob+"'")
+	}
+	return strings.Join(args, " ")
+}
 
 // hidden-pids (atrk-style brute force, migrated 2026-10): a rootkit that
 // filters the /proc readdir path still cannot hide from the kernel's own
@@ -189,73 +178,6 @@ find /tmp /var/tmp /dev/shm -xdev -maxdepth 4 -type f \( -iname '*xmrig*' -o -in
 // one row per confirmed PID, so the rules fire on either tier. The native
 // tier's scan cap lives in pids_native_linux.go; the shell tier caps at
 // 131072 because its loop runs interpreted.
-
-// hiddenPidScan is the brute-force comparison with every oracle injected, so
-// the algorithm is testable without touching the live /proc.
-type hiddenPidScan struct {
-	pidMax   int
-	scanCap  int
-	euid     int
-	kill0    func(pid int) bool               // kernel-side existence oracle
-	fdExists func(pid int) bool               // /proc/PID/fd lookup oracle (evidence)
-	listPIDs func() []int                     // readdir view: PIDs and thread IDs
-	readFile func(path string) (string, bool) // best-effort /proc reads for the report
-}
-
-func (s hiddenPidScan) run(ctx context.Context) (string, error) {
-	var b strings.Builder
-	fmt.Fprintf(&b, "scan: pid_max=%d scanned=1-%d oracle=kill(pid,0) vs /proc readdir (threads included)\n",
-		s.pidMax, s.scanCap)
-	if s.euid != 0 {
-		b.WriteString("note: not running as root: readdir may hide other users' processes\n")
-	}
-	normal := map[int]bool{}
-	for _, p := range s.listPIDs() {
-		normal[p] = true
-	}
-	var candidates []int
-	for pid := 1; pid <= s.scanCap; pid++ {
-		// ctx.Err() is one atomic load; checking every iteration keeps
-		// cancellation honest even for small caps
-		if ctx.Err() != nil {
-			return b.String(), ctx.Err()
-		}
-		if !normal[pid] && s.kill0(pid) {
-			candidates = append(candidates, pid)
-		}
-	}
-	if len(candidates) == 0 {
-		return b.String(), nil
-	}
-	// Confirmation pass kills both races: a process that exited fails the
-	// oracle again, and a process created between the two listings shows up
-	// in the fresh readdir view.
-	fresh := map[int]bool{}
-	for _, p := range s.listPIDs() {
-		fresh[p] = true
-	}
-	var hidden []int
-	for _, pid := range candidates {
-		if !fresh[pid] && s.kill0(pid) {
-			hidden = append(hidden, pid)
-		}
-	}
-	if len(hidden) == 0 {
-		return b.String(), nil
-	}
-	b.WriteString("== hidden\n")
-	for _, pid := range hidden {
-		fd := "no"
-		if s.fdExists(pid) {
-			fd = "yes"
-		}
-		comm, _ := s.readFile(fmt.Sprintf("/proc/%d/comm", pid))
-		cmd, _ := s.readFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-		fmt.Fprintf(&b, "PID %d  fd=%s  comm=%s  cmd='%s'\n", pid, fd,
-			strings.TrimSpace(comm), strings.TrimRight(strings.ReplaceAll(cmd, "\x00", " "), " "))
-	}
-	return b.String(), nil
-}
 
 // hiddenPidsScript is the script branch of the same hunt — the branch the ssh
 // channel runs. kill -0 is a shell builtin on every practical /bin/sh, so the
@@ -330,9 +252,9 @@ var ProcessChecks = []*model.Check{
 	// host binaries.
 	define.LinuxCheck("ps", "Process tree", model.AspectProcess,
 		[]model.Probe{
-			{Label: "ps", Inv: model.Dual{Run: nativePsAux, Script: "ps auxwwf"}},
-			{Label: "pstree", Inv: model.Dual{Run: nativePstree, Script: "pstree -ap"}},
-			{Label: "ps-ef", Inv: model.Dual{Run: nativePsEf, Script: "ps -ef"}},
+			{Label: "ps", Inv: model.Dual{Run: native.PsAux, Script: "ps auxwwf"}},
+			{Label: "pstree", Inv: model.Dual{Run: native.Pstree, Script: "pstree -ap"}},
+			{Label: "ps-ef", Inv: model.Dual{Run: native.PsEf, Script: "ps -ef"}},
 		},
 		define.CheckOpt{
 			Syntax: "table",
@@ -363,14 +285,14 @@ var ProcessChecks = []*model.Check{
 		[]model.Probe{
 			// head is the shape this probe wants: stop when enough is read, count it as a
 			// complete answer, and do not mark it "truncated"
-			{Label: "top", Inv: model.Dual{Run: nativeTop, Script: "top -b -n 1"}, Head: 25},
-			{Label: "ps-cpu", Inv: model.Dual{Run: nativePsCPU, Script: "ps aux --sort=-%cpu"}, Head: 10},
-			{Label: "ps-mem", Inv: model.Dual{Run: nativePsMem, Script: "ps aux --sort=-%mem"}, Head: 10},
+			{Label: "top", Inv: model.Dual{Run: native.Top, Script: "top -b -n 1"}, Head: 25},
+			{Label: "ps-cpu", Inv: model.Dual{Run: native.PsCPU, Script: "ps aux --sort=-%cpu"}, Head: 10},
+			{Label: "ps-mem", Inv: model.Dual{Run: native.PsMem, Script: "ps aux --sort=-%mem"}, Head: 10},
 		},
 		define.CheckOpt{Syntax: "top", Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,
 		[]model.Probe{
-			{Label: "caps", Inv: model.Dual{Run: nativeProcCaps, Script: sessionCapsScript}, Adapt: decodeCapMasks},
+			{Label: "caps", Inv: model.Dual{Run: native.ProcCaps, Script: sessionCapsScript}, Adapt: native.DecodeCapMasks},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -389,7 +311,7 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("deleted-exe", "Deleted files still in use", model.AspectProcess,
-		// The lsof tier is dual: locally nativeDeletedExe ladders from lsof to
+		// The lsof tier is dual: locally native.DeletedExe ladders from lsof to
 		// the /proc walk in one pass, so the two script-only tiers below exist
 		// on the ssh channel alone — find covers the fd/cwd/exe links in one
 		// process, the shell walk is the portable last resort for hosts whose
@@ -397,7 +319,7 @@ var ProcessChecks = []*model.Check{
 		// the reader's scan budget: a source-side line cap would cut the
 		// stream before the keep filter sees the deleted rows.
 		[]model.Probe{
-			{Label: "lsof", Inv: model.Dual{Run: nativeDeletedExe, Script: lsofScript}},
+			{Label: "lsof", Inv: model.Dual{Run: native.DeletedExe, Script: lsofScript}},
 			{Label: "find", Inv: model.Dual{Script: findDeletedScript}, LineLimit: 200},
 			{Label: "proc-links", Inv: model.Dual{Script: deletedLinksScript}, LineLimit: 200},
 		},
@@ -410,7 +332,7 @@ var ProcessChecks = []*model.Check{
 		}),
 	define.LinuxCheck("cwd-tmp", "Processes with cwd in a temp directory", model.AspectProcess,
 		[]model.Probe{
-			{Label: "proc-cwd", Inv: model.Dual{Run: nativeCwdTmp, Script: cwdTmpScript}},
+			{Label: "proc-cwd", Inv: model.Dual{Run: native.CwdTmp(tmpDirs), Script: cwdTmpScript}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -420,7 +342,7 @@ var ProcessChecks = []*model.Check{
 		}),
 	define.LinuxCheck("hidden-procs", "proc vs ps process comparison", model.AspectProcess,
 		[]model.Probe{
-			{Label: "ps", Inv: model.Dual{Run: nativeHiddenProcs, Script: hiddenProcsScript}},
+			{Label: "ps", Inv: model.Dual{Run: native.HiddenProcs, Script: hiddenProcsScript}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -431,7 +353,7 @@ var ProcessChecks = []*model.Check{
 	define.LinuxCheck("hidden-pids", "Hidden process brute-force (kill(0) vs /proc)", model.AspectProcess,
 		// Both branches print the same text shape, so the rules are shared.
 		[]model.Probe{
-			{Label: "brute", Inv: model.Dual{Run: nativeHiddenPIDs, Script: hiddenPidsScript}, LineLimit: 200},
+			{Label: "brute", Inv: model.Dual{Run: native.HiddenPIDs, Script: hiddenPidsScript}, LineLimit: 200},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -441,7 +363,15 @@ var ProcessChecks = []*model.Check{
 		}),
 	define.LinuxCheck("miner", "Cryptominer hunt (processes and drop paths)", model.AspectProcess,
 		[]model.Probe{
-			{Label: "scan", Inv: model.Dual{Run: nativeMiner, Script: minerScript}, LineLimit: 200},
+			{Label: "scan", Inv: model.Dual{
+				Run: native.Miner(native.MinerScan{
+					Pattern:   minerPsPattern,
+					DropPaths: minerDropPaths,
+					NameGlobs: minerNameGlobs,
+					TempDirs:  tmpDirs,
+				}),
+				Script: minerScript,
+			}, LineLimit: 200},
 		},
 		define.CheckOpt{
 			Syntax: "table",

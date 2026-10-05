@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/script"
@@ -60,8 +61,12 @@ const pkgVerifyTimeout = 180 * time.Second // a full package verify takes a minu
 // keep live text logs; the RedHat family answers from its transaction database, so
 // both surfaces go into one sectioned script (the empty branch on the other family
 // is an empty section the reader drops).
+// pkgHistoryPaths are the text logs the check tails; the RedHat family answers
+// from its transaction database instead.
+var pkgHistoryPaths = []string{"/var/log/apt/history.log", "/var/log/dpkg.log"}
+
 var pkgHistoryScript = script.Lines(
-	script.ReadFiles([]string{"/var/log/apt/history.log", "/var/log/dpkg.log"}, `tail -n 300 "$f"`, true),
+	script.ReadFiles(pkgHistoryPaths, `tail -n 300 "$f"`, true),
 	`echo "== dnf history"; dnf history 2>/dev/null || yum history 2>/dev/null | head -n 300`,
 )
 
@@ -74,13 +79,19 @@ var pkgHistoryRules = []model.Rule{
 	define.KeywordRule,
 }
 
-// authBinScript: the programs most often replaced in the login auth chain; once
-// pkg-verify points at one, type and mtime close the loop in place.
+// authBinPaths are the programs most often replaced in the login auth chain;
+// once pkg-verify points at one, type and mtime close the loop in place. The
+// globs cover both the multiarch and lib64 PAM layouts. The ssh loop and the
+// local walk cover the same list.
+var authBinPaths = []string{
+	"/usr/sbin/sshd", "/usr/bin/login", "/usr/bin/su", "/usr/bin/sudo",
+	"/usr/bin/passwd", "/usr/sbin/unix_chkpwd", "/sbin/unix_chkpwd",
+	"/usr/lib*/security/pam_unix.so", "/lib*/security/pam_unix.so",
+}
+
 var authBinScript = `
 list=
-for f in /usr/sbin/sshd /usr/bin/login /usr/bin/su /usr/bin/sudo /usr/bin/passwd \
-         /usr/sbin/unix_chkpwd /sbin/unix_chkpwd \
-         /usr/lib*/security/pam_unix.so /lib*/security/pam_unix.so; do
+for f in ` + strings.Join(authBinPaths, " ") + `; do
   [ -f "$f" ] && list="$list $f"
 done
 ` + forensicsBlock("list")
@@ -93,13 +104,13 @@ var binNotElfRule = model.NewRule("bin-not-elf",
 var PackageChecks = []*model.Check{
 	define.LinuxCheck("containers", "Containers (Docker)", model.AspectPackage,
 		[]model.Probe{
-			{Label: "docker", Inv: model.Dual{Run: nativeDocker, Script: dockerScript}},
+			{Label: "docker", Inv: model.Dual{Run: native.Docker, Script: dockerScript}},
 		},
 		define.CheckOpt{Syntax: "table", Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("pkg-verify", "Package integrity verification", model.AspectPackage,
 		[]model.Probe{
-			{Label: "dpkg", Inv: model.Dual{Run: nativePkgVerify([]string{"dpkg", "-V"}), Script: verifyScript(pkgVerifyDpkg)}},
-			{Label: "rpm", Inv: model.Dual{Run: nativePkgVerify([]string{"rpm", "-Va"}), Script: verifyScript(pkgVerifyRpm)}},
+			{Label: "dpkg", Inv: model.Dual{Run: native.PkgVerify([]string{"dpkg", "-V"}), Script: verifyScript(pkgVerifyDpkg)}},
+			{Label: "rpm", Inv: model.Dual{Run: native.PkgVerify([]string{"rpm", "-Va"}), Script: verifyScript(pkgVerifyRpm)}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -114,12 +125,12 @@ var PackageChecks = []*model.Check{
 		}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
 		[]model.Probe{
-			{Label: "log", Inv: model.Dual{Run: nativePkgHistory, Script: pkgHistoryScript}},
+			{Label: "log", Inv: model.Dual{Run: native.PkgHistory(pkgHistoryPaths), Script: pkgHistoryScript}},
 		},
 		define.CheckOpt{Rules: pkgHistoryRules}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
 		[]model.Probe{
-			{Label: "file", Inv: model.Dual{Run: nativeAuthBinaries, Script: authBinScript}},
+			{Label: "file", Inv: model.Dual{Run: native.AuthBinaries(authBinPaths), Script: authBinScript}},
 		},
 		define.CheckOpt{
 			Syntax: "ls-l",

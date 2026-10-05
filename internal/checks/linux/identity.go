@@ -3,15 +3,21 @@
 package linux
 
 import (
+	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
+	"strings"
 )
 
 // sudoers: stop as soon as a file is readable; if none is, exit non-zero and fall
 // through to sudo -n -l, which only answers what the current user may run.
-const sudoersScript = `
+// sudoersPaths are the surfaces the check covers; the ssh loop prints each
+// readable one and exits 0 only once something was read.
+var sudoersPaths = []string{"/etc/sudoers", "/etc/sudo.conf", "/etc/sudoers.d/*"}
+
+var sudoersScript = `
 ok=1
-for f in /etc/sudoers /etc/sudo.conf /etc/sudoers.d/*; do
+for f in ` + strings.Join(sudoersPaths, " ") + `; do
   [ -f "$f" ] && [ -r "$f" ] || continue
   echo "== $f"
   cat "$f"
@@ -20,14 +26,30 @@ done
 exit "$ok"
 `
 
+// homeGlobs: where user homes live, in the order both channels visit them. A
+// trailing "/*" marks a container whose immediate children are homes; a bare path
+// is one home itself. The ssh script expands the list with the shell's pathname
+// expansion, the local tier with native.expandHomes, so both channels visit the
+// same directories rather than two spellings of the list drifting apart.
+var homeGlobs = []string{"/root", "/home/*"}
+
+// homeGlobWords is homeGlobs in the shell's spelling, spliced into the script.
+var homeGlobWords = strings.Join(homeGlobs, " ")
+
+// sshdConfigPaths: the sshd config stack. The sshd-config check reads it as
+// evidence, the authorized-keys check takes its AuthorizedKeysFile directives
+// from the same files, and authorizedKeysScript greps them for those directives,
+// so one list covers all three.
+var sshdConfigPaths = []string{"/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/*.conf"}
+
 // authorizedKeysScript finds each user's authorized_keys; paths named by the
 // AuthorizedKeysFile directive are read too: %u expands to the user name, %h to
 // the home directory, and a relative path lands in that user's home. Default names
 // find already reports are skipped to avoid duplicate sections.
-const authorizedKeysScript = `
+var authorizedKeysScript = `
 seen=
 pseen=
-for d in /root /home/*; do
+for d in ` + homeGlobWords + `; do
   [ -d "$d" ] || continue
   find "$d" -maxdepth 3 -name 'authorized_keys*' -type f 2>/dev/null | while read -r f; do
     echo "== $f"
@@ -35,14 +57,14 @@ for d in /root /home/*; do
   done
 done
 awk '$1 == "AuthorizedKeysFile" { for (i = 2; i <= NF; i++) print $i }' \
-  /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null |
+  ` + strings.Join(sshdConfigPaths, " ") + ` 2>/dev/null |
 while read -r spec; do
   case " $seen " in *" $spec "*) continue;; esac
   seen="$seen $spec"
   case "$spec" in
     none|authorized_keys|authorized_keys2|.ssh/authorized_keys|.ssh/authorized_keys2) continue;;
   esac
-  for d in /root /home/*; do
+  for d in ` + homeGlobWords + `; do
     [ -d "$d" ] || continue
     p=$(printf '%s\n' "$spec" | sed "s/%u/$(basename "$d")/g")
     p=$(printf '%s\n' "$p" | sed "s|%h|$d|g")
@@ -151,15 +173,15 @@ var IdentityChecks = []*model.Check{
 	// the same labels run the util-linux binaries.
 	define.LinuxCheck("logins", "Current logins", model.AspectIdentity,
 		[]model.Probe{
-			{Label: "w", Inv: model.Dual{Run: nativeW, Script: "w"}},
-			{Label: "who", Inv: model.Dual{Run: nativeWho, Script: "who"}},
+			{Label: "w", Inv: model.Dual{Run: native.W, Script: "w"}},
+			{Label: "who", Inv: model.Dual{Run: native.Who, Script: "who"}},
 		},
 		define.CheckOpt{Syntax: "table"}),
 	define.LinuxCheck("last", "Login history (last)", model.AspectIdentity,
-		[]model.Probe{{Label: "last", Inv: model.Dual{Run: nativeLast, Script: "last -n 200"}}},
+		[]model.Probe{{Label: "last", Inv: model.Dual{Run: native.Last, Script: "last -n 200"}}},
 		define.CheckOpt{Syntax: "table"}),
 	define.LinuxCheck("lastlog", "Last account login (lastlog)", model.AspectIdentity,
-		[]model.Probe{{Label: "lastlog", Inv: model.Dual{Run: nativeLastlog, Script: "lastlog"}}},
+		[]model.Probe{{Label: "lastlog", Inv: model.Dual{Run: native.Lastlog, Script: "lastlog"}}},
 		define.CheckOpt{
 			// The header is mixed case, so the columns are anchored by their own
 			// syntax; the note line ahead of the header stays plain.
@@ -170,7 +192,7 @@ var IdentityChecks = []*model.Check{
 		}),
 	define.LinuxCheck("sudoers", "Sudo grants", model.AspectIdentity,
 		[]model.Probe{
-			{Label: "cat", Inv: model.Dual{Run: nativeSudoers, Script: sudoersScript}},
+			{Label: "cat", Inv: model.Dual{Run: native.Sudoers(sudoersPaths), Script: sudoersScript}},
 			{Label: "sudo", Inv: model.NewCommand("sudo", "-n", "-l")},
 		},
 		define.CheckOpt{
@@ -185,7 +207,10 @@ var IdentityChecks = []*model.Check{
 		[]model.Rule{define.KeywordRule}),
 	define.LinuxCheck("authorized-keys", "SSH authorized keys", model.AspectIdentity,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: nativeAuthorizedKeys, Script: authorizedKeysScript}},
+			{Label: "find", Inv: model.Dual{
+				Run:    native.AuthorizedKeys(homeGlobs, sshdConfigPaths),
+				Script: authorizedKeysScript,
+			}},
 		},
 		define.CheckOpt{
 			Syntax: "ssh-pubkey",
@@ -198,7 +223,7 @@ var IdentityChecks = []*model.Check{
 	// A modified sshd_config (redirected AuthorizedKeysFile, root access opened) is
 	// the easiest key-based backdoor
 	define.LinuxCheck("sshd-config", "sshd config", model.AspectIdentity,
-		readFilesCheck("/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/*.conf"),
+		readFilesCheck(sshdConfigPaths...),
 		define.CheckOpt{
 			Syntax: "sshd-config",
 			Rules: []model.Rule{

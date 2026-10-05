@@ -226,7 +226,7 @@ func TestCommandLineErrors(t *testing.T) {
 	}{
 		{"unknown command gets a suggestion", []string{"lst"}, []string{`unknown command "lst"`, "Did you mean: list"}},
 		{"a typo only gets the closest", []string{"locl"}, []string{"Did you mean: local"}},
-		{"a subcommand mounted elsewhere gets its placement", []string{"mtime", "/tmp"}, []string{`unknown command "mtime"`, "karma local mtime"}},
+		{"a mode that lives on a channel command gets its placement", []string{"mtime", "/tmp"}, []string{`unknown command "mtime"`, "karma local mtime"}},
 		{"unknown flag", []string{"local", "--typo"}, []string{"unknown flag --typo", "FLAGS"}},
 		{"unknown shorthand flag", []string{"local", "-x"}, []string{"unknown shorthand flag -x"}},
 		{"flag needs a value", []string{"local", "--timeout"}, []string{"flag --timeout needs a value"}},

@@ -55,7 +55,7 @@ func RenderListTable(w io.Writer, selected []*model.Check, width int) {
 			if index > 0 {
 				fmt.Fprintln(w)
 			}
-			fmt.Fprintln(w, bandHeading(string(group.platform), width, bandStyle))
+			fmt.Fprintln(w, headingBand(string(group.platform), width))
 		}
 		rows := make([]string, 0, len(group.checks))
 		for _, check := range group.checks {
@@ -64,12 +64,6 @@ func RenderListTable(w io.Writer, selected []*model.Check, width int) {
 		head := []string{fillBand(" "+strings.ToUpper(string(group.aspect)), railInner(width), subBandStyle)}
 		fmt.Fprintln(w, checkBlock(model.Info, head, rows, width))
 	}
-}
-
-// bandHeading is the level-one heading band (the platform): a full-width band,
-// so the platform is said once instead of once per group.
-func bandHeading(name string, term int, st lipgloss.Style) string {
-	return fillBand(" "+strings.ToUpper(name), lineWidth(term), st)
 }
 
 // listLayout splits the line between the three columns: the id keeps its natural

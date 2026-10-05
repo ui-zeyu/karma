@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -29,18 +30,26 @@ func TestParseSSHDestination(t *testing.T) {
 }
 
 func TestParseSSHDestinationErrors(t *testing.T) {
-	bad := []string{
-		"",
-		"10.0.0.8:2222", // non-URI form has no colon
-		"root@10.0.0.8:22",
-		"ssh://::1",    // IPv6 needs brackets
-		"ssh://host:0", // port out of range
-		"ssh://host:99999",
-		"ssh://host:abc", // port not a number
+	bad := []struct {
+		in      string
+		wantErr string
+	}{
+		{"", "not a valid destination"},
+		{"10.0.0.8:2222", "non-URI form has no colon"}, // non-URI form has no colon
+		{"root@10.0.0.8:22", "non-URI form has no colon"},
+		{"ssh://::1", "IPv6 address requires brackets"},
+		{"ssh://host:0", "port 0 out of range"},
+		{"ssh://host:99999", "port 99999 out of range"},
+		{"ssh://host:abc", `port "abc" is not a number`},
 	}
-	for _, in := range bad {
-		if got, err := ParseSSHDestination(in); err == nil {
-			t.Errorf("ParseSSHDestination(%q) = %+v, want error", in, got)
+	for _, c := range bad {
+		got, err := ParseSSHDestination(c.in)
+		if err == nil {
+			t.Errorf("ParseSSHDestination(%q) = %+v, want error", c.in, got)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.wantErr) {
+			t.Errorf("ParseSSHDestination(%q) errored %q, want it to mention %q", c.in, err, c.wantErr)
 		}
 	}
 }

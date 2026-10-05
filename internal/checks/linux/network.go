@@ -6,135 +6,58 @@
 package linux
 
 import (
-	"encoding/hex"
-	"fmt"
-	"net"
-	"slices"
-	"strconv"
-	"strings"
-
-	"github.com/samber/lo"
-
+	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/script"
-	"karma/internal/textutil"
+	"strings"
 )
 
 // procNetScript: each of the four files becomes a section (ReadFiles' `== path`
-// header): parseProcNet uses the adapt section-title parameter to tell TCP from UDP
+// header): native.ParseProcNet uses the adapt section-title parameter to tell TCP from UDP
 // state semantics, which a plain cat merge cannot distinguish.
-var procNetScript = script.ReadFiles([]string{
-	"/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", "/proc/net/udp6",
-}, `cat "$f"`, true)
+// procNetPaths are the four socket tables the check renders, one section each.
+var procNetPaths = []string{"/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", "/proc/net/udp6"}
+
+var procNetScript = script.ReadFiles(procNetPaths, `cat "$f"`, true)
 
 // firewallScript: `-S` alone only shows the filter table, leaving out nat/mangle/raw
 // and IPv6; one script lays out every surface and adds the nft ruleset (when the
 // iptables compat layer is present it is not skipped by the fallback either).
-const firewallScript = `for t in filter nat mangle raw; do
-  echo "== iptables $t"
-  iptables -t "$t" -S 2>/dev/null
-done
-for t in filter nat mangle raw; do
-  echo "== ip6tables $t"
-  ip6tables -t "$t" -S 2>/dev/null
-done
-echo "== nft"
-nft list ruleset 2>/dev/null
-`
+// firewallFamilies and firewallTables are the surfaces the firewall check
+// covers; one loop per family, then the nft ruleset.
+var (
+	firewallFamilies = []string{"iptables", "ip6tables"}
+	firewallTables   = []string{"filter", "nat", "mangle", "raw"}
+)
 
-// procNetStates: /proc/net state codes (uppercase hex). UDP state translation
-// happens in parseProcNet: the kernel marks a connectionless socket TCP_CLOSE(07),
-// so a UDP section reads that code as UNCONN instead of the table's CLOSE.
-var procNetStates = map[string]string{
-	"00": "UNCONN",
-	"01": "ESTAB",
-	"02": "SYN_SENT",
-	"03": "SYN_RECV",
-	"04": "FIN_WAIT1",
-	"05": "FIN_WAIT2",
-	"06": "TIME_WAIT",
-	"07": "CLOSE",
-	"08": "CLOSE_WAIT",
-	"09": "LAST_ACK",
-	"0A": "LISTEN",
-	"0B": "CLOSING",
-}
+// firewallScript is that shape as the ssh script.
+var firewallScript = firewallScriptText()
 
-// decodeEndpoint restores a /proc/net hex address to ip:port (v4 dotted, v6 bracketed).
-//
-// v4 is one little-endian 32-bit word and v6 is four: reverse each word, keep word
-// order. Reversing the whole thing would spell ::1 as a bogus address.
-func decodeEndpoint(field string) (string, error) {
-	addressHex, portHex, ok := strings.Cut(field, ":")
-	if !ok {
-		return "", fmt.Errorf("endpoint missing port: %s", field)
+func firewallScriptText() string {
+	var b strings.Builder
+	for _, binary := range firewallFamilies {
+		b.WriteString("for t in " + strings.Join(firewallTables, " ") + "; do\n")
+		b.WriteString("  echo \"== " + binary + " $t\"\n")
+		b.WriteString("  " + binary + " -t \"$t\" -S 2>/dev/null\n")
+		b.WriteString("done\n")
 	}
-	port, err := strconv.ParseUint(portHex, 16, 32)
-	if err != nil {
-		return "", err
-	}
-	raw, err := hex.DecodeString(addressHex)
-	if err != nil {
-		return "", err
-	}
-	if len(raw)%4 != 0 {
-		return "", fmt.Errorf("address length is not a multiple of 4 bytes: %s", addressHex)
-	}
-	words := make([]byte, len(raw))
-	for i := 0; i+4 <= len(raw); i += 4 {
-		copy(words[i:], raw[i:i+4])
-		slices.Reverse(words[i : i+4])
-	}
-	ip := net.IP(words).String()
-	if len(words) == 4 {
-		return ip + ":" + strconv.FormatUint(port, 10), nil
-	}
-	return "[" + ip + "]:" + strconv.FormatUint(port, 10), nil
-}
-
-// parseProcNet converts one /proc/net/{tcp,tcp6,udp,udp6} section body into
-// `state  local  remote` lines. The title differs TCP from UDP state semantics: in
-// a UDP section both TCP_CLOSE(07) and the 00 placeholder translate to UNCONN as
-// connectionless.
-func parseProcNet(title string, text string) *model.Shaped {
-	udp := strings.Contains(title, "/udp")
-	lines := lo.FilterMap(textutil.CollectLines(text), func(row string, _ int) (string, bool) {
-		fields := strings.Fields(row)
-		if len(fields) < 4 || strings.TrimSuffix(fields[0], ":") == "sl" {
-			return "", false
-		}
-		local, err := decodeEndpoint(fields[1])
-		if err != nil {
-			return "", false
-		}
-		remote, err := decodeEndpoint(fields[2])
-		if err != nil {
-			return "", false
-		}
-		// A UDP socket is connectionless: the kernel reports TCP_CLOSE(07) for it,
-		// so the TCP table would print CLOSE; the section says UDP, so the state
-		// reads UNCONN.
-		state := strings.ToUpper(fields[3])
-		if udp && (state == "00" || state == "07") {
-			state = "UNCONN"
-		} else if mapped, ok := procNetStates[state]; ok {
-			state = mapped
-		}
-		return state + "  " + local + "  " + remote, true
-	})
-	return &model.Shaped{Text: strings.Join(lines, "\n")}
+	b.WriteString("echo \"== nft\"\nnft list ruleset 2>/dev/null\n")
+	return b.String()
 }
 
 // NetworkChecks covers networking.
 var NetworkChecks = []*model.Check{
 	define.LinuxCheck("listen", "Listening and established connections", model.AspectNetwork,
 		[]model.Probe{
-			{Label: "ss", Inv: model.Dual{Run: nativeSs, Script: "ss -tunap"}},
+			{Label: "ss", Inv: model.Dual{Run: native.Ss, Script: "ss -tunap"}},
 			{Label: "netstat", Inv: model.NewCommand("netstat", "-tunap")},
 			// The proc-net hex address restore is this probe's own dialect (adapt carries the
 			// section title to tell TCP/UDP); ss and netstat already output the target shape.
-			{Label: "proc-net", Inv: model.Dual{Run: nativeProcNet, Script: procNetScript}, Adapt: parseProcNet},
+			{Label: "proc-net", Inv: model.Dual{
+				Run:    native.ProcNet(procNetPaths),
+				Script: procNetScript,
+			}, Adapt: native.ParseProcNet},
 		},
 		define.CheckOpt{
 			Syntax: "listen",
@@ -156,27 +79,30 @@ var NetworkChecks = []*model.Check{
 		}),
 	define.LinuxCheck("addr", "Network addresses", model.AspectNetwork,
 		[]model.Probe{
-			{Label: "ip", Inv: model.Dual{Run: nativeIPAddr, Script: "ip -br addr"}},
+			{Label: "ip", Inv: model.Dual{Run: native.IPAddr, Script: "ip -br addr"}},
 			{Label: "ifconfig", Inv: model.NewCommand("ifconfig", "-a")},
-			{Label: "hostname", Inv: model.Dual{Run: nativeHostnameIps, Script: "hostname -I"}},
+			{Label: "hostname", Inv: model.Dual{Run: native.HostnameIps, Script: "hostname -I"}},
 		},
 		define.CheckOpt{Syntax: "ip-addr"}),
 	define.LinuxCheck("arp", "ARP / neighbor table", model.AspectNetwork,
 		[]model.Probe{
-			{Label: "ip", Inv: model.Dual{Run: nativeIPNeigh, Script: "ip neigh"}},
+			{Label: "ip", Inv: model.Dual{Run: native.IPNeigh, Script: "ip neigh"}},
 			{Label: "arp", Inv: model.NewCommand("arp", "-n")},
 		},
 		define.CheckOpt{Syntax: "ip-keyval"}),
 	define.LinuxCheck("route", "Routing table", model.AspectNetwork,
 		[]model.Probe{
-			{Label: "ip", Inv: model.Dual{Run: nativeIPRoute, Script: "ip route"}},
+			{Label: "ip", Inv: model.Dual{Run: native.IPRoute, Script: "ip route"}},
 			{Label: "route", Inv: model.NewCommand("route", "-n")},
 			{Label: "netstat", Inv: model.NewCommand("netstat", "-rn")},
 		},
 		define.CheckOpt{Syntax: "ip-keyval"}),
 	define.LinuxCheck("firewall", "Firewall rules", model.AspectNetwork,
 		[]model.Probe{
-			{Label: "iptables", Inv: model.Dual{Run: nativeFirewall, Script: firewallScript}},
+			{Label: "iptables", Inv: model.Dual{
+				Run:    native.Firewall(firewallFamilies, firewallTables),
+				Script: firewallScript,
+			}},
 			{Label: "nft", Inv: model.NewCommand("nft", "list", "ruleset")},
 		},
 		define.CheckOpt{

@@ -17,6 +17,7 @@ import (
 
 	"github.com/samber/lo"
 
+	"karma/internal/checks/linux/native"
 	"karma/internal/cluster"
 	"karma/internal/define"
 	"karma/internal/model"
@@ -40,9 +41,14 @@ const huntTimeout = 60 * time.Second
 // path, tab-separated.
 const findPrintf = `%T@\t%C@\t%TY-%Tm-%Td\t%TH:%TM:%TS\t%s\t%p\n`
 
-// huntPrune: the virtual filesystems a sweep from / must not descend into. They
-// hold no file metadata worth clustering, and walking them floods the stream.
-const huntPrune = `-path /proc -o -path /sys -o -path /dev`
+// huntPruneDirs: the virtual filesystems a sweep from / must not descend into.
+// They hold no file metadata worth clustering, and walking them floods the
+// stream. The find tier prunes them by path, the local walk decides per
+// directory, so both cover the same set.
+var huntPruneDirs = []string{"/proc", "/sys", "/dev"}
+
+// huntPrune is that list as the find expression -prune takes.
+var huntPrune = strings.Join(lo.Map(huntPruneDirs, func(dir string, _ int) string { return "-path " + dir }), " -o ")
 
 // huntScript: one section per directory; an absent or unreadable directory yields
 // an empty body, and the normalizer adds an explanatory line. -xdev keeps the walk
@@ -192,7 +198,7 @@ func timeline(groups [][]*cluster.FindRow) []string {
 func HuntCheck(dirs []string) *model.Check {
 	return define.LinuxCheck(huntID, "Mtime clustering (user-specified directories)", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: nativeHunt(dirs), Script: huntScript(dirs)}},
+			{Label: "find", Inv: model.Dual{Run: native.Hunt(dirs, huntPruneDirs), Script: huntScript(dirs)}},
 		},
 		define.CheckOpt{
 			Normalize: huntNormalize(time.Now),

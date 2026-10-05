@@ -13,6 +13,7 @@ import (
 
 	"github.com/samber/lo"
 
+	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/textutil"
@@ -107,7 +108,7 @@ var LogsChecks = []*model.Check{
 			Rules: []model.Rule{define.KeywordRule},
 		}),
 	define.LinuxCheck("lastb", "Failed login records", model.AspectLog,
-		[]model.Probe{{Label: "lastb", Inv: model.Dual{Run: nativeLastb, Script: "lastb -n 400"}}},
+		[]model.Probe{{Label: "lastb", Inv: model.Dual{Run: native.Lastb, Script: "lastb -n 400"}}},
 		define.CheckOpt{Syntax: "table"}),
 	listingCheck("log-dirs", "Log directory listing (by mtime)", model.AspectLog,
 		[]string{"/var/log", "/var/log/journal"}, 100,

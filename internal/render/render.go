@@ -81,9 +81,10 @@ func legend() string {
 	return strings.Join(parts, "  ")
 }
 
-// aspectBanner is the aspect banner: one band filling the full width, bold
-// white uppercase text.
-func aspectBanner(name string, term int) string {
+// headingBand is a level-one heading band: a full-width strip with bold white
+// uppercase text. It is the report's aspect banner and the catalog listing's
+// platform band, so both views say a level-one heading the same way.
+func headingBand(name string, term int) string {
 	return fillBand(" "+strings.ToUpper(name), lineWidth(term), bandStyle)
 }
 
@@ -105,7 +106,7 @@ func fillBand(label string, width int, st lipgloss.Style) string {
 
 // Band renders name as a level-one heading band.
 func Band(name string, term int) string {
-	return aspectBanner(name, term)
+	return headingBand(name, term)
 }
 
 // Panel renders label as a quiet rail panel head over the body rows.
@@ -751,7 +752,7 @@ func (o *LiveObserver) emit(result *model.CheckResult) {
 	}
 	if aspect := string(result.Check.Aspect); aspect != o.aspect {
 		o.aspect = aspect
-		fmt.Fprintln(o.w, aspectBanner(aspect, o.width))
+		fmt.Fprintln(o.w, headingBand(aspect, o.width))
 	}
 	if text == "" {
 		// Not even the fallback panel can be drawn: bare text with the check

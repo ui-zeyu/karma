@@ -9,7 +9,7 @@ go build -o dist/karma ./cmd/karma
 dist/karma --help
 ```
 
-The version is `0.13.0`; override it with `-ldflags "-X main.version=…"` and print it with `karma version` or `karma --version`.
+The version is `0.14.0`; override it with `-ldflags "-X main.version=…"` and print it with `karma version` or `karma --version`.
 
 ## Usage
 
@@ -32,9 +32,9 @@ dist/karma list
 dist/karma list network
 ```
 
-A selector word is a platform name, an aspect name, or a check id; with none given, everything runs. A platform or aspect word counts only if the catalog carries it, so `karma list windows` selects one platform's catalog and `karma list persistence` selects that aspect on both; an unknown word is an error with close matches. The first positional argument of `karma ssh` is the target. mtime hangs below `local` and `ssh` and clusters directory change times (the walk stays on each directory's own filesystem and skips `/proc`, `/sys` and `/dev`); over SSH the connection parameters (-p/-i/-o/--password) are written after the target as usual.
+A selector word is a platform name, an aspect name, or a check id; with none given, everything runs. A platform or aspect word counts only if the catalog carries it, so `karma list windows` selects one platform's catalog and `karma list persistence` selects that aspect on both; an unknown word is an error with close matches. The first positional argument of `karma ssh` is the target. The mtime mode is written after that: `mtime DIR...` clusters directory change times (the walk stays on each directory's own filesystem and skips `/proc`, `/sys` and `/dev`); over SSH the connection parameters (-p/-i/-o/--password) are written after the target as usual.
 
-Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log` `kernel` `package` (74 checks). Windows aspects: `system` `identity` `process` `network` `persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (42 checks). `karma list` lists both platforms' catalogs as a two-level heading tree — one band per platform, one band per aspect — and every row carries the check id, the title, and the probe chain. Column widths are measured over the whole selection, so the groups line up and a long title wraps inside its own column.
+Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log` `kernel` `package` (77 checks). Windows aspects: `system` `identity` `process` `network` `persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (42 checks). `karma list` lists both platforms' catalogs as a two-level heading tree — one band per platform, one band per aspect — and every row carries the check id, the title, and the probe chain. Column widths are measured over the whole selection, so the groups line up and a long title wraps inside its own column.
 
 Shared options: `--concurrency` defaults to 6, `--timeout` to 30 seconds, `--max-lines` to 400. With `--save DIR`, every check that collected output writes the target's raw stdout to `<DIR>/<aspect>/<check id>.txt` — the bytes exactly as the channel delivered them, before any reading, filtering, or normalization — one directory per aspect, overwriting same-named files on a repeated run. The directory also carries `manifest.json`: the run's provenance (karma version, channel, host facts, UTC start time) and one entry per file with its size and sha256, so a bundle can be identified and checked for tampering without opening the files.
 

@@ -163,11 +163,11 @@ func TestCheckPanelQuietRailAndSkippedLine(t *testing.T) {
 	}
 }
 
-// The aspect banner fills the line width, is all uppercase, white on dark, and
-// never exceeds the terminal.
-func TestAspectBanner(t *testing.T) {
+// The level-one heading band fills the line width, is all uppercase, white on
+// dark, and never exceeds the terminal.
+func TestHeadingBand(t *testing.T) {
 	const width = 60
-	band := aspectBanner("identity", width)
+	band := headingBand("identity", width)
 	if got := lipgloss.Width(band); got != width-1 {
 		t.Fatalf("the banner should fill %d columns, got %d", width-1, got)
 	}
@@ -177,7 +177,7 @@ func TestAspectBanner(t *testing.T) {
 	if !strings.Contains(band, "\x1b[") {
 		t.Fatalf("the banner should be colored: %q", band)
 	}
-	if narrow := aspectBanner("identity", 12); lipgloss.Width(narrow) != 11 {
+	if narrow := headingBand("identity", 12); lipgloss.Width(narrow) != 11 {
 		t.Fatalf("a narrow terminal should still be filled: %d", lipgloss.Width(narrow))
 	}
 }

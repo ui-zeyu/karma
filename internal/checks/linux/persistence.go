@@ -3,27 +3,34 @@
 package linux
 
 import (
+	"regexp"
+	"strings"
 	"time"
 
+	"karma/internal/checks/linux/native"
 	"karma/internal/cluster"
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/script"
 )
 
+// cronPaths: the two system crontabs, then the spool and cron.d layers; the
+// ssh loop and the local walk read the same list in the same order.
+var cronPaths = []string{
+	"/etc/crontab", "/etc/anacrontab",
+	"/etc/cron.d/*",
+	"/etc/cron.daily/*",
+	"/etc/cron.hourly/*",
+	"/etc/cron.weekly/*",
+	"/etc/cron.monthly/*",
+	"/var/spool/cron/crontabs/*",
+	"/var/spool/cron/*",
+	"/var/spool/cron/atspool/*",
+	"/var/spool/cron/atjobs/*",
+}
+
 var cronScript = script.Lines(
-	script.ReadFiles([]string{"/etc/crontab", "/etc/anacrontab"}, `cat "$f"`, true),
-	script.ReadFiles([]string{
-		"/etc/cron.d/*",
-		"/etc/cron.daily/*",
-		"/etc/cron.hourly/*",
-		"/etc/cron.weekly/*",
-		"/etc/cron.monthly/*",
-		"/var/spool/cron/crontabs/*",
-		"/var/spool/cron/*",
-		"/var/spool/cron/atspool/*",
-		"/var/spool/cron/atjobs/*",
-	}, `cat "$f"`, true),
+	script.ReadFiles(cronPaths, `cat "$f"`, true),
 	`echo "== crontab -l"`,
 	"crontab -l 2>/dev/null",
 )
@@ -60,17 +67,29 @@ var shellRcPaths = []string{
 // template once backdoors every new user afterward; the listing section runs
 // find -printf (epoch first) and clusters locally to mark modified templates as
 // outliers.
+// skelDir, skelHead and skelTemplates are the template check's shape: the
+// listing and the template files the ssh script and the local walk both cover.
+// A new user's home is copied wholesale from /etc/skel, so poisoning one
+// template backdoors every new user afterwards; the listing section clusters
+// locally so a modified template shows up as an outlier.
+const (
+	skelDir  = "/etc/skel"
+	skelHead = 100
+)
+
+var skelTemplates = []string{
+	skelDir + "/.bashrc",
+	skelDir + "/.profile",
+	skelDir + "/.bash_profile",
+	skelDir + "/.bash_login",
+	skelDir + "/.bash_logout",
+	skelDir + "/.zshrc",
+}
+
 var skelScript = script.Lines(
-	`echo "== /etc/skel"`,
-	script.ListingFind("/etc/skel/", 100),
-	script.ReadFiles([]string{
-		"/etc/skel/.bashrc",
-		"/etc/skel/.profile",
-		"/etc/skel/.bash_profile",
-		"/etc/skel/.bash_login",
-		"/etc/skel/.bash_logout",
-		"/etc/skel/.zshrc",
-	}, `cat "$f"`, true),
+	`echo "== `+skelDir+`"`,
+	script.ListingFind(skelDir+"/", skelHead),
+	script.ReadFiles(skelTemplates, `cat "$f"`, true),
 )
 
 // unitDirs: a freshly dropped malicious unit floats to the top; /run is tmpfs and
@@ -90,11 +109,20 @@ var unitDirs = []string{
 // is runtime-generated; the /usr and /lib layer is a sea of official rules and is
 // not scanned. The listing is sorted by mtime and clustered, and grep catches only
 // the three assignment keys that reference external programs.
+// udevDirs and udevExec are the udev check's shape: the writable rule layers
+// and the keys that reference an external program, shared by the ssh grep and
+// the local walk.
+var udevDirs = []string{"/etc/udev/rules.d", "/run/udev/rules.d"}
+
+const udevExec = `(RUN|PROGRAM|IMPORT)(\+=|\{|=)`
+
+var udevExecRe = regexp.MustCompile(udevExec)
+
 var udevScript = script.Lines(
-	"for d in /etc/udev/rules.d /run/udev/rules.d; do",
+	"for d in "+strings.Join(udevDirs, " ")+"; do",
 	`  echo "== $d"`,
 	"  "+script.ListingFind("$d", 40),
-	`  grep -rnIE '(RUN|PROGRAM|IMPORT)(\+=|\{|=)' "$d" 2>/dev/null | head -n 100`,
+	"  grep -rnIE '"+udevExec+`' "$d" 2>/dev/null | head -n 100`,
 	"done",
 )
 
@@ -104,28 +132,56 @@ var udevScript = script.Lines(
 // pthScript: a .pth in site/dist-packages is processed at Python startup, and a
 // line starting with import is code; setuptools' two legitimate precedence files
 // are excluded on the grep side, so a normal system stays silent.
-const pthScript = `
-for d in /usr/lib/python3*/dist-packages /usr/lib/python3*/site-packages \
-         /usr/local/lib/python3*/dist-packages /usr/local/lib/python3*/site-packages; do
-  [ -d "$d" ] || continue
-  grep -rnI --include='*.pth' --exclude='distutils-precedence.pth' \
-    --exclude='_distutils_system_mod.pth' '^import' "$d" 2>/dev/null
-done
-`
+// pthDirs, pthImport and pthExcludes are the .pth check's shape: the python
+// package directories, the line the grep keeps, and setuptools' two legitimate
+// precedence files, excluded on both sides so a normal system stays silent. A
+// .pth in site/dist-packages is processed at Python startup, and a line
+// starting with import is code.
+var (
+	pthDirs = []string{
+		"/usr/lib/python3*/dist-packages",
+		"/usr/lib/python3*/site-packages",
+		"/usr/local/lib/python3*/dist-packages",
+		"/usr/local/lib/python3*/site-packages",
+	}
+	pthExcludes = []string{"distutils-precedence.pth", "_distutils_system_mod.pth"}
+)
+
+const pthImport = `^import`
+
+var pthImportRe = regexp.MustCompile(pthImport)
+
+var pthScript = script.Lines(
+	"for d in "+strings.Join(pthDirs, " ")+"; do",
+	`  [ -d "$d" ] || continue`,
+	"  grep -rnI --include='*.pth' --exclude='"+strings.Join(pthExcludes, "' --exclude='")+"' '"+pthImport+`' "$d" 2>/dev/null`,
+	"done",
+)
 
 // generatorsScript: generators are among the very first executables systemd runs
 // at boot, and monitoring agents like auditd/sysmon start only after they finish,
 // so the static listing is the only forensics surface; on usrmerge systems /lib and
 // /usr/lib are the same directory, so readlink dedup avoids doubling the whole thing.
+// generatorDirs is the directory word list the generator check covers; on
+// usrmerge systems /lib and /usr/lib are one directory, so the walk dedupes by
+// resolved path exactly like the script's readlink -f.
+var generatorDirs = []string{
+	"/etc/systemd/system-generators",
+	"/run/systemd/system-generators",
+	"/usr/local/lib/systemd/system-generators",
+	"/usr/lib/systemd/system-generators",
+	"/lib/systemd/system-generators",
+	"/etc/systemd/user-generators",
+	"/run/systemd/user-generators",
+	"/usr/local/lib/systemd/user-generators",
+	"/usr/lib/systemd/user-generators",
+	"/root/.local/share/systemd/user-generators",
+	"/home/*/.local/share/systemd/user-generators",
+}
+
 var generatorsScript = script.Lines(
 	"seen=",
-	"for d in /etc/systemd/system-generators /run/systemd/system-generators \\",
-	"         /usr/local/lib/systemd/system-generators /usr/lib/systemd/system-generators \\",
-	"         /lib/systemd/system-generators \\",
-	"         /etc/systemd/user-generators /run/systemd/user-generators \\",
-	"         /usr/local/lib/systemd/user-generators /usr/lib/systemd/user-generators \\",
-	"         /root/.local/share/systemd/user-generators \\",
-	"         /home/*/.local/share/systemd/user-generators; do",
+	"for d in "+strings.Join(generatorDirs, " ")+"; do",
 	`  [ -d "$d" ] || continue`,
 	`  r=$(readlink -f "$d")`,
 	`  case " $seen " in *" $r "*) continue;; esac`,
@@ -139,7 +195,7 @@ var generatorsScript = script.Lines(
 var PersistenceChecks = []*model.Check{
 	define.LinuxCheck("cron", "Scheduled tasks", model.AspectPersistence,
 		[]model.Probe{
-			{Label: "cat", Inv: model.Dual{Run: nativeCron, Script: cronScript}},
+			{Label: "cat", Inv: model.Dual{Run: native.Cron(cronPaths), Script: cronScript}},
 		},
 		define.CheckOpt{
 			// pygments has no crontab lexer; the bash lexer approximates the command part well
@@ -169,7 +225,7 @@ var PersistenceChecks = []*model.Check{
 		unitDirs, 100, nil),
 	define.LinuxCheck("systemd-generators", "systemd generator directories", model.AspectPersistence,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: nativeGenerators, Script: generatorsScript}},
+			{Label: "find", Inv: model.Dual{Run: native.Generators(generatorDirs), Script: generatorsScript}},
 		},
 		define.CheckOpt{
 			Syntax:    "ls-l",
@@ -199,7 +255,10 @@ var PersistenceChecks = []*model.Check{
 		[]string{"/etc/xinetd.d"}, 100, []model.Rule{define.KeywordRule}),
 	define.LinuxCheck("udev-rules", "udev rules (writable layers)", model.AspectPersistence,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: nativeUdev, Script: udevScript}},
+			{Label: "find", Inv: model.Dual{
+				Run:    native.Udev(udevDirs, udevExecRe),
+				Script: udevScript,
+			}},
 		},
 		define.CheckOpt{
 			Syntax:    "ls-l",
@@ -211,7 +270,7 @@ var PersistenceChecks = []*model.Check{
 		}),
 	define.LinuxCheck("ld-preload", "Dynamic library preload (ld.so.preload)", model.AspectPersistence,
 		[]model.Probe{
-			{Label: "cat", Inv: model.Dual{Run: nativeLdPreload, Script: "cat /etc/ld.so.preload 2>/dev/null"}},
+			{Label: "cat", Inv: model.Dual{Run: native.LdPreload, Script: "cat /etc/ld.so.preload 2>/dev/null"}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -232,7 +291,10 @@ var PersistenceChecks = []*model.Check{
 	// collection script, so the rule stays minimal
 	define.LinuxCheck("python-pth", "Python .pth injection", model.AspectPersistence,
 		[]model.Probe{
-			{Label: "grep", Inv: model.Dual{Run: nativePth, Script: pthScript}},
+			{Label: "grep", Inv: model.Dual{
+				Run:    native.Pth(pthDirs, pthImportRe, pthExcludes),
+				Script: pthScript,
+			}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -245,7 +307,7 @@ var PersistenceChecks = []*model.Check{
 		define.CheckOpt{Rules: []model.Rule{historyOffRule, define.KeywordRule}, Syntax: "bash"}),
 	define.LinuxCheck("skel", "Home directory templates (/etc/skel)", model.AspectPersistence,
 		[]model.Probe{
-			{Label: "cat", Inv: model.Dual{Run: nativeSkel, Script: skelScript}},
+			{Label: "cat", Inv: model.Dual{Run: native.Skel(skelDir, skelHead, skelTemplates), Script: skelScript}},
 		},
 		define.CheckOpt{
 			Syntax:    "bash",

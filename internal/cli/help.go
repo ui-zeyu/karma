@@ -148,8 +148,8 @@ func rootArgs(cmd *cobra.Command, args []string) error {
 	return usagef(cmd, "unknown command %q", name)
 }
 
-// nameHints: names that are this tool's own subcommands but hang below another
-// command, with how to write them.
+// nameHints: words that are not root commands but are this tool's own, with how
+// to write them.
 var nameHints = map[string]string{
-	"mtime": `mtime lives under local and ssh: "karma local mtime DIR..." or "karma ssh TARGET mtime DIR..."`,
+	"mtime": `mtime is written after the channel: "karma local mtime DIR..." or "karma ssh TARGET mtime DIR..."`,
 }

@@ -4,11 +4,14 @@
 package linux
 
 import (
+	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/script"
@@ -65,17 +68,46 @@ var gtfobinsSu = []string{
 	"yash", "zic", "zip", "zless", "zsh", "zsoelim",
 }
 
+// tmpDirs is the temp-directory word list the temp listing and the miner's name
+// walk both cover.
+var tmpDirs = []string{"/tmp", "/var/tmp", "/dev/shm"}
+
 // gtfobinsPattern: the list holds basenames only and version suffixes are tolerated
 // uniformly after the alternation: python matches python3.x without crossing a
 // hyphen to wrongly hit things like python-config.
 var gtfobinsPattern = `/(?:[\w.]+/)*(?:` + strings.Join(slices.Sorted(slices.Values(gtfobinsSu)), "|") + `)[0-9.]*$`
 
-var tmpDirs = []string{"/tmp", "/var/tmp", "/dev/shm"}
+// webScriptRoots, webScriptSuffixes, webScriptDepth and webScriptWindow are the
+// web-script check's shape; its find command (ssh) and its in-process walk
+// (local) are built from them, so the two channels cover identical files.
+var (
+	webScriptRoots    = []string{"/var/www", "/usr/local/nginx", "/opt"}
+	webScriptSuffixes = []string{".php", ".jsp", ".jspx", ".sh", ".py"}
+)
 
-const webScriptFind = "find /var/www /usr/local/nginx /opt -xdev -maxdepth 3 -type f" +
-	` \( -name '*.php' -o -name '*.jsp' -o -name '*.jspx' -o -name '*.sh' -o -name '*.py' \)` +
-	" -mtime -14 2>/dev/null"
-const webTimeout = 15 * time.Second
+const (
+	webScriptDepth  = 3
+	webScriptWindow = 14 * 24 * time.Hour
+	webTimeout      = 15 * time.Second
+)
+
+// webScriptFind is that shape as the find command the ssh channel runs.
+var webScriptFind = fmt.Sprintf("find %s -xdev -maxdepth %d -type f \\( %s \\) -mtime -%d 2>/dev/null",
+	strings.Join(webScriptRoots, " "), webScriptDepth, findNameArgs(webScriptSuffixes),
+	int(webScriptWindow.Hours()/24))
+
+// findNameArgs renders a find -name alternation for a suffix list: .php becomes
+// -name '*.php'.
+func findNameArgs(suffixes []string) string {
+	args := make([]string, 0, 2*len(suffixes)-1)
+	for i, suffix := range suffixes {
+		if i > 0 {
+			args = append(args, "-o")
+		}
+		args = append(args, "-name '*"+suffix+"'")
+	}
+	return strings.Join(args, " ")
+}
 
 // Three webshell signature groups: request superglobals passed straight into an
 // exec/decode/callback function. The same regex feeds both grep -e (target-side
@@ -91,26 +123,47 @@ const webshellCallback = `@?\b(call_user_func(_array)?|create_function|array_map
 	`|register_shutdown_function|extract|parse_str|mb_ereg_replace)` +
 	`\s*\(\s*[$]_(POST|GET|REQUEST|COOKIE)`
 
-// webshellGrep's directory list matches web-dirs plus the common AWD roots /srv,
-// /app and /usr/share/nginx; .git/node_modules only slow the walk and yield no hits.
-const webshellGrep = "grep -rInEi --include='*.php' --include='*.phtml' --include='*.inc'" +
-	" --exclude-dir=.git --exclude-dir=node_modules" +
+// webshellRoots, webshellFiles and webshellExcludeDirs are the webshell check's
+// shape: the directory list (web-dirs' roots plus the common AWD ones), the
+// php-family file names, and the directories that only slow the walk. The ssh
+// grep and the local walk are built from them and from the three groups above.
+var (
+	webshellRoots       = []string{"/var/www", "/srv", "/opt", "/app", "/usr/local/nginx", "/usr/share/nginx"}
+	webshellFiles       = []string{"*.php", "*.phtml", "*.inc"}
+	webshellExcludeDirs = []string{".git", "node_modules"}
+)
+
+// webshellRe is the three groups in one alternation — the union the local walk
+// collects; the rules grade the groups one by one afterwards.
+var webshellRe = regexp.MustCompile(`(?i)(?:` + webshellDirect + `|` + webshellDecode + `|` + webshellCallback + `)`)
+
+// webshellGrep is that shape as the grep -rInEi command the ssh channel runs.
+var webshellGrep = "grep -rInEi" +
+	" --include='" + strings.Join(webshellFiles, "' --include='") + "'" +
+	" --exclude-dir=" + strings.Join(webshellExcludeDirs, " --exclude-dir=") +
 	" -e '" + webshellDirect + "' -e '" + webshellDecode + "' -e '" + webshellCallback + "'" +
-	" /var/www /srv /opt /app /usr/local/nginx /usr/share/nginx 2>/dev/null"
+	" " + strings.Join(webshellRoots, " ") + " 2>/dev/null"
 
 // keyDirs: listing collection runs find -printf (epoch first, body in ls -l shape)
 // and clusters locally to mark outlier lines with !/!!; find lists dotfiles
 // naturally, so the hidden subsection is dropped.
 var keyDirs = []string{"/", "/home", "/opt", "/root", "/srv", "/usr/local"}
 
-// homeTreeFind: the whole /home tree, four levels deep (down to files in home
-// directories, deeper project trees truncated); tree is used if present, else
-// 127 falls through to find. find's -printf is arranged in ls -l shape, which
-// the ls-l pseudo-lexer colors directly. This tier exists on ssh alone: the
-// dual tree tier's local branch ladders from tree to its own walk in process.
-const homeTreeArgs = "-a -p -u -g -s -D --timefmt '%Y-%m-%d %H:%M' -L 4"
+// homeTreeRoot, homeTreeDepth and homeTreeArgs are the home-tree check's shape:
+// the root, how deep the walk goes, and the flag set tree is called with. The
+// ssh find fallback and the local walk take the same root and depth; the flags
+// are the tool's own spelling on one side and an argument vector on the other.
+// tree is used if present, else 127 falls through to find, whose -printf is
+// arranged in ls -l shape for the ls-l pseudo-lexer.
+const (
+	homeTreeRoot  = "/home"
+	homeTreeDepth = 4
+	homeTreeArgs  = "-a -p -u -g -s -D --timefmt '%Y-%m-%d %H:%M'"
+)
 
-var homeTreeFind = "LC_ALL=C find /home -xdev -maxdepth 4 -printf '" + script.LSBodyPrintf + "' 2>/dev/null"
+// homeTreeFind is that shape as the find command the ssh fallback runs.
+var homeTreeFind = fmt.Sprintf("LC_ALL=C find %s -xdev -maxdepth %d -printf '%s' 2>/dev/null",
+	homeTreeRoot, homeTreeDepth, script.LSBodyPrintf)
 
 // mountNoise: snap/container overlay mounts are noise during host incident response.
 const mountNoise = `\b(?:squashfs|overlay)\b|/dev/loop\d+`
@@ -132,15 +185,15 @@ var tunnelToolRule = model.NewRule("tunnel-tool",
 var FilesystemChecks = []*model.Check{
 	// Locally df reads /proc/self/mounts and statfs in-process (native_fs).
 	define.LinuxCheck("df", "Disk usage", model.AspectFilesystem,
-		[]model.Probe{{Label: "df", Inv: model.Dual{Run: nativeDf, Script: "df -h"}}},
+		[]model.Probe{{Label: "df", Inv: model.Dual{Run: native.Df, Script: "df -h"}}},
 		define.CheckOpt{Syntax: "df"}),
 	define.LinuxCheck("fstab", "Filesystem mount config (fstab)", model.AspectFilesystem,
 		readFilesCheck("/etc/fstab"),
 		define.CheckOpt{Syntax: "fstab", Rules: []model.Rule{mountRemoteFsRule}}),
 	define.LinuxCheck("mounts", "Mount points", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "findmnt", Inv: model.Dual{Run: nativeFindmnt, Script: "findmnt"}},
-			{Label: "mount", Inv: model.Dual{Run: nativeMount, Script: "mount"}},
+			{Label: "findmnt", Inv: model.Dual{Run: native.Findmnt, Script: "findmnt"}},
+			{Label: "mount", Inv: model.Dual{Run: native.Mount, Script: "mount"}},
 		},
 		define.CheckOpt{
 			Filters: []model.LineFilter{
@@ -155,7 +208,7 @@ var FilesystemChecks = []*model.Check{
 	// stand in).
 	define.LinuxCheck("suid", "SUID files", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: nativeModeBitScan(os.ModeSetuid), Script: suidFind}},
+			{Label: "find", Inv: model.Dual{Run: native.ModeBitScan(os.ModeSetuid), Script: suidFind}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -166,7 +219,7 @@ var FilesystemChecks = []*model.Check{
 		}),
 	define.LinuxCheck("sgid", "SGID files", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: nativeModeBitScan(os.ModeSetgid), Script: sgidFind}},
+			{Label: "find", Inv: model.Dual{Run: native.ModeBitScan(os.ModeSetgid), Script: sgidFind}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -178,7 +231,7 @@ var FilesystemChecks = []*model.Check{
 	// Capabilities are another escalation path besides SUID: cap_setuid equals SUID
 	define.LinuxCheck("caps", "File capabilities (getcap)", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "getcap", Inv: model.Dual{Run: nativeFileCaps, Script: "getcap -r / 2>/dev/null"}, LineLimit: 200},
+			{Label: "getcap", Inv: model.Dual{Run: native.FileCaps, Script: "getcap -r / 2>/dev/null"}, LineLimit: 200},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -203,7 +256,10 @@ var FilesystemChecks = []*model.Check{
 		keyDirs, 100, []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}),
 	define.LinuxCheck("home-tree", "/home directory tree (four levels deep, including hidden files)", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "tree", Inv: model.Dual{Run: nativeHomeTree, Script: "tree " + homeTreeArgs + " /home 2>/dev/null"}},
+			{Label: "tree", Inv: model.Dual{
+				Run:    native.HomeTree(homeTreeRoot, homeTreeDepth),
+				Script: "tree " + homeTreeArgs + " " + homeTreeRoot + " 2>/dev/null",
+			}},
 			{Label: "find", Inv: model.Dual{Script: homeTreeFind}},
 		},
 		define.CheckOpt{
@@ -212,7 +268,15 @@ var FilesystemChecks = []*model.Check{
 		}),
 	define.LinuxCheck("web-dirs", "Recently changed scripts in web directories", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: nativeWebDirs, Script: webScriptFind}, LineLimit: 200},
+			{Label: "find", Inv: model.Dual{
+				Run: native.RecentFiles(native.RecentScan{
+					Roots:    webScriptRoots,
+					Suffixes: webScriptSuffixes,
+					MaxDepth: webScriptDepth,
+					Window:   webScriptWindow,
+				}),
+				Script: webScriptFind,
+			}, LineLimit: 200},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -226,7 +290,14 @@ var FilesystemChecks = []*model.Check{
 	// by group locally
 	define.LinuxCheck("webshell-grep", "Webshell content signatures", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "grep", Inv: model.Dual{Run: nativeWebshellGrep, Script: webshellGrep}, LineLimit: 200},
+			{Label: "grep", Inv: model.Dual{
+				Run: native.Grep(webshellRoots, native.GrepScan{
+					Pattern:     webshellRe,
+					Includes:    webshellFiles,
+					ExcludeDirs: webshellExcludeDirs,
+				}),
+				Script: webshellGrep,
+			}, LineLimit: 200},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
