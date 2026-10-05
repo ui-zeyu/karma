@@ -31,7 +31,10 @@ func TestMain(m *testing.M) {
 // A check panel is a half-block left rail: the severity color for signals,
 // muted otherwise, the id as the level-two band label and metadata right on
 // the first line, and over-long lines soft-wrapped — not one word lost,
-// continuation lines sharing the body indent, the rail unbroken.
+// continuation lines sharing the body indent, the rail unbroken. The per-line
+// width assertions below also cover the CJK case: a title row carrying a CJK
+// badge once shifted the border and collapsed the line width on a real Windows
+// host (Server 2025, 146 columns).
 func TestCheckPanelSignalRail(t *testing.T) {
 	const width = 48
 	long := strings.Repeat("allow from 203.0.113.0/24 ", 8)
@@ -606,10 +609,6 @@ func TestBodyRowsPreludeComesFirst(t *testing.T) {
 		t.Fatalf("the preamble and the source should be separated by one blank line: %q", plain(strings.Join(rows, "|")))
 	}
 }
-
-// On a real Windows host (Server 2025, 146 columns) a title row carrying a CJK
-// badge once showed a shifted border and a collapsed line width; the line-width
-// invariant is now folded into TestCheckPanelSignalRail's per-line assertions.
 
 // A failed render falls back to a thin grey rail with the raw text, keeping the
 // id and the text.

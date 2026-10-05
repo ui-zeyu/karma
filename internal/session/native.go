@@ -34,24 +34,26 @@ func runNative(ctx context.Context, fn func(context.Context) (string, error), ti
 		return model.RunResult{Stderr: err.Error(), ExitCode: 1}
 	}
 
-	truncated := false
-	if lineLimit > 0 {
-		var b strings.Builder
-		for i, line := range strings.Split(text, "\n") {
-			if i == lineLimit {
-				truncated = true
-				break
-			}
-			if i > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(line)
-		}
-		text = b.String()
-	}
+	text, truncated := capLines(text, lineLimit)
 	if int64(len(text)) > maxHarvestBytes {
 		text = text[:maxHarvestBytes]
 		truncated = true
 	}
 	return model.RunResult{Stdout: validText(text), ExitCode: 0, Truncated: truncated}
+}
+
+// capLines keeps the first limit lines of a body and reports whether more
+// followed. The boundary is the streaming harvest's: one probe past the limit
+// decides, and a trailing newline is not another line. Keeping the two in step
+// is what makes the in-process tier and the subprocess/ssh tiers mark the same
+// body truncated, and keep the same text.
+func capLines(text string, limit int) (string, bool) {
+	if limit <= 0 {
+		return text, false
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if len(lines) <= limit {
+		return text, false
+	}
+	return strings.Join(lines[:limit], "\n") + "\n", true
 }

@@ -8,7 +8,6 @@ package facts
 import (
 	"os"
 	"os/exec"
-	"sync"
 
 	"karma/internal/model"
 )
@@ -30,21 +29,10 @@ func collectLocal(bins []string) model.HostFacts {
 // performs.
 func localBins(wanted []string) map[string]bool {
 	set := make(map[string]bool, len(wanted))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
 	for _, name := range wanted {
-		set[name] = false
-		wg.Add(1)
-		go func(name string) {
-			defer wg.Done()
-			if _, err := exec.LookPath(name); err == nil {
-				mu.Lock()
-				set[name] = true
-				mu.Unlock()
-			}
-		}(name)
+		_, err := exec.LookPath(name)
+		set[name] = err == nil
 	}
-	wg.Wait()
 	return set
 }
 

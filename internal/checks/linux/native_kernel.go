@@ -69,14 +69,7 @@ func nativeKallsyms(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", model.ErrTierUnavailable
 	}
-	var b strings.Builder
-	for _, line := range strings.Split(string(data), "\n") {
-		if kallsymsRe.MatchString(line) {
-			b.WriteString(line)
-			b.WriteByte('\n')
-		}
-	}
-	return b.String(), nil
+	return filteredLines(string(data), kallsymsRe.MatchString), nil
 }
 
 // nativeProcModules reads the module registry the cat tier reads.
@@ -179,12 +172,7 @@ func configSigRows(path string, gzipped bool) string {
 		}
 		data = unpacked
 	}
-	var b strings.Builder
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "CONFIG_MODULE_SIG") {
-			b.WriteString(line)
-			b.WriteByte('\n')
-		}
-	}
-	return b.String()
+	return filteredLines(string(data), func(line string) bool {
+		return strings.HasPrefix(line, "CONFIG_MODULE_SIG")
+	})
 }

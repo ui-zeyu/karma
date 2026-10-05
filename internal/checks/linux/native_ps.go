@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/procfs"
 
 	"karma/internal/model"
+	"karma/internal/runstate"
 )
 
 // clkTck is USER_HZ, the unit /proc/[pid]/stat counts time in. Every Linux
@@ -49,33 +50,80 @@ func procFS() procfs.FS {
 	return fs
 }
 
-// procSnapshot gathers every process in numeric pid order plus the machine
-// facts (boot time, uptime, memory) the derived columns need. ok is false
-// when /proc is absent, the script tier's "no ps" case.
-func procSnapshot(ctx context.Context) (entries []procEntry, boot time.Time, uptime float64, memTotal int64, ok bool) {
+// processSnapshot is one view of the process table: the entries in numeric pid
+// order plus the machine facts the derived columns need. It is read-only once
+// taken; a caller that reorders the entries copies them first.
+type processSnapshot struct {
+	entries  []procEntry
+	boot     time.Time
+	uptime   float64
+	memTotal int64
+	// ok is false when /proc is absent, the script tier's "no ps" case.
+	ok bool
+	// complete is false when the walk ended on cancellation instead of on the
+	// end of /proc.
+	complete bool
+}
+
+// procSnapshotKey is the run store's slot for that view (see runstate).
+type procSnapshotKey struct{}
+
+// procSnapshot returns the run's view of the process table, computed at the
+// first request and shared from then on: one entry costs four /proc reads
+// (stat, status, cmdline, statm), and ps, top, miner, and w all want the whole
+// table while their checks run together. Outside a run — a unit test calling a
+// body directly — each caller computes its own.
+func procSnapshot(ctx context.Context) processSnapshot {
+	store := runstate.From(ctx)
+	if store == nil {
+		return scanProcesses(ctx)
+	}
+	snap := runstate.Memo(store, procSnapshotKey{}, func() processSnapshot {
+		return scanProcesses(ctx)
+	})
+	if !snap.complete {
+		// A walk cut short by the winning check's own timeout — a hung /proc
+		// on the host this tool exists for — is that check's partial answer,
+		// not the run's view: the others read their own rather than publish
+		// the fragment as a whole table.
+		return scanProcesses(ctx)
+	}
+	return snap
+}
+
+// scanProcesses gathers every process once. A cancelled context ends the walk
+// early and keeps the entries already read.
+func scanProcesses(ctx context.Context) processSnapshot {
 	fs := procFS()
 	stat, err := fs.Stat()
 	if err != nil {
-		return nil, time.Time{}, 0, 0, false
+		return processSnapshot{complete: true}
 	}
-	boot = time.Unix(int64(stat.BootTime), 0)
-	uptime = readProcUptime()
-	memTotal = readMemTotal()
+	snap := processSnapshot{
+		boot:     time.Unix(int64(stat.BootTime), 0),
+		uptime:   readProcUptime(),
+		memTotal: readMemTotal(),
+	}
 	procs, err := fs.AllProcs()
 	if err != nil {
-		return nil, time.Time{}, 0, 0, false
+		return processSnapshot{complete: true}
 	}
 	names := newNameCache()
 	for _, p := range procs {
 		if ctx.Err() != nil {
-			return entries, boot, uptime, memTotal, true
+			// The entries read before the deadline are still this caller's
+			// answer; complete stays false, so the shared slot never hands
+			// the fragment to the checks that did not time out.
+			break
 		}
 		if e, good := readProcEntry(p, names); good {
-			entries = append(entries, e)
+			snap.entries = append(snap.entries, e)
 		}
 	}
-	slices.SortFunc(entries, func(a, b procEntry) int { return a.pid - b.pid })
-	return entries, boot, uptime, memTotal, true
+	slices.SortFunc(snap.entries, func(a, b procEntry) int { return a.pid - b.pid })
+	snap.ok = true
+	snap.complete = ctx.Err() == nil
+	return snap
 }
 
 // readProcEntry loads one process through procfs; a process that exited
@@ -287,15 +335,15 @@ func psEfRow(e procEntry, boot time.Time, now time.Time, uptime float64) string 
 // nativePsAux renders the auxww table (pid order; forest nesting is pstree's
 // job on this tier).
 func nativePsAux(ctx context.Context) (string, error) {
-	entries, boot, uptime, memTotal, ok := procSnapshot(ctx)
-	if !ok {
+	snap := procSnapshot(ctx)
+	if !snap.ok {
 		return "", model.ErrTierUnavailable
 	}
 	now := time.Now()
 	var b strings.Builder
 	b.WriteString(psAuxHeader + "\n")
-	for _, e := range entries {
-		b.WriteString(psAuxRow(e, boot, now, uptime, memTotal))
+	for _, e := range snap.entries {
+		b.WriteString(psAuxRow(e, snap.boot, now, snap.uptime, snap.memTotal))
 		b.WriteByte('\n')
 	}
 	return b.String(), nil
@@ -303,34 +351,38 @@ func nativePsAux(ctx context.Context) (string, error) {
 
 // nativePsEf renders the System V table.
 func nativePsEf(ctx context.Context) (string, error) {
-	entries, boot, uptime, _, ok := procSnapshot(ctx)
-	if !ok {
+	snap := procSnapshot(ctx)
+	if !snap.ok {
 		return "", model.ErrTierUnavailable
 	}
 	now := time.Now()
 	var b strings.Builder
 	b.WriteString("UID          PID  PPID  C STIME TTY          TIME CMD\n")
-	for _, e := range entries {
-		b.WriteString(psEfRow(e, boot, now, uptime))
+	for _, e := range snap.entries {
+		b.WriteString(psEfRow(e, snap.boot, now, snap.uptime))
 		b.WriteByte('\n')
 	}
 	return b.String(), nil
 }
 
-// nativePsSort renders an aux table sorted by a column, ps --sort's shape;
-// the machine facts arrive once so the comparator does no file I/O.
+// nativePsSort renders an aux table sorted by a column, ps --sort's shape; the
+// machine facts arrive once so the comparator does no file I/O. The shared
+// snapshot is copied before sorting: other checks read the same view.
 func nativePsSort(ctx context.Context,
 	by func(a, b procEntry, uptime float64, memTotal int64) int) (string, error) {
-	entries, boot, uptime, memTotal, ok := procSnapshot(ctx)
-	if !ok {
+	snap := procSnapshot(ctx)
+	if !snap.ok {
 		return "", model.ErrTierUnavailable
 	}
-	slices.SortStableFunc(entries, func(a, b procEntry) int { return by(a, b, uptime, memTotal) })
+	entries := slices.Clone(snap.entries)
+	slices.SortStableFunc(entries, func(a, b procEntry) int {
+		return by(a, b, snap.uptime, snap.memTotal)
+	})
 	now := time.Now()
 	var b strings.Builder
 	b.WriteString(psAuxHeader + "\n")
 	for _, e := range entries {
-		b.WriteString(psAuxRow(e, boot, now, uptime, memTotal))
+		b.WriteString(psAuxRow(e, snap.boot, now, snap.uptime, snap.memTotal))
 		b.WriteByte('\n')
 	}
 	return b.String(), nil
@@ -375,12 +427,13 @@ func cmpInt64Desc(a, b int64) int {
 // nativeTop renders a top -b snapshot: banner, task and memory summaries, and
 // the process table in %CPU order.
 func nativeTop(ctx context.Context) (string, error) {
-	entries, _, uptime, memTotal, ok := procSnapshot(ctx)
-	if !ok {
+	snap := procSnapshot(ctx)
+	if !snap.ok {
 		return "", model.ErrTierUnavailable
 	}
+	entries := slices.Clone(snap.entries)
 	slices.SortStableFunc(entries, func(a, b procEntry) int {
-		return cmpFloatDesc(b.cpuPercent(uptime), a.cpuPercent(uptime))
+		return cmpFloatDesc(b.cpuPercent(snap.uptime), a.cpuPercent(snap.uptime))
 	})
 	var b strings.Builder
 	fmt.Fprintf(&b, "top - %s\n", uptimeBannerBody())
@@ -388,13 +441,13 @@ func nativeTop(ctx context.Context) (string, error) {
 		len(entries), countState(entries, 'R'), countState(entries, 'S'),
 		countState(entries, 'T'), countState(entries, 'Z'))
 	b.WriteString(cpuSummaryLine())
-	b.WriteString(memSummaryLine(memTotal))
+	b.WriteString(memSummaryLine(snap.memTotal))
 	b.WriteString("\n    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND\n")
 	for _, e := range entries {
 		fmt.Fprintf(&b, "%7d %-8s %3d %3d %7d %6d %6d %c %5.1f %5.1f %9s %s\n",
 			e.pid, psUserCell(e.user), e.priority, e.nice,
 			e.vsize/1024, e.rss*int64(os.Getpagesize())/1024, e.shr*int64(os.Getpagesize())/1024,
-			e.state, e.cpuPercent(uptime), e.memPercent(memTotal),
+			e.state, e.cpuPercent(snap.uptime), e.memPercent(snap.memTotal),
 			topTimeFormat(e.cpuSeconds()), e.args)
 	}
 	return b.String(), nil
@@ -471,11 +524,11 @@ func memSummaryLine(memTotal int64) string {
 // nativePstree renders the process tree from ppid links, pstree -ap's
 // evidence in ASCII connectors.
 func nativePstree(ctx context.Context) (string, error) {
-	entries, _, _, _, ok := procSnapshot(ctx)
-	if !ok {
+	snap := procSnapshot(ctx)
+	if !snap.ok {
 		return "", model.ErrTierUnavailable
 	}
-	return renderPstree(entries), nil
+	return renderPstree(snap.entries), nil
 }
 
 // renderPstree prints the forest: every process whose parent is absent (pid

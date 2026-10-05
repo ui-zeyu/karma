@@ -26,7 +26,7 @@ func TestStyledUsageCarriesColor(t *testing.T) {
 	root.InitDefaultHelpFlag()
 
 	var plain bytes.Buffer
-	styledUsage(&plain, root)
+	styledUsageWith(&plain, root, stylesFor(&plain))
 	if strings.Contains(plain.String(), "\x1b[") {
 		t.Fatalf("detected styling on a capture buffer should be plain: %q", plain.String())
 	}

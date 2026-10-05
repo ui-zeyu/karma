@@ -143,8 +143,8 @@ func nativeW(ctx context.Context) (string, error) {
 	if !ok {
 		return "", model.ErrTierUnavailable
 	}
-	entries, _, _, _, sok := procSnapshot(ctx)
-	if !sok {
+	snap := procSnapshot(ctx)
+	if !snap.ok {
 		return "", model.ErrTierUnavailable
 	}
 	now := time.Now()
@@ -157,8 +157,8 @@ func nativeW(ctx context.Context) (string, error) {
 			idle = idleFormat(now.Sub(statOf(info).atime))
 		}
 		var fg *procEntry
-		for i := range entries {
-			e := &entries[i]
+		for i := range snap.entries {
+			e := &snap.entries[i]
 			if ttyName(e.ttyNr) != r.line {
 				continue
 			}

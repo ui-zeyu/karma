@@ -484,3 +484,17 @@ func matchAny(globs []string, name string) bool {
 	}
 	return false
 }
+
+// filteredLines is the in-process counterpart of the scripts' grep over a file
+// it has already read: the lines keep accepts, in order, one newline each. No
+// hit is an empty string rather than one empty line.
+func filteredLines(data string, keep func(line string) bool) string {
+	var b strings.Builder
+	for _, line := range strings.Split(data, "\n") {
+		if keep(line) {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}

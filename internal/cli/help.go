@@ -32,11 +32,6 @@ func styledHelp(cmd *cobra.Command) {
 	styledUsageWith(w, cmd, stylesFor(w))
 }
 
-// styledUsage renders the usage block at the stream's own styles.
-func styledUsage(w io.Writer, cmd *cobra.Command) {
-	styledUsageWith(w, cmd, stylesFor(w))
-}
-
 // styledUsageWith renders the usage block in the report's visual language: a
 // USAGE panel, a COMMANDS panel for the subcommands, FLAGS panels for the flag
 // tables, with bold names and muted descriptions. Tests use it with a forced

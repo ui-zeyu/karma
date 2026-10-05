@@ -1,5 +1,5 @@
 // tests for the /proc process snapshot's pure parts: tty decoding, the ps
-// row formats, stat modifiers, and the pstree render.
+// row formats, stat modifiers, the pstree render, and the run's shared view.
 
 package linux
 
@@ -8,7 +8,68 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"karma/internal/runstate"
 )
+
+// The process tiers must read the run's one snapshot rather than walk /proc
+// each; a value planted in the store's slot is what they print. The reordering
+// tiers sort their own copy: the shared view stays in pid order for the next
+// check.
+func TestProcessTiersReadTheSharedSnapshot(t *testing.T) {
+	ctx := runstate.WithStore(t.Context())
+	runstate.Memo(runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
+		return processSnapshot{
+			entries: []procEntry{
+				{pid: 1, comm: "quiet", args: "quiet --arg", state: 'S', numThreads: 1},
+				{pid: 2, comm: "busy", args: "busy", state: 'R', numThreads: 1, utime: 100},
+			},
+			boot:     time.Unix(1_700_000_000, 0),
+			uptime:   3600,
+			memTotal: 1 << 30,
+			ok:       true,
+			complete: true,
+		}
+	})
+
+	aux, err := nativePsAux(ctx)
+	if err != nil {
+		t.Fatalf("ps tier: %v", err)
+	}
+	if !strings.Contains(aux, "quiet --arg") || !strings.Contains(aux, "busy") {
+		t.Fatalf("the ps tier should render the shared snapshot:\n%s", aux)
+	}
+	if tree, err := nativePstree(ctx); err != nil || !strings.Contains(tree, "quiet(1)") {
+		t.Fatalf("pstree tier = %q, %v", tree, err)
+	}
+
+	sorted, err := nativePsCPU(ctx)
+	if err != nil {
+		t.Fatalf("ps-cpu tier: %v", err)
+	}
+	if first := strings.SplitN(sorted, "\n", 3)[1]; !strings.Contains(first, "busy") {
+		t.Fatalf("the sorted tier should lead with the busiest process:\n%s", sorted)
+	}
+	if got := procSnapshot(ctx).entries[0].comm; got != "quiet" {
+		t.Fatalf("sorting a tier's own copy reordered the shared snapshot: %q first", got)
+	}
+}
+
+// A walk the winning check had to cut short is that check's partial answer, not
+// the run's view: a later check reads its own instead of publishing the
+// fragment as a whole table.
+func TestProcessSnapshotDropsACutWalk(t *testing.T) {
+	ctx := runstate.WithStore(t.Context())
+	const sentinel = 1 << 30
+	runstate.Memo(runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
+		return processSnapshot{entries: []procEntry{{pid: sentinel}}, ok: true}
+	})
+	for _, e := range procSnapshot(ctx).entries {
+		if e.pid == sentinel {
+			t.Fatal("a cut-short walk was published as the run's view")
+		}
+	}
+}
 
 func TestTtyName(t *testing.T) {
 	cases := []struct {

@@ -6,10 +6,10 @@ package cli
 import (
 	"context"
 	"io"
+	"maps"
 	"os"
 	"slices"
 
-	"github.com/samber/lo"
 	"golang.org/x/term"
 
 	"karma/internal/checks"
@@ -86,14 +86,15 @@ func Execute(ctx context.Context, w io.Writer, transport session.Transport, opti
 }
 
 // catalogBins is the union of the binaries every probe in the list requires,
-// used for the capability probe.
+// used for the capability probe: one PATH search per name.
 func catalogBins(selected []*model.Check) []string {
-	names := lo.FlatMap(selected, func(check *model.Check, _ int) []string {
-		return lo.FlatMap(check.Probes, func(probe model.Probe, _ int) []string {
-			return probe.RequiredBins()
-		})
-	})
-	uniques := lo.Uniq(names)
-	slices.Sort(uniques)
-	return uniques
+	names := map[string]bool{}
+	for _, check := range selected {
+		for _, probe := range check.Probes {
+			for _, name := range probe.RequiredBins() {
+				names[name] = true
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(names))
 }

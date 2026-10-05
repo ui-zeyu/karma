@@ -102,7 +102,35 @@ func TestRunNativeLineLimitTruncates(t *testing.T) {
 		model.Dual{Run: func(context.Context) (string, error) {
 			return "a\nb\nc\nd", nil
 		}}, 0, 2)
-	if res.Stdout != "a\nb" || !res.Truncated {
+	if res.Stdout != "a\nb\n" || !res.Truncated {
 		t.Fatalf("wanted the first two lines marked truncated, got %+v", res)
+	}
+}
+
+// The in-process cap shares the streaming harvest's boundary: the body keeps
+// each line's own newline, a body that ends at the limit is the whole answer,
+// and a partial last line counts as content. The two channels therefore mark
+// the same body truncated and hand the reader the same text.
+func TestCapLinesMatchesTheHarvestBoundary(t *testing.T) {
+	cases := []struct {
+		text      string
+		limit     int
+		want      string
+		truncated bool
+	}{
+		{"a\nb\n", 2, "a\nb\n", false},
+		{"a\nb", 2, "a\nb", false},
+		{"a\nb\nc\n", 2, "a\nb\n", true},
+		{"a\nb\nc", 2, "a\nb\n", true},
+		{"", 2, "", false},
+		{"\n", 1, "\n", false},
+		{"a\nb\nc\n", 0, "a\nb\nc\n", false},
+	}
+	for _, c := range cases {
+		got, truncated := capLines(c.text, c.limit)
+		if got != c.want || truncated != c.truncated {
+			t.Errorf("capLines(%q, %d) = %q, %v; want %q, %v",
+				c.text, c.limit, got, truncated, c.want, c.truncated)
+		}
 	}
 }

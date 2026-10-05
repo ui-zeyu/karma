@@ -60,14 +60,7 @@ func capStatusLines() string {
 	if err != nil {
 		return ""
 	}
-	var b strings.Builder
-	for _, line := range strings.Split(string(body), "\n") {
-		if strings.HasPrefix(line, "Cap") {
-			b.WriteString(line)
-			b.WriteByte('\n')
-		}
-	}
-	return b.String()
+	return filteredLines(string(body), func(line string) bool { return strings.HasPrefix(line, "Cap") })
 }
 
 // nativeDeletedExe collapses the three script tiers into one ladder: lsof's
@@ -217,15 +210,15 @@ func minerPsLines(entries []procEntry, boot, now time.Time, uptime float64, memT
 // come from lsBody in-process. The ps section drops lines carrying "grep"
 // exactly like the script's second grep.
 func nativeMiner(ctx context.Context) (string, error) {
-	entries, boot, uptime, memTotal, ok := procSnapshot(ctx)
-	if !ok {
+	snap := procSnapshot(ctx)
+	if !snap.ok {
 		return "", model.ErrTierUnavailable
 	}
 	names := newNameCache()
 	now := time.Now()
 	var b strings.Builder
 	b.WriteString("== ps\n")
-	for _, line := range minerPsLines(entries, boot, now, uptime, memTotal) {
+	for _, line := range minerPsLines(snap.entries, snap.boot, now, snap.uptime, snap.memTotal) {
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
