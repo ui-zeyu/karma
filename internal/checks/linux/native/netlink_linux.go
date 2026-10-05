@@ -277,7 +277,12 @@ func neighFlags(flags, extFlags int) []string {
 	return out
 }
 
-// IPRoute reads the routing table the way `ip route` prints it.
+// IPRoute reads the routing table the way `ip route` prints it, both address
+// families in the one dump. An IPv6 row can carry fields iproute2 reads from
+// attributes the library's Route does not decode ("pref medium", a nexthop id,
+// "expires Nsec"): the destination, the gateway, the device, and the protocol,
+// scope, source and metric columns are the same, which is what the rows are
+// read for.
 func IPRoute(ctx context.Context) (string, error) {
 	links, err := netlink.LinkList()
 	if err != nil {

@@ -146,6 +146,10 @@ func TestDfDummyFilesystems(t *testing.T) {
 		{mountRow{fstype: "mqueue"}, true},
 		{mountRow{fstype: "none", opts: "rw,nosuid"}, true},
 		{mountRow{fstype: "none", opts: "rw,bind"}, false}, // a bind mount is real
+		// devtmpfs reports real blocks (/dev carries the nodes' size), so df has
+		// to hide it by type: verified against GNU df, which drops it while `df -a`
+		// lists it
+		{mountRow{fstype: "devtmpfs"}, true},
 		{mountRow{fstype: "tmpfs", opts: "rw"}, false},
 		{mountRow{fstype: "ext4", opts: "rw,relatime"}, false},
 	}

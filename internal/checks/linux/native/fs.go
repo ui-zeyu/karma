@@ -157,10 +157,15 @@ func btoi(b bool) int {
 // dfDummyTypes are the pseudo filesystems coreutils' df hides unless -a is
 // given (ME_DUMMY_0 in mountlist.c); the zero-block test below catches the
 // rest, and "none" counts only when the entry is not a bind mount.
+//
+// devtmpfs is the one type here that reports real blocks: /dev carries the
+// device nodes' size, so df hides it by type alone. Checked against GNU df's
+// default view (`df` next to `df -a`): every other mount it drops reads zero
+// blocks, which the test below already covers.
 var dfDummyTypes = map[string]bool{
 	"autofs": true, "proc": true, "subfs": true, "debugfs": true, "devpts": true,
 	"fusectl": true, "fuse.portal": true, "mqueue": true, "rpc_pipefs": true,
-	"sysfs": true, "devfs": true, "kernfs": true, "ignore": true,
+	"sysfs": true, "devfs": true, "kernfs": true, "ignore": true, "devtmpfs": true,
 }
 
 // dfDummy reports whether df would leave this mount out of its default view.
@@ -194,7 +199,11 @@ func Df(ctx context.Context) (string, error) {
 	return b.String(), nil
 }
 
-// dfLine renders one df row from the statfs numbers.
+// dfLine renders one df row from the statfs numbers. The cell widths are
+// fixed, while GNU df widens the filesystem column to its longest name and
+// keeps the numeric cells to their own widest values: the same tokens, the
+// same rows, and at most a column of padding apart. The df lexer splits on
+// blank runs, so either spelling reads the same.
 func dfLine(m mountRow, total, used, avail uint64) string {
 	return fmt.Sprintf("%-16s %5s %5s %5s %3d%% %s",
 		m.dev, humanKiB(total), humanKiB(used), humanKiB(avail), dfPercent(used, avail), m.point)
@@ -218,8 +227,15 @@ func renderMountRows(rows []mountRow) string {
 	return b.String()
 }
 
-// Findmnt mirrors `findmnt`: the mount tree indented by target depth,
-// with the fstype and options columns the mount rules match on.
+// Findmnt renders findmnt's columns over the kernel's mount table: the target
+// indented by its depth, then the source, the fstype, and the options.
+//
+// findmnt's tree glyphs and its padding are not reproduced: the mount tree's
+// parent ids live in /proc/self/mountinfo, which these readers deliberately
+// keep out of (mountinfo splits the options into two maps where the printed
+// fourth field is one merged string, and mount below prints that string).
+// The rows are the kernel's mount order with the same tokens in the same
+// columns, which is what the check's rules and its table lexer read.
 func Findmnt(ctx context.Context) (string, error) {
 	rows, ok := readMounts()
 	if !ok {

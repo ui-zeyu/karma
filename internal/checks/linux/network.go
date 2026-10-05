@@ -21,6 +21,10 @@ var procNetPaths = []string{"/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", 
 
 var procNetScript = script.ReadFiles(procNetPaths, `cat "$f"`, true)
 
+// routeScript is the route tier's ssh side: the IPv4 table, then the IPv6 one
+// (the local tier dumps both families in one pass).
+const routeScript = "ip route; ip -6 route 2>/dev/null"
+
 // firewallScript: `-S` alone only shows the filter table, leaving out nat/mangle/raw
 // and IPv6; one script lays out every surface and adds the nft ruleset (when the
 // iptables compat layer is present it is not skipped by the fallback either).
@@ -90,9 +94,14 @@ var NetworkChecks = []*model.Check{
 			{Label: "arp", Inv: model.NewCommand("arp", "-n")},
 		},
 		define.CheckOpt{Syntax: "ip-keyval"}),
+	// Both address families: ip route dumps IPv4 alone, and the local tier's
+	// netlink dump covers both, so an IPv6 route — a C2's default route, a
+	// tunnel's — would otherwise show on one channel only. The IPv6 dump runs
+	// second and its failure is silent: the IPv4 rows are already this tier's
+	// answer, and a kernel without IPv6 leaves them untouched.
 	define.LinuxCheck("route", "Routing table", model.AspectNetwork,
 		[]model.Probe{
-			{Label: "ip", Inv: model.Dual{Run: native.IPRoute, Script: "ip route"}},
+			{Label: "ip", Inv: model.Dual{Run: native.IPRoute, Script: routeScript}},
 			{Label: "route", Inv: model.NewCommand("route", "-n")},
 			{Label: "netstat", Inv: model.NewCommand("netstat", "-rn")},
 		},

@@ -9,6 +9,7 @@
 package localfs
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"os/user"
@@ -146,21 +147,38 @@ func EpochFrac(t time.Time) string {
 	return fmt.Sprintf("%d.%010d", t.Unix(), t.Nanosecond()*10)
 }
 
+// listedRow is one collection row while it is being ordered: the epoch fields
+// as numbers (they are the sort key) and the row text as the collection prints
+// it.
+type listedRow struct {
+	sec  int64  // %T@'s whole seconds
+	nsec int    // %T@'s fraction, the ten digits find prints
+	text string // the row as the collection prints it
+}
+
+// listingOrder is `sort -rn`'s comparison over two collection rows: the epoch
+// field first and the whole row after it, every step descending because -r
+// reverses the last-resort comparison too. Seconds and nanoseconds are
+// compared apart: the printed fraction carries the nanosecond exactly, while
+// one float64 would merge neighbouring values near today's epoch.
+func listingOrder(a, b listedRow) int {
+	return cmp.Or(
+		cmp.Compare(b.sec, a.sec),
+		cmp.Compare(b.nsec, a.nsec),
+		strings.Compare(b.text, a.text),
+	)
+}
+
 // listingRows mirrors script.ListingFind: one directory's entries as
-// "%T@\t%C@\t" + ls-l rows, sorted by mtime descending (ties by row text,
-// sort's last-resort comparison) and capped at head. A head of zero or less
-// lists every entry. The epoch prefix is the cluster's input; RowBody is the
-// half the panels show.
+// "%T@\t%C@\t" + ls-l rows, sorted by listingOrder and capped at head. A head
+// of zero or less lists every entry. The epoch prefix is the cluster's input;
+// RowBody is the half the panels show.
 func listingRows(dir string, head int, names *NameCache) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
-	type listed struct {
-		mtime float64
-		text  string
-	}
-	var rows []listed
+	var rows []listedRow
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil {
@@ -169,17 +187,9 @@ func listingRows(dir string, head int, names *NameCache) ([]string, error) {
 		st := StatOf(info)
 		text := EpochFrac(st.Mtime) + "\t" + EpochFrac(st.Ctime) + "\t" +
 			LsBody(info, filepath.Join(dir, entry.Name()), names)
-		rows = append(rows, listed{mtime: secFloat(st.Mtime), text: text})
+		rows = append(rows, listedRow{sec: st.Mtime.Unix(), nsec: st.Mtime.Nanosecond(), text: text})
 	}
-	slices.SortFunc(rows, func(a, b listed) int {
-		if a.mtime != b.mtime {
-			if a.mtime > b.mtime {
-				return -1
-			}
-			return 1
-		}
-		return strings.Compare(a.text, b.text)
-	})
+	slices.SortFunc(rows, listingOrder)
 	if head > 0 && len(rows) > head {
 		rows = rows[:head]
 	}
@@ -198,11 +208,6 @@ func rowBody(row string) string {
 		return parts[2]
 	}
 	return row
-}
-
-// secFloat is an instant as seconds-with-fraction for numeric ordering.
-func secFloat(t time.Time) float64 {
-	return float64(t.Unix()) + float64(t.Nanosecond())/1e9
 }
 
 // sortedPaths returns the paths in the listing tier's sorted order: the order

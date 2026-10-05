@@ -6,6 +6,7 @@ package localfs
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -125,5 +126,46 @@ func writeTouched(t *testing.T, path string, at time.Time) {
 	}
 	if err := os.Chtimes(path, at, at); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The listing's order is the ssh pipeline's: sort -rn over "epoch\trow", which
+// orders by the epoch field and then by the whole row, and -r reverses both
+// steps. A row of the same instant therefore comes out newest-first by text.
+func TestListingOrderMirrorsSortRnTies(t *testing.T) {
+	tied := []listedRow{
+		{sec: 1759000000, nsec: 500, text: "1759000000.0000005000\t1759000000.0000005000\t-rw-r--r-- 1 root root 0 Jan  1 00:00 /d/a"},
+		{sec: 1759000000, nsec: 500, text: "1759000000.0000005000\t1759000000.0000005000\t-rw-r--r-- 1 root root 0 Jan  1 00:00 /d/c"},
+		{sec: 1759000000, nsec: 500, text: "1759000000.0000005000\t1759000000.0000005000\t-rw-r--r-- 1 root root 0 Jan  1 00:00 /d/b"},
+	}
+	slices.SortFunc(tied, listingOrder)
+	var got []string
+	for _, r := range tied {
+		got = append(got, r.text[len(r.text)-1:])
+	}
+	if want := []string{"c", "b", "a"}; !slices.Equal(got, want) {
+		t.Errorf("ties ordered %q, sort -rn prints %q", got, want)
+	}
+}
+
+// The comparator's numeric key is the printed fraction itself, not a float
+// re-reading of it: the two rows below differ by one nanosecond, below what a
+// float64 can hold at today's epoch. With identical row text only the exact key
+// can order them, so a single float64 would hand the pair back unchanged.
+func TestListingOrderKeepsNanosecondsApart(t *testing.T) {
+	const text = "1759000000.9999999980\t1759000000.9999999980\tsame"
+	rows := []listedRow{
+		{sec: 1759000000, nsec: 999999998, text: text},
+		{sec: 1759000001, nsec: 0, text: "1759000001.0000000000\tnewer"},
+		{sec: 1759000000, nsec: 999999999, text: text},
+	}
+	slices.SortFunc(rows, listingOrder)
+	// the key as one number, so the expectation reads in time order
+	var got []int
+	for _, r := range rows {
+		got = append(got, int(r.sec-1759000000)*1000000000+r.nsec)
+	}
+	if want := []int{1000000000, 999999999, 999999998}; !slices.Equal(got, want) {
+		t.Errorf("key order %v, want %v (seconds and nanoseconds compared apart, descending)", got, want)
 	}
 }

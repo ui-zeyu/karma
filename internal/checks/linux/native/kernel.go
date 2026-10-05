@@ -266,6 +266,12 @@ func Lsmod(ctx context.Context) (string, error) {
 // name, the size in eight, two blanks, then the use count, and the dependent
 // list after one blank only when the module has dependents (lsmod leaves no
 // trailing blank, and the fourth field is "-" when there are none).
+//
+// The kernel's dependent field is a comma-terminated list ("udp_diag,tcp_diag,"),
+// while lsmod joins the names with commas and no terminator; the trailing comma
+// is dropped here. The names themselves come in the kernel's own order, which
+// can differ from the sysfs holder order lsmod reads its column from — the set
+// is the same either way.
 func lsmodRows(data string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%-19s %8s  %s\n", "Module", "Size", "Used by")
@@ -275,8 +281,10 @@ func lsmodRows(data string) string {
 			continue
 		}
 		fmt.Fprintf(&b, "%-19s %8s  %s", f[0], f[1], f[2])
-		if len(f) >= 4 && f[3] != "-" {
-			b.WriteString(" " + f[3])
+		if len(f) >= 4 {
+			if dependents := strings.TrimSuffix(f[3], ","); dependents != "-" {
+				b.WriteString(" " + dependents)
+			}
 		}
 		b.WriteByte('\n')
 	}

@@ -161,9 +161,9 @@ func TestRenderNeighRowsFlagsBeforeState(t *testing.T) {
 		{ip: "10.0.0.2", dev: "eth0", flags: []string{"proxy"}},
 	})
 	want := []string{
-		"fe80::1 dev eth0 lladdr ee:ff:ff:ff:ff:ff router STALE",
-		"10.0.0.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE",
-		"10.0.0.2 dev eth0 proxy",
+		"fe80::1 dev eth0 lladdr ee:ff:ff:ff:ff:ff router STALE ",
+		"10.0.0.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE ",
+		"10.0.0.2 dev eth0 proxy ",
 	}
 	for i, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
 		if line != want[i] {
@@ -199,19 +199,11 @@ func TestRenderLinkRows(t *testing.T) {
 		{name: "eth0", state: "UP", addrs: []string{"10.0.0.5/24"}},
 		{name: "tun0", state: "DOWN"},
 	})
-	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("want 3 rows, got %d:\n%s", len(lines), out)
-	}
-	// the ip-addr lexer splits the interface from the state on a run of blanks
-	if !strings.HasPrefix(lines[0], "lo") || !strings.Contains(lines[0], "  UNKNOWN") {
-		t.Errorf("lo row = %q", lines[0])
-	}
-	if !strings.Contains(lines[0], "127.0.0.1/8 ::1/128") {
-		t.Errorf("lo addresses = %q", lines[0])
-	}
-	if got := strings.Fields(lines[2]); len(got) != 2 || got[0] != "tun0" || got[1] != "DOWN" {
-		t.Errorf("addressless row = %q", lines[2])
+	want := "lo               UNKNOWN        127.0.0.1/8 ::1/128 \n" +
+		"eth0             UP             10.0.0.5/24 \n" +
+		"tun0             DOWN           \n"
+	if out != want {
+		t.Errorf("renderLinkRows = %q, want %q", out, want)
 	}
 }
 
@@ -220,7 +212,8 @@ func TestRenderNeighRows(t *testing.T) {
 		{ip: "10.0.0.1", dev: "eth0", lladdr: "aa:bb:cc:dd:ee:ff", state: "REACHABLE"},
 		{ip: "10.0.0.9", dev: "eth0", state: "FAILED"},
 	})
-	want := "10.0.0.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE\n10.0.0.9 dev eth0 FAILED\n"
+	// iproute2 prints every cell with a trailing blank, so each row ends in one
+	want := "10.0.0.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE \n10.0.0.9 dev eth0 FAILED \n"
 	if out != want {
 		t.Errorf("renderNeighRows = %q, want %q", out, want)
 	}
@@ -231,8 +224,8 @@ func TestRenderRouteRows(t *testing.T) {
 		{dest: "default", via: "10.0.0.1", dev: "eth0", proto: "dhcp", src: "10.0.0.5", metric: 100},
 		{dest: "10.0.0.0/24", dev: "eth0", proto: "kernel", scope: "link", src: "10.0.0.5"},
 	})
-	want := "default via 10.0.0.1 dev eth0 proto dhcp src 10.0.0.5 metric 100\n" +
-		"10.0.0.0/24 dev eth0 proto kernel scope link src 10.0.0.5\n"
+	want := "default via 10.0.0.1 dev eth0 proto dhcp src 10.0.0.5 metric 100 \n" +
+		"10.0.0.0/24 dev eth0 proto kernel scope link src 10.0.0.5 \n"
 	if out != want {
 		t.Errorf("renderRouteRows = %q, want %q", out, want)
 	}

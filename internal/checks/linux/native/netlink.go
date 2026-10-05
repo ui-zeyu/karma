@@ -155,62 +155,67 @@ func renderSs(rows []ssRow, holders map[uint64][]socketHolder) string {
 	return b.String()
 }
 
-// renderLinkRows prints `ip -br addr` rows: the interface, the operational
-// state, then the addresses.
+// renderLinkRows prints `ip -br addr` rows in the tool's own cells: the
+// interface in 16 columns, a blank, the operational state in 14, a blank, then
+// every address followed by a blank. iproute2 prints each cell with a trailing
+// blank and the state cell whether or not addresses follow, so a row ends in a
+// blank; the local rows compare byte for byte with the tool's.
 func renderLinkRows(rows []linkRow) string {
 	var b strings.Builder
 	for _, r := range rows {
-		if len(r.addrs) == 0 {
-			fmt.Fprintf(&b, "%-16s %s\n", r.name, r.state)
-			continue
-		}
-		fmt.Fprintf(&b, "%-16s %-15s %s\n", r.name, r.state, strings.Join(r.addrs, " "))
-	}
-	return b.String()
-}
-
-// renderNeighRows prints `ip neigh` rows: address, device, link-layer address,
-// the flags ip prints as bare words, then the state words.
-func renderNeighRows(rows []neighRow) string {
-	var b strings.Builder
-	for _, r := range rows {
-		b.WriteString(r.ip + " dev " + r.dev)
-		if r.lladdr != "" {
-			b.WriteString(" lladdr " + r.lladdr)
-		}
-		for _, flag := range r.flags {
-			b.WriteString(" " + flag)
-		}
-		if r.state != "" {
-			b.WriteString(" " + r.state)
+		fmt.Fprintf(&b, "%-16s %-14s ", r.name, r.state)
+		for _, addr := range r.addrs {
+			b.WriteString(addr + " ")
 		}
 		b.WriteByte('\n')
 	}
 	return b.String()
 }
 
-// renderRouteRows prints `ip route` rows in the field order ip uses.
+// renderNeighRows prints `ip neigh` rows: address, device, link-layer address,
+// the flags ip prints as bare words, then the state words. Every cell carries
+// iproute2's trailing blank.
+func renderNeighRows(rows []neighRow) string {
+	var b strings.Builder
+	for _, r := range rows {
+		b.WriteString(r.ip + " dev " + r.dev + " ")
+		if r.lladdr != "" {
+			b.WriteString("lladdr " + r.lladdr + " ")
+		}
+		for _, flag := range r.flags {
+			b.WriteString(flag + " ")
+		}
+		if r.state != "" {
+			b.WriteString(r.state + " ")
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// renderRouteRows prints `ip route` rows in the field order ip uses, every
+// field with the tool's trailing blank.
 func renderRouteRows(rows []routeRow) string {
 	var b strings.Builder
 	for _, r := range rows {
-		b.WriteString(r.dest)
+		b.WriteString(r.dest + " ")
 		if r.via != "" {
-			b.WriteString(" via " + r.via)
+			b.WriteString("via " + r.via + " ")
 		}
 		if r.dev != "" {
-			b.WriteString(" dev " + r.dev)
+			b.WriteString("dev " + r.dev + " ")
 		}
 		if r.proto != "" {
-			b.WriteString(" proto " + r.proto)
+			b.WriteString("proto " + r.proto + " ")
 		}
 		if r.scope != "" {
-			b.WriteString(" scope " + r.scope)
+			b.WriteString("scope " + r.scope + " ")
 		}
 		if r.src != "" {
-			b.WriteString(" src " + r.src)
+			b.WriteString("src " + r.src + " ")
 		}
 		if r.metric != 0 {
-			fmt.Fprintf(&b, " metric %d", r.metric)
+			fmt.Fprintf(&b, "metric %d ", r.metric)
 		}
 		b.WriteByte('\n')
 	}

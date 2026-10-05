@@ -7,6 +7,7 @@ package native
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -151,4 +152,37 @@ func TestHiddenModuleLineSkipsEmptyAttrs(t *testing.T) {
 	if strings.Count(hiddenModuleLine("pathless", attrs, read), "HIDDEN ") != 1 {
 		t.Error("a module with no readable attribute still needs its marker line")
 	}
+}
+
+// /proc/modules ends its dependent list with a comma; lsmod joins the holder
+// names with commas and no terminator, so the trailing comma is dropped. The
+// header is lsmod's own literal, which the generated one has to reproduce.
+func TestLsmodRowsDropsTheTrailingComma(t *testing.T) {
+	body := "inet_diag 24576 2 udp_diag,tcp_diag, Live 0x0000000000000000\n" +
+		"kvm_intel 397312 0 - Live 0x0000000000000000\n" +
+		"nf_tables 356352 3 nft_chain_filter, Live 0x0000000000000000 (E)\n"
+	out := lsmodRows(body)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	wantHeader := "Module                  Size  Used by"
+	if lines[0] != wantHeader {
+		t.Errorf("header = %q, want lsmod's own %q", lines[0], wantHeader)
+	}
+	want := []string{
+		fieldCell("inet_diag", "24576", "2") + " udp_diag,tcp_diag",
+		fieldCell("kvm_intel", "397312", "0"),
+		fieldCell("nf_tables", "356352", "3") + " nft_chain_filter",
+	}
+	for i, line := range lines[1:] {
+		if line != want[i] {
+			t.Errorf("row %d = %q, want %q", i, line, want[i])
+		}
+	}
+	if strings.Contains(out, ",\n") {
+		t.Errorf("a dependent list kept its terminator:\n%s", out)
+	}
+}
+
+// fieldCell is lsmod's row prefix: name, size, use count — printf("%-19s %8ld  %d").
+func fieldCell(name, size, count string) string {
+	return fmt.Sprintf("%-19s %8s  %s", name, size, count)
 }
