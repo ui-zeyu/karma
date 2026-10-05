@@ -367,11 +367,11 @@ const (
 // Ubuntu and its neighbours (wtmpdb's companion lastlog2).
 const lastlog2DB = "/var/lib/lastlog/lastlog2.db"
 
-// nativeLastlog mirrors `lastlog`: the newest login per account. Where the
-// records moved to lastlog2's database, /var/log/lastlog is no longer written
-// and the classic lastlog(1) is usually gone — the file is then the only
-// source left, so it is read and the age of that source is stated up front
-// instead of being left invisible.
+// nativeLastlog mirrors `lastlog`: the newest login per account, read from the
+// sparse file indexed by uid. Where the records moved to lastlog2's database
+// the classic file is only written by legacy paths and falls behind the live
+// store, so the panel states the age of what it is showing up front instead of
+// leaving the reader to compare two stores.
 func nativeLastlog(ctx context.Context) (string, error) {
 	users, err := passwdUsers()
 	if err != nil {
@@ -385,22 +385,46 @@ func nativeLastlog(ctx context.Context) (string, error) {
 	if _, err := os.Stat(lastlog2DB); err == nil {
 		fmt.Fprintf(&b, "note: %s present, /var/log/lastlog is frozen at its last pre-migration write\n", lastlog2DB)
 	}
-	b.WriteString("Username         Port     From                                       Latest\n")
+	b.WriteString(lastlogHeaderLine() + "\n")
 	for _, u := range users {
 		off := u.uid * lastlogSize
-		line, host, latest := "", "", "**Never logged in**"
+		line, host, latest := "", "", lastlogNever
 		if off+lastlogSize <= len(data) {
 			rec := data[off : off+lastlogSize]
 			when := int32(binary.LittleEndian.Uint32(rec[:4]))
 			line = cstrFixed(rec[lastlogLineOff : lastlogLineOff+utmpLineLen])
 			host = cstrFixed(rec[lastlogHostOff : lastlogHostOff+utmpHostLen])
 			if when > 0 {
-				latest = time.Unix(int64(when), 0).Format("Mon Jan _2 15:04:05 2006")
+				latest = time.Unix(int64(when), 0).Format(lastlogTimeFormat)
 			}
 		}
-		fmt.Fprintf(&b, "%-16s %-8s %-24s %s\n", u.name, line, host, latest)
+		b.WriteString(lastlogRow(u.name, line, host, latest) + "\n")
 	}
 	return b.String(), nil
+}
+
+// lastlog's columns, taken from the tool this tier replaces: the account in 16
+// columns, the port in 8 (a longer line is cut to eight with no marker), and
+// the host left-justified in maxIPv6Addrlen = 25 + 1 + IFNAMSIZ columns, which
+// starts the timestamps at column 68. The header pads "From" with
+// maxIPv6Addrlen-3 spaces where the rows pad the host with maxIPv6Addrlen, so
+// "Latest" sits one column right of the column it labels — kept as the tool
+// prints it, so a local run and an ssh run of the same host agree. The panel's
+// syntax anchors its colors on that header, and its boundary tolerance covers
+// the one-column float.
+const (
+	lastlogHostWidth   = 42
+	lastlogHeaderWidth = lastlogHostWidth + 1
+	lastlogTimeFormat  = "Mon Jan _2 15:04:05 -0700 2006"
+	lastlogNever       = "**Never logged in**"
+)
+
+func lastlogHeaderLine() string {
+	return fmt.Sprintf("%-16s %-8s %-*s%s", "Username", "Port", lastlogHeaderWidth, "From", "Latest")
+}
+
+func lastlogRow(name, line, host, latest string) string {
+	return fmt.Sprintf("%-16s %-8.8s %-*s%s", name, line, lastlogHostWidth, host, latest)
 }
 
 // cstrFixed trims a fixed-size NUL-terminated field.
@@ -417,8 +441,9 @@ type passwdUser struct {
 	uid  int
 }
 
-// passwdUsers lists the accounts by uid, first name per uid, uid-sorted —
-// lastlog's row set.
+// passwdUsers lists the accounts lastlog prints, in its order: the row set is
+// what getpwent() reports, which on a files-backed NSS is the passwd file's own
+// order (so a later account of the same uid gets its own row).
 func passwdUsers() ([]passwdUser, error) {
 	data, err := os.ReadFile("/etc/passwd")
 	if err != nil {
@@ -429,7 +454,6 @@ func passwdUsers() ([]passwdUser, error) {
 
 // parsePasswdUsers decodes the passwd table into lastlog's row set.
 func parsePasswdUsers(data string) []passwdUser {
-	seen := map[int]bool{}
 	var users []passwdUser
 	for _, line := range strings.Split(data, "\n") {
 		f := strings.Split(line, ":")
@@ -437,12 +461,10 @@ func parsePasswdUsers(data string) []passwdUser {
 			continue
 		}
 		uid, err := strconv.Atoi(f[2])
-		if err != nil || seen[uid] {
+		if err != nil {
 			continue
 		}
-		seen[uid] = true
 		users = append(users, passwdUser{name: f[0], uid: uid})
 	}
-	slices.SortFunc(users, func(a, b passwdUser) int { return a.uid - b.uid })
 	return users
 }

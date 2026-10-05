@@ -869,6 +869,58 @@ func TestDfHeaderAnchorsMultiWordLastColumn(t *testing.T) {
 	}
 }
 
+// The accounting store's closing line is a remark about the file — where its
+// records begin, or that it holds none — not a row of it: the word-by-word
+// cycle would paint its parts, so the table styler leaves it plain.
+func TestTableStylerLeavesTheStoreTrailerPlain(t *testing.T) {
+	styler := newLineStyler("table")
+	for _, line := range []string{
+		"/var/log/btmp has no entries",
+		"btmp begins Mon Oct  5 09:12:00 2026",
+		"wtmp begins Mon Oct  5 22:04:11 2026",
+		"wtmpdb begins Mon Oct  5 22:04:11 2026",
+	} {
+		if spans := styler(line); spans != nil {
+			t.Fatalf("%q should stay plain: %+v", line, spans)
+		}
+	}
+	row := "root     ssh          117.67.231.246   Mon Oct  5 22:04 - still logged in"
+	if spans := styler(row); len(spans) == 0 {
+		t.Fatal("a session row should still get column colors")
+	}
+}
+
+// lastlog's header is mixed case, so the all-caps header test does not
+// recognize it: the check declares its own syntax, which anchors the columns on
+// the header and leaves the note line printed ahead of it plain — the
+// word-by-word cycle is for headerless tables only. The two rows are the tool's
+// own output, "Latest" included, one column right of the timestamps below it.
+func TestLastlogStylerAnchorsOnItsHeader(t *testing.T) {
+	styler := newLineStyler("lastlog")
+	note := "note: /var/lib/lastlog/lastlog2.db present, /var/log/lastlog is frozen"
+	if spans := styler(note); spans != nil {
+		t.Fatalf("a note ahead of the header should stay plain: %v", spans)
+	}
+	header := "Username         Port     From                                       Latest"
+	if spans := styler(header); spans != nil {
+		t.Fatalf("the header should only record anchors: %v", spans)
+	}
+	row := "root             pts/0    117.67.231.246                            Mon Oct  5 20:01:48 +0800 2026"
+	spans := styler(row)
+	painted := paintLine(row, spans)
+	for i, want := range []string{"root", "pts/0", "117.67.231.246"} {
+		if !strings.Contains(painted, tableColumnStyles[i].seq().Render(want)) {
+			t.Fatalf("column %d should have its column color (%q): %q", i, want, plain(painted))
+		}
+	}
+	latest := strings.Index(row, "Mon")
+	for _, span := range spans {
+		if span.Start >= latest {
+			t.Fatalf("the timestamp column should stay plain: %+v", spans)
+		}
+	}
+}
+
 // fstab rows are colored by column: device blue, mount point green, filesystem
 // type magenta, options default, dump and pass dimmed; comments stay with the
 // reader's comment muting.

@@ -36,6 +36,17 @@ var (
 	// column instead of two words; the middle groups take the variants (GNU
 	// df -h is Size/Used/Avail/Use%, busybox and df -P have one fewer column).
 	dfHeader = compile(`^(Filesystem)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?\s+(Mounted on)\s*$`)
+
+	// lastlogHeader anchors lastlog's columns. Its header words are mixed case
+	// ("Username Port From Latest"), so the generic all-caps header test never
+	// recognizes the line and the panel would cycle word by word instead.
+	lastlogHeader = compile(`^(Username)\s+(Port)\s+(From)\s+(Latest)\s*$`)
+
+	// logTrailer is an accounting store's closing line: where its records begin
+	// ("wtmp begins …", "wtmpdb begins …"), or that it holds none ("… has no
+	// entries"). That is a remark about the file, not a row of it, so it stays
+	// plain where a session row takes the column colors.
+	logTrailer = compile(`^(?:\S+ has no entries|(?:wtmp|wtmpdb|btmp) begins\b)`)
 )
 
 // columnTol is the boundary tolerance when locating a word's column against the
@@ -67,6 +78,9 @@ func (t *tableStyler) style(line string) []Span {
 	if uptimeBanner.MatchString(line) {
 		return []Span{{Start: 0, End: len(line), Style: mutedStyle}}
 	}
+	if logTrailer.MatchString(line) {
+		return nil
+	}
 	columns := slices.Collect(matches(wsColumn, line))
 	if len(columns) < 2 {
 		return nil
@@ -83,7 +97,10 @@ func (t *tableStyler) style(line string) []Span {
 		return nil
 	}
 	if len(t.starts) == 0 {
-		if t.cycle {
+		// A styler with declared headers knows an anchor line is coming: text
+		// ahead of it (a note, a banner) stays plain, rather than taking the
+		// word-by-word cycle that exists for headerless tables.
+		if t.cycle && len(t.headers) == 0 {
 			return cycleColumns(columns)
 		}
 		return nil

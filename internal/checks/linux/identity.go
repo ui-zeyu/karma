@@ -161,7 +161,9 @@ var IdentityChecks = []*model.Check{
 	define.LinuxCheck("lastlog", "Last account login (lastlog)", model.AspectIdentity,
 		[]model.Probe{{Label: "lastlog", Inv: model.Dual{Run: nativeLastlog, Script: "lastlog"}}},
 		define.CheckOpt{
-			Syntax: "table",
+			// The header is mixed case, so the columns are anchored by their own
+			// syntax; the note line ahead of the header stays plain.
+			Syntax: "lastlog",
 			Filters: []model.LineFilter{
 				model.NewFilter("lastlog-never", `Never logged in`, model.FilterDrop),
 			},

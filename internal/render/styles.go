@@ -229,6 +229,8 @@ func buildLineStyler(syntax string) LineStyler {
 		return newTableStyler(nil, false).style
 	case "df":
 		return newTableStyler([]*regexp.Regexp{dfHeader}, true).style
+	case "lastlog":
+		return newTableStyler([]*regexp.Regexp{lastlogHeader}, true).style
 	case "units":
 		return newUnitStyler().style
 	case "listen":

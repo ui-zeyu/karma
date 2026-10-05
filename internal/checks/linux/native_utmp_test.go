@@ -5,6 +5,7 @@ package linux
 import (
 	"encoding/binary"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -116,10 +117,13 @@ func TestParsePasswdUsers(t *testing.T) {
 		"alice:x:1000:1000:Alice:/home/alice:/bin/bash\n" +
 		"broken:x:uid:0:0::\n"
 	users := parsePasswdUsers(data)
-	if len(users) != 2 {
+	// getpwent's order is the file's own, and an account that repeats a uid
+	// gets its own row
+	if len(users) != 3 {
 		t.Fatalf("users = %+v", users)
 	}
-	if users[0].name != "root" || users[0].uid != 0 || users[1].name != "alice" || users[1].uid != 1000 {
+	if users[0].name != "root" || users[0].uid != 0 || users[1].name != "dup" ||
+		users[2].name != "alice" || users[2].uid != 1000 {
 		t.Fatalf("users = %+v", users)
 	}
 }
@@ -135,5 +139,33 @@ func TestRecordTrailer(t *testing.T) {
 	// says so instead of printing a year-1 timestamp
 	if got := recordTrailer("/var/log/btmp", "btmp", nil); got != "/var/log/btmp has no entries\n" {
 		t.Errorf("empty trailer = %q", got)
+	}
+}
+
+// lastlog's own output for the header, a logged-in account, and an account
+// that never logged in, recorded from the tool this tier replaces (shadow's
+// lastlog against a real /var/log/lastlog). The header's "Latest" sits one
+// column right of the timestamps below it, as the tool prints it.
+const (
+	lastlogOutputHeader = "Username         Port     From                                       Latest"
+	lastlogOutputRow    = "root             pts/0    117.67.231.246                            Mon Oct  5 20:01:48 +0800 2026"
+	lastlogOutputNever  = "daemon                                                              **Never logged in**"
+)
+
+func TestLastlogRowsMatchTheTool(t *testing.T) {
+	if got := lastlogHeaderLine(); got != lastlogOutputHeader {
+		t.Errorf("header:\n%q\nwant\n%q", got, lastlogOutputHeader)
+	}
+	when := time.Date(2026, 10, 5, 20, 1, 48, 0, time.FixedZone("", 8*3600))
+	if got := lastlogRow("root", "pts/0", "117.67.231.246", when.Format(lastlogTimeFormat)); got != lastlogOutputRow {
+		t.Errorf("row:\n%q\nwant\n%q", got, lastlogOutputRow)
+	}
+	if got := lastlogRow("daemon", "", "", lastlogNever); got != lastlogOutputNever {
+		t.Errorf("never-logged-in row:\n%q\nwant\n%q", got, lastlogOutputNever)
+	}
+	// the port field is cut to its eight columns, the account is not
+	long := lastlogRow("a-long-service-account", "pts/0123456", "", lastlogNever)
+	if !strings.HasPrefix(long, "a-long-service-account ") || !strings.Contains(long, "pts/0123 ") {
+		t.Errorf("long fields should keep the account and cut the port: %q", long)
 	}
 }
