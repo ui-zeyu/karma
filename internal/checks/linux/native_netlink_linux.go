@@ -4,10 +4,13 @@ package linux
 
 import (
 	"context"
+	"encoding/binary"
+	"fmt"
 	"net"
 	"strings"
 
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 
 	"karma/internal/model"
@@ -28,6 +31,7 @@ func nativeSs(ctx context.Context) (string, error) {
 	}
 	var rows []ssRow
 	answered := false
+	names := linkNames()
 	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
 		for _, src := range sources {
 			if ctx.Err() != nil {
@@ -44,8 +48,8 @@ func nativeSs(ctx context.Context) (string, error) {
 					state: ssStateWord(src.netid, s.State),
 					rq:    s.RQueue,
 					sq:    s.WQueue,
-					local: ssEndpoint(s.ID.Source, s.ID.SourcePort),
-					peer:  ssEndpoint(s.ID.Destination, s.ID.DestinationPort),
+					local: ssEndpoint(s.ID.Source, s.ID.SourcePort, names[int(s.ID.Interface)]),
+					peer:  ssEndpoint(s.ID.Destination, s.ID.DestinationPort, ""),
 					inode: uint64(s.INode),
 				})
 			}
@@ -103,6 +107,7 @@ func nativeIPAddr(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", model.ErrTierUnavailable
 	}
+	metrics := addrMetrics()
 	rows := make([]linkRow, 0, len(links))
 	for _, l := range links {
 		if ctx.Err() != nil {
@@ -115,24 +120,98 @@ func nativeIPAddr(ctx context.Context) (string, error) {
 		}
 		row := linkRow{name: attrs.Name, state: strings.ToUpper(attrs.OperState.String())}
 		for _, a := range addrs {
-			if a.IPNet != nil {
-				row.addrs = append(row.addrs, a.IPNet.String())
+			if a.IPNet == nil {
+				continue
 			}
+			cell := a.IPNet.String()
+			// ip prints an address metric after the prefix; the library's Addr
+			// carries no metric, so it comes from the separately parsed dump
+			if metric := metrics[addrMetricKey(attrs.Index, a.IPNet)]; metric > 0 {
+				cell += fmt.Sprintf(" metric %d", metric)
+			}
+			row.addrs = append(row.addrs, cell)
 		}
 		rows = append(rows, row)
 	}
 	return renderLinkRows(rows), nil
 }
 
-// nativeIPNeigh reads the neighbor table the way `ip neigh` prints it.
-func nativeIPNeigh(ctx context.Context) (string, error) {
+// ifaRtPriority is IFA_RT_PRIORITY, the address metric ip -br addr prints as
+// "metric N" (uapi/linux/if_addr.h); netlink's Addr has no field for it.
+const ifaRtPriority = 9
+
+// addrMetricKey identifies one address row of the kernel's dump.
+func addrMetricKey(linkIndex int, ipnet *net.IPNet) string {
+	return fmt.Sprintf("%d|%s", linkIndex, ipnet)
+}
+
+// addrMetrics parses IFA_RT_PRIORITY out of an address dump: the kernel sends
+// the metric as a separate attribute of the address message, and only
+// addresses whose prefix route carries a priority have one (cloud images set
+// 100 on their primary address).
+func addrMetrics() map[string]int {
+	req := nl.NewNetlinkRequest(unix.RTM_GETADDR, unix.NLM_F_DUMP)
+	req.AddData(nl.NewIfAddrmsg(unix.AF_UNSPEC))
+	msgs, err := req.Execute(unix.NETLINK_ROUTE, unix.RTM_NEWADDR)
+	if err != nil {
+		return nil
+	}
+	out := map[string]int{}
+	for _, msg := range msgs {
+		header := nl.DeserializeIfAddrmsg(msg)
+		attrs, err := nl.ParseRouteAttr(msg[header.Len():])
+		if err != nil {
+			continue
+		}
+		var (
+			local  net.IP
+			metric int
+		)
+		for _, attr := range attrs {
+			switch attr.Attr.Type {
+			case unix.IFA_LOCAL, unix.IFA_ADDRESS:
+				if local == nil {
+					local = net.IP(attr.Value)
+				}
+			case ifaRtPriority:
+				if len(attr.Value) >= 4 {
+					metric = int(binary.LittleEndian.Uint32(attr.Value[:4]))
+				}
+			}
+		}
+		if local == nil || metric == 0 {
+			continue
+		}
+		ipnet := &net.IPNet{
+			IP:   local,
+			Mask: net.CIDRMask(int(header.Prefixlen), len(local)*8),
+		}
+		out[addrMetricKey(int(header.Index), ipnet)] = metric
+	}
+	return out
+}
+
+// linkNames maps every interface index to its name, for the socket table's
+// "%ifname" suffix and the neighbor rows' dev column.
+func linkNames() map[int]string {
 	links, err := netlink.LinkList()
 	if err != nil {
-		return "", model.ErrTierUnavailable
+		return nil
 	}
-	dev := map[int]string{}
+	names := make(map[int]string, len(links))
 	for _, l := range links {
-		dev[l.Attrs().Index] = l.Attrs().Name
+		names[l.Attrs().Index] = l.Attrs().Name
+	}
+	return names
+}
+
+// nativeIPNeigh reads the neighbor table the way `ip neigh` prints it: the
+// entries ip's default state filter keeps (no NOARP-only pseudo entries, no
+// stateless ones), with the flags ip prints as bare words.
+func nativeIPNeigh(ctx context.Context) (string, error) {
+	dev := linkNames()
+	if dev == nil {
+		return "", model.ErrTierUnavailable
 	}
 	var rows []neighRow
 	answered := false
@@ -147,13 +226,14 @@ func nativeIPNeigh(ctx context.Context) (string, error) {
 		answered = true
 		for _, n := range neighs {
 			name := dev[n.LinkIndex]
-			if name == "" || n.IP == nil {
+			if name == "" || n.IP == nil || !neighVisible(n.State, n.Flags) {
 				continue
 			}
-			row := neighRow{ip: n.IP.String(), dev: name, state: neighState(n.State)}
+			row := neighRow{ip: n.IP.String(), dev: name, state: neighStateWords(n.State)}
 			if len(n.HardwareAddr) > 0 {
 				row.lladdr = n.HardwareAddr.String()
 			}
+			row.flags = neighFlags(n.Flags, n.FlagsExt)
 			rows = append(rows, row)
 		}
 	}
@@ -161,6 +241,40 @@ func nativeIPNeigh(ctx context.Context) (string, error) {
 		return "", model.ErrTierUnavailable
 	}
 	return renderNeighRows(rows), nil
+}
+
+// NTF_EXT_* live in the kernel's extended-flags attribute (NDA_FLAGS_EXT); the
+// netlink package carries only NTF_EXT_MANAGED, so the rest are spelled here
+// (uapi/linux/neighbour.h).
+const (
+	ntfExtManaged      = 0x1
+	ntfExtExtValidated = 0x4
+)
+
+// neighFlags spells the neighbor flags ip neigh prints, in iproute2's order:
+// the plain ndm_flags words first, "managed" and "extern_valid" (the extended
+// attribute) in the positions ip uses.
+func neighFlags(flags, extFlags int) []string {
+	var out []string
+	if flags&netlink.NTF_ROUTER != 0 {
+		out = append(out, "router")
+	}
+	if flags&netlink.NTF_PROXY != 0 {
+		out = append(out, "proxy")
+	}
+	if extFlags&ntfExtManaged != 0 {
+		out = append(out, "managed")
+	}
+	if flags&netlink.NTF_EXT_LEARNED != 0 {
+		out = append(out, "extern_learn")
+	}
+	if flags&netlink.NTF_OFFLOADED != 0 {
+		out = append(out, "offload")
+	}
+	if extFlags&ntfExtExtValidated != 0 {
+		out = append(out, "extern_valid")
+	}
+	return out
 }
 
 // nativeIPRoute reads the routing table the way `ip route` prints it.
@@ -198,18 +312,6 @@ func nativeIPRoute(ctx context.Context) (string, error) {
 		rows = append(rows, row)
 	}
 	return renderRouteRows(rows), nil
-}
-
-// routeDest is ip route's destination cell: the prefix, or "default" for the
-// zero-length mask.
-func routeDest(dst *net.IPNet) string {
-	if dst == nil {
-		return "default"
-	}
-	if ones, bits := dst.Mask.Size(); ones == 0 && bits != 0 {
-		return "default"
-	}
-	return dst.String()
 }
 
 // routeScope is ip route's scope cell, empty for universe: ip omits the

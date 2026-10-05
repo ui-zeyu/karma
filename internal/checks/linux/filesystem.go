@@ -149,24 +149,13 @@ var FilesystemChecks = []*model.Check{
 			Syntax: "table",
 			Rules:  []model.Rule{mountRemoteFsRule},
 		}),
-	listingCheck("tmp-listing", "Temp directory listing", model.AspectFilesystem, tmpDirs, 200,
-		[]model.Rule{
-			// RE2 has no lookahead: standard system hidden entries (socket directories like
-			// .X11-unix, display locks) become an exclusion
-			model.NewRule("tmp-hidden-entry", `\s\.[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\s|$)`,
-				model.High, "hidden entry in temp directory").
-				WithExclude(`\s\.(?:(?:X11|ICE|font|XIM|Test)-unix|X[0-9]+-lock)[A-Za-z0-9_.-]*(?:\s|$)`),
-			sshMaterialRule,
-			tunnelToolRule,
-			define.KeywordRule,
-		}),
 	// GTFOBins is the only verdict surface on these listings: a documented
 	// escalation program under SUID/SGID is critical/high, everything else is
 	// quiet evidence (GTFOBins has no separate sgid list, so the suid names
 	// stand in).
 	define.LinuxCheck("suid", "SUID files", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: nativeSuidScan(os.ModeSetuid), Script: suidFind}},
+			{Label: "find", Inv: model.Dual{Run: nativeModeBitScan(os.ModeSetuid), Script: suidFind}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -177,7 +166,7 @@ var FilesystemChecks = []*model.Check{
 		}),
 	define.LinuxCheck("sgid", "SGID files", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: nativeSuidScan(os.ModeSetgid), Script: sgidFind}},
+			{Label: "find", Inv: model.Dual{Run: nativeModeBitScan(os.ModeSetgid), Script: sgidFind}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -185,6 +174,30 @@ var FilesystemChecks = []*model.Check{
 					"SGID of a GTFOBins privilege-escalation program (group escalation)"),
 			},
 			Timeout: suidTimeout,
+		}),
+	// Capabilities are another escalation path besides SUID: cap_setuid equals SUID
+	define.LinuxCheck("caps", "File capabilities (getcap)", model.AspectFilesystem,
+		[]model.Probe{
+			{Label: "getcap", Inv: model.Dual{Run: nativeFileCaps, Script: "getcap -r / 2>/dev/null"}, LineLimit: 200},
+		},
+		define.CheckOpt{
+			Rules: []model.Rule{
+				model.NewRule("caps-setuid", `cap_setuid[+=]`, model.Critical,
+					"cap_setuid (SUID-equivalent)"),
+				model.NewRule("caps-present", `\bcap_[a-z_]+`, model.Low, "file has Linux capabilities"),
+			},
+			Timeout: suidTimeout,
+		}),
+	listingCheck("tmp-listing", "Temp directory listing", model.AspectFilesystem, tmpDirs, 200,
+		[]model.Rule{
+			// RE2 has no lookahead: standard system hidden entries (socket directories like
+			// .X11-unix, display locks) become an exclusion
+			model.NewRule("tmp-hidden-entry", `\s\.[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\s|$)`,
+				model.High, "hidden entry in temp directory").
+				WithExclude(`\s\.(?:(?:X11|ICE|font|XIM|Test)-unix|X[0-9]+-lock)[A-Za-z0-9_.-]*(?:\s|$)`),
+			sshMaterialRule,
+			tunnelToolRule,
+			define.KeywordRule,
 		}),
 	listingCheck("key-dirs", "Key directory listing (by mtime)", model.AspectFilesystem,
 		keyDirs, 100, []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}),
@@ -225,18 +238,5 @@ var FilesystemChecks = []*model.Check{
 					"request parameter into a callback/variable-override function (variant webshell and variable override)"),
 			},
 			Timeout: webTimeout,
-		}),
-	// Capabilities are another escalation path besides SUID: cap_setuid equals SUID
-	define.LinuxCheck("caps", "File capabilities (getcap)", model.AspectFilesystem,
-		[]model.Probe{
-			{Label: "getcap", Inv: model.Dual{Run: nativeCaps, Script: "getcap -r / 2>/dev/null"}, LineLimit: 200},
-		},
-		define.CheckOpt{
-			Rules: []model.Rule{
-				model.NewRule("caps-setuid", `cap_setuid[+=]`, model.Critical,
-					"cap_setuid (SUID-equivalent)"),
-				model.NewRule("caps-present", `\bcap_[a-z_]+`, model.Low, "file has Linux capabilities"),
-			},
-			Timeout: suidTimeout,
 		}),
 }

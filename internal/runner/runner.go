@@ -27,6 +27,7 @@ import (
 
 	"karma/internal/model"
 	"karma/internal/reader"
+	"karma/internal/runstate"
 	"karma/internal/session"
 )
 
@@ -43,8 +44,12 @@ type Observer interface {
 // released by the presentation layer by check index, and no conclusions are
 // gathered here. A cancelled context stops queuing new checks and in-flight
 // tiers return promptly with the output they had already read.
+//
+// The run's shared reads live in a store on the context (runstate), so checks
+// that want the same expensive view of the host read it once between them.
 func RunCatalog(ctx context.Context, sess session.Session, facts model.HostFacts, checks []*model.Check,
 	options model.RunOptions, observer Observer) {
+	ctx = runstate.WithStore(ctx)
 	var g errgroup.Group
 	g.SetLimit(max(1, options.Concurrency))
 	for _, check := range checks {

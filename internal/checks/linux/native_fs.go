@@ -7,8 +7,8 @@ package linux
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -68,33 +68,107 @@ func readMounts() ([]mountRow, bool) {
 	return parseMounts(string(data)), true
 }
 
-// humanKiB renders df -h's size spelling: one decimal under ten, integer
-// above ("4.0K", "9.9M", "99G").
-func humanKiB(kib float64) string {
-	if kib <= 0 {
+// humanKiB renders df -h's size spelling the way coreutils' human_readable
+// does with autoscale, base 1024 and ceiling rounding: the value takes the
+// largest unit below 1024, one decimal while it is under ten, and is always
+// rounded up at the printed precision — so 39.008 GiB prints as 40G and 7.4K
+// is the ceiling of 7577 bytes.
+func humanKiB(bytes uint64) string {
+	if bytes == 0 {
 		return "0"
 	}
-	unit := "K"
-	for _, u := range []string{"M", "G", "T", "E"} {
-		if kib < 1024 {
-			break
+	amt, tenths, rounding := bytes, uint64(0), uint64(0)
+	exponent := 0
+	for amt >= 1024 && exponent < len(dfUnits)-1 {
+		// the rounding flag is a three-state remainder marker: 0 exact,
+		// 1/2 rounding down, 3 rounding up
+		r10 := amt%1024*10 + tenths
+		r2 := r10%1024*2 + rounding>>1
+		amt /= 1024
+		tenths = r10 / 1024
+		switch {
+		case r2 < 1024:
+			if r2+rounding != 0 {
+				rounding = 1
+			} else {
+				rounding = 0
+			}
+		case 1024 < r2+rounding:
+			rounding = 3
+		default:
+			rounding = 2
 		}
-		kib /= 1024
-		unit = u
+		exponent++
 	}
-	if kib < 10 {
-		return fmt.Sprintf("%.1f%s", kib, unit)
+	decimal := false
+	tenthsPrinted := uint64(0)
+	if amt < 10 {
+		if rounding > 0 {
+			tenths++
+			rounding = 0
+			if tenths == 10 {
+				amt++
+				tenths = 0
+			}
+		}
+		// under ten coreutils keeps the decimal point even at .0 ("4.0K"),
+		// and the digit is settled here — the ceiling step below then finds
+		// nothing left to round
+		decimal, tenthsPrinted = true, tenths
+		tenths, rounding = 0, 0
 	}
-	return fmt.Sprintf("%d%s", int64(kib+0.5), unit)
+	if tenths+rounding > 0 {
+		amt++
+		if amt == 1024 && exponent < len(dfUnits)-1 {
+			exponent++
+			tenthsPrinted = 0
+			decimal = true
+			amt = 1
+		}
+	}
+	cell := strconv.FormatUint(amt, 10)
+	if decimal {
+		cell += "." + strconv.FormatUint(tenthsPrinted, 10)
+	}
+	return cell + dfUnits[exponent]
 }
 
-// dfPercent is df's used share, rounded up the way coreutils does.
-func dfPercent(used, total uint64) int {
-	if total == 0 {
+// dfUnits are the suffixes coreutils prints after an autoscaled value.
+var dfUnits = []string{"", "K", "M", "G", "T", "P", "E", "Z", "Y", "R", "Q"}
+
+// dfPercent is df's used share, rounded up, over the space a non-root user can
+// use (used + available): a filesystem with reserved blocks therefore reads
+// higher than used/total, the way df counts it.
+func dfPercent(used, avail uint64) int {
+	nonroot := used + avail
+	if nonroot == 0 {
 		return 0
 	}
-	pct := int(math.Ceil(float64(used) * 100 / float64(total)))
-	return min(pct, 100)
+	return int(used*100/nonroot) + btoi(used*100%nonroot != 0)
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// dfDummyTypes are the pseudo filesystems coreutils' df hides unless -a is
+// given (ME_DUMMY_0 in mountlist.c); the zero-block test below catches the
+// rest, and "none" counts only when the entry is not a bind mount.
+var dfDummyTypes = map[string]bool{
+	"autofs": true, "proc": true, "subfs": true, "debugfs": true, "devpts": true,
+	"fusectl": true, "fuse.portal": true, "mqueue": true, "rpc_pipefs": true,
+	"sysfs": true, "devfs": true, "kernfs": true, "ignore": true,
+}
+
+// dfDummy reports whether df would leave this mount out of its default view.
+func dfDummy(m mountRow) bool {
+	if dfDummyTypes[m.fstype] {
+		return true
+	}
+	return m.fstype == "none" && !slices.Contains(strings.Split(m.opts, ","), "bind")
 }
 
 // nativeDf mirrors `df -h`: every mount with real blocks, the header the df
@@ -108,6 +182,9 @@ func nativeDf(ctx context.Context) (string, error) {
 	var b strings.Builder
 	b.WriteString("Filesystem      Size  Used Avail Use% Mounted on\n")
 	for _, m := range rows {
+		if dfDummy(m) {
+			continue
+		}
 		total, used, avail, ok := statfsBlocks(m.point)
 		if !ok || total == 0 {
 			continue
@@ -120,8 +197,7 @@ func nativeDf(ctx context.Context) (string, error) {
 // dfLine renders one df row from the statfs numbers.
 func dfLine(m mountRow, total, used, avail uint64) string {
 	return fmt.Sprintf("%-16s %5s %5s %5s %3d%% %s",
-		m.dev, humanKiB(float64(total)/1024), humanKiB(float64(used)/1024),
-		humanKiB(float64(avail)/1024), dfPercent(used, total), m.point)
+		m.dev, humanKiB(total), humanKiB(used), humanKiB(avail), dfPercent(used, avail), m.point)
 }
 
 // nativeMount mirrors `mount`'s rows: "dev on point type fstype (opts)".

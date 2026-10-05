@@ -12,27 +12,97 @@ import (
 	"time"
 
 	"karma/internal/model"
+	"karma/internal/runstate"
 )
 
-// nativeSuidScan walks / on one device collecting files carrying the mode bit
-// — find -perm -NNNN in process, so the listing answers even where GNU find is
-// missing.
-func nativeSuidScan(bit os.FileMode) func(context.Context) (string, error) {
-	return nativeSuidScanRoot("/", bit)
+// scanPrivFiles walks one filesystem collecting the regular files carrying each
+// of bits — find -perm -NNNN per bit over a single traversal, the lists in walk
+// order — and the capability rows the same pass reads. A file carrying two of
+// the bits lands in both lists, the way two separate finds would report it.
+func scanPrivFiles(ctx context.Context, root string, bits ...os.FileMode) ([][]string, []string, error) {
+	lists := make([][]string, len(bits))
+	var caps []string
+	err := walkTree(ctx, root, 0, true, nil, func(path string, info os.FileInfo) bool {
+		mode := info.Mode()
+		if !mode.IsRegular() {
+			return true
+		}
+		for i, bit := range bits {
+			if mode&bit != 0 {
+				lists[i] = append(lists[i], path)
+			}
+		}
+		if row := fileCapsRow(path); row != "" {
+			caps = append(caps, row)
+		}
+		return true
+	})
+	return lists, caps, err
 }
 
-func nativeSuidScanRoot(root string, bit os.FileMode) func(context.Context) (string, error) {
+// privWalkKey is the store key of the privilege walk the SUID, SGID, and
+// capability checks share.
+type privWalkKey struct{}
+
+// privWalk is that walk's answer: one path list per requested bit, then the
+// capability rows.
+type privWalk struct {
+	lists [][]string
+	caps  []string
+	err   error
+}
+
+// sharedPrivWalk walks / once for the SUID, SGID, and capability checks and
+// keeps the answer for the run: the three want the same traversal with one
+// question different each, and find -perm plus getcap walk the tree three
+// times over — seconds on a large host, and three times the syscall load while
+// every other check competes for the same cache.
+func sharedPrivWalk(ctx context.Context) privWalk {
+	scan := func() privWalk {
+		lists, caps, err := scanPrivFiles(ctx, "/", os.ModeSetuid, os.ModeSetgid)
+		return privWalk{lists: lists, caps: caps, err: err}
+	}
+	store := runstate.From(ctx)
+	if store == nil {
+		return scan()
+	}
+	return runstate.Memo(store, privWalkKey{}, scan)
+}
+
+// nativeModeBitScan is the privilege-bit tier: the shared walk's list for one
+// bit, printed as find's one path per line.
+func nativeModeBitScan(bit os.FileMode) func(context.Context) (string, error) {
+	index := 0
+	if bit == os.ModeSetgid {
+		index = 1
+	}
 	return func(ctx context.Context) (string, error) {
+		walk := sharedPrivWalk(ctx)
 		var b strings.Builder
-		err := walkTree(ctx, root, 0, true, nil, func(path string, info os.FileInfo) bool {
-			if info.Mode().IsRegular() && info.Mode()&bit != 0 {
+		if index < len(walk.lists) {
+			for _, path := range walk.lists[index] {
 				b.WriteString(path)
 				b.WriteByte('\n')
 			}
-			return true
-		})
-		return b.String(), err
+		}
+		return b.String(), walk.err
 	}
+}
+
+// nativeFileCaps is the capability tier: the shared walk's rows, which are
+// getcap's own shape. A platform without an in-process xattr read leaves the
+// tier to the host's getcap.
+func nativeFileCaps(ctx context.Context) (string, error) {
+	if !capsInProcess() {
+		return "", model.ErrTierUnavailable
+	}
+	walk := sharedPrivWalk(ctx)
+	var b strings.Builder
+	for _, row := range walk.caps {
+		b.WriteString(row)
+		b.WriteByte('\n')
+	}
+	return b.String(), walk.err
 }
 
 // homeTreeArgv is the tree tier's argument vector — the same words the script
@@ -115,13 +185,4 @@ func nativeWebshellGrep(ctx context.Context) (string, error) {
 		}
 	}
 	return b.String(), nil
-}
-
-// nativeCaps mirrors the getcap tier: the recursive capability listing, run
-// without a shell.
-func nativeCaps(ctx context.Context) (string, error) {
-	if !haveBinary("getcap") {
-		return "", model.ErrTierUnavailable
-	}
-	return runHost(ctx, []string{"getcap", "-r", "/"}, false).out, nil
 }

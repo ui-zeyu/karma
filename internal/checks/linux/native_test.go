@@ -248,12 +248,19 @@ func TestNativeSuidScanFiltersModeBit(t *testing.T) {
 	// The owner-execute bit stands in for the setuid/setgid bits the callers
 	// pass: some filesystems (macOS temp volumes) strip the special bits, and
 	// the filter is the same bit test either way.
-	body, err := nativeSuidScanRoot(dir, 0o100)(context.Background())
+	lists, caps, err := scanPrivFiles(context.Background(), dir, 0o100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(body, marked) || strings.Contains(body, plain) {
-		t.Fatalf("mode-bit scan window wrong:\n%s", body)
+	if len(lists) != 1 {
+		t.Fatalf("scan returned %d bit lists, want 1", len(lists))
+	}
+	if !slices.Contains(lists[0], marked) || slices.Contains(lists[0], plain) {
+		t.Fatalf("mode-bit scan window wrong: %v", lists[0])
+	}
+	// the same pass reads capabilities; a plain temp file carries none
+	if len(caps) != 0 {
+		t.Fatalf("capability rows on files without capabilities: %v", caps)
 	}
 }
 
@@ -280,5 +287,66 @@ func TestNativeMinerPsFilter(t *testing.T) {
 	}
 	if strings.Contains(body, "grep") || strings.Contains(body, "bash") {
 		t.Fatalf("miner ps window kept noise:\n%s", body)
+	}
+}
+
+// shellGlob must not hand back dot-file names the shell's own glob would skip:
+// /etc/cron.d/* has a .placeholder the script tier never sees.
+func TestShellGlobSkipsDotFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"job", ".placeholder", ".hidden"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := shellGlob(filepath.Join(dir, "*"))
+	if len(got) != 1 || filepath.Base(got[0]) != "job" {
+		t.Errorf("glob * = %v, want just the plain name", got)
+	}
+	got = shellGlob(filepath.Join(dir, ".*"))
+	if len(got) != 2 {
+		t.Errorf("glob .* = %v, want both dot names", got)
+	}
+	if got = shellGlob(filepath.Join(dir, "*.nomatch")); len(got) != 0 {
+		t.Errorf("non-matching glob = %v, want nothing", got)
+	}
+}
+
+// The kernel stores a priority in front of every ring-buffer line; dmesg
+// prints the line without it.
+func TestStripSyslogPriority(t *testing.T) {
+	body := "<6>[    0.000000] Linux version 7.0.0\n<4>[   12.5] audit: denied\n" +
+		"[    9.9] already bare\n<5>no bracket close\nnot <6> a prefix\n"
+	want := "[    0.000000] Linux version 7.0.0\n[   12.5] audit: denied\n" +
+		"[    9.9] already bare\nno bracket close\nnot <6> a prefix\n"
+	if got := stripSyslogPriority(body); got != want {
+		t.Errorf("stripSyslogPriority = %q, want %q", got, want)
+	}
+	if got := stripSyslogPriority("plain\n"); got != "plain\n" {
+		t.Errorf("plain body changed: %q", got)
+	}
+}
+
+func TestLsmodRows(t *testing.T) {
+	data := "udp_diag 12288 0 - Live 0x0000000000000000\n" +
+		"inet_diag 24576 2 tcp_diag,udp_diag Live 0x0000000000000000\n" +
+		"broken\n"
+	want := "Module                  Size  Used by\n" +
+		"udp_diag               12288  0\n" +
+		"inet_diag              24576  2 tcp_diag,udp_diag\n"
+	if got := lsmodRows(data); got != want {
+		t.Errorf("lsmodRows:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// find %T@ prints ten decimal places; the cluster parser reads the field as one
+// number either way, but the listing rows have to match the script tier's.
+func TestEpochFracTenDigits(t *testing.T) {
+	at := time.Unix(1791205135, 277378520)
+	if got := epochFrac(at); got != "1791205135.2773785200" {
+		t.Errorf("epochFrac = %q, want the host find's %q", got, "1791205135.2773785200")
+	}
+	if got := epochFrac(time.Unix(1791205135, 0)); got != "1791205135.0000000000" {
+		t.Errorf("whole second = %q", got)
 	}
 }

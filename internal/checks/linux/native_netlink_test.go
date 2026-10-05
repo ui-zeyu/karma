@@ -33,19 +33,25 @@ func TestSsStateWord(t *testing.T) {
 
 func TestSsEndpoint(t *testing.T) {
 	cases := []struct {
-		ip   string
-		port uint16
-		want string
+		ip     string
+		port   uint16
+		ifname string
+		want   string
 	}{
-		{"0.0.0.0", 22, "0.0.0.0:22"},
-		{"0.0.0.0", 0, "0.0.0.0:*"},
-		{"127.0.0.53", 53, "127.0.0.53:53"},
-		{"::", 22, "[::]:22"},
-		{"::1", 631, "[::1]:631"},
+		{"0.0.0.0", 22, "", "0.0.0.0:22"},
+		{"0.0.0.0", 0, "", "0.0.0.0:*"},
+		{"127.0.0.53", 53, "", "127.0.0.53:53"},
+		{"::", 22, "", "[::]:22"},
+		{"::1", 631, "", "[::1]:631"},
+		// ss appends the bound interface between the address and the port
+		{"127.0.0.53", 53, "lo", "127.0.0.53%lo:53"},
+		{"172.17.234.94", 68, "eth0", "172.17.234.94%eth0:68"},
+		{"fe80::216:3eff:fe3a:2862", 546, "eth0", "[fe80::216:3eff:fe3a:2862]%eth0:546"},
+		{"10.0.0.1", 0, "eth0", "10.0.0.1%eth0:*"},
 	}
 	for _, c := range cases {
-		if got := ssEndpoint(net.ParseIP(c.ip), c.port); got != c.want {
-			t.Errorf("ssEndpoint(%s, %d) = %q, want %q", c.ip, c.port, got, c.want)
+		if got := ssEndpoint(net.ParseIP(c.ip), c.port, c.ifname); got != c.want {
+			t.Errorf("ssEndpoint(%s, %d, %q) = %q, want %q", c.ip, c.port, c.ifname, got, c.want)
 		}
 	}
 }
@@ -109,7 +115,7 @@ func TestSocketInode(t *testing.T) {
 	}
 }
 
-func TestNeighState(t *testing.T) {
+func TestNeighStateWords(t *testing.T) {
 	cases := []struct {
 		state int
 		want  string
@@ -117,11 +123,72 @@ func TestNeighState(t *testing.T) {
 		{0x02, "REACHABLE"},
 		{0x04, "STALE"},
 		{0x80, "PERMANENT"},
-		{0x42, "NOARP"}, // NOARP rides on top of a reachability state
+		{0x42, "REACHABLE NOARP"}, // iproute2 prints every set bit, in its order
+		{0x02 | 0x08, "REACHABLE DELAY"},
+		{0, ""}, // a stateless entry prints no state at all
 	}
 	for _, c := range cases {
-		if got := neighState(c.state); got != c.want {
-			t.Errorf("neighState(%#x) = %q, want %q", c.state, got, c.want)
+		if got := neighStateWords(c.state); got != c.want {
+			t.Errorf("neighStateWords(%#x) = %q, want %q", c.state, got, c.want)
+		}
+	}
+}
+
+func TestNeighVisibleHidesNoarpOnly(t *testing.T) {
+	cases := []struct {
+		state, flags int
+		want         bool
+	}{
+		{0x02, 0, true},    // REACHABLE
+		{0x42, 0, true},    // NOARP on top of a state ip prints
+		{0x40, 0, false},   // the NOARP-only pseudo entries ip hides
+		{0, 0, false},      // no state yet: ip skips it too
+		{0x40, 0x08, true}, // NTF_PROXY keeps the entry
+		{0x40, 0x10, true}, // NTF_EXT_LEARNED keeps the entry
+		{0x80, 0, true},    // PERMANENT
+	}
+	for _, c := range cases {
+		if got := neighVisible(c.state, c.flags); got != c.want {
+			t.Errorf("neighVisible(%#x, %#x) = %v, want %v", c.state, c.flags, got, c.want)
+		}
+	}
+}
+
+func TestRenderNeighRowsFlagsBeforeState(t *testing.T) {
+	out := renderNeighRows([]neighRow{
+		{ip: "fe80::1", dev: "eth0", lladdr: "ee:ff:ff:ff:ff:ff", flags: []string{"router"}, state: "STALE"},
+		{ip: "10.0.0.1", dev: "eth0", lladdr: "aa:bb:cc:dd:ee:ff", state: "REACHABLE"},
+		{ip: "10.0.0.2", dev: "eth0", flags: []string{"proxy"}},
+	})
+	want := []string{
+		"fe80::1 dev eth0 lladdr ee:ff:ff:ff:ff:ff router STALE",
+		"10.0.0.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE",
+		"10.0.0.2 dev eth0 proxy",
+	}
+	for i, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if line != want[i] {
+			t.Errorf("neigh row %d = %q, want %q", i, line, want[i])
+		}
+	}
+}
+
+func TestRouteDestHostRoutes(t *testing.T) {
+	_, host4, _ := net.ParseCIDR("10.0.0.5/32")
+	_, net4, _ := net.ParseCIDR("10.0.0.0/24")
+	_, host6, _ := net.ParseCIDR("fe80::1/128")
+	cases := []struct {
+		dst  *net.IPNet
+		want string
+	}{
+		{nil, "default"},
+		{&net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}, "default"},
+		{host4, "10.0.0.5"}, // ip route prints a host route without the /32
+		{host6, "fe80::1"},
+		{net4, "10.0.0.0/24"},
+	}
+	for _, c := range cases {
+		if got := routeDest(c.dst); got != c.want {
+			t.Errorf("routeDest(%v) = %q, want %q", c.dst, got, c.want)
 		}
 	}
 }

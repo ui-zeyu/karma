@@ -47,7 +47,7 @@ func fileTypeWords(path string) string {
 	head := buf[:n]
 	switch {
 	case bytes.HasPrefix(head, []byte("\x7fELF")):
-		return elfWords(head)
+		return elfWords(f)
 	case bytes.HasPrefix(head, []byte("#!")):
 		return scriptWords(head)
 	}
@@ -57,23 +57,27 @@ func fileTypeWords(path string) string {
 	return "data"
 }
 
-// elfWords spells the ELF header the way file(1) opens that line.
-func elfWords(head []byte) string {
-	f, err := elf.NewFile(bytes.NewReader(head))
+// elfWords spells the ELF header the way file(1) opens that line. The reader is
+// the whole file rather than the first block it was classified from: debug/elf
+// resolves the section and program headers by offset, and every real binary
+// keeps them past the first 4096 bytes — reading only the head left this
+// function with the bare "ELF" fallback.
+func elfWords(f io.ReaderAt) string {
+	parsed, err := elf.NewFile(f)
 	if err != nil {
 		return "ELF"
 	}
-	defer f.Close()
+	defer parsed.Close()
 	class := "32-bit"
-	if f.Class == elf.ELFCLASS64 {
+	if parsed.Class == elf.ELFCLASS64 {
 		class = "64-bit"
 	}
 	order := "LSB"
-	if f.Data == elf.ELFDATA2MSB {
+	if parsed.Data == elf.ELFDATA2MSB {
 		order = "MSB"
 	}
 	kind := "executable"
-	switch f.Type {
+	switch parsed.Type {
 	case elf.ET_DYN:
 		kind = "shared object"
 	case elf.ET_REL:

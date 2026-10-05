@@ -152,6 +152,9 @@ var PersistenceChecks = []*model.Check{
 				define.KeywordRule,
 			},
 		}),
+	define.LinuxCheck("at", "at one-shot job queue", model.AspectPersistence,
+		[]model.Probe{{Label: "at", Inv: model.NewCommand("atq")}},
+		define.CheckOpt{Syntax: "table"}),
 	define.LinuxCheck("enabled-units", "Units enabled at boot", model.AspectPersistence,
 		[]model.Probe{{Label: "systemctl",
 			Inv: model.NewCommand("systemctl", "list-unit-files", "--state=enabled")}},
@@ -161,6 +164,17 @@ var PersistenceChecks = []*model.Check{
 				model.NewFilter("unit-files-listed", `^\d+ unit files listed`, model.FilterDrop),
 			},
 			Syntax: "table",
+		}),
+	listingCheck("unit-dirs", "systemd unit directories (by mtime)", model.AspectPersistence,
+		unitDirs, 100, nil),
+	define.LinuxCheck("systemd-generators", "systemd generator directories", model.AspectPersistence,
+		[]model.Probe{
+			{Label: "find", Inv: model.Dual{Run: nativeGenerators, Script: generatorsScript}},
+		},
+		define.CheckOpt{
+			Syntax:    "ls-l",
+			Normalize: cluster.ListingNormalize(time.Now),
+			Rules:     []model.Rule{define.KeywordRule},
 		}),
 	define.LinuxCheck("rc-local", "rc.local boot script", model.AspectPersistence,
 		readFilesCheck("/etc/rc.local", "/etc/rc.d/rc.local"),
@@ -183,6 +197,18 @@ var PersistenceChecks = []*model.Check{
 		[]model.Rule{define.KeywordRule}),
 	listingCheck("xinetd", "xinetd service directory", model.AspectPersistence,
 		[]string{"/etc/xinetd.d"}, 100, []model.Rule{define.KeywordRule}),
+	define.LinuxCheck("udev-rules", "udev rules (writable layers)", model.AspectPersistence,
+		[]model.Probe{
+			{Label: "find", Inv: model.Dual{Run: nativeUdev, Script: udevScript}},
+		},
+		define.CheckOpt{
+			Syntax:    "ls-l",
+			Normalize: cluster.ListingNormalize(time.Now),
+			Rules: []model.Rule{
+				model.NewRule("udev-exec-key", `(?:RUN|PROGRAM|IMPORT)(?:\+=|\{|=)`, model.Medium,
+					"udev rule runs external program"),
+			},
+		}),
 	define.LinuxCheck("ld-preload", "Dynamic library preload (ld.so.preload)", model.AspectPersistence,
 		[]model.Probe{
 			{Label: "cat", Inv: model.Dual{Run: nativeLdPreload, Script: "cat /etc/ld.so.preload 2>/dev/null"}},
@@ -202,6 +228,18 @@ var PersistenceChecks = []*model.Check{
 				model.NewRule("ld-conf-entry", `^[^#\n]\S+`, model.Low, "library search path entry"),
 			},
 		}),
+	// setuptools' two legitimate precedence files are already excluded by the
+	// collection script, so the rule stays minimal
+	define.LinuxCheck("python-pth", "Python .pth injection", model.AspectPersistence,
+		[]model.Probe{
+			{Label: "grep", Inv: model.Dual{Run: nativePth, Script: pthScript}},
+		},
+		define.CheckOpt{
+			Rules: []model.Rule{
+				model.NewRule("pth-import", `\.pth:[0-9]+:import`, model.High,
+					".pth import (runs at python startup)"),
+			},
+		}),
 	define.LinuxCheck("shell-rc", "Shell startup files", model.AspectPersistence,
 		readFilesCheck(shellRcPaths...),
 		define.CheckOpt{Rules: []model.Rule{historyOffRule, define.KeywordRule}, Syntax: "bash"}),
@@ -216,45 +254,7 @@ var PersistenceChecks = []*model.Check{
 			// the listing section speaks ls -l, the collected files speak shell
 			SectionSyntax: []model.SectionSyntax{{Title: "/etc/skel", Syntax: "ls-l"}},
 		}),
-	define.LinuxCheck("at", "at one-shot job queue", model.AspectPersistence,
-		[]model.Probe{{Label: "at", Inv: model.NewCommand("atq")}},
-		define.CheckOpt{Syntax: "table"}),
-	listingCheck("unit-dirs", "systemd unit directories (by mtime)", model.AspectPersistence,
-		unitDirs, 100, nil),
-	define.LinuxCheck("systemd-generators", "systemd generator directories", model.AspectPersistence,
-		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: nativeGenerators, Script: generatorsScript}},
-		},
-		define.CheckOpt{
-			Syntax:    "ls-l",
-			Normalize: cluster.ListingNormalize(time.Now),
-			Rules:     []model.Rule{define.KeywordRule},
-		}),
-	define.LinuxCheck("udev-rules", "udev rules (writable layers)", model.AspectPersistence,
-		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: nativeUdev, Script: udevScript}},
-		},
-		define.CheckOpt{
-			Syntax:    "ls-l",
-			Normalize: cluster.ListingNormalize(time.Now),
-			Rules: []model.Rule{
-				model.NewRule("udev-exec-key", `(?:RUN|PROGRAM|IMPORT)(?:\+=|\{|=)`, model.Medium,
-					"udev rule runs external program"),
-			},
-		}),
 	define.LinuxCheck("motd", "motd login banner", model.AspectPersistence,
 		readFilesCheck("/etc/motd", "/etc/update-motd.d/*"),
 		define.CheckOpt{Syntax: "bash", Rules: []model.Rule{define.KeywordRule}}),
-	// setuptools' two legitimate precedence files are already excluded by the
-	// collection script, so the rule stays minimal
-	define.LinuxCheck("python-pth", "Python .pth injection", model.AspectPersistence,
-		[]model.Probe{
-			{Label: "grep", Inv: model.Dual{Run: nativePth, Script: pthScript}},
-		},
-		define.CheckOpt{
-			Rules: []model.Rule{
-				model.NewRule("pth-import", `\.pth:[0-9]+:import`, model.High,
-					".pth import (runs at python startup)"),
-			},
-		}),
 }

@@ -28,5 +28,5 @@ func nativeDmesg(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", model.ErrTierUnavailable
 	}
-	return string(buf[:n]), nil
+	return stripSyslogPriority(string(buf[:n])), nil
 }

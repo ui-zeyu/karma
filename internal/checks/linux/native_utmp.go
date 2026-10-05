@@ -271,9 +271,22 @@ func lastSessionRows(recs []utmpRec, live map[string]bool) []lastRow {
 	return rows
 }
 
+// wtmpdbLive reports whether logins are recorded in wtmpdb's database. The
+// wtmpdb-aware last(1) then reads the database and /var/log/wtmp stops being
+// written, so the binary file still parses — it just no longer holds the live
+// sessions, and reporting them would present stale evidence as current.
+func wtmpdbLive() bool {
+	_, err := os.Stat("/var/log/wtmp.db")
+	return err == nil
+}
+
 // nativeLast mirrors `last -n 200`: sessions newest first, the wtmp trailer
-// naming where the record begins.
+// naming where the record begins. A host whose logins live in wtmpdb hands the
+// question to its own last(1), which reads the database.
 func nativeLast(ctx context.Context) (string, error) {
+	if wtmpdbLive() {
+		return "", model.ErrTierUnavailable
+	}
 	recs, ok := readUtmpRecords("/var/log/wtmp")
 	if !ok {
 		return "", model.ErrTierUnavailable
@@ -293,7 +306,7 @@ func nativeLast(ctx context.Context) (string, error) {
 	for _, row := range rows {
 		renderLastRow(&b, row)
 	}
-	fmt.Fprintf(&b, "\nwtmp begins %s\n", firstRecordTime(recs).Format("Mon Jan _2 15:04:05 2006"))
+	b.WriteString(recordTrailer("/var/log/wtmp", "wtmp", recs))
 	return b.String(), nil
 }
 
@@ -303,6 +316,17 @@ func firstRecordTime(recs []utmpRec) time.Time {
 		return time.Time{}
 	}
 	return recs[0].at
+}
+
+// recordTrailer is last's closing line: where the records begin. A file with no
+// record at all — an untouched btmp — gets the notice the wtmpdb family prints
+// instead, since the zero time would otherwise read as a year-1 timestamp.
+func recordTrailer(path, label string, recs []utmpRec) string {
+	if len(recs) == 0 {
+		return path + " has no entries\n"
+	}
+	return fmt.Sprintf("\n%s begins %s\n", label,
+		firstRecordTime(recs).Format("Mon Jan _2 15:04:05 2006"))
 }
 
 // nativeLastb mirrors `lastb -n 400`: every failed attempt, newest first.
@@ -327,7 +351,7 @@ func nativeLastb(ctx context.Context) (string, error) {
 	for _, row := range rows {
 		renderLastRow(&b, row)
 	}
-	fmt.Fprintf(&b, "\nbtmp begins %s\n", firstRecordTime(recs).Format("Mon Jan _2 15:04:05 2006"))
+	b.WriteString(recordTrailer("/var/log/btmp", "btmp", recs))
 	return b.String(), nil
 }
 
@@ -339,7 +363,15 @@ const (
 	lastlogHostOff = 36
 )
 
-// nativeLastlog mirrors `lastlog`: the newest login per account.
+// lastlog2DB is where the account records moved on the 26.04 generation of
+// Ubuntu and its neighbours (wtmpdb's companion lastlog2).
+const lastlog2DB = "/var/lib/lastlog/lastlog2.db"
+
+// nativeLastlog mirrors `lastlog`: the newest login per account. Where the
+// records moved to lastlog2's database, /var/log/lastlog is no longer written
+// and the classic lastlog(1) is usually gone — the file is then the only
+// source left, so it is read and the age of that source is stated up front
+// instead of being left invisible.
 func nativeLastlog(ctx context.Context) (string, error) {
 	users, err := passwdUsers()
 	if err != nil {
@@ -350,6 +382,9 @@ func nativeLastlog(ctx context.Context) (string, error) {
 		return "", model.ErrTierUnavailable
 	}
 	var b strings.Builder
+	if _, err := os.Stat(lastlog2DB); err == nil {
+		fmt.Fprintf(&b, "note: %s present, /var/log/lastlog is frozen at its last pre-migration write\n", lastlog2DB)
+	}
 	b.WriteString("Username         Port     From                                       Latest\n")
 	for _, u := range users {
 		off := u.uid * lastlogSize

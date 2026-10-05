@@ -123,3 +123,17 @@ func TestParsePasswdUsers(t *testing.T) {
 		t.Fatalf("users = %+v", users)
 	}
 }
+
+func TestRecordTrailer(t *testing.T) {
+	recs := []utmpRec{{typ: utUserProc, line: "pts/0", id: "s1", user: "root",
+		at: time.Date(2026, 10, 5, 9, 12, 0, 0, time.UTC)}}
+	want := "\nbtmp begins Mon Oct  5 09:12:00 2026\n"
+	if got := recordTrailer("/var/log/btmp", "btmp", recs); got != want {
+		t.Errorf("trailer = %q, want %q", got, want)
+	}
+	// an untouched btmp has no records at all: last(1) from the wtmpdb family
+	// says so instead of printing a year-1 timestamp
+	if got := recordTrailer("/var/log/btmp", "btmp", nil); got != "/var/log/btmp has no entries\n" {
+		t.Errorf("empty trailer = %q", got)
+	}
+}

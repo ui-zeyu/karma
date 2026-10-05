@@ -428,6 +428,17 @@ var ProcessChecks = []*model.Check{
 					"in /proc but not in ps (or just exited)"),
 			},
 		}),
+	define.LinuxCheck("hidden-pids", "Hidden process brute-force (kill(0) vs /proc)", model.AspectProcess,
+		// Both branches print the same text shape, so the rules are shared.
+		[]model.Probe{
+			{Label: "brute", Inv: model.Dual{Run: nativeHiddenPIDs, Script: hiddenPidsScript}, LineLimit: 200},
+		},
+		define.CheckOpt{
+			Rules: []model.Rule{
+				model.NewRule("hidden-pid", `^PID \d+ `, model.Critical,
+					"alive for the kernel, hidden from /proc listing"),
+			},
+		}),
 	define.LinuxCheck("miner", "Cryptominer hunt (processes and drop paths)", model.AspectProcess,
 		[]model.Probe{
 			{Label: "scan", Inv: model.Dual{Run: nativeMiner, Script: minerScript}, LineLimit: 200},
@@ -449,17 +460,6 @@ var ProcessChecks = []*model.Check{
 					"Stratum mining-pool protocol in a command line"),
 				model.NewRule("miner-config", `/(?:tmp|var/tmp|dev/shm)/config\.json(?:\s|$)`, model.High,
 					"miner config at a known drop path"),
-			},
-		}),
-	define.LinuxCheck("hidden-pids", "Hidden process brute-force (kill(0) vs /proc)", model.AspectProcess,
-		// Both branches print the same text shape, so the rules are shared.
-		[]model.Probe{
-			{Label: "brute", Inv: model.Dual{Run: nativeHiddenPIDs, Script: hiddenPidsScript}, LineLimit: 200},
-		},
-		define.CheckOpt{
-			Rules: []model.Rule{
-				model.NewRule("hidden-pid", `^PID \d+ `, model.Critical,
-					"alive for the kernel, hidden from /proc listing"),
 			},
 		}),
 }

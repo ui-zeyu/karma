@@ -3,7 +3,7 @@
 # test passes.
 
 GO ?= go
-VERSION ?= 0.11.0
+VERSION ?= 0.12.0
 
 .PHONY: all fmt vet test race staticcheck build dist clean
 
@@ -20,9 +20,9 @@ test:
 	$(GO) test -count=1 ./...
 
 # The packages whose code runs across goroutines (presentation, channels,
-# orchestration) under the race detector.
+# orchestration, and the run's shared-read store) under the race detector.
 race:
-	$(GO) test -race -count=1 ./internal/render/ ./internal/session/ ./internal/runner/ ./internal/cli/
+	$(GO) test -race -count=1 ./internal/render/ ./internal/session/ ./internal/runner/ ./internal/cli/ ./internal/runstate/
 
 staticcheck:
 	staticcheck -checks=all ./...

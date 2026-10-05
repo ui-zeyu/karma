@@ -20,7 +20,9 @@ import (
 	"strings"
 )
 
-// ssRow is one socket-table row: the columns `ss -tunap` prints.
+// ssRow is one socket-table row: the columns `ss -tunap` prints. The local cell
+// carries ss's "%ifname" suffix when the socket is bound to a device, since the
+// interface only belongs to the local side of the pair.
 type ssRow struct {
 	netid string // "tcp" or "udp"
 	state string // ss's state word
@@ -50,7 +52,8 @@ type neighRow struct {
 	ip     string
 	dev    string
 	lladdr string
-	state  string
+	flags  []string // router, proxy, managed, extern_learn, offload, extern_valid
+	state  string   // the NUD state words, empty when the kernel reports none
 }
 
 // routeRow is one `ip route` row.
@@ -103,11 +106,15 @@ func ssStateWord(netid string, state uint8) string {
 }
 
 // ssEndpoint renders ss's address:port cell; port 0 (an unconnected peer)
-// prints "*", and a v6 address is bracketed.
-func ssEndpoint(ip net.IP, port uint16) string {
+// prints "*", a v6 address is bracketed, and a socket bound to a device carries
+// ss's "%ifname" between the address and the port.
+func ssEndpoint(ip net.IP, port uint16, ifname string) string {
 	host := ip.String()
 	if ip.To4() == nil {
 		host = "[" + host + "]"
+	}
+	if ifname != "" {
+		host += "%" + ifname
 	}
 	if port == 0 {
 		return host + ":*"
@@ -170,7 +177,8 @@ func renderLinkRows(rows []linkRow) string {
 	return b.String()
 }
 
-// renderNeighRows prints `ip neigh` rows.
+// renderNeighRows prints `ip neigh` rows: address, device, link-layer address,
+// the flags ip prints as bare words, then the state words.
 func renderNeighRows(rows []neighRow) string {
 	var b strings.Builder
 	for _, r := range rows {
@@ -178,7 +186,13 @@ func renderNeighRows(rows []neighRow) string {
 		if r.lladdr != "" {
 			b.WriteString(" lladdr " + r.lladdr)
 		}
-		b.WriteString(" " + r.state + "\n")
+		for _, flag := range r.flags {
+			b.WriteString(" " + flag)
+		}
+		if r.state != "" {
+			b.WriteString(" " + r.state)
+		}
+		b.WriteByte('\n')
 	}
 	return b.String()
 }
@@ -211,28 +225,70 @@ func renderRouteRows(rows []routeRow) string {
 	return b.String()
 }
 
-// neighStateWord maps rtnetlink's NUD state to the word ip neigh prints.
-var neighStateWord = map[int]string{
-	0x01: "INCOMPLETE",
-	0x02: "REACHABLE",
-	0x04: "STALE",
-	0x08: "DELAY",
-	0x10: "PROBE",
-	0x20: "FAILED",
-	0x40: "NOARP",
-	0x80: "PERMANENT",
+// routeDest is ip route's destination cell: the prefix, or "default" for the
+// zero-length mask. A full-length mask is a host route, and ip prints the bare
+// address without the /32 or /128.
+func routeDest(dst *net.IPNet) string {
+	if dst == nil {
+		return "default"
+	}
+	ones, bits := dst.Mask.Size()
+	if ones == 0 && bits != 0 {
+		return "default"
+	}
+	if ones == bits {
+		return dst.IP.String()
+	}
+	return dst.String()
 }
 
-// neighState spells a neighbor entry's state; NOARP rides on top of a
-// reachability state and ip neigh prints it alone.
-func neighState(state int) string {
-	if word, ok := neighStateWord[state]; ok {
-		return word
+// neighStateWords spells a neighbor entry's state the way ip neigh does: every
+// set bit as a word, in the order iproute2 prints them, joined by blanks. An
+// entry the kernel reports without a NUD state yields no words at all.
+var neighStateOrder = []struct {
+	bit  int
+	word string
+}{
+	{0x01, "INCOMPLETE"},
+	{0x02, "REACHABLE"},
+	{0x04, "STALE"},
+	{0x08, "DELAY"},
+	{0x10, "PROBE"},
+	{0x20, "FAILED"},
+	{0x40, "NOARP"},
+	{0x80, "PERMANENT"},
+}
+
+func neighStateWords(state int) string {
+	if state == 0 {
+		return ""
 	}
-	if state&0x40 != 0 {
-		return "NOARP"
+	words := make([]string, 0, 2)
+	for _, entry := range neighStateOrder {
+		if state&entry.bit != 0 {
+			words = append(words, entry.word)
+		}
 	}
-	return strconv.Itoa(state)
+	if len(words) == 0 {
+		return strconv.Itoa(state)
+	}
+	return strings.Join(words, " ")
+}
+
+// neighVisible is ip neigh's default state filter (0xFF & ~NUD_NOARP): an entry
+// whose state is NOARP alone — a no-ARP-needed pseudo entry — is not shown, and
+// neither is one the kernel reports without any state. The proxy and
+// extern_learn flags keep an entry visible regardless.
+func neighVisible(state, flags int) bool {
+	const (
+		nudNoarp  = 0x40
+		ntfProxy  = 0x08
+		ntfExtLrn = 0x10
+	)
+	if flags&(ntfProxy|ntfExtLrn) != 0 {
+		return true
+	}
+	return state&(0xff&^nudNoarp) != 0
 }
 
 // socketInode pulls the inode out of a /proc/[pid]/fd target of the form

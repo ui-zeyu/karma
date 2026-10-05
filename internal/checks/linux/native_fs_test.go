@@ -3,9 +3,48 @@
 package linux
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	"karma/internal/runstate"
 )
+
+// The suid, sgid, and capability tiers must read the run's shared walk rather
+// than start one of their own: a value planted in the store's slot is what
+// they print.
+func TestPrivWalkTiersReadSharedStore(t *testing.T) {
+	ctx := runstate.WithStore(t.Context())
+	planted := privWalk{
+		lists: [][]string{{"/planted/suid"}, {"/planted/sgid", "/also/sgid"}},
+		caps:  []string{"/planted/ping cap_net_raw=ep"},
+	}
+	runstate.Memo(runstate.From(ctx), privWalkKey{}, func() privWalk { return planted })
+
+	suid, err := nativeModeBitScan(os.ModeSetuid)(ctx)
+	if err != nil {
+		t.Fatalf("suid tier: %v", err)
+	}
+	if suid != "/planted/suid\n" {
+		t.Fatalf("suid tier printed %q", suid)
+	}
+	sgid, err := nativeModeBitScan(os.ModeSetgid)(ctx)
+	if err != nil {
+		t.Fatalf("sgid tier: %v", err)
+	}
+	if sgid != "/planted/sgid\n/also/sgid\n" {
+		t.Fatalf("sgid tier printed %q", sgid)
+	}
+	if capsInProcess() {
+		caps, err := nativeFileCaps(ctx)
+		if err != nil {
+			t.Fatalf("caps tier: %v", err)
+		}
+		if caps != "/planted/ping cap_net_raw=ep\n" {
+			t.Fatalf("caps tier printed %q", caps)
+		}
+	}
+}
 
 func TestParseMountsUnescapesOctal(t *testing.T) {
 	data := "/dev/sda1 /mnt/space\\040dir ext4 rw,relatime 0 0\n" +
@@ -23,37 +62,75 @@ func TestParseMountsUnescapesOctal(t *testing.T) {
 	}
 }
 
-func TestHumanKiB(t *testing.T) {
+func TestHumanKiBRoundsUp(t *testing.T) {
+	// every expectation below was checked against the host's own df -h on
+	// Ubuntu 26.04 (coreutils 9.7)
 	cases := []struct {
-		kib  float64
-		want string
+		bytes uint64
+		want  string
 	}{
 		{0, "0"},
-		{4, "4.0K"},
-		{512, "512K"},
-		{9.9 * 1024, "9.9M"},
-		{99 * 1024, "99M"},
-		{1.5 * 1024 * 1024, "1.5G"},
+		{4 << 10, "4.0K"},       // under ten keeps the decimal point
+		{512 << 10, "512K"},     // at or above ten the integer stands alone
+		{7577, "7.4K"},          // the ceiling of 7.399K
+		{1084 << 10, "1.1M"},    // 1.058 MiB
+		{2500 << 10, "2.5M"},    // 2.441 MiB → ceiling of the tenths digit
+		{164644 << 10, "161M"},  // 160.78 MiB
+		{249508 << 10, "244M"},  // 243.66 MiB
+		{40901312 << 10, "40G"}, // 39.008 GiB: df prints 40G, not 39G
+		{6759644 << 10, "6.5G"}, // 6.446 GiB
+		{32251300 << 10, "31G"}, // 30.758 GiB
+		{1048000, "1.0M"},       // 1023.4K rounds into the next unit
 	}
 	for _, c := range cases {
-		if got := humanKiB(c.kib); got != c.want {
-			t.Errorf("humanKiB(%.0f) = %q, want %q", c.kib, got, c.want)
+		if got := humanKiB(c.bytes); got != c.want {
+			t.Errorf("humanKiB(%d) = %q, want %q", c.bytes, got, c.want)
 		}
 	}
 }
 
 func TestDfPercentRoundsUp(t *testing.T) {
-	if got := dfPercent(1, 1024); got != 1 {
-		t.Errorf("1 byte of 1KiB = %d%%, want 1", got)
+	// the denominator is used + available (the space a non-root user can use),
+	// so a filesystem with reserved blocks reads higher than used/total
+	cases := []struct {
+		used, avail uint64
+		want        int
+	}{
+		{1, 1 << 20, 1},
+		{0, 1 << 20, 0},
+		{6759644, 32251300, 18}, // 17.33% → 18, the host's own reading
+		{1084, 328208, 1},       // 0.33% → 1
+		{2500, 820724, 1},       // 0.30% → 1
+		{7577, 249856, 3},       // 2.94% → 3
+		{99, 1, 99},             // 99% stays 99
+		{0, 0, 0},               // nothing to divide by
 	}
-	if got := dfPercent(0, 1024); got != 0 {
-		t.Errorf("empty = %d%%, want 0", got)
+	for _, c := range cases {
+		if got := dfPercent(c.used, c.avail); got != c.want {
+			t.Errorf("dfPercent(%d, %d) = %d, want %d", c.used, c.avail, got, c.want)
+		}
 	}
-	if got := dfPercent(1023*100, 1024*100); got != 100 { // 99.9% rounds to 100
-		t.Errorf("99.9%% = %d, want 100", got)
+}
+
+func TestDfDummyFilesystems(t *testing.T) {
+	cases := []struct {
+		m    mountRow
+		want bool
+	}{
+		{mountRow{fstype: "proc"}, true},
+		{mountRow{fstype: "sysfs"}, true},
+		{mountRow{fstype: "devpts"}, true},
+		{mountRow{fstype: "debugfs"}, true},
+		{mountRow{fstype: "mqueue"}, true},
+		{mountRow{fstype: "none", opts: "rw,nosuid"}, true},
+		{mountRow{fstype: "none", opts: "rw,bind"}, false}, // a bind mount is real
+		{mountRow{fstype: "tmpfs", opts: "rw"}, false},
+		{mountRow{fstype: "ext4", opts: "rw,relatime"}, false},
 	}
-	if got := dfPercent(1, 0); got != 0 {
-		t.Errorf("no total = %d, want 0", got)
+	for _, c := range cases {
+		if got := dfDummy(c.m); got != c.want {
+			t.Errorf("dfDummy(%+v) = %v, want %v", c.m, got, c.want)
+		}
 	}
 }
 

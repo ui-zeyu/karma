@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,10 +30,11 @@ func listingCheck(id, title string, aspect model.Aspect, dirs []string, head int
 }
 
 // expandDirs expands a directory word list the way the script tier's shell
-// does: $(uname -r) is substituted from /proc, globs are expanded and keep
-// only directories (a file in the word list makes find print nothing either
-// way), and a non-matching glob stays literal — its section body comes back
-// empty and the reader drops it.
+// does: $(uname -r) is substituted from /proc, globs are expanded (dot-file
+// names only when the pattern spells the dot) and keep only directories (a
+// file in the word list makes find print nothing either way), and a
+// non-matching glob stays literal — its section body comes back empty and the
+// reader drops it.
 func expandDirs(dirs []string) []string {
 	release, _ := kernelRelease()
 	var out []string
@@ -43,7 +43,7 @@ func expandDirs(dirs []string) []string {
 			dir = strings.ReplaceAll(dir, "$(uname -r)", release)
 		}
 		if hasGlobMeta(dir) {
-			matches, _ := filepath.Glob(dir)
+			matches := shellGlob(dir)
 			for _, match := range matches {
 				if info, err := os.Stat(match); err == nil && info.IsDir() {
 					out = append(out, match)

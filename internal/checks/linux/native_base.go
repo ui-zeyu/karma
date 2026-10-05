@@ -93,8 +93,7 @@ func expandFiles(patterns []string) []string {
 	var paths []string
 	for _, pattern := range patterns {
 		if hasGlobMeta(pattern) {
-			matches, _ := filepath.Glob(pattern)
-			paths = append(paths, matches...)
+			paths = append(paths, shellGlob(pattern)...)
 			continue
 		}
 		paths = append(paths, pattern)
@@ -102,6 +101,33 @@ func expandFiles(patterns []string) []string {
 	return slices.DeleteFunc(paths, func(path string) bool {
 		info, err := os.Stat(path)
 		return err != nil || !info.Mode().IsRegular()
+	})
+}
+
+// shellGlob expands one pattern the way a POSIX shell does. filepath.Glob has
+// no dot-file rule: a "*" matches a leading dot, while the shell only matches
+// one the pattern spells out, so a directory holding .placeholder yields a
+// result the script tier's glob would not produce.
+func shellGlob(pattern string) []string {
+	matches, _ := filepath.Glob(pattern)
+	if len(matches) == 0 {
+		return nil
+	}
+	words := strings.Split(pattern, "/")
+	return slices.DeleteFunc(matches, func(path string) bool {
+		parts := strings.Split(path, "/")
+		if len(parts) != len(words) {
+			return false
+		}
+		for i, word := range words {
+			if !hasGlobMeta(word) || strings.HasPrefix(word, ".") {
+				continue
+			}
+			if strings.HasPrefix(parts[i], ".") {
+				return true
+			}
+		}
+		return false
 	})
 }
 
@@ -265,10 +291,11 @@ func lsBody(info os.FileInfo, path string, names *nameCache) string {
 }
 
 // epochFrac renders find's epoch-with-fraction field (%T@, %C@): whole seconds
-// then nanoseconds, which sort -rn and the cluster parser both read as one
-// number.
+// then a ten-digit fraction, which sort -rn and the cluster parser both read as
+// one number. The trailing digit is always zero — find prints ten decimal
+// places although timestamps stop at nanoseconds.
 func epochFrac(t time.Time) string {
-	return fmt.Sprintf("%d.%09d", t.Unix(), t.Nanosecond())
+	return fmt.Sprintf("%d.%010d", t.Unix(), t.Nanosecond()*10)
 }
 
 // listingRows mirrors script.ListingFind: one directory's entries as

@@ -86,6 +86,25 @@ var KernelChecks = []*model.Check{
 					"module loaded at boot"),
 			},
 		}),
+	// lsmod is a big all-modules table with little signal; placed at the end of the
+	// aspect so it does not block the targeted checks before it
+	define.LinuxCheck("lsmod", "Kernel modules", model.AspectKernel,
+		[]model.Probe{
+			{Label: "lsmod", Inv: model.Dual{Run: nativeLsmod, Script: "lsmod"}},
+			{Label: "proc-modules", Inv: model.Dual{Run: nativeProcModules, Script: "cat /proc/modules 2>/dev/null"}},
+		},
+		// The Used by tail can contain spaces, which the generic table word-by-word
+		// coloring would split apart
+		define.CheckOpt{Syntax: "lsmod"}),
+	listingCheck("module-files", "Out-of-tree kernel modules (updates/dkms, extra, etc.)", model.AspectKernel,
+		moduleDirs, 100,
+		[]model.Rule{
+			// The filename is at the end of an ls line (symlink lines carry " -> target", so
+			// the rule ends with \s|$); modules.* metadata in the root and entries under the
+			// kernel/ subdirectory are official content and are not flagged
+			model.NewRule("module-files-out-of-tree", `\.ko(?:\.[a-z0-9]+)?(?:\s|$)`, model.Medium,
+				"out-of-tree module file"),
+		}),
 	define.LinuxCheck("modules-hidden", "Hidden module cross-check (/sys/module vs /proc/modules)", model.AspectKernel,
 		[]model.Probe{
 			{Label: "proc-modules-diff", Inv: model.Dual{Run: nativeModulesHidden, Script: hiddenModuleScript}},
@@ -94,6 +113,18 @@ var KernelChecks = []*model.Check{
 			Rules: []model.Rule{
 				model.NewRule("module-hidden", `^HIDDEN `, model.Critical,
 					"module hidden from /proc/modules"),
+			},
+		}),
+	define.LinuxCheck("module-sig-config", "Kernel module signature config", model.AspectKernel,
+		[]model.Probe{
+			{Label: "zcat", Inv: model.Dual{Run: nativeModuleSig, Script: moduleSigScript}},
+		},
+		define.CheckOpt{
+			Syntax: "env",
+			Rules: []model.Rule{
+				model.NewRule("module-sig-off", `^CONFIG_MODULE_SIG=(?:n|m)`, model.Medium, "module signing not enabled"),
+				model.NewRule("module-sig-not-forced", `^CONFIG_MODULE_SIG_FORCE=n`, model.Medium,
+					"unsigned modules still load"),
 			},
 		}),
 	// LKM rootkits cannot scrub their own symbols out of /proc/kallsyms: the
@@ -111,15 +142,6 @@ var KernelChecks = []*model.Check{
 					"known LKM rootkit symbol in the kernel symbol table"),
 			},
 		}),
-	listingCheck("module-files", "Out-of-tree kernel modules (updates/dkms, extra, etc.)", model.AspectKernel,
-		moduleDirs, 100,
-		[]model.Rule{
-			// The filename is at the end of an ls line (symlink lines carry " -> target", so
-			// the rule ends with \s|$); modules.* metadata in the root and entries under the
-			// kernel/ subdirectory are official content and are not flagged
-			model.NewRule("module-files-out-of-tree", `\.ko(?:\.[a-z0-9]+)?(?:\s|$)`, model.Medium,
-				"out-of-tree module file"),
-		}),
 	define.LinuxCheck("tainted", "Kernel tainted flags", model.AspectKernel,
 		[]model.Probe{
 			{Label: "tainted", Inv: model.Dual{Run: nativeTainted, Script: "cat /proc/sys/kernel/tainted 2>/dev/null"}},
@@ -128,18 +150,6 @@ var KernelChecks = []*model.Check{
 			Rules: []model.Rule{
 				model.NewRule("kernel-tainted", `^[1-9]`, model.Medium,
 					"kernel tainted (non-zero)"),
-			},
-		}),
-	define.LinuxCheck("module-sig-config", "Kernel module signature config", model.AspectKernel,
-		[]model.Probe{
-			{Label: "zcat", Inv: model.Dual{Run: nativeModuleSig, Script: moduleSigScript}},
-		},
-		define.CheckOpt{
-			Syntax: "env",
-			Rules: []model.Rule{
-				model.NewRule("module-sig-off", `^CONFIG_MODULE_SIG=(?:n|m)`, model.Medium, "module signing not enabled"),
-				model.NewRule("module-sig-not-forced", `^CONFIG_MODULE_SIG_FORCE=n`, model.Medium,
-					"unsigned modules still load"),
 			},
 		}),
 	// dmesg's module lines are the evidence surface for load activity; placed last,
@@ -160,14 +170,4 @@ var KernelChecks = []*model.Check{
 					"kernel tainted (dmesg)"),
 			},
 		}),
-	// lsmod is a big all-modules table with little signal; placed at the end of the
-	// aspect so it does not block the targeted checks before it
-	define.LinuxCheck("lsmod", "Kernel modules", model.AspectKernel,
-		[]model.Probe{
-			{Label: "lsmod", Inv: model.Dual{Run: nativeLsmod, Script: "lsmod"}},
-			{Label: "proc-modules", Inv: model.Dual{Run: nativeProcModules, Script: "cat /proc/modules 2>/dev/null"}},
-		},
-		// The Used by tail can contain spaces, which the generic table word-by-word
-		// coloring would split apart
-		define.CheckOpt{Syntax: "lsmod"}),
 }

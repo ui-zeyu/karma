@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"karma/internal/model"
@@ -87,28 +88,54 @@ func nativeProcModules(ctx context.Context) (string, error) {
 	return string(data), nil
 }
 
+// stripSyslogPriority drops the "<N>" facility/level prefix the kernel stores
+// at the head of every ring-buffer line: dmesg parses it and prints the line
+// without it, and that is the text the rules read. A line whose angle brackets
+// do not hold a number stays untouched.
+func stripSyslogPriority(body string) string {
+	if !strings.Contains(body, "<") {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if end := strings.IndexByte(line, '>'); end > 1 && end <= 4 && strings.HasPrefix(line, "<") {
+			if _, err := strconv.Atoi(line[1:end]); err == nil {
+				lines[i] = line[end+1:]
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // nativeLsmod formats /proc/modules as the lsmod table — header included, so
-// the lsmod lexer reads both channels' output the same way. The fourth
-// /proc/modules field is the dependent-module list or "-".
+// the lsmod lexer reads both channels' output the same way.
 func nativeLsmod(ctx context.Context) (string, error) {
 	data, err := os.ReadFile("/proc/modules")
 	if err != nil {
 		return "", model.ErrTierUnavailable
 	}
+	return lsmodRows(string(data)), nil
+}
+
+// lsmodRows renders /proc/modules in lsmod's own layout: a 19-cell module
+// name, the size in eight, two blanks, then the use count, and the dependent
+// list after one blank only when the module has dependents (lsmod leaves no
+// trailing blank, and the fourth field is "-" when there are none).
+func lsmodRows(data string) string {
 	var b strings.Builder
-	b.WriteString("Module                  Size  Used by\n")
-	for _, line := range strings.Split(string(data), "\n") {
+	fmt.Fprintf(&b, "%-19s %8s  %s\n", "Module", "Size", "Used by")
+	for _, line := range strings.Split(data, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 3 {
 			continue
 		}
-		used := ""
+		fmt.Fprintf(&b, "%-19s %8s  %s", f[0], f[1], f[2])
 		if len(f) >= 4 && f[3] != "-" {
-			used = f[3]
+			b.WriteString(" " + f[3])
 		}
-		fmt.Fprintf(&b, "%-20s %8s %2s %s\n", f[0], f[1], f[2], used)
+		b.WriteByte('\n')
 	}
-	return b.String(), nil
+	return b.String()
 }
 
 // nativeTainted reads the taint mask. procfs.KernelTainted covers the same file
