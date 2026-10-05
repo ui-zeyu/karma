@@ -24,6 +24,15 @@ const ListingPrintf = `%T@\t%C@\t` + LSBodyPrintf
 
 var unsafeShellChar = regexp.MustCompile(`[^A-Za-z0-9_@%+=:,./-]`)
 
+// shellReserved are POSIX shell reserved words: bare in a word position they
+// would read as syntax (a directory named "done" inside a for list breaks the
+// loop), so Quote quotes them like unsafe characters.
+var shellReserved = map[string]bool{
+	"do": true, "done": true, "elif": true, "else": true, "esac": true,
+	"fi": true, "for": true, "if": true, "in": true, "then": true,
+	"until": true, "while": true,
+}
+
 // Lines joins script fragments into one multi-line script: the shared spelling of
 // every per-section collection script.
 func Lines(parts ...string) string {
@@ -35,12 +44,14 @@ func Join(argv []string) string {
 	return strings.Join(lo.Map(argv, func(word string, _ int) string { return Quote(word) }), " ")
 }
 
-// Quote is shell escaping for a single word: wrap in single quotes, closing and reopening around embedded single quotes.
+// Quote is shell escaping for a single word: wrap in single quotes, closing and
+// reopening around embedded single quotes. A reserved word gets the same
+// treatment: bare, it would read as syntax rather than a name.
 func Quote(word string) string {
 	if word == "" {
 		return "''"
 	}
-	if unsafeShellChar.MatchString(word) {
+	if unsafeShellChar.MatchString(word) || shellReserved[word] {
 		return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
 	}
 	return word

@@ -1,5 +1,7 @@
 // Timeout harvesting: reads are attached first, the data source is stopped at
-// the deadline, and output already produced is kept.
+// the deadline, and output already produced is kept. A cancelled context
+// (Ctrl-C) takes the same path as the timeout: stop the source, keep the
+// partial output.
 //
 // The local subprocess and the SSH channel share this. The two read streams
 // (stdout, stderr) each get their own goroutine: a timeout stops the data
@@ -17,6 +19,7 @@ package session
 import (
 	"bufio"
 	"cmp"
+	"context"
 	"io"
 	"strings"
 	"sync"
@@ -26,8 +29,9 @@ import (
 )
 
 // stopGrace is the grace period to finish after stopping the data source; if the
-// source cannot be stopped (a hung channel), it ends as a timeout and read output is discarded.
-const stopGrace = 5 * time.Second
+// source cannot be stopped (a hung channel), it ends as a timeout or cancel and
+// the output read so far is kept. A variable so tests can shorten it.
+var stopGrace = 5 * time.Second
 
 // maxHarvestBytes is the output safety valve for a single call: past the limit,
 // stop the source and count as truncated. The reading layer caps by ScanBytes
@@ -70,22 +74,55 @@ type source struct {
 	byteLimit int64
 }
 
-// harvest waits for the call to end or the timeout. On timeout it stops first and
-// waits for exit within the grace period; both paths carry back the output read
-// so far; if it still cannot stop within the grace period it ends as a timeout and discards the read output.
-func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
-	// Each reader owns one builder, and every snapshot happens only after done
-	// closes (reads drained, source reaped): the channel close orders all of it, so
-	// the line-by-line path needs no lock.
-	var (
-		out, errS strings.Builder
-		truncated bool
-	)
-	snapshot := func() (string, string, bool) {
-		return out.String(), errS.String(), truncated
-	}
+// harvestState buffers the two read streams. Every write takes the lock so the
+// timeout and cancel paths can snapshot mid-read: even a source that survives
+// stop past the grace period keeps what it already produced.
+type harvestState struct {
+	mu        sync.Mutex
+	out, errS strings.Builder
+	truncated bool
+}
 
-	// Once stopCh is closed, stdout reading stops: either the line limit or the timeout triggered the stop.
+func (h *harvestState) addOut(chunk string) {
+	if chunk == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.out.WriteString(chunk)
+}
+
+func (h *harvestState) addErr(text string) {
+	if text == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.errS.WriteString(text)
+}
+
+func (h *harvestState) markTruncated() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.truncated = true
+}
+
+func (h *harvestState) snapshot() (string, string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.out.String(), h.errS.String(), h.truncated
+}
+
+// harvest waits for the call to end, the timeout, or cancellation. On timeout
+// or cancel it stops the source first and waits for exit within the grace
+// period; both paths carry back the output read so far.
+func harvest(ctx context.Context, src source, timeout time.Duration, lineLimit int) model.RunResult {
+	// Each reader owns one builder through the locked state, so a snapshot is
+	// safe at any point; the line-by-line path needs no extra ordering.
+	var state harvestState
+
+	// Once stopCh is closed, stdout reading stops: either the line limit, the
+	// timeout, or the cancel triggered the stop.
 	stopCh := make(chan struct{})
 	var once sync.Once
 	stopSource := func() {
@@ -108,8 +145,8 @@ func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
 			default:
 			}
 			chunk, ok := src.readLine()
+			state.addOut(chunk)
 			if chunk != "" {
-				out.WriteString(chunk)
 				lines++
 				buffered += int64(len(chunk))
 			}
@@ -122,14 +159,14 @@ func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
 				// partial line has more=false but non-empty content and likewise
 				// counts as "more content".
 				if extra, _ := src.readLine(); extra != "" {
-					truncated = true
+					state.markTruncated()
 				}
 				stopSource()
 				return
 			}
 			// Byte safety valve: a runaway output can fill memory before the timeout, so stop at the limit
 			if buffered >= byteLimit {
-				truncated = true
+				state.markTruncated()
 				stopSource()
 				return
 			}
@@ -137,7 +174,7 @@ func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
 	}()
 	go func() {
 		defer readers.Done()
-		errS.WriteString(src.readAll())
+		state.addErr(src.readAll())
 	}()
 
 	done := make(chan struct{})
@@ -151,20 +188,30 @@ func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
 	defer timer.Stop()
 	select {
 	case <-done:
-		outText, errText, trunc := snapshot()
+		outText, errText, trunc := state.snapshot()
 		return model.RunResult{Stdout: outText, Stderr: errText, ExitCode: src.exitCode(), Truncated: trunc}
 	case <-timer.C:
-		stopSource()
-		grace := time.NewTimer(stopGrace)
-		defer grace.Stop()
-		select {
-		case <-done:
-			// A kill-stop has no exit code; output already produced is kept
-			outText, errText, _ := snapshot()
-			return model.RunResult{Stdout: outText, Stderr: errText, ExitCode: -1, TimedOut: true}
-		case <-grace.C:
-			return model.RunResult{Stdout: "", Stderr: "", ExitCode: -1, TimedOut: true}
-		}
+		return stopAndCollect(done, stopSource, src, &state, false)
+	case <-ctx.Done():
+		return stopAndCollect(done, stopSource, src, &state, true)
+	}
+}
+
+// stopAndCollect stops the data source and keeps what was read: the reads drain
+// within the grace period, or the snapshot lands on whatever arrived by then.
+// interrupted selects between the timeout and the cancel presentation.
+func stopAndCollect(done chan struct{}, stopSource func(), src source, state *harvestState, interrupted bool) model.RunResult {
+	stopSource()
+	grace := time.NewTimer(stopGrace)
+	defer grace.Stop()
+	select {
+	case <-done:
+	case <-grace.C:
+	}
+	outText, errText, trunc := state.snapshot()
+	return model.RunResult{
+		Stdout: outText, Stderr: errText, ExitCode: -1,
+		TimedOut: !interrupted, Interrupted: interrupted, Truncated: trunc,
 	}
 }
 
@@ -175,9 +222,9 @@ func harvest(src source, timeout time.Duration, lineLimit int) model.RunResult {
 // semantics), so the exit code is reported as 0 with the truncated flag (the
 // frame marks "truncated" from it); a timeout is still presented as a timeout.
 // limit 0 means no cap.
-func harvestCapped(src source, timeout time.Duration, limit int) model.RunResult {
-	result := harvest(src, timeout, limit)
-	if result.Truncated && !result.TimedOut {
+func harvestCapped(ctx context.Context, src source, timeout time.Duration, limit int) model.RunResult {
+	result := harvest(ctx, src, timeout, limit)
+	if result.Truncated && !result.TimedOut && !result.Interrupted {
 		result.ExitCode = 0
 	}
 	return result

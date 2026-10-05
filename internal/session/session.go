@@ -4,11 +4,13 @@
 // karma depends only on the interfaces declared here.
 //
 // Every run is harvested the same way (harvest.go): the reads are attached
-// first, a timeout stops the data source rather than the reads, output already
-// produced is kept, and a line limit stops the source once enough rows exist.
+// first, a timeout or a cancel (Ctrl-C) stops the data source rather than the
+// reads, output already produced is kept, and a line limit stops the source
+// once enough rows exist.
 package session
 
 import (
+	"context"
 	"time"
 
 	"karma/internal/model"
@@ -20,8 +22,9 @@ type Session interface {
 	// Name is the channel's display name in the report header ("local", "ssh").
 	Name() string
 	// Run executes one invocation, with a per-command timeout and an optional
-	// line limit, and harvests its output.
-	Run(inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult
+	// line limit, and harvests its output. A cancelled context stops the data
+	// source and keeps the output already produced.
+	Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult
 	// Close releases the channel's resources.
 	Close() error
 }

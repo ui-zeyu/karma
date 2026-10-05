@@ -4,6 +4,7 @@ package session
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -25,7 +26,7 @@ type SSHSession struct {
 func (s *SSHSession) Name() string { return "ssh" }
 
 // Run sends the command string rendered through /bin/sh -c to the channel for execution.
-func (s *SSHSession) Run(inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
+func (s *SSHSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
 	script := RenderShell(inv)
 	sess, err := s.client.NewSession()
 	if err != nil {
@@ -49,7 +50,7 @@ func (s *SSHSession) Run(inv model.Invocation, timeout time.Duration, lineLimit 
 	var waitErr error
 	// The decoding strategy matches the local channel: line reads clean bad bytes, stderr switches to U+FFFD after draining.
 	// stop closes the channel directly: a hung channel that never sees EOF is finished off by harvest's grace period.
-	return harvestCapped(source{
+	return harvestCapped(ctx, source{
 		wait:     func() { waitErr = sess.Wait() },
 		stop:     func() { _ = sess.Close() },
 		readLine: lineReader(reader),

@@ -7,6 +7,7 @@ package session
 
 import (
 	"bufio"
+	"context"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -39,14 +40,14 @@ func (LocalTransport) Open() (Session, error) { return LocalSession{}, nil }
 func (LocalSession) Name() string { return "local" }
 
 // Run sends the invocation to run locally.
-func (s LocalSession) Run(inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
-	return runLocal(ArgvFor(inv), timeout, lineLimit)
+func (s LocalSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
+	return runLocal(ctx, ArgvFor(inv), timeout, lineLimit)
 }
 
 // Close releases the local channel's resources: there are none.
 func (LocalSession) Close() error { return nil }
 
-func runLocal(argv []string, timeout time.Duration, lineLimit int) model.RunResult {
+func runLocal(ctx context.Context, argv []string, timeout time.Duration, lineLimit int) model.RunResult {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -63,7 +64,7 @@ func runLocal(argv []string, timeout time.Duration, lineLimit int) model.RunResu
 	}
 	reader := bufio.NewReader(stdout)
 	errReader := bufio.NewReader(stderrPipe)
-	return harvestCapped(source{
+	return harvestCapped(ctx, source{
 		wait:     func() { _ = cmd.Wait() },
 		stop:     func() { stop(cmd.Process.Pid) },
 		readLine: lineReader(reader),

@@ -1,6 +1,9 @@
 package session
 
 import (
+	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -39,9 +42,41 @@ func fakeSourceCapped(byteLimit int64, chunks []fakeChunk) source {
 func line(text string) fakeChunk { return fakeChunk{text: text, ok: true} }
 func tail(text string) fakeChunk { return fakeChunk{text: text, ok: false} } // last line without a newline
 
+// streamingSource produces lines until stopped and keeps readLine hanging after
+// the stop, so both stop paths run through the grace period. Callers shorten
+// stopGrace with shortGrace.
+func streamingSource() source {
+	stopped := make(chan struct{})
+	var once sync.Once
+	return source{
+		wait: func() {},
+		stop: func() { once.Do(func() { close(stopped) }) },
+		readLine: func() (string, bool) {
+			select {
+			case <-stopped:
+				<-make(chan struct{}) // a pathological source: reads hang past the stop
+				return "", false
+			default:
+			}
+			return "row\n", true
+		},
+		readAll:  func() string { return "" },
+		exitCode: func() int { return -1 },
+	}
+}
+
+// shortGrace shortens the grace period for the duration of one test: the real
+// 5s would turn every hung-source test into a slow one.
+func shortGrace(t *testing.T) {
+	t.Helper()
+	original := stopGrace
+	stopGrace = 50 * time.Millisecond
+	t.Cleanup(func() { stopGrace = original })
+}
+
 func TestHarvestLineLimitCleanEOF(t *testing.T) {
 	src := fakeSource([]fakeChunk{line("a\n"), line("b\n"), line("c\n")})
-	result := harvest(src, 2*time.Second, 3)
+	result := harvest(context.Background(), src, 2*time.Second, 3)
 	if result.Truncated {
 		t.Errorf("EOF exactly at the limit does not count as truncated")
 	}
@@ -52,7 +87,7 @@ func TestHarvestLineLimitCleanEOF(t *testing.T) {
 
 func TestHarvestLineLimitTruncated(t *testing.T) {
 	src := fakeSource([]fakeChunk{line("a\n"), line("b\n"), line("c\n"), line("d\n")})
-	result := harvest(src, 2*time.Second, 3)
+	result := harvest(context.Background(), src, 2*time.Second, 3)
 	if !result.Truncated {
 		t.Errorf("a complete line after the limit should mark truncated")
 	}
@@ -64,7 +99,7 @@ func TestHarvestLineLimitTruncated(t *testing.T) {
 // A trailing partial line has more=false but non-empty content: the truncated flag was once missed because the condition included more.
 func TestHarvestLineLimitPartialTail(t *testing.T) {
 	src := fakeSource([]fakeChunk{line("a\n"), line("b\n"), line("c\n"), tail("partial")})
-	result := harvest(src, 2*time.Second, 3)
+	result := harvest(context.Background(), src, 2*time.Second, 3)
 	if !result.Truncated {
 		t.Errorf("a trailing partial line after the limit should mark truncated")
 	}
@@ -75,11 +110,66 @@ func TestHarvestLineLimitPartialTail(t *testing.T) {
 
 func TestHarvestByteCap(t *testing.T) {
 	src := fakeSourceCapped(8, []fakeChunk{line("12345678\n"), line("x\n")})
-	result := harvest(src, 2*time.Second, 0)
+	result := harvest(context.Background(), src, 2*time.Second, 0)
 	if !result.Truncated {
 		t.Errorf("exceeding the byte safety valve should mark truncated")
 	}
 	if result.Stdout != "12345678\n" {
 		t.Errorf("body = %q", result.Stdout)
+	}
+}
+
+func TestHarvestTimeoutKeepsPartialOutput(t *testing.T) {
+	shortGrace(t)
+	result := harvest(context.Background(), streamingSource(), 30*time.Millisecond, 0)
+	if !result.TimedOut || result.Interrupted {
+		t.Fatalf("should end as a timeout: %+v", result)
+	}
+	if !strings.Contains(result.Stdout, "row\n") {
+		t.Fatalf("a timeout should keep output already produced: %q", result.Stdout)
+	}
+}
+
+func TestHarvestCancelKeepsPartialOutput(t *testing.T) {
+	shortGrace(t)
+	src := streamingSource()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(30 * time.Millisecond); cancel() }()
+	result := harvest(ctx, src, time.Minute, 0)
+	cancel()
+	if !result.Interrupted || result.TimedOut {
+		t.Fatalf("should end as interrupted: %+v", result)
+	}
+	if !strings.Contains(result.Stdout, "row\n") {
+		t.Fatalf("a cancel should keep output already produced: %q", result.Stdout)
+	}
+}
+
+// A source that ignores stop entirely: the grace period expires and the output
+// read before the stop is still kept instead of discarded.
+func TestHarvestGraceExpiryKeepsReadOutput(t *testing.T) {
+	shortGrace(t)
+	unstoppable := make(chan struct{})
+	src := source{
+		wait: func() {},
+		stop: func() { close(unstoppable) },
+		readLine: func() (string, bool) {
+			select {
+			case <-unstoppable:
+				<-make(chan struct{}) // hangs forever, stop or no stop
+				return "", false
+			default:
+			}
+			return "early\n", true
+		},
+		readAll:  func() string { return "" },
+		exitCode: func() int { return -1 },
+	}
+	result := harvest(context.Background(), src, 30*time.Millisecond, 0)
+	if !result.TimedOut {
+		t.Fatalf("should end as a timeout: %+v", result)
+	}
+	if !strings.Contains(result.Stdout, "early\n") {
+		t.Fatalf("output read before the stop should be kept: %q", result.Stdout)
 	}
 }

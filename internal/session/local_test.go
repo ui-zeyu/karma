@@ -1,13 +1,14 @@
 package session
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestRunLocalCapturesFullOutput(t *testing.T) {
-	result := runLocal([]string{"/bin/sh", "-c", "seq 1 500"}, 10*time.Second, 0)
+	result := runLocal(context.Background(), []string{"/bin/sh", "-c", "seq 1 500"}, 10*time.Second, 0)
 	if result.ExitCode != 0 || result.TimedOut || result.Truncated {
 		t.Fatalf("should succeed completely: %+v", result)
 	}
@@ -17,7 +18,7 @@ func TestRunLocalCapturesFullOutput(t *testing.T) {
 }
 
 func TestRunLocalLineLimitMarksTruncated(t *testing.T) {
-	result := runLocal([]string{"/bin/sh", "-c", "seq 1 500"}, 10*time.Second, 50)
+	result := runLocal(context.Background(), []string{"/bin/sh", "-c", "seq 1 500"}, 10*time.Second, 50)
 	if !result.Truncated || result.TimedOut {
 		t.Fatalf("stopping the source at enough lines should mark truncated: %+v", result)
 	}
@@ -30,7 +31,7 @@ func TestRunLocalLineLimitMarksTruncated(t *testing.T) {
 }
 
 func TestRunLocalTimeoutKeepsPartialOutput(t *testing.T) {
-	result := runLocal([]string{"/bin/sh", "-c", "echo first; sleep 5"}, 300*time.Millisecond, 0)
+	result := runLocal(context.Background(), []string{"/bin/sh", "-c", "echo first; sleep 5"}, 300*time.Millisecond, 0)
 	if !result.TimedOut {
 		t.Fatalf("should time out: %+v", result)
 	}
@@ -41,7 +42,7 @@ func TestRunLocalTimeoutKeepsPartialOutput(t *testing.T) {
 
 // stdout and stderr get the same treatment: stray output from the target is replaced with U+FFFD, so the body carries no bad bytes.
 func TestRunLocalSanitizesBadBytes(t *testing.T) {
-	result := runLocal([]string{"/bin/sh", "-c", "printf 'ok\\n\\377\\376bad\\n'"}, 5*time.Second, 0)
+	result := runLocal(context.Background(), []string{"/bin/sh", "-c", "printf 'ok\\n\\377\\376bad\\n'"}, 5*time.Second, 0)
 	if result.ExitCode != 0 {
 		t.Fatalf("should succeed: %+v", result)
 	}

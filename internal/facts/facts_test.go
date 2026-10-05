@@ -1,6 +1,7 @@
 package facts_test
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +25,7 @@ func (s *scriptedSession) Name() string   { return "scripted" }
 func (s *scriptedSession) Target() string { return "scripted" }
 func (s *scriptedSession) Close() error   { return nil }
 
-func (s *scriptedSession) Run(inv model.Invocation, _ time.Duration, _ int) model.RunResult {
+func (s *scriptedSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ int) model.RunResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch v := inv.(type) {
@@ -78,7 +79,7 @@ func TestCollectLinux(t *testing.T) {
 		t.Errorf("unexpected call: %+v", inv)
 		return model.RunResult{ExitCode: 1}
 	}}
-	got := facts.Collect(fake, []string{"find"})
+	got := facts.Collect(context.Background(), fake, []string{"find"})
 	if got.AvailableBins["find"] {
 		t.Fatalf("find missing from probe output: %+v", got.AvailableBins)
 	}
@@ -114,7 +115,7 @@ func TestCollectWindowsPowershellPresent(t *testing.T) {
 			return model.RunResult{ExitCode: 1}
 		}
 	}}
-	got := facts.CollectWindows(fake, nil)
+	got := facts.CollectWindows(context.Background(), fake, nil)
 	if got.Hostname != "WS2019" || got.User != "CORP\\admin" {
 		t.Fatalf("wrong host facts: %+v", got)
 	}
@@ -151,7 +152,7 @@ func TestCollectWindowsPowershellDegraded(t *testing.T) {
 			return model.RunResult{ExitCode: 1}
 		}
 	}}
-	got := facts.CollectWindows(fake, nil)
+	got := facts.CollectWindows(context.Background(), fake, nil)
 	if got.Hostname != "WIN-XP" || got.User != "BOX\\john" {
 		t.Fatalf("wrong host facts: %+v", got)
 	}
@@ -191,7 +192,7 @@ func TestCollectWindowsFallsBackToRegistry(t *testing.T) {
 			return model.RunResult{ExitCode: 1}
 		}
 	}}
-	got := facts.CollectWindows(fake, nil)
+	got := facts.CollectWindows(context.Background(), fake, nil)
 	if !got.AvailableBins["reg"] || got.AvailableBins["powershell"] {
 		t.Fatalf("after fallback only reg should be in capability bits: %+v", got.AvailableBins)
 	}

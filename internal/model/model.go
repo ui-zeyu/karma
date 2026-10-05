@@ -182,13 +182,16 @@ type Shell struct{ Script string }
 func (Shell) isInvocation() {}
 
 // RunResult is the result of one call. ExitCode -1 means the call was killed
-// on timeout and has no exit code.
+// on timeout or cancelled and has no exit code.
 type RunResult struct {
 	Stdout    string
 	Stderr    string
 	ExitCode  int
 	TimedOut  bool
 	Truncated bool
+	// Interrupted marks a call cut short by cancellation (Ctrl-C): the source
+	// was stopped and the partial output kept.
+	Interrupted bool
 }
 
 // Answered reports whether this tier answered: exit code 0, or stdout already

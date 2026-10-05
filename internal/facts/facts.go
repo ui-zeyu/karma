@@ -7,6 +7,7 @@ package facts
 
 import (
 	"cmp"
+	"context"
 	"maps"
 	"regexp"
 	"slices"
@@ -57,22 +58,28 @@ var windowsFactsScript = strings.Join([]string{
 }, "\n")
 
 // CollectFor dispatches fact collection by platform; platform dispatch lives only here.
-func CollectFor(platform model.Platform, sess session.Session, bins []string) model.HostFacts {
+func CollectFor(ctx context.Context, platform model.Platform, sess session.Session, bins []string) model.HostFacts {
 	if platform == model.Windows {
-		return CollectWindows(sess, bins)
+		return CollectWindows(ctx, sess, bins)
 	}
-	return Collect(sess, bins)
+	return Collect(ctx, sess, bins)
 }
 
 // Collect concurrently gathers binary presence and host facts (Linux directory).
-func Collect(sess session.Session, bins []string) model.HostFacts {
+func Collect(ctx context.Context, sess session.Session, bins []string) model.HostFacts {
 	names := probeBins(bins, linuxFactBins)
-	results := gather(map[string]func() model.RunResult{
-		"bins":     func() model.RunResult { return runShell(sess, binProbe(names), 15*time.Second) },
-		"hostname": func() model.RunResult { return runShell(sess, hostnameScript, 10*time.Second) },
-		"kernel":   func() model.RunResult { return sess.Run(model.NewCommand("uname", "-r"), 10*time.Second, 0) },
-		"os":       func() model.RunResult { return runShell(sess, "cat /etc/os-release", 10*time.Second) },
-		"uid":      func() model.RunResult { return sess.Run(model.NewCommand("id", "-u"), 10*time.Second, 0) },
+	results := gather(ctx, map[string]func(context.Context) model.RunResult{
+		"bins":     func(ctx context.Context) model.RunResult { return runShell(ctx, sess, binProbe(names), 15*time.Second) },
+		"hostname": func(ctx context.Context) model.RunResult { return runShell(ctx, sess, hostnameScript, 10*time.Second) },
+		"kernel": func(ctx context.Context) model.RunResult {
+			return sess.Run(ctx, model.NewCommand("uname", "-r"), 10*time.Second, 0)
+		},
+		"os": func(ctx context.Context) model.RunResult {
+			return runShell(ctx, sess, "cat /etc/os-release", 10*time.Second)
+		},
+		"uid": func(ctx context.Context) model.RunResult {
+			return sess.Run(ctx, model.NewCommand("id", "-u"), 10*time.Second, 0)
+		},
 	})
 	return model.HostFacts{
 		AvailableBins: availableBins(results["bins"].Stdout, names),
@@ -91,13 +98,13 @@ func Collect(sess session.Session, bins []string) model.HostFacts {
 // (not through a shell) and takes facts from the registry instead -- so the registry
 // checks' fallback tier stays available as usual, and PS-only checks are skipped as
 // usual for "missing powershell".
-func CollectWindows(sess session.Session, bins []string) model.HostFacts {
+func CollectWindows(ctx context.Context, sess session.Session, bins []string) model.HostFacts {
 	names := probeBins(bins, windowsFactBins)
-	available := availableBins(runPS(sess, probeScript(names), 15*time.Second).Stdout, names)
+	available := availableBins(runPS(ctx, sess, probeScript(names), 15*time.Second).Stdout, names)
 
 	if available["powershell"] {
 		// one PS cold start brings back all facts; the four paths are evaluated eagerly, 15s is the grace
-		values := labeledLines(runPS(sess, windowsFactsScript, 15*time.Second).Stdout)
+		values := labeledLines(runPS(ctx, sess, windowsFactsScript, 15*time.Second).Stdout)
 		return model.HostFacts{
 			AvailableBins: available,
 			Hostname:      cmp.Or(values["host"], "unknown"),
@@ -110,15 +117,15 @@ func CollectWindows(sess session.Session, bins []string) model.HostFacts {
 
 	// PS absent: reg direct probe + registry facts. One CurrentVersion key fetches
 	// ProductName/CurrentVersion/CurrentBuildNumber/UBR/DisplayVersion
-	results := gather(map[string]func() model.RunResult{
-		"version": func() model.RunResult {
-			return sess.Run(model.NewCommand("reg", "query", currentVersionReg), 10*time.Second, 0)
+	results := gather(ctx, map[string]func(context.Context) model.RunResult{
+		"version": func(ctx context.Context) model.RunResult {
+			return sess.Run(ctx, model.NewCommand("reg", "query", currentVersionReg), 10*time.Second, 0)
 		},
-		"hostname": func() model.RunResult {
-			return sess.Run(model.NewCommand("reg", "query", computerNameReg, "/v", "ComputerName"), 10*time.Second, 0)
+		"hostname": func(ctx context.Context) model.RunResult {
+			return sess.Run(ctx, model.NewCommand("reg", "query", computerNameReg, "/v", "ComputerName"), 10*time.Second, 0)
 		},
-		"username": func() model.RunResult {
-			return sess.Run(model.NewCommand("reg", "query", volatileEnvReg, "/v", "USERNAME"), 10*time.Second, 0)
+		"username": func(ctx context.Context) model.RunResult {
+			return sess.Run(ctx, model.NewCommand("reg", "query", volatileEnvReg, "/v", "USERNAME"), 10*time.Second, 0)
 		},
 	})
 	version := results["version"]
@@ -141,17 +148,17 @@ func CollectWindows(sess session.Session, bins []string) model.HostFacts {
 	}
 }
 
-func runShell(sess session.Session, script string, timeout time.Duration) model.RunResult {
-	return sess.Run(model.Shell{Script: script}, timeout, 0)
+func runShell(ctx context.Context, sess session.Session, script string, timeout time.Duration) model.RunResult {
+	return sess.Run(ctx, model.Shell{Script: script}, timeout, 0)
 }
 
-func runPS(sess session.Session, script string, timeout time.Duration) model.RunResult {
-	return sess.Run(powershell.PowerShell(script), timeout, 0)
+func runPS(ctx context.Context, sess session.Session, script string, timeout time.Duration) model.RunResult {
+	return sess.Run(ctx, powershell.PowerShell(script), timeout, 0)
 }
 
 // gather runs all fact collection concurrently, keyed by job name so a result can
 // never drift onto the wrong fact; a failed path falls back to an empty answer.
-func gather(jobs map[string]func() model.RunResult) map[string]model.RunResult {
+func gather(ctx context.Context, jobs map[string]func(context.Context) model.RunResult) map[string]model.RunResult {
 	results := make(map[string]model.RunResult, len(jobs))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -159,7 +166,7 @@ func gather(jobs map[string]func() model.RunResult) map[string]model.RunResult {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result := job()
+			result := job(ctx)
 			mu.Lock()
 			defer mu.Unlock()
 			results[name] = result

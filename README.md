@@ -9,7 +9,7 @@ go build -o dist/karma ./cmd/karma
 dist/karma --help
 ```
 
-The version is `0.7.2`; override it with `-ldflags "-X main.version=…"` and print it with `karma version`.
+The version is `0.8.0`; override it with `-ldflags "-X main.version=…"` and print it with `karma version` or `karma --version`.
 
 ## Usage
 
@@ -36,11 +36,11 @@ A selector word is a platform name, an aspect name, or a check id; with none giv
 
 Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log` `kernel` `package` (70 checks). Windows aspects: `system` `identity` `process` `network` `persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (42 checks). `karma list` lists both platforms' catalogs as a two-level heading tree — one band per platform, one band per aspect — and every row carries the check id, the title, and the probe chain. Column widths are measured over the whole selection, so the groups line up and a long title wraps inside its own column.
 
-Shared options: `--concurrency` defaults to 6, `--timeout` to 30 seconds, `--max-lines` to 400. With `--save DIR`, every check that collected output writes the target's raw stdout to `<DIR>/<aspect>/<check id>.txt` — the bytes exactly as the channel delivered them, before any reading, filtering, or normalization — one directory per aspect, overwriting same-named files on a repeated run.
+Shared options: `--concurrency` defaults to 6, `--timeout` to 30 seconds, `--max-lines` to 400. With `--save DIR`, every check that collected output writes the target's raw stdout to `<DIR>/<aspect>/<check id>.txt` — the bytes exactly as the channel delivered them, before any reading, filtering, or normalization — one directory per aspect, overwriting same-named files on a repeated run. The directory also carries `manifest.json`: the run's provenance (karma version, channel, host facts, UTC start time) and one entry per file with its size and sha256, so a bundle can be identified and checked for tampering without opening the files.
 
 SSH: `-p` port, `-i` private key (repeatable), `--password` for password authentication (it also unlocks an encrypted private key). The password comes from that flag alone; without it karma uses public keys and exits when authentication fails. An identity that cannot be used (say, a passphrase-protected key with no `--password`) is skipped; that failure surfaces only when nothing is left to authenticate with. `-o` accepts only `StrictHostKeyChecking=no|accept-new|yes`, defaulting to `no`. A failed connection exits 2.
 
-Errors always go to stderr with the `karma: ` prefix and one plain sentence: an unknown command gets close commands (`lst` → `list`), a name mounted elsewhere (`mtime`) gets the way to write it, an unknown flag gets that command's flag list, and a bad value gets one line. Usage and help text is cobra's standard English. Exit codes: 0 for a run that finished and for a mistake the message already explained, 2 for a run that could not happen (a failed connection).
+Errors always go to stderr with the `karma: ` prefix and one plain sentence: an unknown command gets close commands (`lst` → `list`), a name mounted elsewhere (`mtime`) gets the way to write it, an unknown flag gets that command's flag list, and a bad value gets one line. Usage and help text is cobra's standard English. Exit codes: 0 for a run that finished and for a mistake the message already explained, 2 for a run that could not happen (a failed connection), 130 when interrupted — Ctrl-C stops collection promptly, in-flight checks keep the output they had already read, and the partial report still prints.
 
 ## Output
 

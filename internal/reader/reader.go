@@ -7,7 +7,6 @@
 package reader
 
 import (
-	"cmp"
 	"iter"
 	"slices"
 	"strings"
@@ -73,9 +72,12 @@ func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normal
 }
 
 // capBytes truncates by UTF-8 bytes when over the reading limit, dropping the
-// partial character at the cut point. A limit of 0 uses MaxScanBytes.
+// partial character at the cut point. A limit of zero or less (a catalog
+// construction bug) uses MaxScanBytes, so Analyze is total over any int.
 func capBytes(text string, limit int) (string, bool) {
-	limit = cmp.Or(limit, MaxScanBytes)
+	if limit <= 0 {
+		limit = MaxScanBytes
+	}
 	if len(text) <= limit {
 		return text, false
 	}

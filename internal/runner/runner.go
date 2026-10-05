@@ -12,6 +12,7 @@ package runner
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -35,16 +36,22 @@ type Observer interface {
 // RunCatalog runs the checks concurrently in catalog order. Each check calls
 // the Observer as soon as it finishes in its own goroutine; catalog order is
 // released by the presentation layer by check index, and no conclusions are
-// gathered here.
-func RunCatalog(sess session.Session, facts model.HostFacts, checks []*model.Check,
+// gathered here. A cancelled context stops queuing new checks and in-flight
+// tiers return promptly with the output they had already read.
+func RunCatalog(ctx context.Context, sess session.Session, facts model.HostFacts, checks []*model.Check,
 	options model.RunOptions, observer Observer) {
 	var g errgroup.Group
 	g.SetLimit(max(1, options.Concurrency))
 	for _, check := range checks {
 		g.Go(func() error {
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
+			}
 			runObserver(observer, func() { observer.CheckStarted(check) })
 			result := recoverPanic(check, func() *model.CheckResult {
-				return runCheck(sess, facts, check, options)
+				return runCheck(ctx, sess, facts, check, options)
 			})
 			// A rendering panic in CheckFinished is already caught by emit's
 			// internal fallback; reaching here means unexpected internal damage
@@ -88,12 +95,13 @@ type probeFailure struct {
 // runCheck walks the fallback chain once.
 //
 // Exit code 0 or existing stdout stays. 127, and a non-zero exit with empty
-// stdout, moves to the next tier. A timeout keeps the output that was cut off
-// and does not move on. If the last tier has both streams empty it stays
-// silent; error text alone goes into the panel. A chain whose tiers were all
-// unavailable (binary absent from the capability probe, or 127 at run time) is
-// Skipped: the target's environment lacks the command, which is not a finding.
-func runCheck(sess session.Session, facts model.HostFacts, check *model.Check, options model.RunOptions) *model.CheckResult {
+// stdout, moves to the next tier. A timeout or cancellation keeps the output
+// that was cut off and does not move on; a cancelled context stops walking the
+// chain. If the last tier has both streams empty it stays silent; error text
+// alone goes into the panel. A chain whose tiers were all unavailable (binary
+// absent from the capability probe, or 127 at run time) is Skipped: the
+// target's environment lacks the command, which is not a finding.
+func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, check *model.Check, options model.RunOptions) *model.CheckResult {
 	timeout := cmp.Or(check.Timeout, options.Timeout)
 
 	var (
@@ -102,6 +110,9 @@ func runCheck(sess session.Session, facts model.HostFacts, check *model.Check, o
 		failure     *probeFailure
 	)
 	for i := range check.Probes {
+		if ctx.Err() != nil {
+			break
+		}
 		probe := &check.Probes[i]
 		if !facts.HasAll(probe.RequiredBins()) {
 			unavailable = true
@@ -110,7 +121,7 @@ func runCheck(sess session.Session, facts model.HostFacts, check *model.Check, o
 		}
 		// head is the shape this tier wants (stopping once it has enough rows
 		// counts as success); line_limit only caps open scans
-		result := sess.Run(probe.Inv, timeout, cmp.Or(probe.Head, probe.LineLimit))
+		result := sess.Run(ctx, probe.Inv, timeout, cmp.Or(probe.Head, probe.LineLimit))
 		switch {
 		case result.TimedOut || result.Answered():
 			// "truncated" is marked for an explicit line_limit and the byte
@@ -154,6 +165,8 @@ func commandResult(check *model.Check, probe *model.Probe, result model.RunResul
 	switch {
 	case result.TimedOut:
 		note = fmt.Sprintf("timeout (%gs), partial output kept", timeout.Seconds())
+	case result.Interrupted:
+		note = "interrupted, partial output kept"
 	case opt.failure:
 		note = failureNote(result)
 	}

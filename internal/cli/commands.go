@@ -4,9 +4,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -17,11 +20,24 @@ import (
 	"karma/internal/session"
 )
 
+// buildVersion is stamped by Main from the entry point's version; --save's
+// manifest records it.
+var buildVersion = "dev"
+
 // Main wires up the command line and runs it; it returns the process exit code.
+// Ctrl-C (SIGINT/SIGTERM) cancels the run's context: collection stops promptly,
+// in-flight checks keep the output they had already read, the partial report is
+// still presented, and the exit code is 130.
 func Main(version string) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	buildVersion = version
 	root := newRootCmd(version)
-	if err := root.Execute(); err != nil {
+	if err := root.ExecuteContext(ctx); err != nil {
 		return reportError(os.Stderr, err)
+	}
+	if ctx.Err() != nil {
+		return reportError(os.Stderr, failf(130, "interrupted"))
 	}
 	return 0
 }
@@ -30,10 +46,13 @@ func newRootCmd(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "karma",
 		Short:         "Read-only incident-response collection: Linux over local or SSH, Windows on the local host.",
+		Version:       version,
 		Args:          rootArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	// --version prints the same line the version subcommand prints.
+	root.SetVersionTemplate("karma {{.Version}}\n")
 	// cobra only fills this default in its own "unknown command" hint, and
 	// rootArgs calls SuggestionsFor directly, so set it explicitly (2 is
 	// cobra's own convention)
@@ -65,14 +84,14 @@ func newRootCmd(version string) *cobra.Command {
 	return root
 }
 
-func runLocalOrSSH(transport session.Transport, options model.RunOptions) error {
-	return Execute(os.Stdout, transport, options, nil)
+func runLocalOrSSH(ctx context.Context, transport session.Transport, options model.RunOptions) error {
+	return Execute(ctx, os.Stdout, transport, options, nil)
 }
 
 // runMtime is the mtime subcommand's body: one dynamic check appended after the
 // directories. The local and ssh entry points share it.
-func runMtime(transport session.Transport, dirs []string, options model.RunOptions) error {
-	return Execute(os.Stdout, transport, options, []*model.Check{linux.HuntCheck(dirs)})
+func runMtime(ctx context.Context, transport session.Transport, dirs []string, options model.RunOptions) error {
+	return Execute(ctx, os.Stdout, transport, options, []*model.Check{linux.HuntCheck(dirs)})
 }
 
 func newLocalCmd() *cobra.Command {
@@ -85,7 +104,7 @@ func newLocalCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runLocalOrSSH(session.LocalTransport{}, options)
+			return runLocalOrSSH(cmd.Context(), session.LocalTransport{}, options)
 		},
 	}
 	addRunFlags(cmd)
@@ -120,13 +139,13 @@ func newSSHCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return runMtime(transport, dirs, options)
+				return runMtime(cmd.Context(), transport, dirs, options)
 			}
 			options, err := runOptions(cmd.Flags(), args[1:])
 			if err != nil {
 				return err
 			}
-			return runLocalOrSSH(transport, options)
+			return runLocalOrSSH(cmd.Context(), transport, options)
 		},
 	}
 	addRunFlags(cmd)
@@ -153,7 +172,7 @@ func newMtimeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runMtime(session.LocalTransport{}, args, options)
+			return runMtime(cmd.Context(), session.LocalTransport{}, args, options)
 		},
 	}
 	addRunFlags(cmd)

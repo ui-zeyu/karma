@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -37,13 +38,14 @@ const (
 	sshTimeout = 30 * time.Second
 )
 
-// defaultIdentities is the default private key locations when -i is not given, matching OpenSSH's default search order.
+// defaultIdentities is the default private key locations when -i is not given,
+// matching OpenSSH's default search order (hardware-key variants included).
 func defaultIdentities() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
 	}
-	return lo.FilterMap([]string{"id_ed25519", "id_ecdsa", "id_rsa"}, func(name string, _ int) (string, bool) {
+	return lo.FilterMap([]string{"id_ed25519", "id_ed25519_sk", "id_ecdsa", "id_ecdsa_sk", "id_rsa"}, func(name string, _ int) (string, bool) {
 		path := filepath.Join(home, ".ssh", name)
 		info, err := os.Stat(path)
 		return path, err == nil && !info.IsDir()
@@ -130,7 +132,6 @@ func (t *SSHTransport) connect(auth []ssh.AuthMethod, callback ssh.HostKeyCallba
 		User:            t.user(),
 		Auth:            auth,
 		HostKeyCallback: callback,
-		Timeout:         sshTimeout,
 	}
 	// Keepalive on: a collection run holds the connection for minutes, and a
 	// NAT or firewall that silently drops idle TCP would otherwise leave the
@@ -143,14 +144,23 @@ func (t *SSHTransport) connect(auth []ssh.AuthMethod, callback ssh.HostKeyCallba
 		}
 		return nil, err
 	}
+	// The handshake has no deadline of its own (ClientConfig.Timeout only
+	// bounds ssh.Dial's own dial): a server that accepts the connection and
+	// then stalls would hang the whole run here. Bound it, release it once the
+	// connection is up.
+	_ = conn.SetDeadline(time.Now().Add(sshTimeout))
 	client, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
 	if err != nil {
 		_ = conn.Close()
+		if isTimeout(err) {
+			return nil, fmt.Errorf("handshake with %s timed out (%gs)", t.Destination.Display(), sshTimeout.Seconds())
+		}
 		if isAuthFailure(err) {
 			return nil, fmt.Errorf("ssh authentication failed (use --password or allow a public key): %v", err)
 		}
 		return nil, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	go ssh.DiscardRequests(reqs)
 	return ssh.NewClient(client, chans, reqs), nil
 }
@@ -166,11 +176,20 @@ func isAuthFailure(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "unable to authenticate")
 }
 
+// user is the SSH login user: an explicit user@host wins, then the USER
+// environment variable, then the OS account (USER is unset in some service
+// contexts and on Windows).
 func (t *SSHTransport) user() string {
 	if t.Destination.User != "" {
 		return t.Destination.User
 	}
-	return os.Getenv("USER")
+	if name := os.Getenv("USER"); name != "" {
+		return name
+	}
+	if current, err := user.Current(); err == nil {
+		return current.Username
+	}
+	return ""
 }
 
 // publicKeyAuth gathers available public keys: agent signers + explicit key files + default keys.

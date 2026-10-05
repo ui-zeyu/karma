@@ -165,6 +165,24 @@ func TestVersionSubcommand(t *testing.T) {
 	}
 }
 
+// --version is cobra's root flag: it prints the same line the subcommand prints.
+func TestVersionFlag(t *testing.T) {
+	root := newRootCmd("9.9.9")
+	root.SetArgs([]string{"--version"})
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("--version should succeed: %v", err)
+	}
+	if got := out.String(); got != "karma 9.9.9\n" {
+		t.Fatalf("--version output: %q", got)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("--version should stay off stderr: %q", errOut.String())
+	}
+}
+
 // reportError's two shapes: a usage error appends the usage block and returns 0
 // (a typo is not a failed run, so the shell's status stays quiet), a coded error
 // returns its own code, and anything else returns 0 with the message only.

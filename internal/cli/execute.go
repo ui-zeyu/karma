@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"io"
 	"os"
 	"slices"
@@ -45,9 +46,11 @@ func terminalWidth(w io.Writer) int {
 }
 
 // Execute is one full collection run. A nil catalog uses the platform's check
-// catalog; the mtime subcommand passes its own list. The returned error is
-// printed by the command-line layer.
-func Execute(w io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
+// catalog; the mtime subcommand passes its own list. A cancelled context stops
+// the run: in-flight checks keep the output they had already read, and the
+// partial report is still presented. The returned error is printed by the
+// command-line layer.
+func Execute(ctx context.Context, w io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
 	target := catalog
 	if target == nil {
 		target = checks.ChecksFor(transport.Platform())
@@ -66,7 +69,7 @@ func Execute(w io.Writer, transport session.Transport, options model.RunOptions,
 	defer sess.Close()
 
 	bins := catalogBins(selected)
-	factsValue := facts.CollectFor(transport.Platform(), sess, bins)
+	factsValue := facts.CollectFor(ctx, transport.Platform(), sess, bins)
 	width := terminalWidth(w)
 	render.RenderHeader(w, sess.Name(), factsValue, width)
 	live := render.NewLiveObserver(w, selected, options.MaxLines, width, isTerminal(w))
@@ -74,9 +77,11 @@ func Execute(w io.Writer, transport session.Transport, options model.RunOptions,
 	defer live.Close()
 	var observer runner.Observer = live
 	if options.SaveDir != "" {
-		observer = &saveObserver{dir: options.SaveDir, next: live}
+		saver := newSaveObserver(options.SaveDir, buildVersion, sess.Name(), factsValue, live)
+		defer saver.finalize()
+		observer = saver
 	}
-	runner.RunCatalog(sess, factsValue, selected, options, observer)
+	runner.RunCatalog(ctx, sess, factsValue, selected, options, observer)
 	return nil
 }
 
