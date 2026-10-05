@@ -37,6 +37,30 @@ func TestSyntaxLine(t *testing.T) {
 	}
 }
 
+// The reading layer lines a listing's columns up before the panel paints it, so
+// the lexer reads rows with runs of spaces between the columns too; the name
+// span still covers the whole path.
+func TestLsLAlignedRow(t *testing.T) {
+	row := "drwxr-xr-x  2 root root    4096 Oct 06 12:00 /tmp/sub"
+	painted := SyntaxLine("ls-l", row)
+	if painted == row {
+		t.Fatalf("an aligned ls-l row should be colored: %q", painted)
+	}
+	if plain(painted) != row {
+		t.Fatalf("the paint should not change the text: %q", painted)
+	}
+	nameAt := strings.Index(row, "/tmp/sub")
+	covered := false
+	for _, span := range styleLsL(row) {
+		if span.Start == nameAt {
+			covered = span.End == len(row)
+		}
+	}
+	if !covered {
+		t.Fatalf("the name span should cover the whole path: %+v", styleLsL(row))
+	}
+}
+
 // The test process's stdout is not a terminal, so lipgloss lands in the Ascii
 // profile and comparing plain text would verify no coloring at all; pinning the
 // 256-color profile makes this package's color assertions real.

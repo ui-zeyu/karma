@@ -3,8 +3,8 @@
 // LD_PRELOAD hook on cat or ls cannot reshape the output. ls paints its rows
 // with the report's own ls-l coloring, so the standalone output reads like
 // the panels; a pipe or capture drops the color automatically. Failures are
-// phrased the way the host's tools phrase them, and a failed operand never
-// hides the rest.
+// phrased the way the host's tools phrase them, a failed operand never hides
+// the rest, and a failed read exits 1.
 
 package cli
 
@@ -27,7 +27,7 @@ func newCatCmd() *cobra.Command {
 		Short: "Print files, read in process",
 		Long: "Print each file's bytes on stdout in order, read by karma itself rather than the host's " +
 			"cat — a preload hook on the host binary cannot reshape the output. A file that cannot be " +
-			"read is reported after the rest have printed.",
+			"read is reported after the rest have printed; the command then exits 1.",
 		Args: atLeastOneArg("cat needs at least one file: karma local cat FILE..."),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
@@ -45,7 +45,7 @@ func newCatCmd() *cobra.Command {
 					return err
 				}
 			}
-			return first
+			return readerFailure(first)
 		},
 	}
 }
@@ -58,8 +58,8 @@ func newLsCmd() *cobra.Command {
 			"hidden entries included) with the report's ls-l coloring, read by karma itself rather than the " +
 			"host's ls — a preload hook on the host binary cannot hide an entry. With no path the current " +
 			"directory is listed, the way ls itself defaults; several paths get an \"== path\" section header " +
-			"each, and a path that cannot be read is reported after the rest have printed. A file operand " +
-			"prints its own row.",
+			"each, and a path that cannot be read is reported after the rest have printed; the command " +
+			"then exits 1. A file operand prints its own row.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths := args
 			if len(paths) == 0 {
@@ -82,13 +82,24 @@ func newLsCmd() *cobra.Command {
 			if err != nil {
 				var pathErr *fs.PathError
 				if errors.As(err, &pathErr) {
-					return readError("ls", pathErr.Path, err)
+					return readerFailure(readError("ls", pathErr.Path, err))
 				}
-				return readError("ls", paths[0], err)
+				return readerFailure(readError("ls", paths[0], err))
 			}
 			return nil
 		},
 	}
+}
+
+// readerFailure is one built-in reader's failure: the message stays the host
+// tool's own sentence, and the command exits 1 — the status a failed read
+// carries — so a script that reads $? sees the failure instead of success. The
+// operands that did read have already printed either way.
+func readerFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	return failf(1, "%s", err.Error())
 }
 
 // atLeastOneArg is cat's argument check: one or more positional words, with

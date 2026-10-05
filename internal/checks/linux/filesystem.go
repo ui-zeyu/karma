@@ -295,16 +295,7 @@ var FilesystemChecks = []*model.Check{
 			Timeout: suidTimeout,
 		}),
 	listingCheck("tmp-listing", "Temp directory listing", model.AspectFilesystem, tmpDirs, 200,
-		[]model.Rule{
-			// RE2 has no lookahead: standard system hidden entries (socket directories like
-			// .X11-unix, display locks) become an exclusion
-			model.NewRule("tmp-hidden-entry", `\s\.[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\s|$)`,
-				model.High, "hidden entry in temp directory").
-				WithExclude(`\s\.(?:(?:X11|ICE|font|XIM|Test)-unix|X[0-9]+-lock)[A-Za-z0-9_.-]*(?:\s|$)`),
-			sshMaterialRule,
-			tunnelToolRule,
-			define.KeywordRule,
-		}),
+		[]model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}),
 	listingCheck("key-dirs", "Key directory listing (by mtime)", model.AspectFilesystem,
 		keyDirs, 100, []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}),
 	define.LinuxCheck("home-tree", "/home directory tree (four levels deep, including hidden files)", model.AspectFilesystem,

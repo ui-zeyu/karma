@@ -122,3 +122,55 @@ func collectRow(mtime, ctime float64, path string) string {
 		strconv.FormatFloat(ctime, 'f', 3, 64) + "\t" +
 		"-rw-r--r-- 1 root root 100 " + stamp + " " + path
 }
+
+// The listing normalizer lines the section's columns up and states its outlier
+// verdict over the aligned line, which is the text the panel paints.
+func TestListingNormalizeAlignsColumns(t *testing.T) {
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+	var rows []string
+	for i := 0; i < 40; i++ {
+		mtime := float64(base + int64(i))
+		rows = append(rows, collectRow(mtime, mtime, "/srv/app/file"+strconv.Itoa(i)))
+	}
+	// one row of the section carries wider owner, group and size columns
+	stamp := strconv.FormatFloat(float64(base+1), 'f', 3, 64)
+	rows[1] = stamp + "\t" + stamp +
+		"\t-rw-r--r-- 12 www-data www-data 1048576 Jan 01 00:00 /srv/app/file1"
+	for i := 0; i < 2; i++ {
+		mtime := float64(base + 30*86400 + int64(i))
+		rows = append(rows, collectRow(mtime, mtime, "/tmp/.evil"+strconv.Itoa(i)))
+	}
+
+	normalize := cluster.ListingNormalize(func() time.Time { return time.Unix(base+31*86400, 0) })
+	shaped := normalize("", strings.Join(rows, "\n"))
+	if shaped == nil {
+		t.Fatal("collection rows should produce a shaped result")
+	}
+	lines := strings.Split(shaped.Text, "\n")
+	if len(lines) != len(rows) {
+		t.Fatalf("one shaped line per row: %q", shaped.Text)
+	}
+	// every row's path starts in the same column
+	pathColumn := -1
+	for _, line := range lines {
+		at := strings.LastIndex(line, " /")
+		if at < 0 {
+			t.Fatalf("no path in shaped row: %q", line)
+		}
+		if pathColumn < 0 {
+			pathColumn = at
+			continue
+		}
+		if at != pathColumn {
+			t.Fatalf("paths do not line up: %d vs %d in\n%s", pathColumn, at, shaped.Text)
+		}
+	}
+	if len(shaped.Notes) != 2 {
+		t.Fatalf("the two outliers should be flagged: %+v", shaped.Notes)
+	}
+	for _, note := range shaped.Notes {
+		if note.Match.End != len(lines[note.Line]) {
+			t.Fatalf("a verdict covers the whole aligned line: %+v", note)
+		}
+	}
+}

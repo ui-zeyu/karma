@@ -2,7 +2,9 @@
 // reads and per-directory listing section loops. The `^== ` section header is the
 // structural convention of collection output: reader cuts it into Sections and each
 // source is filtered and counted independently. Shell word quoting also lives here
-// (remote rendering and collection scripts share one escaping).
+// (remote rendering and collection scripts share one escaping), and so does the
+// ls -l body row both sides speak: LSBodyPrintf is the shape the collection
+// prints, SplitLsBody and AlignLsBodies (lsbody.go) the reading side's view of it.
 package script
 
 import (

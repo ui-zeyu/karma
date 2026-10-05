@@ -71,3 +71,91 @@ func TestReadFiles(t *testing.T) {
 		t.Fatalf("non-quiet should carry no redirect: %q", loud)
 	}
 }
+
+// The ls -l body split is the reading side's single definition of the row
+// shape: columns are separated by runs of spaces, and the path keeps its own.
+func TestSplitLsBody(t *testing.T) {
+	cases := []struct {
+		name string
+		row  string
+		want []string
+	}{
+		{
+			"single spaces, as find -printf prints",
+			"-rw-r--r-- 1 root root 4096 Jan 01 00:00 /etc/hosts",
+			[]string{"-rw-r--r--", "1", "root", "root", "4096", "Jan", "01", "00:00", "/etc/hosts"},
+		},
+		{
+			"padded, as GNU ls and AlignLsBodies print",
+			"-rw-r--r--  1 root root    4096 Jan 01 00:00 /etc/hosts",
+			[]string{"-rw-r--r--", "1", "root", "root", "4096", "Jan", "01", "00:00", "/etc/hosts"},
+		},
+		{
+			"a path may hold spaces itself",
+			"-rw-r--r-- 1 root root 4096 Jan 01 00:00 /tmp/my file.txt",
+			[]string{"-rw-r--r--", "1", "root", "root", "4096", "Jan", "01", "00:00", "/tmp/my file.txt"},
+		},
+	}
+	for _, c := range cases {
+		fields, ok := SplitLsBody(c.row)
+		if !ok {
+			t.Errorf("%s: should split: %q", c.name, c.row)
+			continue
+		}
+		if len(fields) != len(c.want) {
+			t.Errorf("%s: %d fields, want %d: %q", c.name, len(fields), len(c.want), fields)
+			continue
+		}
+		for i := range c.want {
+			if fields[i] != c.want[i] {
+				t.Errorf("%s: field %d = %q, want %q", c.name, i, fields[i], c.want[i])
+			}
+		}
+	}
+	for _, bad := range []string{"", "garbage", "-rw-r--r-- 1 root root", "-rw-r--r-- 1 root root 4096 Jan 01 00:00 "} {
+		if fields, ok := SplitLsBody(bad); ok {
+			t.Errorf("%q should not split into nine columns: %q", bad, fields)
+		}
+	}
+	// a section holds rows that are not listings: a grep hit must not be read
+	// as an ls -l row and padded
+	hit := "/etc/udev/rules.d/50-x.rules:12:ACTION==\"add\", RUN+=\"/bin/sh -c echo x\""
+	if fields, ok := SplitLsBody(hit); ok {
+		t.Errorf("a grep hit should not split as a listing row: %q", fields)
+	}
+	// the platform's trailing attribute mark is part of the column
+	withMark := "drwxr-xr-x+ 2 root root 4096 Jan 01 00:00 /etc/ssh"
+	if fields, ok := SplitLsBody(withMark); !ok || fields[0] != "drwxr-xr-x+" {
+		t.Errorf("an ACL mark belongs to the permission column: %q %v", fields, ok)
+	}
+}
+
+// Alignment lines the numeric and name columns up over a whole listing, passes
+// an unusual row through, leaves a single row alone, and is stable: an already
+// aligned listing splits and re-renders unchanged.
+func TestAlignLsBodies(t *testing.T) {
+	rows := []string{
+		"-rw-r--r-- 1 root root 100 Jan 01 00:00 /a/b",
+		"drwxr-xr-x 20 yuyy wheel 1024 Jan 01 00:00 /c",
+	}
+	want := []string{
+		"-rw-r--r--  1 root root   100 Jan 01 00:00 /a/b",
+		"drwxr-xr-x 20 yuyy wheel 1024 Jan 01 00:00 /c",
+	}
+	aligned := AlignLsBodies(rows)
+	for i := range want {
+		if aligned[i] != want[i] {
+			t.Errorf("row %d = %q, want %q", i, aligned[i], want[i])
+		}
+	}
+	if again := AlignLsBodies(aligned); again[0] != want[0] || again[1] != want[1] {
+		t.Errorf("alignment should be stable: %q", again)
+	}
+	if single := AlignLsBodies(rows[:1]); single[0] != rows[0] {
+		t.Errorf("a single row has nothing to line up with: %q", single[0])
+	}
+	mixed := AlignLsBodies([]string{rows[0], "not a listing row", rows[1]})
+	if mixed[1] != "not a listing row" || mixed[0] != want[0] {
+		t.Errorf("an unusual row passes through and the rest still align: %q", mixed)
+	}
+}

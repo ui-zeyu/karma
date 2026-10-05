@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"karma/internal/script"
 )
 
 // expandDirs expands a directory word list the way the script tier's shell
@@ -94,55 +96,12 @@ func Ls(paths []string) (string, error) {
 		if len(paths) > 1 {
 			fmt.Fprintf(&b, "== %s\n", path)
 		}
-		for _, row := range alignLsBodies(rows) {
+		for _, row := range script.AlignLsBodies(rows) {
 			b.WriteString(row)
 			b.WriteByte('\n')
 		}
 	}
 	return b.String(), first
-}
-
-// alignLsBodies lines one listing's columns up the way ls -l lays them out:
-// each of the eight leading fields starts in the same column for every row,
-// links and size right-aligned, owner and group left-aligned. The path is
-// taken as it is — it may hold spaces itself — so the rows are split with a
-// bounded count. A row that does not carry the eight fields is passed
-// through, and a single row has nothing to line up with.
-//
-// text/tabwriter is the obvious library here, but it aligns a whole table one
-// way; this row shape wants the numeric columns right-aligned and the rest
-// left-aligned, so the measured widths go into one fmt format and fmt does the
-// padding.
-func alignLsBodies(rows []string) []string {
-	if len(rows) < 2 {
-		return rows
-	}
-	split := make([][]string, len(rows))
-	width := make([]int, 8)
-	for i, row := range rows {
-		fields := strings.SplitN(row, " ", 9)
-		if len(fields) != 9 {
-			continue
-		}
-		split[i] = fields
-		for column := range 8 {
-			width[column] = max(width[column], len(fields[column]))
-		}
-	}
-	// perms, links, owner, group, size, then the date, the clock, and the path
-	format := fmt.Sprintf("%%-%ds %%%ds %%-%ds %%-%ds %%%ds %%s %%s %%s %%s",
-		width[0], width[1], width[2], width[3], width[4])
-	aligned := make([]string, len(rows))
-	for i, fields := range split {
-		if fields == nil {
-			aligned[i] = rows[i]
-			continue
-		}
-		aligned[i] = fmt.Sprintf(format,
-			fields[0], fields[1], fields[2], fields[3], fields[4],
-			fields[5], fields[6], fields[7], fields[8])
-	}
-	return aligned
 }
 
 // lsPath is one operand of Ls: a directory's listingRows, shown as the panels

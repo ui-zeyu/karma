@@ -83,9 +83,11 @@ func legend() string {
 
 // headingBand is a level-one heading band: a full-width strip with bold white
 // uppercase text. It is the report's aspect banner and the catalog listing's
-// platform band, so both views say a level-one heading the same way.
+// platform band, so both views say a level-one heading the same way. The band's
+// fill is trimmed off again when it carries no color: a plain report has no use
+// for the padding.
 func headingBand(name string, term int) string {
-	return fillBand(" "+strings.ToUpper(name), lineWidth(term), bandStyle)
+	return trimPadding(fillBand(" "+strings.ToUpper(name), lineWidth(term), bandStyle))
 }
 
 // fillBand fills the line with a band: the label is truncated when it does not
@@ -176,6 +178,9 @@ func headerBlock(term int, title, meta string, lines []string) string {
 // columns; over-long lines are soft-wrapped by lipgloss's Width, with
 // continuation lines sharing the body indent and the rail unbroken. Rows are
 // bounded first (see boundRow), so nothing reaches the terminal's last column.
+//
+// The rail pads every line out to the block width, so the finished panel goes
+// through trimPadding before it is returned.
 func checkBlock(severity model.Severity, head []string, body []string, term int) string {
 	st := lipgloss.NewStyle().BorderLeft(true).
 		BorderStyle(lipgloss.OuterHalfBlockBorder())
@@ -191,7 +196,20 @@ func checkBlock(severity model.Severity, head []string, body []string, term int)
 		box := lipgloss.NewStyle().Padding(0, rightPad, 0, bodyPad).Width(inner)
 		text += "\n" + box.Render(strings.Join(rows, "\n"))
 	}
-	return st.Render(text)
+	return trimPadding(st.Render(text))
+}
+
+// trimPadding drops the plain spaces lipgloss pads a rendered block out to its
+// width with. The padding places the rail and gives a wrapped line its room;
+// none of it is visible, and a redirected report would otherwise be half
+// spaces. A band row's padding is the band's own fill, painted inside its style
+// and closed by that style's reset, so it is not plain trailing space and stays.
+func trimPadding(block string) string {
+	lines := strings.Split(block, "\n")
+	for index, line := range lines {
+		lines[index] = strings.TrimRight(line, " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // boundRow keeps a row inside the given width before lipgloss wraps it. A row

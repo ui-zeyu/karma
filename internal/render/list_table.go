@@ -119,20 +119,20 @@ func probeChain(check *model.Check) string {
 // muted probe chain starting at a fixed column. The group panel's body box
 // provides the indent, so the row starts at its id. Only the two sized cells
 // carry a width (the id pads to its column, the title and chain wrap inside
-// theirs), and the padding after the last visible character is trimmed.
+// theirs); the panel trims each finished line, so padding after the last
+// visible character never reaches the output.
 func listRow(check *model.Check, idW, titleW, chainW int) string {
 	id := lipgloss.NewStyle().Foreground(listIDColor).
 		Padding(0, listGap, 0, 0).Width(idW + listGap).
 		Render(check.ID)
 	title := lipgloss.NewStyle().Width(titleW).Render(wordWrap(check.Title, titleW))
 	if chainW == 0 {
-		return trimLineEnds(lipgloss.JoinHorizontal(lipgloss.Top, id, title))
+		return lipgloss.JoinHorizontal(lipgloss.Top, id, title)
 	}
 	chain := lipgloss.NewStyle().Foreground(MutedColor).Width(chainW).
 		Render(wordWrap(probeChain(check), chainW))
-	cells := lipgloss.JoinHorizontal(lipgloss.Top, id, title,
+	return lipgloss.JoinHorizontal(lipgloss.Top, id, title,
 		lipgloss.NewStyle().Width(listGap).Render(""), chain)
-	return trimLineEnds(cells)
 }
 
 // wordWrap breaks a cell's text between words; a slash counts as a break point
@@ -144,14 +144,4 @@ func wordWrap(text string, limit int) string {
 		return text
 	}
 	return xansi.Wordwrap(text, limit, "/")
-}
-
-// trimLineEnds drops the blank padding at the end of each joined line (a
-// wrapped cell leaves its shorter neighbours padded).
-func trimLineEnds(block string) string {
-	lines := strings.Split(block, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimRight(line, " ")
-	}
-	return strings.Join(lines, "\n")
 }

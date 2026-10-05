@@ -336,16 +336,19 @@ func TestLocalCatAndLs(t *testing.T) {
 		t.Fatalf("the default should list the current directory: %q", got)
 	}
 
+	// a read that failed exits 1, the status the replaced tools use; a usage
+	// mistake stays at 0 so a typo never looks like a failed read
 	for _, tc := range []struct {
-		name    string
-		args    []string
-		wantErr string
+		name     string
+		args     []string
+		wantErr  string
+		wantCode int
 	}{
-		{"cat a missing file", []string{"local", "cat", filepath.Join(dir, "none")}, ": no such file or directory"},
-		{"cat a directory", []string{"local", "cat", dir}, ": is a directory"},
-		{"ls a missing path", []string{"local", "ls", filepath.Join(dir, "none")}, ": no such file or directory"},
-		{"cat needs a word", []string{"local", "cat"}, "cat needs at least one file"},
-		{"cat at the root points under local", []string{"cat", "/etc/passwd"}, `"karma local cat FILE..."`},
+		{"cat a missing file", []string{"local", "cat", filepath.Join(dir, "none")}, ": no such file or directory", 1},
+		{"cat a directory", []string{"local", "cat", dir}, ": is a directory", 1},
+		{"ls a missing path", []string{"local", "ls", filepath.Join(dir, "none")}, ": no such file or directory", 1},
+		{"cat needs a word", []string{"local", "cat"}, "cat needs at least one file", 0},
+		{"cat at the root points under local", []string{"cat", "/etc/passwd"}, `"karma local cat FILE..."`, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := newRootCmd("test")
@@ -357,14 +360,15 @@ func TestLocalCatAndLs(t *testing.T) {
 				t.Fatalf("want %q in the failure, got %v", tc.wantErr, err)
 			}
 			var reported bytes.Buffer
-			if code := reportError(&reported, err); code != 0 {
-				t.Fatalf("a reader mistake should return 0, got %d", code)
+			if code := reportError(&reported, err); code != tc.wantCode {
+				t.Fatalf("want exit code %d, got %d (%v)", tc.wantCode, code, err)
 			}
 		})
 	}
 
 	// a failed operand is reported after the rest have printed: the rows of
-	// the good path stay on stdout, the failure goes to the caller
+	// the good path stay on stdout, the failure goes to the caller with the
+	// status of a failed read
 	root := newRootCmd("test")
 	root.SetArgs([]string{"local", "ls", filepath.Join(dir, "none"), dir})
 	var out, errOut bytes.Buffer
@@ -376,6 +380,9 @@ func TestLocalCatAndLs(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), " "+one+"\n") {
 		t.Fatalf("the surviving path should have printed: %q", out.String())
+	}
+	if code := reportError(&bytes.Buffer{}, err); code != 1 {
+		t.Fatalf("a failed operand should exit 1, got %d", code)
 	}
 
 	// a selector word is not a subcommand: it still reaches the run and fails

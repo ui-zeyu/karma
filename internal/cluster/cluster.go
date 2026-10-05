@@ -22,6 +22,7 @@ import (
 	"github.com/samber/lo"
 
 	"karma/internal/model"
+	"karma/internal/script"
 	"karma/internal/textutil"
 )
 
@@ -278,9 +279,9 @@ func ParseEntry(line string) *Entry {
 
 // EntryPath returns the path of one listing row: the row shape is
 // %M %n %u %g %s %Tb %Td %TH:%TM followed by the path, which is used for tie
-// ordering. A row that does not split into that many fields is returned whole.
+// ordering. A row that does not carry those columns is returned whole.
 func EntryPath(e *Entry) string {
-	if fields := strings.SplitN(e.Row, " ", 9); len(fields) == 9 {
+	if fields, ok := script.SplitLsBody(e.Row); ok {
 		return fields[8]
 	}
 	return e.Row
@@ -293,15 +294,20 @@ type row struct {
 }
 
 // ListingNormalize shapes a directory listing section (key-dirs/unit-dirs etc.):
-// cluster and grade outliers, strip the collection prefix. The title parameter comes
-// from the reading layer's section split; clustering looks only at body lines. Same
-// clustering thresholds as mtime-hunt: file lines time-isolated from the main cluster
-// rate MEDIUM (hidden files and scripts upgraded by path), and mtimes in the future
-// or over a day before ctime rate CRITICAL; severity and reason are laid down as
-// ranges on the spot at cluster time (OutlierMatch). A section with sparse small
-// clusters and no dominant main cluster is the environment's daily write
-// cadence; flagging everything would only flood the screen, so it stays quiet;
-// non-collection rows pass through as-is.
+// cluster and grade outliers, strip the collection prefix, and line the rows up
+// into ls -l columns. The title parameter comes from the reading layer's section
+// split; clustering looks only at body lines. Same clustering thresholds as
+// mtime-hunt: file lines time-isolated from the main cluster rate MEDIUM (hidden
+// files and scripts upgraded by path), and mtimes in the future or over a day
+// before ctime rate CRITICAL; severity and reason are laid down as ranges on the
+// spot at cluster time (OutlierMatch). A section with sparse small clusters and no
+// dominant main cluster is the environment's daily write cadence; flagging
+// everything would only flood the screen, so it stays quiet; non-collection rows
+// pass through as-is.
+//
+// Columns are lined up here, on the whole section, so what the panel shows is
+// what the SSH channel's find rows and the local channel's own rows both become;
+// spans are stated over the aligned text, which is the text the reader sees.
 func ListingNormalize(now func() time.Time) model.Normalizer {
 	return func(_ string, text string) *model.Shaped {
 		rows := lo.Map(textutil.CollectLines(text), func(line string, _ int) row {
@@ -323,16 +329,21 @@ func ListingNormalize(now func() time.Time) model.Normalizer {
 			outliers = MinorClusters(groups, limit)
 		}
 
-		var lines []string
+		// A collection row drops the epoch prefix here; everything else in the
+		// section passes through as it came.
+		lines := script.AlignLsBodies(lo.Map(rows, func(r row, _ int) string {
+			if r.entry == nil {
+				return r.text
+			}
+			return r.entry.Row
+		}))
 		var notes []model.LineMatch
 		for index, r := range rows {
 			if r.entry == nil {
-				lines = append(lines, r.text)
 				continue
 			}
 			marker := OutlierMarker(r.entry.Mtime, r.entry.Ctime, outliers[r.entry], moment)
-			lines = append(lines, r.entry.Row)
-			if verdict := OutlierMatch(EntryPath(r.entry), marker, len(r.entry.Row)); verdict != nil {
+			if verdict := OutlierMatch(EntryPath(r.entry), marker, len(lines[index])); verdict != nil {
 				notes = append(notes, model.LineMatch{Line: index, Match: *verdict})
 			}
 		}

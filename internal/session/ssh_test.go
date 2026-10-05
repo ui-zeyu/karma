@@ -1,8 +1,12 @@
 package session
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
 	"net"
 	"os"
@@ -11,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )
 
@@ -54,6 +59,111 @@ func TestKnownHostNegatedPatterns(t *testing.T) {
 	}
 	if reversed.matchesAny([]string{"bad.example.com"}) {
 		t.Fatal("a negated pattern written first also applies")
+	}
+}
+
+// testPublicKey builds a deterministic ed25519 key, so a fixture known_hosts
+// line can be written out and compared against the same key.
+func testPublicKey(t *testing.T, seed byte) ssh.PublicKey {
+	t.Helper()
+	private := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed}, ed25519.SeedSize))
+	key, err := ssh.NewPublicKey(private.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+// knownHostsLine renders one known_hosts record for a key.
+func knownHostsLine(patterns string, key ssh.PublicKey) string {
+	return patterns + " " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
+}
+
+// hashedHost is the |1|salt|hmac form OpenSSH writes with HashKnownHosts on.
+func hashedHost(t *testing.T, host string) string {
+	t.Helper()
+	salt := []byte("karma-test-salt")
+	mac := hmac.New(sha1.New, salt)
+	mac.Write([]byte(host))
+	return "|1|" + base64.StdEncoding.EncodeToString(salt) + "|" +
+		base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// accept-new is the default mode's verdict, and it decides whether a changed
+// host key is refused: the file is read like OpenSSH reads it, a recorded key
+// is accepted, a different key for a recorded host is refused, an unrecorded
+// host is new, and a hashed record is consulted. Marker lines (@cert-authority)
+// are not records.
+func TestKnownHostsAcceptNewDecides(t *testing.T) {
+	recorded := testPublicKey(t, 1)
+	other := testPublicKey(t, 3)
+	changed := testPublicKey(t, 2)
+
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	content := strings.Join([]string{
+		"# a comment",
+		knownHostsLine("@cert-authority ca.example", other),
+		knownHostsLine("recorded.example", recorded),
+		knownHostsLine(hashedHost(t, "hashed.example"), recorded),
+		"a line that is not a record",
+		"broken.example ssh-ed25519 not-base64",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries := loadKnownHostEntries([]string{path, filepath.Join(t.TempDir(), "absent")})
+	if len(entries) != 2 {
+		t.Fatalf("comments, marker lines and malformed records are not entries: %+v", entries)
+	}
+	callback := acceptNew(entries)
+	cases := []struct {
+		name    string
+		host    string
+		key     ssh.PublicKey
+		wantErr bool
+	}{
+		{"the recorded key is accepted", "recorded.example:22", recorded, false},
+		{"a changed key is refused", "recorded.example:22", changed, true},
+		{"the port does not hide a record", "recorded.example:2200", changed, true},
+		{"an unrecorded host is new", "new.example:22", changed, false},
+		{"a hashed record still matches", "hashed.example:22", recorded, false},
+		{"a changed key under a hashed record is refused", "hashed.example:22", changed, true},
+		{"a marker line is not a record", "ca.example:22", changed, false},
+	}
+	for _, c := range cases {
+		err := callback(c.host, nil, c.key)
+		switch {
+		case c.wantErr && err == nil:
+			t.Errorf("%s: %s should be refused", c.name, c.host)
+		case !c.wantErr && err != nil:
+			t.Errorf("%s: %s should be accepted: %v", c.name, c.host, err)
+		}
+	}
+}
+
+// The names a known_hosts pattern is matched against follow OpenSSH: the
+// host:port form, the bare host, and the bracketed form for a non-default port.
+func TestHostNamesFor(t *testing.T) {
+	cases := []struct {
+		host string
+		want []string
+	}{
+		{"host.example:22", []string{"host.example:22", "host.example"}},
+		{"host.example:2222", []string{"host.example:2222", "host.example", "[host.example]:2222"}},
+		{"host.example", []string{"host.example"}},
+	}
+	for _, c := range cases {
+		got := hostNamesFor(c.host)
+		if len(got) != len(c.want) {
+			t.Errorf("hostNamesFor(%q) = %q, want %q", c.host, got, c.want)
+			continue
+		}
+		for i := range c.want {
+			if got[i] != c.want[i] {
+				t.Errorf("hostNamesFor(%q) = %q, want %q", c.host, got, c.want)
+			}
+		}
 	}
 }
 

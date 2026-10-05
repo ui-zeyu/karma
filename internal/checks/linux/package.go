@@ -100,6 +100,26 @@ var binNotElfRule = model.NewRule("bin-not-elf",
 	`(?i)^.*(?:\bscript\b|\b(?:ASCII|Unicode) text\b)`, model.High,
 	"script/text where ELF expected").WithExclude(`^/etc/`)
 
+// The two forensics sections list exactly the files the verifier flagged, so a
+// row there is a changed file by construction — and among them the binary is the
+// finding: a row for an ELF object is a replaced binary or library, and one
+// carrying an execute bit is a replaced program. Neither may pass for an
+// ordinary listing row, so both paint the whole record rather than one field,
+// and the reason says which file changed. A conffile row (no execute bit, text
+// type) stays quiet: those are the administrator's edits, and marking them would
+// drown the binary in them.
+//
+// The span is the whole row, so the hit covers the metadata the ls-l lexer would
+// otherwise color; the rules are for pkg-verify alone, because its ls section is
+// the changed-file list — auth-binaries lists every auth binary, changed or not.
+var (
+	pkgChangedELFRule = model.NewRule("pkg-changed-elf",
+		`^/\S+: ELF.*$`, model.High, "ELF binary or library changed since install")
+	pkgChangedExecRule = model.NewRule("pkg-changed-exec",
+		`^(?:-[r-][w-][xsS].*|-...[r-][w-][xsS].*|-......[r-][w-][xsS].*)$`, model.High,
+		"executable changed since install")
+)
+
 // PackageChecks covers packages.
 var PackageChecks = []*model.Check{
 	define.LinuxCheck("containers", "Containers (Docker)", model.AspectPackage,
@@ -117,6 +137,8 @@ var PackageChecks = []*model.Check{
 				model.NewRule("pkg-checksum", `^..5`, model.High,
 					"checksum differs from package db"),
 				binNotElfRule,
+				pkgChangedELFRule,
+				pkgChangedExecRule,
 			},
 			// The `== ls` forensics section is ls -l shape; dpkg -V and file lines do not fit
 			// and are left as-is

