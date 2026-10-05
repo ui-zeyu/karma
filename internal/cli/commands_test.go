@@ -283,6 +283,112 @@ func TestMtimeNeedsDirs(t *testing.T) {
 	}
 }
 
+// The built-in readers under local: cat prints the files' bytes in order, ls
+// the collection's bare ls-l rows (one section per path when there are
+// several), neither runs the host's binaries, and neither word shadows a
+// selector — collection arguments still reach the run.
+func TestLocalCatAndLs(t *testing.T) {
+	dir := t.TempDir()
+	one := filepath.Join(dir, "one.txt")
+	two := filepath.Join(dir, "two.txt")
+	if err := os.WriteFile(one, []byte("line1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(two, []byte("line2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(t *testing.T, args ...string) string {
+		t.Helper()
+		root := newRootCmd("test")
+		root.SetArgs(args)
+		var out, errOut bytes.Buffer
+		root.SetOut(&out)
+		root.SetErr(&errOut)
+		if err := root.Execute(); err != nil {
+			t.Fatalf("%v should succeed: %v", args, err)
+		}
+		return out.String()
+	}
+
+	// cat prints the bytes exactly, several files concatenated — no collection
+	// header, so the output pipes and hashes like cat's own
+	if got := run(t, "local", "cat", one, two); got != "line1\nline2\n" {
+		t.Fatalf("cat printed %q", got)
+	}
+	// ls prints bare ls-l rows over the full paths; several paths get a
+	// section header each
+	rows := run(t, "local", "ls", dir, dir)
+	if !strings.Contains(rows, "== "+dir+"\n") || strings.Count(rows, "== ") != 2 {
+		t.Fatalf("each path should head a section: %q", rows)
+	}
+	if !strings.Contains(rows, " "+one+"\n") || strings.Contains(rows, "\t") {
+		t.Fatalf("ls rows wrong: %q", rows)
+	}
+	// a file operand prints its own row
+	if got := run(t, "local", "ls", one); !strings.HasPrefix(got, "-rw") {
+		t.Fatalf("a file operand should print its own row: %q", got)
+	}
+	// with no path the current directory is listed, entries named the way ls
+	// itself names them
+	t.Chdir(dir)
+	if got := run(t, "local", "ls"); !strings.Contains(got, " one.txt\n") {
+		t.Fatalf("the default should list the current directory: %q", got)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"cat a missing file", []string{"local", "cat", filepath.Join(dir, "none")}, ": no such file or directory"},
+		{"cat a directory", []string{"local", "cat", dir}, ": is a directory"},
+		{"ls a missing path", []string{"local", "ls", filepath.Join(dir, "none")}, ": no such file or directory"},
+		{"cat needs a word", []string{"local", "cat"}, "cat needs at least one file"},
+		{"cat at the root points under local", []string{"cat", "/etc/passwd"}, `"karma local cat FILE..."`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := newRootCmd("test")
+			root.SetArgs(tc.args)
+			root.SetOut(&bytes.Buffer{})
+			root.SetErr(&bytes.Buffer{})
+			err := root.Execute()
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("want %q in the failure, got %v", tc.wantErr, err)
+			}
+			var reported bytes.Buffer
+			if code := reportError(&reported, err); code != 0 {
+				t.Fatalf("a reader mistake should return 0, got %d", code)
+			}
+		})
+	}
+
+	// a failed operand is reported after the rest have printed: the rows of
+	// the good path stay on stdout, the failure goes to the caller
+	root := newRootCmd("test")
+	root.SetArgs([]string{"local", "ls", filepath.Join(dir, "none"), dir})
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "no such file or directory") {
+		t.Fatalf("the failed path should be reported: %v", err)
+	}
+	if !strings.Contains(out.String(), " "+one+"\n") {
+		t.Fatalf("the surviving path should have printed: %q", out.String())
+	}
+
+	// a selector word is not a subcommand: it still reaches the run and fails
+	// on its own vocabulary
+	root = newRootCmd("test")
+	root.SetArgs([]string{"local", "zzz"})
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), `unknown selector "zzz"`) {
+		t.Fatalf("selectors should still route to the run: %v", err)
+	}
+}
+
 // The usage and help text is cobra's own English, without the completion
 // boilerplate.
 func TestUsageAndHelpAreEnglish(t *testing.T) {

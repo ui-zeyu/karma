@@ -104,6 +104,18 @@ func fillBand(label string, width int, st lipgloss.Style) string {
 // strip the aspect banners use; Panel is the quiet muted rail with a sub-band
 // head, the list's aspect-group shape.
 
+// SyntaxLine paints one line's declared syntax — the report's body-line
+// coloring without hit spans — so a caller outside the report (the built-in
+// readers) prints the same paint its panels get. An unknown syntax returns
+// the line unchanged.
+func SyntaxLine(syntax, line string) string {
+	styler := newLineStyler(syntax)
+	if styler == nil {
+		return line
+	}
+	return paintLine(line, styler(line))
+}
+
 // Band renders name as a level-one heading band.
 func Band(name string, term int) string {
 	return headingBand(name, term)

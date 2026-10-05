@@ -152,4 +152,6 @@ func rootArgs(cmd *cobra.Command, args []string) error {
 // to write them.
 var nameHints = map[string]string{
 	"mtime": `mtime is written after the channel: "karma local mtime DIR..." or "karma ssh TARGET mtime DIR..."`,
+	"cat":   `cat is written under the local channel: "karma local cat FILE..."`,
+	"ls":    `ls is written under the local channel: "karma local ls [PATH...]"`,
 }

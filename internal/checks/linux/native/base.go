@@ -151,6 +151,14 @@ func ReadSections(patterns []string, transform func(string) string) string {
 	return b.String()
 }
 
+// Cat is the reader form of the file read: the bytes ReadSections prints per
+// section, without the "== path" header — the file exactly as the kernel
+// returned it, from karma's own read rather than the host's cat, so a preload
+// hook on the host binary cannot reshape the answer.
+func Cat(path string) ([]byte, error) {
+	return os.ReadFile(path)
+}
+
 // TailLines keeps the last n lines of a body: the script tier's `tail -n N`.
 func TailLines(n int) func(string) string {
 	return func(text string) string {
@@ -300,11 +308,13 @@ func epochFrac(t time.Time) string {
 
 // listingRows mirrors script.ListingFind: one directory's entries as
 // "%T@\t%C@\t" + ls-l rows, sorted by mtime descending (ties by row text,
-// sort's last-resort comparison) and capped at head.
-func listingRows(dir string, head int, names *nameCache) []string {
+// sort's last-resort comparison) and capped at head. A head of zero or less
+// lists every entry. The epoch prefix is the cluster's input; rowBody is the
+// half the panels show.
+func listingRows(dir string, head int, names *nameCache) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	type listed struct {
 		mtime float64
@@ -330,14 +340,24 @@ func listingRows(dir string, head int, names *nameCache) []string {
 		}
 		return strings.Compare(a.text, b.text)
 	})
-	if len(rows) > head {
+	if head > 0 && len(rows) > head {
 		rows = rows[:head]
 	}
 	texts := make([]string, len(rows))
 	for i, r := range rows {
 		texts[i] = r.text
 	}
-	return texts
+	return texts, nil
+}
+
+// rowBody cuts a collection row down to the ls-l body the panels display.
+// The two leading fields are the epoch prefix the cluster reads.
+func rowBody(row string) string {
+	parts := strings.SplitN(row, "\t", 3)
+	if len(parts) == 3 {
+		return parts[2]
+	}
+	return row
 }
 
 // secFloat is an instant as seconds-with-fraction for numeric ordering.

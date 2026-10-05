@@ -20,6 +20,23 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func plain(s string) string { return ansi.ReplaceAllString(s, "") }
 
+// SyntaxLine is the report's body-line coloring handed to callers outside the
+// report: an ls-l row comes back with the ls-l paint and strips back to
+// itself, and an unknown syntax stays plain.
+func TestSyntaxLine(t *testing.T) {
+	row := "drwxr-xr-x 2 root root 4096 Oct 06 12:00 /tmp/sub"
+	painted := SyntaxLine("ls-l", row)
+	if painted == row {
+		t.Fatalf("the ls-l row should be colored: %q", painted)
+	}
+	if plain(painted) != row {
+		t.Fatalf("the paint should not change the text: %q", painted)
+	}
+	if got := SyntaxLine("no-such-syntax", row); got != row {
+		t.Fatalf("an unknown syntax should stay plain: %q", got)
+	}
+}
+
 // The test process's stdout is not a terminal, so lipgloss lands in the Ascii
 // profile and comparing plain text would verify no coloring at all; pinning the
 // 256-color profile makes this package's color assertions real.

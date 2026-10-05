@@ -1,7 +1,7 @@
 // Package cli is the cobra application: local, ssh, and list hang off the root
-// command, and the mtime mode is written after the channel command (and after the
-// target on ssh). Every failure is written to stderr with the `karma: ` prefix by
-// reportError.
+// command, the mtime mode is written after the channel command (and after the
+// target on ssh), and the cat and ls built-in readers hang under local. Every
+// failure is written to stderr with the `karma: ` prefix by reportError.
 package cli
 
 import (
@@ -128,7 +128,9 @@ func newLocalCmd() *cobra.Command {
 		Short: "Collect read-only evidence from the local host",
 		Long: "Collect read-only evidence from the local host. Positional arguments are platform, aspect, or check names; " +
 			"all of them run when omitted, and a leading ! on a name excludes those checks. " +
-			"Change-time clustering is written karma local mtime DIR...",
+			"Change-time clustering is written karma local mtime DIR... " +
+			"The built-in readers never run the host's own binaries: " +
+			"karma local cat FILE..., karma local ls [PATH...] (the current directory when no path is given).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dirs, ok := mtimeArgs(args); ok {
 				return runMtimeMode(cmd, session.LocalTransport{}, dirs, "local")
@@ -141,6 +143,7 @@ func newLocalCmd() *cobra.Command {
 		},
 	}
 	addRunFlags(cmd)
+	cmd.AddCommand(newCatCmd(), newLsCmd())
 	return cmd
 }
 

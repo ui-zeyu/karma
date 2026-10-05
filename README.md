@@ -9,7 +9,7 @@ go build -o dist/karma ./cmd/karma
 dist/karma --help
 ```
 
-The version is `0.16.0`; override it with `-ldflags "-X main.version=…"` and print it with `karma version` or `karma --version`.
+The version is `0.17.0`; override it with `-ldflags "-X main.version=…"` and print it with `karma version` or `karma --version`.
 
 ## Usage
 
@@ -29,11 +29,15 @@ dist/karma ssh -o StrictHostKeyChecking=yes root@10.0.0.8 network,log
 dist/karma local mtime /var/www
 dist/karma ssh root@10.0.0.8 mtime /var/www /opt
 
+dist/karma local cat /etc/passwd /etc/shadow
+dist/karma local ls /tmp /var/tmp
+dist/karma local ls                    # the current directory
+
 dist/karma list
 dist/karma list network
 ```
 
-A selector word is a platform name, an aspect name, or a check id; with none given, everything runs. A platform or aspect word counts only if the catalog carries it, so `karma list windows` selects one platform's catalog and `karma list persistence` selects that aspect on both; an unknown word is an error with close matches. A leading `!` on a word excludes instead, with the same vocabulary: `karma local '!pkg-verify'` runs everything but that check and `karma local 'package,!pkg-verify'` runs the aspect without it (quote the word, since shells read `!` too); exclusion wins over inclusion, and words that would leave no checks are an error. The first positional argument of `karma ssh` is the target. The mtime mode is written after that: `mtime DIR...` clusters directory change times (the walk stays on each directory's own filesystem and skips `/proc`, `/sys` and `/dev`); over SSH the connection parameters (-p/-i/-o/--password) are written after the target as usual.
+A selector word is a platform name, an aspect name, or a check id; with none given, everything runs. A platform or aspect word counts only if the catalog carries it, so `karma list windows` selects one platform's catalog and `karma list persistence` selects that aspect on both; an unknown word is an error with close matches. A leading `!` on a word excludes instead, with the same vocabulary: `karma local '!pkg-verify'` runs everything but that check and `karma local 'package,!pkg-verify'` runs the aspect without it (quote the word, since shells read `!` too); exclusion wins over inclusion, and words that would leave no checks are an error. The first positional argument of `karma ssh` is the target. The mtime mode is written after that: `mtime DIR...` clusters directory change times (the walk stays on each directory's own filesystem and skips `/proc`, `/sys` and `/dev`); over SSH the connection parameters (-p/-i/-o/--password) are written after the target as usual. The built-in readers are `karma local cat FILE...` and `karma local ls [PATH...]`: cat prints each file's bytes in order, and ls lists each directory — the current one when no path is given, one `== path` section per path when there are several — in the collection's `ls -l` row shape (full paths, newest first, hidden entries included, a file operand prints its own row) with the report's own `ls -l` coloring on a terminal; both read in process rather than through the host's `cat`/`ls`, so a preload hook on those binaries cannot reshape what they print, and an operand that cannot be read is reported after the rest have printed.
 
 Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log` `kernel` `package` (77 checks). Windows aspects: `system` `identity` `process` `network` `persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (42 checks). `karma list` lists both platforms' catalogs as a two-level heading tree — one band per platform, one band per aspect — and every row carries the check id, the title, and the probe chain. Column widths are measured over the whole selection, so the groups line up and a long title wraps inside its own column.
 

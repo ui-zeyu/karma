@@ -39,7 +39,8 @@ func Skel(dir string, head int, templates []string) func(context.Context) (strin
 		var b strings.Builder
 		fmt.Fprintf(&b, "== %s\n", dir)
 		names := newNameCache()
-		for _, row := range listingRows(dir+"/", head, names) {
+		rows, _ := listingRows(dir+"/", head, names)
+		for _, row := range rows {
 			b.WriteString(row)
 			b.WriteByte('\n')
 		}
