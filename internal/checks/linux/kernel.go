@@ -41,6 +41,20 @@ var modulesLoadScript = script.Lines(
 	}, `cat "$f"`, true),
 )
 
+// rootkitSyms: symbol-name families leaked into /proc/kallsyms by known LKM
+// rootkits (Diamorphine, Reptile, Heroinn, and the syy/h4x syscall-table
+// override tutorials). A plain alternation so the same string serves the shell
+// probe's ERE and the rule's RE2.
+const rootkitSyms = `diamorphine|reptile|heroin|hide_module|module_hidden|hidden_files|` +
+	`hide_tcp4_port|hide_tcp6_port|hacked_getdents|hacked_kill|kernel_unlink|` +
+	`find_sys_call_tbl|h4x_delete_module|h4x_getdents64|h4x_kill|h4x_tcp4_seq_show|` +
+	`new_getdents|old_getdents|should_hide_file_name|should_hide_task_name|is_invisible|` +
+	`syy_getdents|syy_kill`
+
+// kallsymsScript narrows to the rootkit families before the text leaves the
+// target: the full table is megabytes and its quiet lines carry no evidence.
+const kallsymsScript = "grep -aE '" + rootkitSyms + "' /proc/kallsyms 2>/dev/null"
+
 // moduleDirs lists the out-of-tree drop points directly: distro-owned modules all
 // live under the kernel/ subdirectory (tens of thousands of files), while rootkit
 // .ko files land in the module root or the out-of-tree updates/dkms, extra,
@@ -76,6 +90,19 @@ var KernelChecks = []*model.Check{
 			Rules: []model.Rule{
 				model.NewRule("module-hidden", `^HIDDEN `, model.Critical,
 					"module hidden from /proc/modules"),
+			},
+		}),
+	// LKM rootkits cannot scrub their own symbols out of /proc/kallsyms: the
+	// families below (Diamorphine, Reptile, and the classic syscall-table
+	// override tutorials) leave their names in the table and often a module tag
+	// in brackets. grep is both collector and filter — no hit is a clean exit 1,
+	// which stays silent, exactly like webshell-grep.
+	define.LinuxCheck("kallsyms", "Kernel symbol table rootkit signatures (/proc/kallsyms)", model.AspectKernel,
+		[]model.Probe{{Label: "grep", Inv: model.Shell{Script: kallsymsScript}, LineLimit: 200}},
+		define.CheckOpt{
+			Rules: []model.Rule{
+				model.NewRule("kallsyms-rootkit", `\b(?:`+rootkitSyms+`)\b`, model.Critical,
+					"known LKM rootkit symbol in the kernel symbol table"),
 			},
 		}),
 	define.ListingCheck("module-files", "Out-of-tree kernel modules (updates/dkms, extra, etc.)", model.AspectKernel,

@@ -13,8 +13,8 @@ import (
 
 func TestCatalogShape(t *testing.T) {
 	linux := checks.ChecksFor(model.Linux)
-	if len(linux) != 70 {
-		t.Fatalf("the Linux catalog should hold 70 checks, got %d", len(linux))
+	if len(linux) != 73 {
+		t.Fatalf("the Linux catalog should hold 73 checks, got %d", len(linux))
 	}
 	windows := checks.ChecksFor(model.Windows)
 	if len(windows) != 42 {
