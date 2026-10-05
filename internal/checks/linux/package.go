@@ -100,6 +100,19 @@ var binNotElfRule = model.NewRule("bin-not-elf",
 	`(?i)^.*(?:\bscript\b|\b(?:ASCII|Unicode) text\b)`, model.High,
 	"script/text where ELF expected").WithExclude(`^/etc/`)
 
+// pkgChangedFileRule covers the verifier's own line, where the file's name sits
+// in the clear. dpkg's default format is rpm's: nine flag characters, then the
+// attribute field, then the name. A conffile carries 'c' in that field
+// ("??5?????? c /etc/hosts", rpm with its own flag letters), and a regular
+// package file leaves it blank — three spaces for dpkg, two for rpm — so a
+// mismatch on a conffile can never match here. A changed conffile is the
+// administrator's edit; a regular package file that no longer matches the
+// package db is the finding, and the whole record is painted rather than the
+// three flag characters pkg-checksum marks. The flag position is the md5 slot in
+// both verifiers (dpkg: result[2] = checks->md5sum; rpm: the third of SM5DLUGTP).
+var pkgChangedFileRule = model.NewRule("pkg-changed-file",
+	`^..5\S{6}\s{2,}/.*$`, model.High, "package file (not a conffile) differs from the package db")
+
 // The two forensics sections list exactly the files the verifier flagged, so a
 // row there is a changed file by construction — and among them the binary is the
 // finding: a row for an ELF object is a replaced binary or library, and one
@@ -134,6 +147,12 @@ var PackageChecks = []*model.Check{
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
+				// The whole-record rule comes first: both it and pkg-checksum
+				// match a regular package file's mismatch at the same severity,
+				// and the row's reason is the first of the top severity, so the
+				// order makes the row say which case it is. The conffile rows
+				// match pkg-checksum alone and keep its three-character span.
+				pkgChangedFileRule,
 				model.NewRule("pkg-checksum", `^..5`, model.High,
 					"checksum differs from package db"),
 				binNotElfRule,

@@ -77,6 +77,11 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"webshell-grep", `<?php @eval($_POST['c']); ?>`, "webshell-direct"},
 		{"caps", `/usr/bin/x cap_setuid=ep`, "caps-setuid"},
 		{"pkg-verify", `??5?????? c /etc/hosts`, "pkg-checksum"},
+		// the verifier's own line for a regular package file: the attribute field
+		// is blank, so the whole record is the finding. dpkg prints its nine flag
+		// characters then three spaces, rpm four ("%s  %c %s", blank class).
+		{"pkg-verify", `??5??????   /bin/ls`, "pkg-changed-file"},
+		{"pkg-verify", `S.5....T.    /usr/bin/curl`, "pkg-changed-file"},
 		{"pkg-verify", `/usr/sbin/sshd: ASCII text`, "bin-not-elf"},
 		// the forensics sections list the files the verifier flagged: an ELF row
 		// and an executable row are the replaced-binary case, in either channel's
@@ -119,6 +124,12 @@ func TestLinuxRuleExclusions(t *testing.T) {
 		{"hosts-file", `127.0.0.1 localhost`, "hosts-nonlocal"},
 		{"env", `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`, "env-path-dot"},
 		{"pkg-verify", `..5?????? c /etc/hosts`, "bin-not-elf"},
+		// a changed conffile is the administrator's edit, so the whole-record rule
+		// leaves those rows to the quiet three-character checksum rule, and a file
+		// the package no longer ships is not a checksum mismatch at all
+		{"pkg-verify", `??5?????? c /etc/hosts`, "pkg-changed-file"},
+		{"pkg-verify", `S.5....T. c /etc/ssh/sshd_config`, "pkg-changed-file"},
+		{"pkg-verify", `missing     /usr/bin/foo`, "pkg-changed-file"},
 		{"suid", `/usr/bin/sudo`, "suid-outside-system"},
 		{"suid", `/usr/lib/openssh/ssh-keysign`, "suid-outside-system"},
 		{"suid", `/usr/lib64/x`, "suid-outside-system"},
@@ -195,6 +206,9 @@ func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
 			`-rwxr-xr-x 1 root root 8600 May 18 07:20 /bin/ls`},
 		{"pkg-verify", `/bin/ls: ELF 64-bit LSB executable`, "pkg-changed-elf",
 			`/bin/ls: ELF 64-bit LSB executable`},
+		// the verifier's line for a regular package file is the whole record,
+		// the flags and the name together
+		{"pkg-verify", `??5??????   /bin/ls`, "pkg-changed-file", `??5??????   /bin/ls`},
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.check)
