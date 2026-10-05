@@ -3,10 +3,12 @@
 package linux
 
 import (
+	"strconv"
+	"strings"
+
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
-	"strings"
 )
 
 // sudoers: stop as soon as a file is readable; if none is, exit non-zero and fall
@@ -42,6 +44,11 @@ var homeGlobWords = strings.Join(homeGlobs, " ")
 // so one list covers all three.
 var sshdConfigPaths = []string{"/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/*.conf"}
 
+// authorizedKeysDepth bounds the key search under each home directory: the
+// -maxdepth of the ssh find and the depth cap of the local walk, one number for
+// both channels.
+const authorizedKeysDepth = 3
+
 // authorizedKeysScript finds each user's authorized_keys; paths named by the
 // AuthorizedKeysFile directive are read too: %u expands to the user name, %h to
 // the home directory, and a relative path lands in that user's home. Default names
@@ -51,7 +58,7 @@ seen=
 pseen=
 for d in ` + homeGlobWords + `; do
   [ -d "$d" ] || continue
-  find "$d" -maxdepth 3 -name 'authorized_keys*' -type f 2>/dev/null | while read -r f; do
+  find "$d" -maxdepth ` + strconv.Itoa(authorizedKeysDepth) + ` -name 'authorized_keys*' -type f 2>/dev/null | while read -r f; do
     echo "== $f"
     cat "$f" 2>/dev/null
   done
@@ -209,7 +216,7 @@ var IdentityChecks = []*model.Check{
 	define.LinuxCheck("authorized-keys", "SSH authorized keys", model.AspectIdentity,
 		[]model.Probe{
 			{Label: "find", Inv: model.Dual{
-				Run:    native.AuthorizedKeys(homeGlobs, sshdConfigPaths),
+				Run:    native.AuthorizedKeys(homeGlobs, authorizedKeysDepth, sshdConfigPaths),
 				Script: authorizedKeysScript,
 			}},
 		},

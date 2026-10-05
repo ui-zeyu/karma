@@ -19,6 +19,7 @@ import (
 
 	"github.com/prometheus/procfs"
 
+	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/runstate"
 )
@@ -118,7 +119,7 @@ func scanProcesses(ctx context.Context) processSnapshot {
 	if err != nil {
 		return processSnapshot{complete: true}
 	}
-	names := newNameCache()
+	names := localfs.NewNameCache()
 	for _, p := range procs {
 		if ctx.Err() != nil {
 			// The entries read before the deadline are still this caller's
@@ -130,7 +131,7 @@ func scanProcesses(ctx context.Context) processSnapshot {
 			snap.entries = append(snap.entries, e)
 		}
 	}
-	slices.SortFunc(snap.entries, func(a, b procEntry) int { return a.pid - b.pid })
+	slices.SortFunc(snap.entries, func(a, b procEntry) int { return cmp.Compare(a.pid, b.pid) })
 	snap.ok = true
 	snap.complete = ctx.Err() == nil
 	return snap
@@ -140,7 +141,7 @@ func scanProcesses(ctx context.Context) processSnapshot {
 // mid-walk drops out, like ps silently losing it. The euid is the second Uid
 // field, matching ps's USER column; status also carries the thread group id
 // (the STAT session-leader test) and VmLck (the locked-pages flag).
-func readProcEntry(p procfs.Proc, names *nameCache) (procEntry, bool) {
+func readProcEntry(p procfs.Proc, names *localfs.NameCache) (procEntry, bool) {
 	st, err := p.Stat()
 	if err != nil || st.State == "" {
 		return procEntry{}, false
@@ -155,7 +156,7 @@ func readProcEntry(p procfs.Proc, names *nameCache) (procEntry, bool) {
 	e.user = "?"
 	e.tgid = e.pid
 	if status, err := p.NewStatus(); err == nil {
-		e.user = names.user(int(status.UIDs[1]))
+		e.user = names.User(int(status.UIDs[1]))
 		e.tgid = status.TGID
 		e.lockKiB = status.VmLck
 	}
@@ -505,37 +506,15 @@ func nativePsSort(ctx context.Context,
 // PsCPU is `ps aux --sort=-%cpu`.
 func PsCPU(ctx context.Context) (string, error) {
 	return nativePsSort(ctx, func(a, b procEntry, uptime float64, _ int64) int {
-		return cmpFloatDesc(b.cpuPercent(uptime), a.cpuPercent(uptime))
+		return cmp.Compare(b.cpuPercent(uptime), a.cpuPercent(uptime))
 	})
 }
 
 // PsMem is `ps aux --sort=-%mem`.
 func PsMem(ctx context.Context) (string, error) {
 	return nativePsSort(ctx, func(a, b procEntry, _ float64, _ int64) int {
-		return cmpInt64Desc(b.rss, a.rss)
+		return cmp.Compare(b.rss, a.rss)
 	})
-}
-
-// cmpFloatDesc/cmpInt64Desc report how the first argument should sort
-// relative to the second (positive means first after second).
-func cmpFloatDesc(a, b float64) int {
-	switch {
-	case a > b:
-		return 1
-	case a < b:
-		return -1
-	}
-	return 0
-}
-
-func cmpInt64Desc(a, b int64) int {
-	switch {
-	case a > b:
-		return 1
-	case a < b:
-		return -1
-	}
-	return 0
 }
 
 // Top renders a top -b snapshot: banner, task and memory summaries, and
@@ -547,7 +526,7 @@ func Top(ctx context.Context) (string, error) {
 	}
 	entries := slices.Clone(snap.entries)
 	slices.SortStableFunc(entries, func(a, b procEntry) int {
-		return cmpFloatDesc(b.cpuPercent(snap.uptime), a.cpuPercent(snap.uptime))
+		return cmp.Compare(b.cpuPercent(snap.uptime), a.cpuPercent(snap.uptime))
 	})
 	var b strings.Builder
 	fmt.Fprintf(&b, "top - %s\n", uptimeBannerBody())

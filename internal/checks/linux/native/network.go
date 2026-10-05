@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/textutil"
 
@@ -41,7 +42,7 @@ func HostnameIps(ctx context.Context) (string, error) {
 // hands in becomes one section; ParseProcNet (the probe's Adapt) restores the
 // hex endpoints.
 func ProcNet(paths []string) func(context.Context) (string, error) {
-	return func(context.Context) (string, error) { return ReadSections(paths, nil), nil }
+	return func(context.Context) (string, error) { return localfs.ReadSections(paths, nil), nil }
 }
 
 // Firewall mirrors the check's firewallScript: every family and table it hands

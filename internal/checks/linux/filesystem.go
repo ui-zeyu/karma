@@ -13,6 +13,7 @@ import (
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
+	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/script"
 )
@@ -179,17 +180,22 @@ var webshellGrep = "grep -rInEi" +
 // naturally, so the hidden subsection is dropped.
 var keyDirs = []string{"/", "/home", "/opt", "/root", "/srv", "/usr/local"}
 
-// homeTreeRoot, homeTreeDepth and homeTreeArgs are the home-tree check's shape:
-// the root, how deep the walk goes, and the flag set tree is called with. The
-// ssh find fallback and the local walk take the same root and depth; the flags
-// are the tool's own spelling on one side and an argument vector on the other.
-// tree is used if present, else 127 falls through to find, whose -printf is
-// arranged in ls -l shape for the ls-l pseudo-lexer.
+// homeTreeRoot, homeTreeDepth and homeTreeFlags are the home-tree check's shape:
+// the root, how deep the walk goes, and the flags tree is called with. The ssh
+// script spells the flags as shell words (script.Join) and the in-process tier
+// as its own argument vector, both from that one list; the find fallback takes
+// the same root and depth. tree is used if present, else the probe falls through
+// to find, whose -printf is arranged in ls -l shape for the ls-l pseudo-lexer.
 const (
 	homeTreeRoot  = "/home"
 	homeTreeDepth = 4
-	homeTreeArgs  = "-a -p -u -g -s -D --timefmt '%Y-%m-%d %H:%M'"
 )
+
+var homeTreeFlags = []string{"-a", "-p", "-u", "-g", "-s", "-D", "--timefmt", "%Y-%m-%d %H:%M"}
+
+// homeTreeScript is the tree tier's ssh branch: the same flags and root as the
+// local argument vector, rendered as shell words.
+var homeTreeScript = "tree " + script.Join(slices.Concat(homeTreeFlags, []string{homeTreeRoot})) + " 2>/dev/null"
 
 // homeTreeFind is that shape as the find command the ssh fallback runs. tree
 // crosses mount points unless -x is given and the check does not pass it, so the
@@ -301,8 +307,8 @@ var FilesystemChecks = []*model.Check{
 	define.LinuxCheck("home-tree", "/home directory tree (four levels deep, including hidden files)", model.AspectFilesystem,
 		[]model.Probe{
 			{Label: "tree", Inv: model.Dual{
-				Run:    native.HomeTree(homeTreeRoot, homeTreeDepth),
-				Script: "tree " + homeTreeArgs + " " + homeTreeRoot + " 2>/dev/null",
+				Run:    native.HomeTree(homeTreeRoot, homeTreeFlags, homeTreeDepth),
+				Script: homeTreeScript,
 			}},
 			{Label: "find", Inv: model.Dual{Script: homeTreeFind}},
 		},
@@ -335,7 +341,7 @@ var FilesystemChecks = []*model.Check{
 	define.LinuxCheck("webshell-grep", "Webshell content signatures", model.AspectFilesystem,
 		[]model.Probe{
 			{Label: "grep", Inv: model.Dual{
-				Run: native.Grep(webshellRoots, native.GrepScan{
+				Run: localfs.Grep(webshellRoots, localfs.GrepScan{
 					Pattern:     webshellRe,
 					Includes:    webshellFiles,
 					ExcludeDirs: webshellExcludeDirs,

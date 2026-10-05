@@ -11,6 +11,7 @@
 package linux
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -88,20 +89,31 @@ var hiddenModuleAttrs = []native.ModuleAttr{
 	{Label: "text", File: "sections/.text"},
 }
 
-// hiddenModuleScript is hiddenModuleAttrs as the ssh branch: a module directory
-// with a sections/ subdirectory that /proc/modules does not list is hidden, and
-// the loop gathers whichever attributes read back non-empty.
-var hiddenModuleScript = hiddenModuleScriptText(hiddenModuleAttrs)
+// hiddenModuleScript is the whole cross-check as one tier, the way
+// native.ModulesHidden is one body: the sysfs diff over the target's own
+// registry, then the kallsyms diff. Both footprints travel in one script — a
+// tier that stopped after the first would answer for the whole tier (an exit 0
+// with no rows is still an answer) and the chain would never reach the second.
+var hiddenModuleScript = hiddenModuleDiffText(hiddenModuleAttrs, "/sys/module", "/proc/modules", "/proc/kallsyms")
 
-func hiddenModuleScriptText(attrs []native.ModuleAttr) string {
+// hiddenModuleDiffText is that tier over given surfaces, the four the tests
+// substitute a fixture for.
+func hiddenModuleDiffText(attrs []native.ModuleAttr, sysfsRoot, modulesPath, symbolsPath string) string {
+	return hiddenSysfsDiffText(attrs, sysfsRoot, modulesPath) + hiddenSymbolDiffText(modulesPath, symbolsPath)
+}
+
+// hiddenSysfsDiffText is the sysfs half: a module directory with a sections/
+// subdirectory that /proc/modules does not list is hidden, and the loop gathers
+// whichever attributes read back non-empty.
+func hiddenSysfsDiffText(attrs []native.ModuleAttr, sysfsRoot, modulesPath string) string {
 	pairs := make([]string, 0, len(attrs))
 	for _, attr := range attrs {
 		pairs = append(pairs, attr.Label+":"+attr.File)
 	}
-	return `for d in /sys/module/*; do
+	return `for d in ` + sysfsRoot + `/*; do
   [ -d "$d/sections" ] || continue
   n=${d##*/}
-  grep -q "^$n " /proc/modules 2>/dev/null && continue
+  grep -q "^$n " ` + modulesPath + ` 2>/dev/null && continue
   line="HIDDEN $n"
   for pair in ` + strings.Join(pairs, " ") + `; do
     v=$(cat "$d/${pair#*:}" 2>/dev/null)
@@ -109,23 +121,27 @@ func hiddenModuleScriptText(attrs []native.ModuleAttr) string {
   done
   echo "$line"
 done
-exit 0
 `
 }
 
-// hiddenSymbolScript is the kallsyms half of the cross-check as the ssh branch:
-// the module tags in the symbol table are a second registry, and one that
+// hiddenSymbolDiffText is the kallsyms half over a given module list and symbol
+// table: the module tags in the symbol table are a second registry, and one that
 // /proc/modules does not name is a hidden module. JITed BPF programs are tagged
-// [bpf] without being modules, so the tag is dropped. One awk pass reads
-// /proc/modules first (NR==FNR) and /proc/kallsyms second — no temporary file on
-// the target — and the count is how many of the module's symbols are still
-// there.
-const hiddenSymbolScript = `awk 'NR==FNR {mods[$1]=1; next}
+// [bpf] without being modules, so the tag is dropped. One awk pass reads the
+// module list first and the symbol table second — no temporary file on the
+// target — and the count is how many of the module's symbols are still there.
+// The first operand is picked by name (ARGV[1]): the NR==FNR idiom reads the
+// second file as the first when the module list is empty or unreadable. The two
+// file operands are substituted, so the tests run this same pipeline over
+// fixtures.
+func hiddenSymbolDiffText(modulesPath, symbolsPath string) string {
+	return fmt.Sprintf(`awk 'FILENAME == ARGV[1] {mods[$1]=1; next}
      {n=$NF; if (n ~ /^\[/ && n != "[bpf]") {gsub(/[][]/,"",n); if (!(n in mods)) print n}}' \
-  /proc/modules /proc/kallsyms 2>/dev/null | sort | uniq -c | sort -k2 |
+  %s %s 2>/dev/null | sort | uniq -c | sort -k2 |
 while read -r count name; do echo "HIDDEN $name symbols $count"; done
 exit 0
-`
+`, modulesPath, symbolsPath)
+}
 
 // KernelChecks covers the kernel.
 var KernelChecks = []*model.Check{
@@ -184,10 +200,12 @@ var KernelChecks = []*model.Check{
 	// symbols came from in brackets, which a module cannot scrub without
 	// unloading. A rootkit that only edits the list is therefore caught twice,
 	// and one that also removes its kobject is still caught in the symbol table.
+	// Both footprints run in one tier: two probes in a chain would let the first
+	// one's empty exit-0 diff answer for the whole check, and the symbol table
+	// would never be read.
 	define.LinuxCheck("modules-hidden", "Hidden module cross-check (/sys/module and kallsyms vs /proc/modules)", model.AspectKernel,
 		[]model.Probe{
-			{Label: "sysfs-diff", Inv: model.Dual{Run: native.ModulesHidden(hiddenModuleAttrs), Script: hiddenModuleScript}},
-			{Label: "kallsyms-diff", Inv: model.Dual{Run: native.ModulesHiddenFromSymbols(), Script: hiddenSymbolScript}},
+			{Label: "diff", Inv: model.Dual{Run: native.ModulesHidden(hiddenModuleAttrs), Script: hiddenModuleScript}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{

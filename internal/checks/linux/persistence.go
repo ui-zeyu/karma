@@ -4,6 +4,7 @@ package linux
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -109,20 +110,25 @@ var unitDirs = []string{
 // is runtime-generated; the /usr and /lib layer is a sea of official rules and is
 // not scanned. The listing is sorted by mtime and clustered, and grep catches only
 // the three assignment keys that reference external programs.
-// udevDirs and udevExec are the udev check's shape: the writable rule layers
-// and the keys that reference an external program, shared by the ssh grep and
-// the local walk.
+// udevDirs, udevHead, udevExecMaxHits and udevExec are the udev check's shape: the
+// writable rule layers, the per-layer listing cap, the cap on the assignment-key
+// hits, and the keys that reference an external program. The ssh grep and the
+// local walk take the same four, so the two channels cover identical rules.
 var udevDirs = []string{"/etc/udev/rules.d", "/run/udev/rules.d"}
 
-const udevExec = `(RUN|PROGRAM|IMPORT)(\+=|\{|=)`
+const (
+	udevHead        = 40
+	udevExecMaxHits = 100
+	udevExec        = `(RUN|PROGRAM|IMPORT)(\+=|\{|=)`
+)
 
 var udevExecRe = regexp.MustCompile(udevExec)
 
 var udevScript = script.Lines(
 	"for d in "+strings.Join(udevDirs, " ")+"; do",
 	`  echo "== $d"`,
-	"  "+script.ListingFind("$d", 40),
-	"  grep -rnIE '"+udevExec+`' "$d" 2>/dev/null | head -n 100`,
+	"  "+script.ListingFind("$d", udevHead),
+	"  grep -rnIE '"+udevExec+`' "$d" 2>/dev/null | head -n `+strconv.Itoa(udevExecMaxHits),
 	"done",
 )
 
@@ -132,11 +138,11 @@ var udevScript = script.Lines(
 // pthScript: a .pth in site/dist-packages is processed at Python startup, and a
 // line starting with import is code; setuptools' two legitimate precedence files
 // are excluded on the grep side, so a normal system stays silent.
-// pthDirs, pthImport and pthExcludes are the .pth check's shape: the python
-// package directories, the line the grep keeps, and setuptools' two legitimate
-// precedence files, excluded on both sides so a normal system stays silent. A
-// .pth in site/dist-packages is processed at Python startup, and a line
-// starting with import is code.
+// pthDirs, pthInclude, pthImport and pthExcludes are the .pth check's shape: the
+// python package directories, the file-name glob, the line the grep keeps, and
+// setuptools' two legitimate precedence files, excluded on both sides so a normal
+// system stays silent. A .pth in site/dist-packages is processed at Python
+// startup, and a line starting with import is code.
 var (
 	pthDirs = []string{
 		"/usr/lib/python3*/dist-packages",
@@ -147,14 +153,17 @@ var (
 	pthExcludes = []string{"distutils-precedence.pth", "_distutils_system_mod.pth"}
 )
 
-const pthImport = `^import`
+const (
+	pthInclude = "*.pth"
+	pthImport  = `^import`
+)
 
 var pthImportRe = regexp.MustCompile(pthImport)
 
 var pthScript = script.Lines(
 	"for d in "+strings.Join(pthDirs, " ")+"; do",
 	`  [ -d "$d" ] || continue`,
-	"  grep -rnI --include='*.pth' --exclude='"+strings.Join(pthExcludes, "' --exclude='")+"' '"+pthImport+`' "$d" 2>/dev/null`,
+	"  grep -rnI --include='"+pthInclude+"' --exclude='"+strings.Join(pthExcludes, "' --exclude='")+"' '"+pthImport+`' "$d" 2>/dev/null`,
 	"done",
 )
 
@@ -162,9 +171,9 @@ var pthScript = script.Lines(
 // at boot, and monitoring agents like auditd/sysmon start only after they finish,
 // so the static listing is the only forensics surface; on usrmerge systems /lib and
 // /usr/lib are the same directory, so readlink dedup avoids doubling the whole thing.
-// generatorDirs is the directory word list the generator check covers; on
-// usrmerge systems /lib and /usr/lib are one directory, so the walk dedupes by
-// resolved path exactly like the script's readlink -f.
+// generatorDirs and generatorHead are the generator check's shape: the directory
+// word list and the per-directory listing cap, which the ssh script and the local
+// walk both take.
 var generatorDirs = []string{
 	"/etc/systemd/system-generators",
 	"/run/systemd/system-generators",
@@ -179,6 +188,8 @@ var generatorDirs = []string{
 	"/home/*/.local/share/systemd/user-generators",
 }
 
+const generatorHead = 100
+
 var generatorsScript = script.Lines(
 	"seen=",
 	"for d in "+strings.Join(generatorDirs, " ")+"; do",
@@ -187,7 +198,7 @@ var generatorsScript = script.Lines(
 	`  case " $seen " in *" $r "*) continue;; esac`,
 	`  seen="$seen $r"`,
 	`  echo "== $d"`,
-	"  "+script.ListingFind("$d", 100),
+	"  "+script.ListingFind("$d", generatorHead),
 	"done",
 )
 
@@ -225,7 +236,7 @@ var PersistenceChecks = []*model.Check{
 		unitDirs, 100, nil),
 	define.LinuxCheck("systemd-generators", "systemd generator directories", model.AspectPersistence,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: native.Generators(generatorDirs), Script: generatorsScript}},
+			{Label: "find", Inv: model.Dual{Run: native.Generators(generatorDirs, generatorHead), Script: generatorsScript}},
 		},
 		define.CheckOpt{
 			Syntax:    "ls-l",
@@ -256,7 +267,7 @@ var PersistenceChecks = []*model.Check{
 	define.LinuxCheck("udev-rules", "udev rules (writable layers)", model.AspectPersistence,
 		[]model.Probe{
 			{Label: "find", Inv: model.Dual{
-				Run:    native.Udev(udevDirs, udevExecRe),
+				Run:    native.Udev(udevDirs, udevHead, udevExecMaxHits, udevExecRe),
 				Script: udevScript,
 			}},
 		},
@@ -296,7 +307,7 @@ var PersistenceChecks = []*model.Check{
 	define.LinuxCheck("python-pth", "Python .pth injection", model.AspectPersistence,
 		[]model.Probe{
 			{Label: "grep", Inv: model.Dual{
-				Run:    native.Pth(pthDirs, pthImportRe, pthExcludes),
+				Run:    native.Pth(pthDirs, pthInclude, pthImportRe, pthExcludes),
 				Script: pthScript,
 			}},
 		},

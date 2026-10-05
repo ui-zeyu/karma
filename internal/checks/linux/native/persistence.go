@@ -5,7 +5,7 @@ package native
 
 import (
 	"context"
-	"fmt"
+	"karma/internal/localfs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,7 +16,7 @@ import (
 // hands in, then the invoking user's own crontab.
 func Cron(paths []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		body := ReadSections(paths, nil)
+		body := localfs.ReadSections(paths, nil)
 		return body + "== crontab -l\n" + runHost(ctx, []string{"crontab", "-l"}, false).out, nil
 	}
 }
@@ -37,26 +37,20 @@ func LdPreload(ctx context.Context) (string, error) {
 func Skel(dir string, head int, templates []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
-		fmt.Fprintf(&b, "== %s\n", dir)
-		names := newNameCache()
-		rows, _ := listingRows(dir+"/", head, names)
-		for _, row := range rows {
-			b.WriteString(row)
-			b.WriteByte('\n')
-		}
-		b.WriteString(ReadSections(templates, nil))
+		b.WriteString(localfs.ListingSection(dir, head, localfs.NewNameCache()))
+		b.WriteString(localfs.ReadSections(templates, nil))
 		return b.String(), nil
 	}
 }
 
 // Generators mirrors generatorsScript: one clustered listing section per
-// unique generator directory.
-func Generators(dirs []string) func(context.Context) (string, error) {
+// unique generator directory, each capped at head like the script's find.
+func Generators(dirs []string, head int) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
 		seen := map[string]bool{}
-		names := newNameCache()
-		for _, dir := range expandDirs(dirs) {
+		names := localfs.NewNameCache()
+		for _, dir := range localfs.ExpandDirs(dirs) {
 			resolved, err := filepath.EvalSymlinks(dir)
 			if err != nil {
 				resolved = dir
@@ -65,22 +59,22 @@ func Generators(dirs []string) func(context.Context) (string, error) {
 				continue
 			}
 			seen[resolved] = true
-			listingSection(&b, dir, 100, names)
+			b.WriteString(localfs.ListingSection(dir, head, names))
 		}
 		return b.String(), nil
 	}
 }
 
 // Udev mirrors the check's udevScript: per writable layer it hands in, a
-// clustered listing then the assignment keys that reference external programs,
-// capped like the script's head.
-func Udev(dirs []string, pattern *regexp.Regexp) func(context.Context) (string, error) {
+// clustered listing capped at head and then the assignment keys that reference
+// external programs, capped at maxHits like the script's head.
+func Udev(dirs []string, head, maxHits int, pattern *regexp.Regexp) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
-		names := newNameCache()
+		names := localfs.NewNameCache()
 		for _, dir := range dirs {
-			listingSection(&b, dir, 40, names)
-			for _, hit := range grepWalk(ctx, dir, GrepScan{Pattern: pattern, MaxHits: 100}) {
+			b.WriteString(localfs.ListingSection(dir, head, names))
+			for _, hit := range localfs.GrepWalk(ctx, dir, localfs.GrepScan{Pattern: pattern, MaxHits: maxHits}) {
 				b.WriteString(hit)
 				b.WriteByte('\n')
 			}
@@ -89,16 +83,16 @@ func Udev(dirs []string, pattern *regexp.Regexp) func(context.Context) (string, 
 	}
 }
 
-// Pth mirrors the check's pthScript: import lines in .pth files across every
+// Pth mirrors the check's pthScript: import lines in the .pth files across every
 // python package directory it hands in, setuptools' two legitimate precedence
 // files excluded.
-func Pth(dirs []string, pattern *regexp.Regexp, excludes []string) func(context.Context) (string, error) {
+func Pth(dirs []string, include string, pattern *regexp.Regexp, excludes []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
-		for _, dir := range expandDirs(dirs) {
-			for _, hit := range grepWalk(ctx, dir, GrepScan{
+		for _, dir := range localfs.ExpandDirs(dirs) {
+			for _, hit := range localfs.GrepWalk(ctx, dir, localfs.GrepScan{
 				Pattern:  pattern,
-				Includes: []string{"*.pth"},
+				Includes: []string{include},
 				Excludes: excludes,
 			}) {
 				b.WriteString(hit)

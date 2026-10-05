@@ -5,11 +5,15 @@
 package native
 
 import (
+	"context"
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"karma/internal/model"
 )
 
 func TestLoadedModuleNames(t *testing.T) {
@@ -43,6 +47,76 @@ func TestHiddenModuleSymbolLinesDiffsAndSorts(t *testing.T) {
 	want := "HIDDEN aardvark symbols 1\nHIDDEN rootkit symbols 41\n"
 	if got := hiddenModuleSymbolLines(counts, loaded); got != want {
 		t.Errorf("hiddenModuleSymbolLines = %q, want %q", got, want)
+	}
+}
+
+// hiddenModuleFixture writes the two registries the cross-check diffs: a rootkit
+// both of them carry and the module list does not, and an nf_tables the list
+// carries. It returns the sysfs root, the module list, and the symbol table.
+func hiddenModuleFixture(t *testing.T) (sysfs, modules, symbols string) {
+	t.Helper()
+	root := t.TempDir()
+	sysfs = filepath.Join(root, "sys", "module")
+	module := filepath.Join(sysfs, "rootkit")
+	if err := os.MkdirAll(filepath.Join(module, "sections"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(module, "coresize"), []byte("16384\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(module, "sections", ".text"), []byte("0xffffffffc05a4000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	modules = filepath.Join(root, "modules")
+	if err := os.WriteFile(modules, []byte("nf_tables 409600 0 - Live 0xffffffffc0567000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symbols = filepath.Join(root, "kallsyms")
+	table := "ffffffff81000000 T startup_64\n" +
+		"ffffffffc0567000 t nft_do_chain\t[nf_tables]\n" +
+		"ffffffffc05a4000 t my_init\t[rootkit]\n" +
+		"ffffffffc05a4010 t my_exit\t[rootkit]\n" +
+		"ffffffffc0700000 t bpf_prog_1\t[bpf]\n"
+	if err := os.WriteFile(symbols, []byte(table), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return sysfs, modules, symbols
+}
+
+// The merged body is one tier on the local channel too: both halves run in one
+// call and both footprints come out in one panel.
+func TestModulesHiddenBodyPrintsBothFootprints(t *testing.T) {
+	sysfs, modules, symbols := hiddenModuleFixture(t)
+	attrs := []ModuleAttr{{Label: "size", File: "coresize"}, {Label: "text", File: "sections/.text"}}
+	got, err := hiddenModulesBody(attrs, sysfs, modules, symbols)(context.Background())
+	if err != nil {
+		t.Fatalf("the merged body failed: %v", err)
+	}
+	want := "HIDDEN rootkit size 16384 text 0xffffffffc05a4000\n" +
+		"HIDDEN rootkit symbols 2\n"
+	if got != want {
+		t.Errorf("the merged body printed %q, want %q", got, want)
+	}
+}
+
+// One surface missing takes its half out and leaves the other's evidence in
+// place; only when both are gone is the tier unavailable and the chain free to
+// move on.
+func TestModulesHiddenBodyKeepsTheHalfThatAnswers(t *testing.T) {
+	_, modules, symbols := hiddenModuleFixture(t)
+	body := hiddenModulesBody(nil, filepath.Join(t.TempDir(), "no-sys"), modules, symbols)
+	got, err := body(context.Background())
+	if err != nil {
+		t.Fatalf("the symbol half alone should answer: %v", err)
+	}
+	if want := "HIDDEN rootkit symbols 2\n"; got != want {
+		t.Errorf("the symbol half printed %q, want %q", got, want)
+	}
+
+	both := hiddenModulesBody(nil, filepath.Join(t.TempDir(), "no-sys"),
+		filepath.Join(t.TempDir(), "gone"), filepath.Join(t.TempDir(), "gone"))
+	if _, err := both(context.Background()); !errors.Is(err, model.ErrTierUnavailable) {
+		t.Errorf("both halves gone should report the tier unavailable, got %v", err)
 	}
 }
 

@@ -15,44 +15,49 @@ import (
 	"strings"
 	"time"
 
+	"karma/internal/localfs"
 	"karma/internal/model"
 )
 
 // ProcCaps mirrors sessionCapsScript: the host's own container markers
 // decide the context line; a container session prints its whole capability set
 // (the standing escape surface), a host session stops at the context line.
-func ProcCaps(ctx context.Context) (string, error) {
-	if !inContainer(ctx) {
-		return "context: host\n", nil
+// cgroupMarkers is the check's container-scope pattern, the same string its
+// script greps for.
+func ProcCaps(cgroupMarkers *regexp.Regexp) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		if !inContainer(ctx, cgroupMarkers) {
+			return "context: host\n", nil
+		}
+		var b strings.Builder
+		b.WriteString("context: container\n")
+		if haveBinary("capsh") {
+			b.WriteString("== capsh --print\n")
+			b.WriteString(runHost(ctx, []string{"capsh", "--print"}, false).out)
+		} else {
+			b.WriteString("== /proc/self/status\n")
+			b.WriteString(capStatusLines())
+		}
+		return b.String(), nil
 	}
-	var b strings.Builder
-	b.WriteString("context: container\n")
-	if haveBinary("capsh") {
-		b.WriteString("== capsh --print\n")
-		b.WriteString(runHost(ctx, []string{"capsh", "--print"}, false).out)
-	} else {
-		b.WriteString("== /proc/self/status\n")
-		b.WriteString(capStatusLines())
-	}
-	return b.String(), nil
 }
 
 // inContainer reads the host's own container markers: /.dockerenv (Docker),
 // /run/.containerenv (Podman), the PID 1 cgroup path, and systemd-detect-virt.
-func inContainer(ctx context.Context) bool {
+// The cgroup pattern comes from the check, which greps the same string in its
+// script branch.
+func inContainer(ctx context.Context, cgroupMarkers *regexp.Regexp) bool {
 	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
 		if _, err := os.Stat(marker); err == nil {
 			return true
 		}
 	}
 	if body, err := os.ReadFile("/proc/1/cgroup"); err == nil &&
-		containerCgroupRe.Match(body) {
+		cgroupMarkers.Match(body) {
 		return true
 	}
 	return runHost(ctx, []string{"systemd-detect-virt", "--container"}, false).ok
 }
-
-var containerCgroupRe = regexp.MustCompile(`(?i)(docker|containerd|kubepods|libpod|lxc|kata)[/.-]`)
 
 // capStatusLines reads the Cap* masks from the session's own status.
 func capStatusLines() string {
@@ -177,14 +182,16 @@ func HiddenProcs(ctx context.Context) (string, error) {
 
 // MinerScan is the cryptominer hunt's local branch: the process-line pattern,
 // the fixed drop paths whose attributes it prints, the temp-directory name
-// globs, and the directories the name walk covers. The check hands all four in
-// — its own script greps the same alternation and lists the same paths — so the
-// two channels cannot end up hunting for different things.
+// globs, the directories the name walk covers, and the walk's depth cap. The
+// check hands all five in — its own script greps the same alternation, lists the
+// same paths, and passes the same -maxdepth to find — so the two channels cannot
+// end up hunting for different things.
 type MinerScan struct {
 	Pattern   *regexp.Regexp
 	DropPaths []string
 	NameGlobs []string
 	TempDirs  []string
+	MaxDepth  int
 }
 
 // minerPsLines filters the aux rows through the hunt's pattern, dropping the
@@ -212,7 +219,7 @@ func Miner(scan MinerScan) func(context.Context) (string, error) {
 		if !snap.ok {
 			return "", model.ErrTierUnavailable
 		}
-		names := newNameCache()
+		names := localfs.NewNameCache()
 		now := time.Now()
 		var b strings.Builder
 		b.WriteString("== ps\n")
@@ -223,19 +230,19 @@ func Miner(scan MinerScan) func(context.Context) (string, error) {
 		b.WriteString("== drop paths\n")
 		for _, path := range scan.DropPaths {
 			if info, err := os.Stat(path); err == nil {
-				b.WriteString(lsBody(info, path, names))
+				b.WriteString(localfs.LsBody(info, path, names))
 				b.WriteByte('\n')
 			}
 		}
 		b.WriteString("== temp names\n")
 		var hits []string
 		for _, dir := range scan.TempDirs {
-			err := walkTree(ctx, dir, 4, false, nil, func(path string, info os.FileInfo) bool {
+			err := localfs.WalkTree(ctx, dir, scan.MaxDepth, false, nil, func(path string, info os.FileInfo) bool {
 				if !info.Mode().IsRegular() {
 					return true
 				}
 				name := strings.ToLower(filepath.Base(path))
-				if matchAny(scan.NameGlobs, name) {
+				if localfs.MatchAny(scan.NameGlobs, name) {
 					hits = append(hits, path)
 				}
 				return true
@@ -246,7 +253,7 @@ func Miner(scan MinerScan) func(context.Context) (string, error) {
 		}
 		for _, hit := range hits {
 			if info, err := os.Stat(hit); err == nil {
-				b.WriteString(lsBody(info, hit, names))
+				b.WriteString(localfs.LsBody(info, hit, names))
 				b.WriteByte('\n')
 			}
 		}

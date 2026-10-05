@@ -32,6 +32,7 @@ import (
 	"github.com/samber/lo"
 
 	"karma/internal/model"
+	"karma/internal/textutil"
 )
 
 // Layout constants inside a rail panel: one column of padding on each side,
@@ -352,14 +353,14 @@ func plainRows(raw, stderr string, limit int) []string {
 	limit = max(limit, 1)
 	var rows []string
 	if raw != "" {
-		body := strings.Split(strings.Trim(raw, "\n"), "\n")
+		body := textutil.CollectLines(strings.Trim(raw, "\r\n"))
 		cut := min(len(body), limit)
 		rows = append(rows, body[:cut]...)
 		if cut < len(body) {
 			rows = append(rows, fmt.Sprintf("… %d lines omitted", len(body)-cut))
 		}
 	}
-	for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
+	for _, line := range textutil.CollectLines(strings.TrimSpace(stderr)) {
 		if line != "" {
 			rows = append(rows, line)
 		}
@@ -421,7 +422,7 @@ func stderrRows(stderr string) []string {
 	if trimmed == "" {
 		return nil
 	}
-	return strings.Split(trimmed, "\n")
+	return textutil.CollectLines(trimmed)
 }
 
 // bodyRows is the panel body: source title rows plus raw rows, with one blank

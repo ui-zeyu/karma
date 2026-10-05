@@ -13,6 +13,7 @@
 package native
 
 import (
+	"cmp"
 	"fmt"
 	"net"
 	"slices"
@@ -130,10 +131,7 @@ func ssProcess(holders []socketHolder) string {
 	}
 	sorted := slices.Clone(holders)
 	slices.SortFunc(sorted, func(a, b socketHolder) int {
-		if a.pid != b.pid {
-			return a.pid - b.pid
-		}
-		return a.fd - b.fd
+		return cmp.Or(cmp.Compare(a.pid, b.pid), cmp.Compare(a.fd, b.fd))
 	})
 	parts := make([]string, 0, len(sorted))
 	for _, h := range sorted {
@@ -147,13 +145,7 @@ func ssProcess(holders []socketHolder) string {
 func renderSs(rows []ssRow, holders map[uint64][]socketHolder) string {
 	sorted := slices.Clone(rows)
 	slices.SortStableFunc(sorted, func(a, b ssRow) int {
-		if c := strings.Compare(a.netid, b.netid); c != 0 {
-			return c
-		}
-		if c := strings.Compare(a.local, b.local); c != 0 {
-			return c
-		}
-		return strings.Compare(a.peer, b.peer)
+		return cmp.Or(strings.Compare(a.netid, b.netid), strings.Compare(a.local, b.local), strings.Compare(a.peer, b.peer))
 	})
 	var b strings.Builder
 	b.WriteString(ssHeader)

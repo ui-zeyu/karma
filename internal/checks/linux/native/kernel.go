@@ -16,13 +16,14 @@ import (
 	"strconv"
 	"strings"
 
+	"karma/internal/localfs"
 	"karma/internal/model"
 )
 
 // ModulesLoad mirrors the check's modulesLoadScript: the /etc/modules file and
 // the load layers it hands in, one section each.
 func ModulesLoad(paths []string) func(context.Context) (string, error) {
-	return func(context.Context) (string, error) { return ReadSections(paths, nil), nil }
+	return func(context.Context) (string, error) { return localfs.ReadSections(paths, nil), nil }
 }
 
 // ModuleAttr is one sysfs attribute a hidden module's evidence line carries: the
@@ -37,19 +38,59 @@ type ModuleAttr struct {
 // dropped from the symbol-table cross-check.
 const bpfModuleTag = "bpf"
 
-// ModulesHidden mirrors hiddenModuleScript: every loadable module has a
+// The three kernel surfaces the hidden-module cross-check diffs.
+const (
+	sysModuleRoot    = "/sys/module"
+	procModulesFile  = "/proc/modules"
+	procKallsymsFile = "/proc/kallsyms"
+)
+
+// ModulesHidden is the merged cross-check body, mirroring hiddenModuleScript:
+// the sysfs diff and the kallsyms diff in one tier, so both footprints land in
+// the same panel. Either half can be unavailable on its own (no /sys mounted, no
+// symbol table in a container); the tier reports unavailable only when both are,
+// so one half's absence does not drop the other's evidence.
+func ModulesHidden(attrs []ModuleAttr) func(context.Context) (string, error) {
+	return hiddenModulesBody(attrs, sysModuleRoot, procModulesFile, procKallsymsFile)
+}
+
+// hiddenModulesBody is that tier over given surfaces, the ones the tests
+// substitute a fixture for.
+func hiddenModulesBody(attrs []ModuleAttr, sysfsRoot, modulesPath, symbolsPath string) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		var b strings.Builder
+		available := false
+		for _, half := range []func(context.Context) (string, error){
+			hiddenModulesFromSysfs(attrs, sysfsRoot, modulesPath),
+			hiddenModulesFromSymbols(modulesPath, symbolsPath),
+		} {
+			text, err := half(ctx)
+			if err != nil {
+				continue
+			}
+			available = true
+			b.WriteString(text)
+		}
+		if !available {
+			return "", model.ErrTierUnavailable
+		}
+		return b.String(), nil
+	}
+}
+
+// hiddenModulesFromSysfs is the sysfs half: every loadable module has a
 // sections/ directory under /sys/module; one that /proc/modules does not list is
 // hidden from the module registry. The evidence line carries the attributes the
 // check hands in, so the module the loader created stays identifiable by size,
 // code address, refcount, state and taint letters even though the list has
 // forgotten it.
-func ModulesHidden(attrs []ModuleAttr) func(context.Context) (string, error) {
+func hiddenModulesFromSysfs(attrs []ModuleAttr, sysfsRoot, modulesPath string) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
-		entries, err := os.ReadDir("/sys/module")
+		entries, err := os.ReadDir(sysfsRoot)
 		if err != nil {
 			return "", model.ErrTierUnavailable
 		}
-		body, err := os.ReadFile("/proc/modules")
+		body, err := os.ReadFile(modulesPath)
 		if err != nil {
 			return "", model.ErrTierUnavailable
 		}
@@ -60,10 +101,10 @@ func ModulesHidden(attrs []ModuleAttr) func(context.Context) (string, error) {
 			if loaded[name] {
 				continue
 			}
-			if info, err := os.Stat(filepath.Join("/sys/module", name, "sections")); err != nil || !info.IsDir() {
+			if info, err := os.Stat(filepath.Join(sysfsRoot, name, "sections")); err != nil || !info.IsDir() {
 				continue
 			}
-			dir := filepath.Join("/sys/module", name)
+			dir := filepath.Join(sysfsRoot, name)
 			fmt.Fprintf(&b, "%s\n", hiddenModuleLine(name, attrs, func(file string) (string, bool) {
 				return readTrimmedFile(filepath.Join(dir, file))
 			}))
@@ -72,17 +113,17 @@ func ModulesHidden(attrs []ModuleAttr) func(context.Context) (string, error) {
 	}
 }
 
-// ModulesHiddenFromSymbols mirrors the kallsyms half of the same cross-check:
-// the table prints the module a symbol came from in brackets after it, and that
+// hiddenModulesFromSymbols is the kallsyms half of the same cross-check: the
+// table prints the module a symbol came from in brackets after it, and that
 // tag survives a module which scrubbed itself out of /proc/modules — a second,
 // independent registry to diff the list against.
-func ModulesHiddenFromSymbols() func(context.Context) (string, error) {
+func hiddenModulesFromSymbols(modulesPath, symbolsPath string) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
-		modules, err := os.ReadFile("/proc/modules")
+		modules, err := os.ReadFile(modulesPath)
 		if err != nil {
 			return "", model.ErrTierUnavailable
 		}
-		symbols, err := os.ReadFile("/proc/kallsyms")
+		symbols, err := os.ReadFile(symbolsPath)
 		if err != nil {
 			return "", model.ErrTierUnavailable
 		}
@@ -261,7 +302,7 @@ func ModuleSig(ctx context.Context) (string, error) {
 	if body := configSigRows("/proc/config.gz", true); body != "" {
 		return body, nil
 	}
-	if release, ok := kernelRelease(); ok {
+	if release, ok := localfs.KernelRelease(); ok {
 		return configSigRows("/boot/config-"+release, false), nil
 	}
 	return "", nil

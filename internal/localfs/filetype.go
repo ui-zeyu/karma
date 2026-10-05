@@ -1,12 +1,12 @@
-// native_filetype: the `file` classification done in process, so the
-// auth-binaries type check no longer runs a dynamically linked file(1) whose
-// libc an LD_PRELOAD hook can reshape. The ELF header is parsed by the
-// standard library's debug/elf; the script and text fallbacks look at the
-// first bytes the way file(1) does. Only the vocabulary the bin-not-elf rule
-// grades has to match ("script", "ASCII text", "Unicode text"), so the words
-// are file(1)'s and the extra detail file prints is left out.
+// The file(1) classification, in process: the auth-binaries type check reads a
+// file's head itself instead of running a dynamically linked file(1) whose libc
+// an LD_PRELOAD hook can reshape. The ELF header is parsed by the standard
+// library's debug/elf; the script and text fallbacks look at the first bytes the
+// way file(1) does. Only the vocabulary the bin-not-elf rule grades has to match
+// ("script", "ASCII text", "Unicode text"), so the words are file(1)'s and the
+// extra detail file prints is left out.
 
-package native
+package localfs
 
 import (
 	"bytes"
@@ -21,12 +21,11 @@ import (
 // fileHeadBytes is how much of a file the classifier reads.
 const fileHeadBytes = 4096
 
-// fileRows renders the `== file` forensics section: one `path: words` line per
+// FileRows renders the `== file` forensics section: one `path: words` line per
 // existing file, in the listing tier's sorted order.
-func fileRows(files []string) string {
-	sorted := sortedPaths(files)
+func FileRows(files []string) string {
 	var b strings.Builder
-	for _, path := range sorted {
+	for _, path := range sortedPaths(files) {
 		if _, err := os.Lstat(path); err != nil {
 			continue
 		}

@@ -1,7 +1,7 @@
 // tests for the in-process file(1) classification: the ELF header words, the
 // shebang and text fallbacks, and the section rows.
 
-package native
+package localfs
 
 import (
 	"encoding/binary"
@@ -81,7 +81,7 @@ func TestFileRows(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "a.elf"), minimalELF64(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out := fileRows([]string{
+	out := FileRows([]string{
 		filepath.Join(dir, "b.sh"),
 		filepath.Join(dir, "a.elf"),
 		filepath.Join(dir, "missing"),

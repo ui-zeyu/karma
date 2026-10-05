@@ -16,6 +16,14 @@ import (
 )
 
 func runNative(ctx context.Context, fn func(context.Context) (string, error), timeout time.Duration, lineLimit int) model.RunResult {
+	if fn == nil {
+		// A Dual with no local branch is a tier that exists on the ssh channel
+		// only (model.Dual.For): the runner never routes it here, and a caller
+		// that does gets the same answer a body that cannot run would give, so
+		// LocalSession.Run falls to the tier's script side as it does for every
+		// other unavailable body.
+		return model.RunResult{Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
+	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)

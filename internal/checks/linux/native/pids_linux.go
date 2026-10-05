@@ -65,7 +65,7 @@ func listProcPIDs() []int {
 	}
 	var pids []int
 	for _, e := range entries {
-		if n, ok := numeric(e.Name()); ok {
+		if n, ok := numericName(e.Name()); ok {
 			pids = append(pids, n)
 		}
 	}
@@ -76,24 +76,10 @@ func listProcPIDs() []int {
 			continue
 		}
 		for _, t := range tasks {
-			if n, ok := numeric(t.Name()); ok {
+			if n, ok := numericName(t.Name()); ok {
 				tids = append(tids, n)
 			}
 		}
 	}
 	return append(pids, tids...)
-}
-
-// numeric reports the value of an all-digits name.
-func numeric(name string) (int, bool) {
-	if name == "" {
-		return 0, false
-	}
-	for _, c := range name {
-		if c < '0' || c > '9' {
-			return 0, false
-		}
-	}
-	n, err := strconv.Atoi(name)
-	return n, err == nil
 }

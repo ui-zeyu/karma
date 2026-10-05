@@ -1,8 +1,14 @@
 // Package native implements the Linux checks' local tier: the bodies that run
 // inside karma, reading the host through its own interfaces — /proc, the utmp
 // and wtmp accounting records, netlink dumps, statfs(2), the passwd-style
-// tables, syslog(2) for the kernel ring buffer, and debug/elf — where the ssh
-// channel runs the check's shell command instead.
+// tables, syslog(2) for the kernel ring buffer, and the host binaries that
+// still own their data (docker, dpkg/rpm, iptables/nft, systemctl) — where the
+// ssh channel runs the check's shell command instead.
+//
+// The filesystem side of those bodies — path word lists, listings, walks,
+// greps, file reads and the file(1) classification — lives in
+// internal/localfs, which is also what the built-in `karma local cat`/`ls`
+// readers call. This package holds what reads a kernel or a host tool.
 //
 // Every body has the shape of model.Dual.Run, func(context.Context) (string,
 // error), and prints the same text its shell counterpart prints, so the check's

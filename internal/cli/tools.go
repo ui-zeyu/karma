@@ -17,7 +17,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"karma/internal/checks/linux/native"
+	// The two built-in readers are the local channel's own in-process view of the
+	// filesystem, so they call internal/localfs directly: no check, no catalog.
+	"karma/internal/localfs"
 	"karma/internal/render"
 )
 
@@ -33,7 +35,7 @@ func newCatCmd() *cobra.Command {
 			w := cmd.OutOrStdout()
 			var first error
 			for _, path := range args {
-				data, err := native.Cat(path)
+				data, err := localfs.Cat(path)
 				if err != nil {
 					err = catError(path, err)
 					if first == nil {
@@ -65,7 +67,7 @@ func newLsCmd() *cobra.Command {
 			if len(paths) == 0 {
 				paths = []string{"."}
 			}
-			text, err := native.Ls(paths)
+			text, err := localfs.Ls(paths)
 			w := cmd.OutOrStdout()
 			if text != "" {
 				st := stylesFor(w)

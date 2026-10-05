@@ -1,8 +1,8 @@
-// listing: the directory-listing tier. The same sections, rows, and caps
-// script.ListingSections prints, produced by readdir + lstat in process; Ls is
-// the single-directory reader form of the same rows.
+// The listing tier and its reader form: one "== dir" section per directory,
+// rows in find -printf shape sorted by mtime descending. Ls is the
+// single-directory reader the `karma local ls` command prints.
 
-package native
+package localfs
 
 import (
 	"context"
@@ -13,43 +13,18 @@ import (
 	"karma/internal/script"
 )
 
-// expandDirs expands a directory word list the way the script tier's shell
-// does: $(uname -r) is substituted from /proc, globs are expanded (dot-file
-// names only when the pattern spells the dot) and keep only directories (a
-// file in the word list makes find print nothing either way), and a
-// non-matching glob stays literal — its section body comes back empty and the
-// reader drops it.
-func expandDirs(dirs []string) []string {
-	release, _ := kernelRelease()
-	var out []string
-	for _, dir := range dirs {
-		if strings.Contains(dir, "$(uname -r)") {
-			dir = strings.ReplaceAll(dir, "$(uname -r)", release)
-		}
-		if hasGlobMeta(dir) {
-			matches := shellGlob(dir)
-			for _, match := range matches {
-				if info, err := os.Stat(match); err == nil && info.IsDir() {
-					out = append(out, match)
-				}
-			}
-			continue
-		}
-		out = append(out, dir)
-	}
-	return out
-}
-
-// listingSection writes one "== dir" section with its ListingFind rows. An
+// ListingSection renders one "== dir" section with its ListingFind rows. An
 // unreadable directory leaves the section empty, the way the find pipeline
 // drops its stderr.
-func listingSection(b *strings.Builder, dir string, head int, names *nameCache) {
-	fmt.Fprintf(b, "== %s\n", dir)
+func ListingSection(dir string, head int, names *NameCache) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "== %s\n", dir)
 	rows, _ := listingRows(dir, head, names)
 	for _, row := range rows {
 		b.WriteString(row)
 		b.WriteByte('\n')
 	}
+	return b.String()
 }
 
 // Listing is the listing tier's in-process branch: one section per
@@ -59,12 +34,12 @@ func listingSection(b *strings.Builder, dir string, head int, names *nameCache) 
 func Listing(dirs []string, head int) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
-		names := newNameCache()
-		for _, dir := range expandDirs(dirs) {
+		names := NewNameCache()
+		for _, dir := range ExpandDirs(dirs) {
 			if ctx.Err() != nil {
 				return b.String(), ctx.Err()
 			}
-			listingSection(&b, dir, head, names)
+			b.WriteString(ListingSection(dir, head, names))
 		}
 		return b.String(), nil
 	}
@@ -73,7 +48,7 @@ func Listing(dirs []string, head int) func(context.Context) (string, error) {
 // Ls is the reader form of listingRows over a path list. A directory operand
 // is that function with no head cap, and the epoch prefix cut off by rowBody,
 // so the rows are the ones the panels display. A path that is not a directory
-// prints its own lsBody row, the way ls does; a symlink operand follows to
+// prints its own LsBody row, the way ls does; a symlink operand follows to
 // its target for the directory decision and keeps the link row on a file.
 // Several paths print one "== path" section per path — the collection
 // sections' own header — so the directories read apart, while a single path
@@ -84,7 +59,7 @@ func Listing(dirs []string, head int) func(context.Context) (string, error) {
 func Ls(paths []string) (string, error) {
 	var b strings.Builder
 	var first error
-	names := newNameCache()
+	names := NewNameCache()
 	for _, path := range paths {
 		rows, err := lsPath(path, names)
 		if err != nil {
@@ -105,8 +80,8 @@ func Ls(paths []string) (string, error) {
 }
 
 // lsPath is one operand of Ls: a directory's listingRows, shown as the panels
-// show them, or a non-directory's own lsBody row.
-func lsPath(path string, names *nameCache) ([]string, error) {
+// show them, or a non-directory's own LsBody row.
+func lsPath(path string, names *NameCache) ([]string, error) {
 	target, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -116,7 +91,7 @@ func lsPath(path string, names *nameCache) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		return []string{lsBody(info, path, names)}, nil
+		return []string{LsBody(info, path, names)}, nil
 	}
 	rows, err := listingRows(path, 0, names)
 	if err != nil {

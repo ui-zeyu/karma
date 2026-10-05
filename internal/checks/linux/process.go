@@ -68,18 +68,27 @@ const hiddenProcsScript = `command -v ps >/dev/null 2>&1 || exit 127
 ` + `{ ls /proc | grep -E '^[0-9]+$'; ps -eo pid= | tr -d ' '; } | sort -n | uniq -u` +
 	` | while read -r p; do [ -d "/proc/$p" ] && echo "$p"; done`
 
+// containerMarkers is the ERE that recognizes a container's cgroup scope, whose
+// runtimes each spell their own scope name. One string feeds both readings: the
+// script's grep over /proc/1/cgroup and the local RE2 compiled from it, so the
+// two cannot drift apart.
+const containerMarkers = `(docker|containerd|kubepods|libpod|lxc|kata)[/.-]`
+
+// containerCgroupRe is containerMarkers as the local read's pattern.
+var containerCgroupRe = regexp.MustCompile(`(?i)` + containerMarkers)
+
 // sessionCapsScript collects the session's own capability set. Inside a
 // container that set is the standing escape surface, so it prints in full;
 // on the host it is fixed by the login uid (root shows the full set by
 // definition), so the context line is the whole answer. Container detection
 // reads the host's own markers: /.dockerenv (Docker), /run/.containerenv
-// (Podman), the PID 1 cgroup path (docker/containerd/kubepods/libpod/lxc/kata
-// scopes), and systemd-detect-virt. capsh (libcap2-bin, near-universal)
-// decodes the names; the fallback tier reads the /proc/self/status masks and
-// native.DecodeCapMasks decodes them locally.
+// (Podman), the PID 1 cgroup path (the runtimes containerMarkers names), and
+// systemd-detect-virt. capsh (libcap2-bin, near-universal) decodes the names;
+// the fallback tier reads the /proc/self/status masks and native.DecodeCapMasks
+// decodes them locally.
 const sessionCapsScript = `
 if [ -f /.dockerenv ] || [ -f /run/.containerenv ]` +
-	` || grep -qaE "(docker|containerd|kubepods|libpod|lxc|kata)[/.-]" /proc/1/cgroup 2>/dev/null` +
+	` || grep -qaE "` + containerMarkers + `" /proc/1/cgroup 2>/dev/null` +
 	` || systemd-detect-virt --container >/dev/null 2>&1; then
   echo "context: container"
 else
@@ -132,6 +141,10 @@ var minerNameGlobs = []string{
 	"networkservice*", "config.json",
 }
 
+// minerWalkDepth bounds the temp-name walk: the same -maxdepth the ssh script
+// passes to find, so both channels stop at the same level.
+const minerWalkDepth = 4
+
 // minerScript hunts cryptominers in place: process lines matched out of a ps
 // snapshot (grep -v drops this pipeline's own lines, which carry the pattern),
 // attributes of the classic fixed drop paths, and a bounded name walk of the
@@ -156,9 +169,9 @@ ps auxwwf | grep -aE "$pat" | grep -av grep
 echo "== drop paths"
 LC_ALL=C ls -l %s 2>/dev/null
 echo "== temp names"
-find %s -maxdepth 4 -type f \( %s \) -exec ls -l {} + 2>/dev/null
+find %s -maxdepth %d -type f \( %s \) -exec ls -l {} + 2>/dev/null
 `, minerPsSource, strings.Join(minerDropPaths, " "), strings.Join(tmpDirs, " "),
-	findNameArgs("-iname", minerNameGlobs))
+	minerWalkDepth, findNameArgs("-iname", minerNameGlobs))
 
 // hidden-pids (atrk-style brute force, migrated 2026-10): a rootkit that
 // filters the /proc readdir path still cannot hide from the kernel's own
@@ -282,7 +295,7 @@ var ProcessChecks = []*model.Check{
 		define.CheckOpt{Syntax: "top", Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,
 		[]model.Probe{
-			{Label: "caps", Inv: model.Dual{Run: native.ProcCaps, Script: sessionCapsScript}, Adapt: native.DecodeCapMasks},
+			{Label: "caps", Inv: model.Dual{Run: native.ProcCaps(containerCgroupRe), Script: sessionCapsScript}, Adapt: native.DecodeCapMasks},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -359,6 +372,7 @@ var ProcessChecks = []*model.Check{
 					DropPaths: minerDropPaths,
 					NameGlobs: minerNameGlobs,
 					TempDirs:  tmpDirs,
+					MaxDepth:  minerWalkDepth,
 				}),
 				Script: minerScript,
 			}, LineLimit: 200},

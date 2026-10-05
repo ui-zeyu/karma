@@ -7,6 +7,7 @@ package native
 import (
 	"context"
 	"fmt"
+	"karma/internal/localfs"
 	"os"
 	"slices"
 	"strings"
@@ -21,17 +22,17 @@ func Hunt(dirs, pruneDirs []string) func(context.Context) (string, error) {
 		var b strings.Builder
 		for _, dir := range dirs {
 			fmt.Fprintf(&b, "== %s\n", dir)
-			err := walkTree(ctx, dir, 0, true, func(path string, _ os.FileInfo) bool {
+			err := localfs.WalkTree(ctx, dir, 0, true, func(path string, _ os.FileInfo) bool {
 				return slices.Contains(pruneDirs, path)
 			}, func(path string, info os.FileInfo) bool {
 				if !info.Mode().IsRegular() {
 					return true
 				}
-				st := statOf(info)
+				st := localfs.StatOf(info)
 				fmt.Fprintf(&b, "%s\t%s\t%s\t%02d:%02d:%02d.%09d\t%d\t%s\n",
-					epochFrac(st.mtime), epochFrac(st.ctime),
-					st.mtime.Format("2006-01-02"),
-					st.mtime.Hour(), st.mtime.Minute(), st.mtime.Second(), st.mtime.Nanosecond(),
+					localfs.EpochFrac(st.Mtime), localfs.EpochFrac(st.Ctime),
+					st.Mtime.Format("2006-01-02"),
+					st.Mtime.Hour(), st.Mtime.Minute(), st.Mtime.Second(), st.Mtime.Nanosecond(),
 					info.Size(), path)
 				return true
 			})

@@ -6,10 +6,9 @@ package native
 
 import (
 	"context"
-	"os"
-	"slices"
 	"strings"
 
+	"karma/internal/localfs"
 	"karma/internal/model"
 )
 
@@ -50,35 +49,9 @@ func forensics(b *strings.Builder, files []string) {
 		return
 	}
 	b.WriteString("== file\n")
-	b.WriteString(fileRows(files))
+	b.WriteString(localfs.FileRows(files))
 	b.WriteString("== ls\n")
-	b.WriteString(lsRows(files))
-}
-
-// sortedPaths returns the paths in the listing tier's sorted order.
-func sortedPaths(files []string) []string {
-	sorted := slices.Clone(files)
-	slices.Sort(sorted)
-	return sorted
-}
-
-// lsRows renders the `== ls` forensics section for one file list. The
-// attributes come from lstat in process, not from a hooked libc: a setuid bit
-// added to an auth binary is the kind of fact an LD_PRELOAD ls would hide.
-// Rows are the listing tier's shape (script.LSBodyPrintf) — the same rows every
-// other local listing prints — so they differ from GNU ls's column padding, and
-// the date is clock-shaped. ls sorts its arguments itself, and a vanished file
-// costs only its row (ls reports it on stderr, which the script tier drops).
-func lsRows(files []string) string {
-	names := newNameCache()
-	var b strings.Builder
-	for _, path := range sortedPaths(files) {
-		if info, err := os.Lstat(path); err == nil {
-			b.WriteString(lsBody(info, path, names))
-			b.WriteByte('\n')
-		}
-	}
-	return b.String()
+	b.WriteString(localfs.LsRows(files))
 }
 
 // PkgVerify mirrors verifyScript: the verifier's own output when
@@ -110,7 +83,7 @@ func PkgHistory(paths []string) func(context.Context) (string, error) {
 }
 
 func pkgHistoryBody(ctx context.Context, paths []string) string {
-	body := ReadSections(paths, TailLines(300))
+	body := localfs.ReadSections(paths, localfs.TailLines(300))
 	body += "== dnf history\n"
 	// The script's `dnf history || yum history | head` keeps dnf's own output
 	// either way and only runs yum when dnf failed.
@@ -138,7 +111,7 @@ func headLines(text string, n int) string {
 func AuthBinaries(paths []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
-		forensics(&b, expandFiles(paths))
+		forensics(&b, localfs.ExpandFiles(paths))
 		return b.String(), nil
 	}
 }

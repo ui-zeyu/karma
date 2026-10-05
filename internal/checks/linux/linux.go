@@ -11,9 +11,9 @@ import (
 
 	"github.com/samber/lo"
 
-	"karma/internal/checks/linux/native"
 	"karma/internal/cluster"
 	"karma/internal/define"
+	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/script"
 )
@@ -23,7 +23,7 @@ import (
 // counterpart (cat reads the file whole, tail keeps the last n lines).
 func filesTier(label string, shellCmd string, transform func(string) string, paths []string) model.Probe {
 	return model.Probe{Label: label, Inv: model.Dual{
-		Run:    func(context.Context) (string, error) { return native.ReadSections(paths, transform), nil },
+		Run:    func(context.Context) (string, error) { return localfs.ReadSections(paths, transform), nil },
 		Script: script.ReadFiles(paths, shellCmd, true),
 	}}
 }
@@ -44,7 +44,7 @@ func findNameArgs(option string, patterns []string) string {
 
 // tailFilesCheck reads the tail of every file in the list.
 func tailFilesCheck(n int, paths ...string) []model.Probe {
-	return []model.Probe{filesTier("tail", fmt.Sprintf(`tail -n %d "$f"`, n), native.TailLines(n), paths)}
+	return []model.Probe{filesTier("tail", fmt.Sprintf(`tail -n %d "$f"`, n), localfs.TailLines(n), paths)}
 }
 
 // All is every Linux check; catalog-level validation lives in the checks package.
@@ -68,7 +68,7 @@ var All = slices.Concat(
 func listingCheck(id, title string, aspect model.Aspect, dirs []string, head int, rules []model.Rule) *model.Check {
 	return define.LinuxCheck(id, title, aspect,
 		[]model.Probe{{Label: "find", Inv: model.Dual{
-			Run:    native.Listing(dirs, head),
+			Run:    localfs.Listing(dirs, head),
 			Script: script.ListingSections(dirs, head),
 		}}},
 		define.CheckOpt{Rules: rules, Syntax: "ls-l", Normalize: cluster.ListingNormalize(time.Now)})

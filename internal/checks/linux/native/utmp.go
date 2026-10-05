@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"karma/internal/localfs"
 	"karma/internal/model"
 )
 
@@ -154,7 +155,7 @@ func W(ctx context.Context) (string, error) {
 	for _, r := range userRecords(recs) {
 		idle, jcpu, pcpu, what := "?", 0.0, 0.0, "-"
 		if info, err := os.Stat("/dev/" + r.line); err == nil {
-			idle = idleFormat(now.Sub(statOf(info).atime))
+			idle = idleFormat(now.Sub(localfs.StatOf(info).Atime))
 		}
 		var fg *procEntry
 		for i := range snap.entries {

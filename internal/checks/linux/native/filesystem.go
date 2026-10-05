@@ -7,10 +7,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/runstate"
 )
@@ -77,7 +79,7 @@ func scanPrivFiles(ctx context.Context, roots []string, bits ...os.FileMode) ([]
 		if ctx.Err() != nil {
 			return lists, caps, ctx.Err()
 		}
-		err := walkTree(ctx, root, 0, true, nil, func(path string, info os.FileInfo) bool {
+		err := localfs.WalkTree(ctx, root, 0, true, nil, func(path string, info os.FileInfo) bool {
 			mode := info.Mode()
 			if !mode.IsRegular() {
 				return true
@@ -170,12 +172,11 @@ func FileCaps(fsTypes []string) func(context.Context) (string, error) {
 // HomeTree is the home-tree ladder's local branch: tree's own output when
 // installed, otherwise the find -printf rows — ls -l shape, one entry per row,
 // bounded by depth. tree crosses mount points unless -x is given and the check
-// does not pass it, so the fallback crosses too. The root and the depth come
-// from the check, which spells the same two in its find command for the ssh
-// channel.
-func HomeTree(root string, depth int) func(context.Context) (string, error) {
-	argv := []string{"tree", "-a", "-p", "-u", "-g", "-s", "-D",
-		"--timefmt", "%Y-%m-%d %H:%M", "-L", strconv.Itoa(depth), root}
+// does not pass it, so the fallback crosses too. The root, the flags and the
+// depth come from the check, which spells the same three in its tree command for
+// the ssh channel.
+func HomeTree(root string, flags []string, depth int) func(context.Context) (string, error) {
+	argv := slices.Concat([]string{"tree"}, flags, []string{"-L", strconv.Itoa(depth), root})
 	return func(ctx context.Context) (string, error) {
 		if haveBinary("tree") {
 			if res := runHost(ctx, argv, false); strings.TrimSpace(res.out) != "" {
@@ -183,10 +184,10 @@ func HomeTree(root string, depth int) func(context.Context) (string, error) {
 			}
 		}
 		var b strings.Builder
-		names := newNameCache()
-		err := walkTree(ctx, root, depth, false, nil, func(path string, info os.FileInfo) bool {
+		names := localfs.NewNameCache()
+		err := localfs.WalkTree(ctx, root, depth, false, nil, func(path string, info os.FileInfo) bool {
 			if path != root {
-				b.WriteString(lsBody(info, path, names))
+				b.WriteString(localfs.LsBody(info, path, names))
 				b.WriteByte('\n')
 			}
 			return true
@@ -215,7 +216,7 @@ func RecentFiles(scan RecentScan) func(context.Context) (string, error) {
 			if ctx.Err() != nil {
 				return b.String(), ctx.Err()
 			}
-			err := walkTree(ctx, root, scan.MaxDepth, false, nil, func(path string, info os.FileInfo) bool {
+			err := localfs.WalkTree(ctx, root, scan.MaxDepth, false, nil, func(path string, info os.FileInfo) bool {
 				if info.Mode().IsRegular() && recentName(filepath.Base(path), scan.Suffixes) &&
 					time.Since(info.ModTime()) < scan.Window {
 					b.WriteString(path)

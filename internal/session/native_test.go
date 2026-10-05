@@ -64,6 +64,21 @@ func TestRunNativeFallbackDoesNotRetryTheBody(t *testing.T) {
 	}
 }
 
+// A tier with no in-process body is the same thing as a body that cannot run
+// here: the local channel answers with the tier's script side, and stays at 127
+// when the tier carries neither.
+func TestRunNativeWithoutALocalBranch(t *testing.T) {
+	res := LocalSession{}.Run(context.Background(),
+		model.Dual{Script: "echo from-script"}, 10*time.Second, 0)
+	if res.ExitCode != 0 || res.Stdout != "from-script\n" {
+		t.Fatalf("wanted the script side's answer, got %+v", res)
+	}
+	bare := LocalSession{}.Run(context.Background(), model.Dual{}, 10*time.Second, 0)
+	if bare.ExitCode != 127 {
+		t.Fatalf("a tier with no branch at all should read as 127, got %+v", bare)
+	}
+}
+
 func TestRunNativeErrorReportsStderr(t *testing.T) {
 	res := LocalSession{}.Run(context.Background(),
 		model.Dual{Run: func(context.Context) (string, error) { return "", errors.New("boom") }}, 0, 0)
