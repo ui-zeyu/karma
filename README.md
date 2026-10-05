@@ -9,7 +9,7 @@ go build -o dist/karma ./cmd/karma
 dist/karma --help
 ```
 
-The version is `0.14.0`; override it with `-ldflags "-X main.version=…"` and print it with `karma version` or `karma --version`.
+The version is `0.15.0`; override it with `-ldflags "-X main.version=…"` and print it with `karma version` or `karma --version`.
 
 ## Usage
 

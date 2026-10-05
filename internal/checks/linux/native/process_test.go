@@ -182,8 +182,9 @@ func TestHiddenPidScan(t *testing.T) {
 	}
 }
 
-// The brute pass respects the scan cap, which is what bounds the tier's
-// runtime on hosts whose pid_max runs into the millions.
+// The brute pass respects the scan cap, the loop bound the ssh tier needs to
+// stay inside its deadline; the local tier sets it to pid_max, and tests
+// inject a small one.
 func TestHiddenPidScanCap(t *testing.T) {
 	maxProbed := 0
 	scan := hiddenPidScan{

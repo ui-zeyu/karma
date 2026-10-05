@@ -13,28 +13,34 @@ import (
 	"karma/internal/model"
 )
 
-// scanLimit caps the in-process tier's brute force. pid_max is 4M on
-// 64-bit kernels; a kill(0) sweep costs well under a microsecond per miss,
-// so 1M keeps the worst case around a second while covering every PID a real
-// host plausibly holds.
-const scanLimit = 1 << 20
-
 // HiddenPIDs is the local-channel tier of the hidden-pids check: the
-// brute force runs inside karma, so it is much faster than the shell tier and
-// can afford a deeper scan cap. Requires /proc (present on every Linux); the
-// wrong-platform case lives in pids_native_other.go.
+// brute force runs inside karma, so it sweeps the whole pid space where the
+// shell tier must cap its interpreted loop. Requires /proc (present on every
+// Linux); the wrong-platform case lives in pids_other.go.
 func HiddenPIDs(ctx context.Context) (string, error) {
+	scan, err := newHiddenPidScan()
+	if err != nil {
+		return "", err
+	}
+	return scan.run(ctx)
+}
+
+// newHiddenPidScan reads pid_max and wires every oracle to the live /proc.
+// The scan cap is pid_max itself: it is the kernel's own bound on allocated
+// PIDs, and a kill(0) probe costs ~0.6µs, so the 4M default sweeps in a
+// couple of seconds even on a small box — nothing alive can sit above it.
+func newHiddenPidScan() (hiddenPidScan, error) {
 	raw, err := os.ReadFile("/proc/sys/kernel/pid_max")
 	if err != nil {
-		return "", model.ErrTierUnavailable
+		return hiddenPidScan{}, model.ErrTierUnavailable
 	}
 	pidMax, err := strconv.Atoi(strings.TrimSpace(string(raw)))
 	if err != nil || pidMax < 1 {
-		return "", fmt.Errorf("pid_max: %q", string(raw))
+		return hiddenPidScan{}, fmt.Errorf("pid_max: %q", string(raw))
 	}
-	scan := hiddenPidScan{
+	return hiddenPidScan{
 		pidMax:   pidMax,
-		scanCap:  min(pidMax, scanLimit),
+		scanCap:  pidMax,
 		euid:     syscall.Geteuid(),
 		kill0:    func(pid int) bool { return syscall.Kill(pid, syscall.Signal(0)) == nil },
 		fdExists: func(pid int) bool { _, err := os.Stat(fmt.Sprintf("/proc/%d/fd", pid)); return err == nil },
@@ -46,8 +52,7 @@ func HiddenPIDs(ctx context.Context) (string, error) {
 			}
 			return string(b), true
 		},
-	}
-	return scan.run(ctx)
+	}, nil
 }
 
 // listProcPIDs is the readdir view: top-level PIDs plus every visible

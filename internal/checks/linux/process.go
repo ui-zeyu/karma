@@ -176,8 +176,9 @@ func minerInameArgs(globs []string) string {
 // kill(pid, 0) existence check, so the two views are crossed. Both tiers
 // print the same text: one scan context line, then a "hidden" section with
 // one row per confirmed PID, so the rules fire on either tier. The native
-// tier's scan cap lives in pids_native_linux.go; the shell tier caps at
-// 131072 because its loop runs interpreted.
+// tier sweeps the whole pid space (pid_max is the kernel's own bound); the
+// shell tier caps at 131072 because its interpreted loop probes at ~10µs per
+// pid, so a full sweep would outlast the tier's deadline.
 
 // hiddenPidsScript is the script branch of the same hunt — the branch the ssh
 // channel runs. kill -0 is a shell builtin on every practical /bin/sh, so the
