@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"karma/internal/checks"
@@ -60,5 +61,62 @@ func TestPlatformSelector(t *testing.T) {
 	}
 	if !platforms[model.Linux] || !platforms[model.Windows] {
 		t.Fatalf("persistence should span both platforms: %v", platforms)
+	}
+}
+
+// A leading ! excludes with the selector vocabulary: from the whole catalog
+// when every word is an exclusion, from what the other words selected
+// otherwise. Exclusion wins over selection, a typo fails with close matches,
+// and a word list that leaves no checks is an error.
+func TestExcludedSelectors(t *testing.T) {
+	linux := checks.ChecksFor(model.Linux)
+	pkgVerify, pkgAspect, procAspect := 0, 0, 0
+	for _, check := range linux {
+		if check.ID == "pkg-verify" {
+			pkgVerify++
+		}
+		if check.Aspect == model.AspectPackage {
+			pkgAspect++
+		}
+		if check.Aspect == model.AspectProcess {
+			procAspect++
+		}
+	}
+	if pkgVerify != 1 || pkgAspect < 2 || procAspect < 1 {
+		t.Fatalf("catalog prerequisites: pkg-verify=%d package=%d process=%d", pkgVerify, pkgAspect, procAspect)
+	}
+
+	kept, err := cli.SelectChecks([]string{"!pkg-verify"}, linux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != len(linux)-pkgVerify {
+		t.Fatalf("excluding one check kept %d of %d", len(kept), len(linux))
+	}
+
+	kept, err = cli.SelectChecks([]string{"package,!pkg-verify"}, linux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != pkgAspect-pkgVerify {
+		t.Fatalf("package minus pkg-verify kept %d, want %d", len(kept), pkgAspect-pkgVerify)
+	}
+
+	kept, err = cli.SelectChecks([]string{"process", "!pkg-verify"}, linux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != procAspect {
+		t.Fatalf("excluding an unselected check changed the selection: %d of %d", len(kept), procAspect)
+	}
+
+	if _, err := cli.SelectChecks([]string{"!pkg-verfy"}, linux); err == nil || !strings.Contains(err.Error(), "unknown exclusion") {
+		t.Fatalf("a typo should fail as an exclusion with close matches, got %v", err)
+	}
+	if _, err := cli.SelectChecks([]string{"!linux"}, linux); err == nil || !strings.Contains(err.Error(), "left no checks") {
+		t.Fatalf("excluding everything should be an error, got %v", err)
+	}
+	if _, err := cli.SelectChecks([]string{"!"}, linux); err == nil {
+		t.Fatal(`a bare "!" should be an error`)
 	}
 }

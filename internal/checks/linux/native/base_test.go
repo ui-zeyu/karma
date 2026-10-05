@@ -248,7 +248,7 @@ func TestNativeSuidScanFiltersModeBit(t *testing.T) {
 	// The owner-execute bit stands in for the setuid/setgid bits the callers
 	// pass: some filesystems (macOS temp volumes) strip the special bits, and
 	// the filter is the same bit test either way.
-	lists, caps, err := scanPrivFiles(context.Background(), dir, 0o100)
+	lists, caps, err := scanPrivFiles(context.Background(), []string{dir}, 0o100)
 	if err != nil {
 		t.Fatal(err)
 	}

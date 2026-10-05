@@ -816,6 +816,51 @@ func TestUnitsPanelPaintsStateCells(t *testing.T) {
 	}
 }
 
+// End to end through the panel: the SysV rows the services check also collects
+// (`service --status-all`) paint the bracketed marker as one field in its state
+// color — not one color per glyph — and the name in the first column color, the
+// one the systemd table gives its UNIT column.
+func TestUnitsPanelPaintsSysvStateMarkers(t *testing.T) {
+	result := &model.CheckResult{
+		Check:   &model.Check{ID: "services", Aspect: model.AspectService, Syntax: "units"},
+		Outcome: model.Collected,
+		Document: model.Document{Sections: []model.Section{{Title: "service", Lines: []model.Line{
+			{Text: " [ + ]  apache2", Severity: model.Info},
+			{Text: " [ - ]  cron", Severity: model.Info},
+			{Text: " [ ? ]  dnsmasq", Severity: model.Info},
+		}}}},
+	}
+	panel := checkPanel(result, 40, 120)
+	if !strings.Contains(panel, style{fg: "2"}.seq().Render("[ + ]")) {
+		t.Fatalf("a running marker should be green as one field:\n%s", plain(panel))
+	}
+	if !strings.Contains(panel, dimStyle.seq().Render("[ - ]")) ||
+		!strings.Contains(panel, dimStyle.seq().Render("[ ? ]")) {
+		t.Fatalf("stopped and unknown markers should be faint:\n%s", plain(panel))
+	}
+	if !strings.Contains(panel, tableColumnStyles[0].seq().Render("apache2")) {
+		t.Fatalf("the service name should take the first column color:\n%s", plain(panel))
+	}
+}
+
+// Two signal rules over the same text: the painted span follows the reason, so
+// the more severe rule wins whichever way the catalog orders them.
+func TestLineTextMostSevereSpanWins(t *testing.T) {
+	const text = "cap_setuid=ep"
+	match := func(id string, severity model.Severity) model.Match {
+		return model.Match{ID: id, Severity: severity, Message: id, Start: 0, End: len(text)}
+	}
+	for _, matches := range [][]model.Match{
+		{match("caps-setuid", model.Critical), match("caps-present", model.Low)},
+		{match("caps-present", model.Low), match("caps-setuid", model.Critical)},
+	} {
+		got := lineText(model.Line{Text: text, Severity: model.Critical, Matches: matches}, nil)
+		if !strings.Contains(got, criticalStyle.seq().Render(text)) {
+			t.Fatalf("the critical span should paint over the lower one (order %v): %q", matches[0].ID, got)
+		}
+	}
+}
+
 // End to end through the panel: one panel, two section rules — the skel
 // listing keeps the ls -l colors while the collected shell file keeps the
 // bash lexer.

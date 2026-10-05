@@ -127,7 +127,8 @@ func newLocalCmd() *cobra.Command {
 		Use:   "local [selector...]",
 		Short: "Collect read-only evidence from the local host",
 		Long: "Collect read-only evidence from the local host. Positional arguments are platform, aspect, or check names; " +
-			"all of them run when omitted. Change-time clustering is written karma local mtime DIR...",
+			"all of them run when omitted, and a leading ! on a name excludes those checks. " +
+			"Change-time clustering is written karma local mtime DIR...",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dirs, ok := mtimeArgs(args); ok {
 				return runMtimeMode(cmd, session.LocalTransport{}, dirs, "local")
@@ -149,7 +150,8 @@ func newSSHCmd() *cobra.Command {
 		Short: "Collect read-only evidence from an SSH target",
 		Long: "Collect read-only evidence from an SSH target. Destinations follow OpenSSH: [user@]host or " +
 			"ssh://[user@]host[:port] (bracket IPv6 addresses). Aspect names or check ids follow; all of " +
-			"them run when omitted. Change-time clustering is written karma ssh TARGET mtime DIR...",
+			"them run when omitted, and a leading ! on a name excludes those checks. " +
+			"Change-time clustering is written karma ssh TARGET mtime DIR...",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return usagef(cmd, "ssh needs a target: [user@]host or ssh://[user@]host[:port]")

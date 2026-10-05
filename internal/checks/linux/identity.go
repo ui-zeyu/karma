@@ -114,9 +114,10 @@ var IdentityChecks = []*model.Check{
 					`:(?:/usr/sbin/nologin|/sbin/nologin|/bin/false|/usr/bin/false)$`, model.FilterDrop),
 			},
 			Rules: []model.Rule{
-				model.NewRule("acct-root-uid0", `^root:[^:]*:0:0:`, model.Benign, "the root account itself"),
-				// RE2 has no lookahead: "UID 0 that isn't root" becomes an exclusion
-				model.NewRule("acct-other-uid0", `^[^:\n]+:[^:]*:0:0:`, model.Critical,
+				model.NewRule("acct-root-uid0", `^root:[^:]*:0:`, model.Benign, "the root account itself"),
+				// RE2 has no lookahead: "UID 0 that isn't root" becomes an exclusion.
+				// Only the UID is tested — a backdoor account can carry any GID.
+				model.NewRule("acct-other-uid0", `^[^:\n]+:[^:]*:0:`, model.Critical,
 					"non-root account with UID 0").WithExclude(`^root:`),
 				model.NewRule("acct-password-field", `^[^:\n]+:.`, model.Medium,
 					"password field not x (hash or empty)").WithExclude(`^[^:\n]+:[x*!]`),

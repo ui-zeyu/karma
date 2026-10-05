@@ -264,7 +264,11 @@ var PersistenceChecks = []*model.Check{
 			Syntax:    "ls-l",
 			Normalize: cluster.ListingNormalize(time.Now),
 			Rules: []model.Rule{
-				model.NewRule("udev-exec-key", `(?:RUN|PROGRAM|IMPORT)(?:\+=|\{|=)`, model.Medium,
+				// The span carries the key and the value it runs (RUN+="…",
+				// IMPORT{program}="…"): the command is the finding, and the span is
+				// what the panel paints.
+				model.NewRule("udev-exec-key",
+					`(?:RUN|PROGRAM|IMPORT)(?:\{[^}\n]*\})?\+?=(?:"[^"\n]*"|\S*)`, model.Medium,
 					"udev rule runs external program"),
 			},
 		}),

@@ -4,6 +4,7 @@ package native
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,14 +22,14 @@ func TestPrivWalkTiersReadSharedStore(t *testing.T) {
 	}
 	runstate.Memo(runstate.From(ctx), privWalkKey{}, func() privWalk { return planted })
 
-	suid, err := ModeBitScan(os.ModeSetuid)(ctx)
+	suid, err := ModeBitScan(os.ModeSetuid, nil)(ctx)
 	if err != nil {
 		t.Fatalf("suid tier: %v", err)
 	}
 	if suid != "/planted/suid\n" {
 		t.Fatalf("suid tier printed %q", suid)
 	}
-	sgid, err := ModeBitScan(os.ModeSetgid)(ctx)
+	sgid, err := ModeBitScan(os.ModeSetgid, nil)(ctx)
 	if err != nil {
 		t.Fatalf("sgid tier: %v", err)
 	}
@@ -36,13 +37,34 @@ func TestPrivWalkTiersReadSharedStore(t *testing.T) {
 		t.Fatalf("sgid tier printed %q", sgid)
 	}
 	if capsInProcess() {
-		caps, err := FileCaps(ctx)
+		caps, err := FileCaps(nil)(ctx)
 		if err != nil {
 			t.Fatalf("caps tier: %v", err)
 		}
 		if caps != "/planted/ping cap_net_raw=ep\n" {
 			t.Fatalf("caps tier printed %q", caps)
 		}
+	}
+}
+
+func TestPrivilegeRoots(t *testing.T) {
+	rows := []mountRow{
+		{dev: "/dev/sda1", point: "/", fstype: "ext4", opts: "rw,relatime"},
+		{dev: "proc", point: "/proc", fstype: "proc", opts: "rw,nosuid"},
+		{dev: "tmpfs", point: "/tmp", fstype: "tmpfs", opts: "rw,nosuid,nodev"},
+		{dev: "/dev/sdb1", point: "/mnt/data", fstype: "xfs", opts: "rw"},
+		{dev: "nfs-server:/export", point: "/mnt/nfs", fstype: "nfs4", opts: "rw"},
+		{dev: "/dev/sda1", point: "/var/lib/lxc/x/rootfs", fstype: "ext4", opts: "rw"},
+		{dev: "overlay", point: "/var/lib/docker/overlay2/x/merged", fstype: "overlay", opts: "rw"},
+		{dev: "/dev/loop0", point: "/snap/core/1", fstype: "squashfs", opts: "ro"},
+		{dev: "/dev/sdc1", point: "/run/media/usb", fstype: "vfat", opts: "rw"},
+	}
+	want := []string{"/", "/tmp", "/mnt/data", "/run/media/usb"}
+	if got := privilegeRoots(rows, []string{"ext4", "xfs", "tmpfs", "vfat"}); !slices.Equal(got, want) {
+		t.Fatalf("roots = %v, want %v", got, want)
+	}
+	if got := privilegeRoots(nil, []string{"ext4"}); !slices.Equal(got, []string{"/"}) {
+		t.Fatalf("an empty mount table still walks the root: %v", got)
 	}
 }
 

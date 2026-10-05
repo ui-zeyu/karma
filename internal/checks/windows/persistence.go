@@ -32,7 +32,7 @@ var wmiSubscriptionScript = `foreach ($c in '__EventFilter','CommandLineEventCon
 
 // Non-empty CommandLineTemplate or ScriptText means subscription persistence; on a default machine
 // these three are all empty.
-const wmiConsumerRule = `(?i)^(?:CommandLineTemplate|ScriptText)\s*:\s*\S`
+const wmiConsumerRule = `(?i)^(?:CommandLineTemplate|ScriptText)\s*:\s*\S.*`
 
 // ifeoKeys: Image File Execution Options carries a per-executable Debugger value
 // that takes over the process at launch (the classic sticky-keys trick: point
@@ -45,9 +45,11 @@ var ifeoKeys = []RegKey{
 	{Path: `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SilentProcessExit`, Recurse: true, Label: "silent-process-exit"},
 }
 
+// A `reg query` value row is `Name  REG_TYPE  value`. Every rule below spans the
+// value whole: the span is what the panel paints, and the value is the finding.
 const (
-	ifeoDebuggerRule = `(?i)^\s+Debugger\s+REG_\w+\s+\S`
-	ifeoMonitorRule  = `(?i)^\s+MonitorProcess\s+REG_\w+\s+\S`
+	ifeoDebuggerRule = `(?i)^\s+Debugger\s+REG_\w+\s+\S.*`
+	ifeoMonitorRule  = `(?i)^\s+MonitorProcess\s+REG_\w+\s+\S.*`
 )
 
 // winlogonKeys: the logon shell, userinit, notification package, and AppSetup
@@ -63,18 +65,18 @@ var winlogonKeys = []RegKey{
 // AppInit_DLLs only takes effect when LoadAppInit_DLLs is 1 (Win8 and later), so
 // the switch is worth its own line.
 var (
-	winlogonShellRule = model.NewRule("winlogon-shell", `(?i)^\s+Shell\s+REG_\w+\s+\S`, model.High,
+	winlogonShellRule = model.NewRule("winlogon-shell", `(?i)^\s+Shell\s+REG_\w+\s+\S.*`, model.High,
 		"logon shell replaced").
 		WithExclude(`(?i)^\s+Shell\s+REG_\w+\s+explorer\.exe\s*$`)
-	winlogonUserinitRule = model.NewRule("winlogon-userinit", `(?i)^\s+Userinit\s+REG_\w+\s+\S`, model.High,
+	winlogonUserinitRule = model.NewRule("winlogon-userinit", `(?i)^\s+Userinit\s+REG_\w+\s+\S.*`, model.High,
 		"logon userinit replaced").
 		// only the stock value is quiet, so an appended program is flagged too
 		WithExclude(`(?i)^\s+Userinit\s+REG_\w+\s+C:\\Windows\\system32\\userinit\.exe,\s*$`)
-	winlogonNotifyRule = model.NewRule("winlogon-notify", `(?i)^\s+Notify\s+REG_\w+\s+\S`, model.Medium,
+	winlogonNotifyRule = model.NewRule("winlogon-notify", `(?i)^\s+Notify\s+REG_\w+\s+\S.*`, model.Medium,
 		"Winlogon notify package registered")
-	winlogonAppSetupRule = model.NewRule("winlogon-appsetup", `(?i)^\s+AppSetup\s+REG_\w+\s+\S`, model.Medium,
+	winlogonAppSetupRule = model.NewRule("winlogon-appsetup", `(?i)^\s+AppSetup\s+REG_\w+\s+\S.*`, model.Medium,
 		"AppSetup command registered")
-	appinitDllRule = model.NewRule("appinit-dlls", `(?i)^\s+AppInit_DLLs\s+REG_\w+\s+\S`, model.High,
+	appinitDllRule = model.NewRule("appinit-dlls", `(?i)^\s+AppInit_DLLs\s+REG_\w+\s+\S.*`, model.High,
 		"AppInit_DLLs set (injects into processes)")
 	appinitLoadRule = model.NewRule("appinit-load", `(?i)^\s+LoadAppInit_DLLs\s+REG_DWORD\s+0x1\b`, model.Medium,
 		"AppInit_DLLs loading enabled")

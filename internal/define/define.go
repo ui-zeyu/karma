@@ -64,6 +64,8 @@ var GlobalRules = []model.Rule{
 	model.NewRule("base64-decode", `\bbase64\s+(?:--decode|-d|-D)\b`, model.Medium,
 		"base64 decode (may hide a payload)"),
 	model.NewRule("ld-so-preload", `\bld\.so\.preload\b`, model.High, "dynamic linker preload configuration"),
+	model.NewRule("ld-preload-var", `\bLD_(?:PRELOAD|AUDIT)=`, model.High,
+		"library preload/audit environment hook"),
 	model.NewRule("deleted-binary", `\(deleted\)`, model.Critical, "file deleted but still in use"),
 	model.NewRule("known-malware-name",
 		`\b(?:xmrig|kdevtmpfsi|kinsing|ddgs|pnscan|masscan|zgrab|spread_qianniu)\b`,
@@ -79,9 +81,12 @@ var GlobalRules = []model.Rule{
 	// Hidden files (`.foo`): temporary directories are the most common drop
 	// point for malicious persistence (HIGH), then /opt /srv /usr/local /etc
 	// (MEDIUM); dotfiles in home directories are normal and are not marked.
-	model.NewRule("hidden-tmp-path", `(?:(?:var/)?tmp|dev/shm)/\.[A-Za-z0-9_.-]`, model.High,
+	// A rule's span is what the panel paints, so both name the whole path: a
+	// pattern that stopped after the first character of the name painted half
+	// of it.
+	model.NewRule("hidden-tmp-path", `/?(?:(?:var/)?tmp|dev/shm)/\.[A-Za-z0-9_.-]+`, model.High,
 		"hidden file in a temporary directory (common persistence spot)").WithExclude(hiddenExclude),
-	model.NewRule("hidden-nonhome-path", `(?:opt|srv|usr/local|etc)/\.[A-Za-z0-9_.-]`, model.Medium,
+	model.NewRule("hidden-nonhome-path", `/?(?:opt|srv|usr/local|etc)/\.[A-Za-z0-9_.-]+`, model.Medium,
 		"hidden file outside a home directory").WithExclude(hiddenExclude),
 }
 

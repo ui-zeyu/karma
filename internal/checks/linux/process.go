@@ -135,8 +135,9 @@ var minerNameGlobs = []string{
 // minerScript hunts cryptominers in place: process lines matched out of a ps
 // snapshot (grep -v drops this pipeline's own lines, which carry the pattern),
 // attributes of the classic fixed drop paths, and a bounded name walk of the
-// temp directories. Every arm is quiet when nothing matches; the deep
-// time-clustered hunt stays with the mtime subcommand.
+// temp directories. That walk crosses devices — a service's PrivateTmp mounts a
+// tmpfs inside /tmp — and is bounded by depth instead. Every arm is quiet when
+// nothing matches; the deep time-clustered hunt stays with the mtime subcommand.
 //
 // The pattern and the three lists are the same ones the local tier walks, so
 // the two channels hunt for identical things instead of two spellings of the
@@ -155,7 +156,7 @@ ps auxwwf | grep -aE "$pat" | grep -av grep
 echo "== drop paths"
 LC_ALL=C ls -l %s 2>/dev/null
 echo "== temp names"
-find %s -xdev -maxdepth 4 -type f \( %s \) -exec ls -l {} + 2>/dev/null
+find %s -maxdepth 4 -type f \( %s \) -exec ls -l {} + 2>/dev/null
 `, minerPsSource, strings.Join(minerDropPaths, " "), strings.Join(tmpDirs, " "), minerInameArgs(minerNameGlobs))
 
 // minerInameArgs renders the temp-name walk's -iname alternation, the globs
@@ -337,7 +338,7 @@ var ProcessChecks = []*model.Check{
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
-				model.NewRule("proc-cwd-tmp", `^/proc/\d+ -> /(?:tmp|var/tmp|dev/shm)/`, model.High,
+				model.NewRule("proc-cwd-tmp", `^/proc/\d+ -> /(?:tmp|var/tmp|dev/shm)/\S*`, model.High,
 					"process cwd is in a temp directory"),
 			},
 		}),

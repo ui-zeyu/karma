@@ -15,29 +15,88 @@ import (
 	"karma/internal/runstate"
 )
 
-// scanPrivFiles walks one filesystem collecting the regular files carrying each
-// of bits — find -perm -NNNN per bit over a single traversal, the lists in walk
-// order — and the capability rows the same pass reads. A file carrying two of
+// privilegeRoots is the privilege walk's root list: the root filesystem first,
+// then every mount of a local storage type from the kernel's mount table. A
+// setuid binary dropped on a data disk or in a tmpfs /tmp is as much evidence as
+// one under /usr/bin, and find -xdev would have missed both. A device-backed
+// filesystem mounted a second time (a bind mount, a container root) is walked
+// once: it is the same files, and the root pass already descends into it, since
+// -xdev prunes by device rather than by mount point. Pseudo sources ("tmpfs",
+// "overlay") are shared names, so two of them are two filesystems and both
+// count.
+func privilegeRoots(rows []mountRow, fsTypes []string) []string {
+	allowed := make(map[string]bool, len(fsTypes))
+	for _, fsType := range fsTypes {
+		allowed[fsType] = true
+	}
+	roots := []string{"/"}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		if row.point == "/" {
+			if deviceBacked(row.dev) {
+				seen[row.dev] = true
+			}
+			continue
+		}
+		if !allowed[row.fstype] {
+			continue
+		}
+		if deviceBacked(row.dev) {
+			if seen[row.dev] {
+				continue
+			}
+			seen[row.dev] = true
+		}
+		roots = append(roots, row.point)
+	}
+	return roots
+}
+
+// deviceBacked reports whether a mount's source names a block device.
+func deviceBacked(dev string) bool { return strings.HasPrefix(dev, "/dev/") }
+
+// privilegeWalkRoots applies privilegeRoots to the kernel's mount table;
+// without one the walk falls back to the root filesystem, which is what it
+// covered on its own.
+func privilegeWalkRoots(fsTypes []string) []string {
+	rows, ok := readMounts()
+	if !ok {
+		return []string{"/"}
+	}
+	return privilegeRoots(rows, fsTypes)
+}
+
+// scanPrivFiles walks the roots collecting the regular files carrying each of
+// bits — find -perm -NNNN per bit over one traversal per root, the lists in walk
+// order — and the capability rows the same passes read. A file carrying two of
 // the bits lands in both lists, the way two separate finds would report it.
-func scanPrivFiles(ctx context.Context, root string, bits ...os.FileMode) ([][]string, []string, error) {
+func scanPrivFiles(ctx context.Context, roots []string, bits ...os.FileMode) ([][]string, []string, error) {
 	lists := make([][]string, len(bits))
 	var caps []string
-	err := walkTree(ctx, root, 0, true, nil, func(path string, info os.FileInfo) bool {
-		mode := info.Mode()
-		if !mode.IsRegular() {
-			return true
+	for _, root := range roots {
+		if ctx.Err() != nil {
+			return lists, caps, ctx.Err()
 		}
-		for i, bit := range bits {
-			if mode&bit != 0 {
-				lists[i] = append(lists[i], path)
+		err := walkTree(ctx, root, 0, true, nil, func(path string, info os.FileInfo) bool {
+			mode := info.Mode()
+			if !mode.IsRegular() {
+				return true
 			}
+			for i, bit := range bits {
+				if mode&bit != 0 {
+					lists[i] = append(lists[i], path)
+				}
+			}
+			if row := fileCapsRow(path); row != "" {
+				caps = append(caps, row)
+			}
+			return true
+		})
+		if err != nil {
+			return lists, caps, err
 		}
-		if row := fileCapsRow(path); row != "" {
-			caps = append(caps, row)
-		}
-		return true
-	})
-	return lists, caps, err
+	}
+	return lists, caps, nil
 }
 
 // privWalkKey is the store key of the privilege walk the SUID, SGID, and
@@ -52,14 +111,14 @@ type privWalk struct {
 	err   error
 }
 
-// sharedPrivWalk walks / once for the SUID, SGID, and capability checks and
-// keeps the answer for the run: the three want the same traversal with one
-// question different each, and find -perm plus getcap walk the tree three
-// times over — seconds on a large host, and three times the syscall load while
-// every other check competes for the same cache.
-func sharedPrivWalk(ctx context.Context) privWalk {
+// sharedPrivWalk walks every privilege root once for the SUID, SGID, and
+// capability checks and keeps the answer for the run: the three want the same
+// traversal with one question different each, and find -perm plus getcap walk
+// the tree three times over — seconds on a large host, and three times the
+// syscall load while every other check competes for the same cache.
+func sharedPrivWalk(ctx context.Context, fsTypes []string) privWalk {
 	scan := func() privWalk {
-		lists, caps, err := scanPrivFiles(ctx, "/", os.ModeSetuid, os.ModeSetgid)
+		lists, caps, err := scanPrivFiles(ctx, privilegeWalkRoots(fsTypes), os.ModeSetuid, os.ModeSetgid)
 		return privWalk{lists: lists, caps: caps, err: err}
 	}
 	store := runstate.From(ctx)
@@ -69,15 +128,16 @@ func sharedPrivWalk(ctx context.Context) privWalk {
 	return runstate.Memo(store, privWalkKey{}, scan)
 }
 
-// ModeBitScan is the privilege-bit tier: the shared walk's list for one
-// bit, printed as find's one path per line.
-func ModeBitScan(bit os.FileMode) func(context.Context) (string, error) {
+// ModeBitScan is the privilege-bit tier: the shared walk's list for one bit,
+// printed as find's one path per line. fsTypes is the check's local storage
+// vocabulary, the mounts the walk adds to the root filesystem.
+func ModeBitScan(bit os.FileMode, fsTypes []string) func(context.Context) (string, error) {
 	index := 0
 	if bit == os.ModeSetgid {
 		index = 1
 	}
 	return func(ctx context.Context) (string, error) {
-		walk := sharedPrivWalk(ctx)
+		walk := sharedPrivWalk(ctx, fsTypes)
 		var b strings.Builder
 		if index < len(walk.lists) {
 			for _, path := range walk.lists[index] {
@@ -89,26 +149,30 @@ func ModeBitScan(bit os.FileMode) func(context.Context) (string, error) {
 	}
 }
 
-// FileCaps is the capability tier: the shared walk's rows, which are
-// getcap's own shape. A platform without an in-process xattr read leaves the
-// tier to the host's getcap.
-func FileCaps(ctx context.Context) (string, error) {
-	if !capsInProcess() {
-		return "", model.ErrTierUnavailable
+// FileCaps is the capability tier: the shared walk's rows, which are getcap's
+// own shape. A platform without an in-process xattr read leaves the tier to the
+// host's getcap.
+func FileCaps(fsTypes []string) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		if !capsInProcess() {
+			return "", model.ErrTierUnavailable
+		}
+		walk := sharedPrivWalk(ctx, fsTypes)
+		var b strings.Builder
+		for _, row := range walk.caps {
+			b.WriteString(row)
+			b.WriteByte('\n')
+		}
+		return b.String(), walk.err
 	}
-	walk := sharedPrivWalk(ctx)
-	var b strings.Builder
-	for _, row := range walk.caps {
-		b.WriteString(row)
-		b.WriteByte('\n')
-	}
-	return b.String(), walk.err
 }
 
 // HomeTree is the home-tree ladder's local branch: tree's own output when
 // installed, otherwise the find -printf rows — ls -l shape, one entry per row,
-// bounded by depth, one filesystem. The root and the depth come from the check,
-// which spells the same two in its find command for the ssh channel.
+// bounded by depth. tree crosses mount points unless -x is given and the check
+// does not pass it, so the fallback crosses too. The root and the depth come
+// from the check, which spells the same two in its find command for the ssh
+// channel.
 func HomeTree(root string, depth int) func(context.Context) (string, error) {
 	argv := []string{"tree", "-a", "-p", "-u", "-g", "-s", "-D",
 		"--timefmt", "%Y-%m-%d %H:%M", "-L", strconv.Itoa(depth), root}
@@ -120,7 +184,7 @@ func HomeTree(root string, depth int) func(context.Context) (string, error) {
 		}
 		var b strings.Builder
 		names := newNameCache()
-		err := walkTree(ctx, root, depth, true, nil, func(path string, info os.FileInfo) bool {
+		err := walkTree(ctx, root, depth, false, nil, func(path string, info os.FileInfo) bool {
 			if path != root {
 				b.WriteString(lsBody(info, path, names))
 				b.WriteByte('\n')
@@ -131,10 +195,11 @@ func HomeTree(root string, depth int) func(context.Context) (string, error) {
 	}
 }
 
-// RecentScan is one recency walk: the roots, each staying on its own
-// filesystem, the name suffixes that count, how deep to go, and the mtime
-// window. The check hands these in, so its find -name list, its rule, and this
-// walk all cover the same files.
+// RecentScan is one recency walk: the roots, the name suffixes that count, how
+// deep to go, and the mtime window. The check hands these in, so its find -name
+// list, its rule, and this walk all cover the same files. The walk crosses
+// devices on purpose, the way its find does: a bind-mounted web root is where
+// the scripts live, and depth plus the mtime window bound the work.
 type RecentScan struct {
 	Roots    []string
 	Suffixes []string
@@ -150,7 +215,7 @@ func RecentFiles(scan RecentScan) func(context.Context) (string, error) {
 			if ctx.Err() != nil {
 				return b.String(), ctx.Err()
 			}
-			err := walkTree(ctx, root, scan.MaxDepth, true, nil, func(path string, info os.FileInfo) bool {
+			err := walkTree(ctx, root, scan.MaxDepth, false, nil, func(path string, info os.FileInfo) bool {
 				if info.Mode().IsRegular() && recentName(filepath.Base(path), scan.Suffixes) &&
 					time.Since(info.ModTime()) < scan.Window {
 					b.WriteString(path)

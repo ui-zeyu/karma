@@ -1,5 +1,6 @@
 // units pseudo-lexer: systemd unit tables (systemctl list-units) with the
-// ACTIVE and SUB cells colored by meaning.
+// ACTIVE and SUB cells colored by meaning, plus the SysV fallback rows
+// (`service --status-all`) the services check also collects.
 
 package render
 
@@ -14,10 +15,46 @@ var unitStateStyles = map[string]style{
 	"inactive": dimStyle,
 }
 
-// unitStyler colors systemd unit tables (`systemctl list-units`): columns as
-// elsewhere, then the ACTIVE and SUB cells repainted by meaning. Restricting
-// the repaint to those two anchored columns keeps a state word in the
-// DESCRIPTION column at the plain table color.
+// sysvServiceLine matches one `service --status-all` row: the bracketed state
+// marker and the service name. The marker is one field, so it takes one span;
+// left to the table's word-by-word cycle the bracket, the sign, and the closing
+// bracket came out in three different colors.
+var sysvServiceLine = compile(`^\s*(?P<marker>\[\s*(?P<sign>[+?-])\s*\])(?P<gap>\s+)(?P<name>\S+)`)
+
+// sysvServiceStyles gives the marker its meaning in the same language as
+// unitStateStyles: `+` (running) dark green, `-` and `?` (stopped, unknown)
+// faint.
+var sysvServiceStyles = map[string]style{
+	"+": {fg: "2"},
+	"-": dimStyle,
+	"?": dimStyle,
+}
+
+// sysvServiceSpans paints one `service --status-all` row: the marker as a
+// single span in its state color, the name in the first table-column color —
+// the same color the systemd table gives its UNIT column.
+func sysvServiceSpans(line string) ([]Span, bool) {
+	groups := findSubindex(sysvServiceLine, line)
+	marker, ok := groups["marker"]
+	if !ok {
+		return nil, false
+	}
+	state, ok := sysvServiceStyles[line[groups["sign"][0]:groups["sign"][1]]]
+	if !ok {
+		return nil, false
+	}
+	spans := []Span{{Start: marker[0], End: marker[1], Style: state}}
+	if name, ok := groups["name"]; ok {
+		spans = append(spans, Span{Start: name[0], End: name[1], Style: tableColumnStyles[0]})
+	}
+	return spans, true
+}
+
+// unitStyler colors systemd unit tables (`systemctl list-units`) and the SysV
+// service listing collected with them: columns as elsewhere, then the ACTIVE
+// and SUB cells repainted by meaning. Restricting the repaint to those two
+// anchored columns keeps a state word in the DESCRIPTION column at the plain
+// table color.
 type unitStyler struct {
 	table *tableStyler
 }
@@ -25,6 +62,9 @@ type unitStyler struct {
 func newUnitStyler() *unitStyler { return &unitStyler{table: newTableStyler(nil, true)} }
 
 func (u *unitStyler) style(line string) []Span {
+	if spans, ok := sysvServiceSpans(line); ok {
+		return spans
+	}
 	spans := u.table.style(line)
 	if len(u.table.starts) < 4 { // UNIT LOAD ACTIVE SUB
 		return spans

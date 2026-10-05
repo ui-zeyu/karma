@@ -17,10 +17,50 @@ import (
 	"karma/internal/script"
 )
 
-const suidFind = "find / -xdev -perm -4000 -type f 2>/dev/null"
 const suidTimeout = 25 * time.Second
 
-const sgidFind = "find / -xdev -perm -2000 -type f 2>/dev/null"
+// privFsTypes is the privilege walk's vocabulary: the local storage types, the
+// filesystems a setuid/setgid binary can be dropped on. The walk enters each of
+// their mounts at its own mount point, because -xdev (which keeps the root pass
+// out of /proc, /sys, and every container overlay) prunes by device and so never
+// descends into another filesystem. The root filesystem is always walked, whatever
+// its type — a container's / is overlay. Network, FUSE, and image filesystems
+// stay out: a walk into NFS or a squashfs image is unbounded next to what it can
+// find, and a read-only image only carries stock copies.
+var privFsTypes = []string{
+	"ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs", "jfs", "reiserfs", "zfs",
+	"vfat", "msdos", "exfat", "ntfs", "ntfs3", "udf", "tmpfs", "ramfs",
+}
+
+// privilegeFind is the setuid/setgid find: one -xdev pass per privilege root,
+// so a bit dropped on a data disk or in a tmpfs /tmp is collected too. The root
+// list is the kernel's mount table filtered the way native.privilegeRoots does
+// it — the root mount first, then one entry per local-storage mount, a device
+// named twice walked once — and the mode bit is spelled out with -perm (a bare
+// -4000 is not a find expression); the listing itself is one bare path per line.
+func privilegeFind(perm string) string { return privilegeFindAt(perm, "/proc/self/mounts") }
+
+// privilegeFindAt is privilegeFind over a given mount table. The tests run the
+// pipeline against a fixture, so the awk filter, the per-root loop, and the find
+// it feeds are all exercised without a host that can mount a data disk.
+func privilegeFindAt(perm, mountsPath string) string {
+	return `awk -v types="` + strings.Join(privFsTypes, " ") + `" '
+  BEGIN { n = split(types, t, " "); for (i = 1; i <= n; i++) allowed[t[i]] = 1 }
+  $2 == "/" { if ($1 ~ /^\/dev\//) seen[$1] = 1; print "/"; next }
+  !allowed[$3] { next }
+  $1 ~ /^\/dev\// { if (seen[$1]++) next }
+  { target = $2; gsub(/\\040/, " ", target); print target }' ` + mountsPath + ` 2>/dev/null |
+while IFS= read -r root; do
+  find "$root" -xdev -perm ` + perm + ` -type f 2>/dev/null
+done`
+}
+
+// systemProgramDirs is where a setuid/setgid binary is part of a normal install:
+// the bin, sbin, lib, lib64, and libexec trees of /, /usr, and /usr/local. A
+// special bit anywhere else (/tmp, /var, /home, /opt, /srv) is a backdoor's
+// classic placement, so it lights a rule of its own. Both find listings are one
+// bare path per line.
+const systemProgramDirs = `^(?:/(?:usr/)?(?:s?bin|lib(?:64|exec)?)/|/usr/local/(?:s?bin|lib(?:64|exec)?)/)`
 
 // gtfobinsSu is the full basename list of SUID privilege-escalation programs from
 // GTFOBins: taken 2026-10-02 from github.com/GTFOBins/GTFOBins.github.io's
@@ -79,7 +119,10 @@ var gtfobinsPattern = `/(?:[\w.]+/)*(?:` + strings.Join(slices.Sorted(slices.Val
 
 // webScriptRoots, webScriptSuffixes, webScriptDepth and webScriptWindow are the
 // web-script check's shape; its find command (ssh) and its in-process walk
-// (local) are built from them, so the two channels cover identical files.
+// (local) are built from them, so the two channels cover identical files. The
+// walk crosses devices on purpose: a bind-mounted web root — the usual
+// container and compose shape — sits on its own filesystem, and that is exactly
+// where the scripts are; depth and the mtime window bound the work.
 var (
 	webScriptRoots    = []string{"/var/www", "/usr/local/nginx", "/opt"}
 	webScriptSuffixes = []string{".php", ".jsp", ".jspx", ".sh", ".py"}
@@ -92,7 +135,7 @@ const (
 )
 
 // webScriptFind is that shape as the find command the ssh channel runs.
-var webScriptFind = fmt.Sprintf("find %s -xdev -maxdepth %d -type f \\( %s \\) -mtime -%d 2>/dev/null",
+var webScriptFind = fmt.Sprintf("find %s -maxdepth %d -type f \\( %s \\) -mtime -%d 2>/dev/null",
 	strings.Join(webScriptRoots, " "), webScriptDepth, findNameArgs(webScriptSuffixes),
 	int(webScriptWindow.Hours()/24))
 
@@ -161,8 +204,10 @@ const (
 	homeTreeArgs  = "-a -p -u -g -s -D --timefmt '%Y-%m-%d %H:%M'"
 )
 
-// homeTreeFind is that shape as the find command the ssh fallback runs.
-var homeTreeFind = fmt.Sprintf("LC_ALL=C find %s -xdev -maxdepth %d -printf '%s' 2>/dev/null",
+// homeTreeFind is that shape as the find command the ssh fallback runs. tree
+// crosses mount points unless -x is given and the check does not pass it, so the
+// fallback crosses too.
+var homeTreeFind = fmt.Sprintf("LC_ALL=C find %s -maxdepth %d -printf '%s' 2>/dev/null",
 	homeTreeRoot, homeTreeDepth, script.LSBodyPrintf)
 
 // mountNoise: snap/container overlay mounts are noise during host incident response.
@@ -205,39 +250,60 @@ var FilesystemChecks = []*model.Check{
 	// GTFOBins is the only verdict surface on these listings: a documented
 	// escalation program under SUID/SGID is critical/high, everything else is
 	// quiet evidence (GTFOBins has no separate sgid list, so the suid names
-	// stand in).
+	// stand in). Both listings cover the root filesystem and every local-storage
+	// mount — a data disk and a tmpfs /tmp included.
 	define.LinuxCheck("suid", "SUID files", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: native.ModeBitScan(os.ModeSetuid), Script: suidFind}},
+			{Label: "find", Inv: model.Dual{
+				Run:    native.ModeBitScan(os.ModeSetuid, privFsTypes),
+				Script: privilegeFind("-4000"),
+			}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("suid-gtfobins", gtfobinsPattern, model.Critical,
 					"SUID privilege-escalation program in GTFOBins"),
+				model.NewRule("suid-outside-system", `^/\S+`, model.High,
+					"SUID binary outside the system program directories").
+					WithExclude(systemProgramDirs),
 			},
 			Timeout: suidTimeout,
 		}),
 	define.LinuxCheck("sgid", "SGID files", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "find", Inv: model.Dual{Run: native.ModeBitScan(os.ModeSetgid), Script: sgidFind}},
+			{Label: "find", Inv: model.Dual{
+				Run:    native.ModeBitScan(os.ModeSetgid, privFsTypes),
+				Script: privilegeFind("-2000"),
+			}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("sgid-gtfobins", gtfobinsPattern, model.High,
 					"SGID of a GTFOBins privilege-escalation program (group escalation)"),
+				model.NewRule("sgid-outside-system", `^/\S+`, model.Medium,
+					"SGID binary outside the system program directories").
+					WithExclude(systemProgramDirs),
 			},
 			Timeout: suidTimeout,
 		}),
 	// Capabilities are another escalation path besides SUID: cap_setuid equals SUID
 	define.LinuxCheck("caps", "File capabilities (getcap)", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "getcap", Inv: model.Dual{Run: native.FileCaps, Script: "getcap -r / 2>/dev/null"}, LineLimit: 200},
+			// getcap -r / recurses across mounts on its own, so the script tier
+			// needs no root list; the local tier walks the same vocabulary.
+			{Label: "getcap", Inv: model.Dual{
+				Run:    native.FileCaps(privFsTypes),
+				Script: "getcap -r / 2>/dev/null",
+			}, LineLimit: 200},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
-				model.NewRule("caps-setuid", `cap_setuid[+=]`, model.Critical,
+				// Both rules span the whole `cap_...=value` assignment: the span is
+				// what the panel paints, and getcap's value (e, i, p) carries the
+				// meaning.
+				model.NewRule("caps-setuid", `cap_setuid[+=][a-z]*`, model.Critical,
 					"cap_setuid (SUID-equivalent)"),
-				model.NewRule("caps-present", `\bcap_[a-z_]+`, model.Low, "file has Linux capabilities"),
+				model.NewRule("caps-present", `\bcap_[a-z_]+(?:[+=][a-z]*)?`, model.Low, "file has Linux capabilities"),
 			},
 			Timeout: suidTimeout,
 		}),

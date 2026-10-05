@@ -204,7 +204,8 @@ func minerPsLines(snap processSnapshot, now time.Time, pattern *regexp.Regexp) [
 // drop-path attributes, and the temp-name walk's ls -l batch. The ps scan reads
 // the /proc snapshot (an interposed ps cannot hide a miner), and the ls -l rows
 // come from lsBody in-process. The ps section drops lines carrying "grep"
-// exactly like the script's second grep.
+// exactly like the script's second grep, and the name walk crosses devices the
+// way its find does — a service's PrivateTmp mounts a tmpfs inside /tmp.
 func Miner(scan MinerScan) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		snap := procSnapshot(ctx)
@@ -229,7 +230,7 @@ func Miner(scan MinerScan) func(context.Context) (string, error) {
 		b.WriteString("== temp names\n")
 		var hits []string
 		for _, dir := range scan.TempDirs {
-			err := walkTree(ctx, dir, 4, true, nil, func(path string, info os.FileInfo) bool {
+			err := walkTree(ctx, dir, 4, false, nil, func(path string, info os.FileInfo) bool {
 				if !info.Mode().IsRegular() {
 					return true
 				}

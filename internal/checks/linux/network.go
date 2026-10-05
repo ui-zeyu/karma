@@ -127,8 +127,11 @@ var NetworkChecks = []*model.Check{
 		readFilesCheck("/etc/hosts", "/etc/resolv.conf"),
 		define.CheckOpt{
 			Rules: []model.Rule{
-				// "maps to a non-loopback address" becomes an exclusion (RE2 has no lookahead)
-				model.NewRule("hosts-nonlocal", `^\s*[0-9a-fA-F:.]+\s+\S`, model.Medium,
+				// "maps to a non-loopback address" becomes an exclusion (RE2 has no lookahead).
+				// The span is the whole entry, names included and the trailing comment
+				// left out: the span is what the panel paints. A comment-only row maps
+				// nothing and is not a hit.
+				model.NewRule("hosts-nonlocal", `^\s*[0-9a-fA-F:.]+\s+[^#\s](?:[^#\n]*[^#\s])?`, model.Medium,
 					"hosts maps a non-loopback address").
 					WithExclude(`^\s*(?:127\.|::1|0\.0\.0\.0|fe|ff)`),
 				define.KeywordRule,

@@ -445,12 +445,7 @@ func sectionSyntax(check *model.Check, title string) string {
 // aligned with the body when it does not fit.
 func sourceTitle(section model.Section, width int) []string {
 	spans := []Span{{Start: 0, End: len(section.Title), Style: style{bold: true}}}
-	for _, match := range section.TitleMatches {
-		if match.Severity.IsSignal() {
-			spans = append(spans, Span{Start: match.Start, End: match.End,
-				Style: severityStyle(match.Severity)})
-		}
-	}
+	spans = append(spans, hitSpans(section.TitleMatches)...)
 	return withReason(paintLine(section.Title, spans), section.TitleMatches, width)
 }
 
@@ -538,18 +533,28 @@ func lineText(line model.Line, lineStyler LineStyler) string {
 	if lineStyler != nil {
 		spans = append(spans, lineStyler(line.Text)...)
 	}
-	hits := 0
-	for _, match := range line.Matches {
-		if match.Severity.IsSignal() {
-			spans = append(spans, Span{Start: match.Start, End: match.End,
-				Style: severityStyle(match.Severity)})
-			hits++
-		}
-	}
-	if hits == 0 && commentLine.MatchString(line.Text) {
+	hits := hitSpans(line.Matches)
+	spans = append(spans, hits...)
+	if len(hits) == 0 && commentLine.MatchString(line.Text) {
 		spans = append(spans, Span{Start: 0, End: len(line.Text), Style: mutedStyle})
 	}
 	return paintLine(line.Text, spans)
+}
+
+// hitSpans paints a line's signal matches, most severe last. Spans stack in
+// order, so where two rules cover the same text the more severe one wins — the
+// span the trailing reason names, rather than whichever rule happened to be
+// declared later.
+func hitSpans(matches []model.Match) []Span {
+	signals := lo.Filter(matches, func(match model.Match, _ int) bool {
+		return match.Severity.IsSignal()
+	})
+	slices.SortStableFunc(signals, func(a, b model.Match) int {
+		return cmp.Compare(b.Severity, a.Severity)
+	})
+	return lo.Map(signals, func(match model.Match, _ int) Span {
+		return Span{Start: match.Start, End: match.End, Style: severityStyle(match.Severity)}
+	})
 }
 
 // withReason appends the reason ⟨…⟩ of the highest hit severity at the end of
