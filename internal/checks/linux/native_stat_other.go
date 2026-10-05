@@ -17,9 +17,11 @@ type statFields struct {
 	gid   int
 	mtime time.Time
 	ctime time.Time
+	atime time.Time
 	dev   uint64
 }
 
 func statOf(info os.FileInfo) statFields {
-	return statFields{nlink: 1, mtime: info.ModTime(), ctime: info.ModTime()}
+	now := info.ModTime()
+	return statFields{nlink: 1, mtime: now, ctime: now, atime: now}
 }

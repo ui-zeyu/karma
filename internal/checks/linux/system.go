@@ -19,18 +19,18 @@ var SystemChecks = []*model.Check{
 		define.CheckOpt{Syntax: "env"}),
 	define.LinuxCheck("uptime", "Hostname and boot time", model.AspectSystem,
 		[]model.Probe{
-			{Label: "uptime", Inv: model.NewCommand("uptime")},
+			{Label: "uptime", Inv: model.Dual{Run: nativeUptime, Script: "uptime"}},
 			{Label: "proc-uptime", Inv: model.Dual{Run: nativeProcUptime, Script: "cat /proc/uptime"}},
 		},
 		define.CheckOpt{}),
 	define.LinuxCheck("time", "System time and timezone", model.AspectSystem,
 		[]model.Probe{
 			{Label: "timedatectl", Inv: model.NewCommand("timedatectl")},
-			{Label: "date", Inv: model.NewCommand("date")},
+			{Label: "date", Inv: model.Dual{Run: nativeDate, Script: "date"}},
 		},
 		define.CheckOpt{}),
 	define.LinuxCheck("env", "Environment variables (security-relevant)", model.AspectSystem,
-		[]model.Probe{{Label: "env", Inv: model.NewCommand("env")}},
+		[]model.Probe{{Label: "env", Inv: model.Dual{Run: nativeEnv, Script: "env"}}},
 		define.CheckOpt{
 			Syntax: "env",
 			// No filter: a whitelist would hide hijack vectors outside the list

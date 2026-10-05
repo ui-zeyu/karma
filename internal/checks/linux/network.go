@@ -130,7 +130,7 @@ func parseProcNet(title string, text string) *model.Shaped {
 var NetworkChecks = []*model.Check{
 	define.LinuxCheck("listen", "Listening and established connections", model.AspectNetwork,
 		[]model.Probe{
-			{Label: "ss", Inv: model.NewCommand("ss", "-tunap")},
+			{Label: "ss", Inv: model.Dual{Run: nativeSs, Script: "ss -tunap"}},
 			{Label: "netstat", Inv: model.NewCommand("netstat", "-tunap")},
 			// The proc-net hex address restore is this probe's own dialect (adapt carries the
 			// section title to tell TCP/UDP); ss and netstat already output the target shape.
@@ -156,20 +156,20 @@ var NetworkChecks = []*model.Check{
 		}),
 	define.LinuxCheck("addr", "Network addresses", model.AspectNetwork,
 		[]model.Probe{
-			{Label: "ip", Inv: model.NewCommand("ip", "-br", "addr")},
+			{Label: "ip", Inv: model.Dual{Run: nativeIPAddr, Script: "ip -br addr"}},
 			{Label: "ifconfig", Inv: model.NewCommand("ifconfig", "-a")},
-			{Label: "hostname", Inv: model.NewCommand("hostname", "-I")},
+			{Label: "hostname", Inv: model.Dual{Run: nativeHostnameIps, Script: "hostname -I"}},
 		},
 		define.CheckOpt{Syntax: "ip-addr"}),
 	define.LinuxCheck("arp", "ARP / neighbor table", model.AspectNetwork,
 		[]model.Probe{
-			{Label: "ip", Inv: model.NewCommand("ip", "neigh")},
+			{Label: "ip", Inv: model.Dual{Run: nativeIPNeigh, Script: "ip neigh"}},
 			{Label: "arp", Inv: model.NewCommand("arp", "-n")},
 		},
 		define.CheckOpt{Syntax: "ip-keyval"}),
 	define.LinuxCheck("route", "Routing table", model.AspectNetwork,
 		[]model.Probe{
-			{Label: "ip", Inv: model.NewCommand("ip", "route")},
+			{Label: "ip", Inv: model.Dual{Run: nativeIPRoute, Script: "ip route"}},
 			{Label: "route", Inv: model.NewCommand("route", "-n")},
 			{Label: "netstat", Inv: model.NewCommand("netstat", "-rn")},
 		},

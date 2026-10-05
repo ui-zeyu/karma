@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"karma/internal/model"
 )
@@ -198,20 +199,43 @@ var minerNameGlobs = []string{
 	"networkservice*", "config.json",
 }
 
+// minerPsLines filters snapshot rows through the miner pattern, dropping the
+// script tier's "grep" noise.
+func minerPsLines(entries []procEntry, boot, now time.Time, uptime float64, memTotal int64) []string {
+	var out []string
+	for _, e := range entries {
+		if line := psAuxRow(e, boot, now, uptime, memTotal); minerPsRe.MatchString(line) && !strings.Contains(line, "grep") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 // nativeMiner mirrors minerScript: matched process lines, the fixed drop-path
-// attributes, and the temp-name walk's ls -l batch. The ps section drops
-// lines carrying "grep" exactly like the script's second grep.
+// attributes, and the temp-name walk's ls -l batch. The ps scan reads the
+// /proc snapshot (an interposed ps cannot hide a miner), and the ls -l rows
+// come from lsBody in-process. The ps section drops lines carrying "grep"
+// exactly like the script's second grep.
 func nativeMiner(ctx context.Context) (string, error) {
+	entries, boot, uptime, memTotal, ok := procSnapshot(ctx)
+	if !ok {
+		return "", model.ErrTierUnavailable
+	}
+	names := newNameCache()
+	now := time.Now()
 	var b strings.Builder
 	b.WriteString("== ps\n")
-	for _, line := range strings.Split(runHost(ctx, []string{"ps", "auxww"}, false).out, "\n") {
-		if minerPsRe.MatchString(line) && !strings.Contains(line, "grep") {
-			b.WriteString(line)
+	for _, line := range minerPsLines(entries, boot, now, uptime, memTotal) {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	b.WriteString("== drop paths\n")
+	for _, path := range minerDropPaths {
+		if info, err := os.Stat(path); err == nil {
+			b.WriteString(lsBody(info, path, names))
 			b.WriteByte('\n')
 		}
 	}
-	b.WriteString("== drop paths\n")
-	b.WriteString(runHost(ctx, append([]string{"ls", "-l"}, minerDropPaths...), true).out)
 	b.WriteString("== temp names\n")
 	var hits []string
 	for _, dir := range tmpDirs {
@@ -229,8 +253,11 @@ func nativeMiner(ctx context.Context) (string, error) {
 			return b.String(), err
 		}
 	}
-	if len(hits) > 0 {
-		b.WriteString(runHost(ctx, append([]string{"ls", "-l"}, hits...), true).out)
+	for _, hit := range hits {
+		if info, err := os.Stat(hit); err == nil {
+			b.WriteString(lsBody(info, hit, names))
+			b.WriteByte('\n')
+		}
 	}
 	return b.String(), nil
 }

@@ -87,7 +87,34 @@ func nativeProcModules(ctx context.Context) (string, error) {
 	return string(data), nil
 }
 
-// nativeTainted reads the taint mask.
+// nativeLsmod formats /proc/modules as the lsmod table — header included, so
+// the lsmod lexer reads both channels' output the same way. The fourth
+// /proc/modules field is the dependent-module list or "-".
+func nativeLsmod(ctx context.Context) (string, error) {
+	data, err := os.ReadFile("/proc/modules")
+	if err != nil {
+		return "", model.ErrTierUnavailable
+	}
+	var b strings.Builder
+	b.WriteString("Module                  Size  Used by\n")
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		used := ""
+		if len(f) >= 4 && f[3] != "-" {
+			used = f[3]
+		}
+		fmt.Fprintf(&b, "%-20s %8s %2s %s\n", f[0], f[1], f[2], used)
+	}
+	return b.String(), nil
+}
+
+// nativeTainted reads the taint mask. procfs.KernelTainted covers the same file
+// but is Linux-only, and this tier is defined on every platform (it reports
+// itself unavailable where /proc is absent); the file holds one integer, so it
+// is read directly.
 func nativeTainted(ctx context.Context) (string, error) {
 	data, err := os.ReadFile("/proc/sys/kernel/tainted")
 	if err != nil {

@@ -97,7 +97,7 @@ var LogsChecks = []*model.Check{
 			Rules:     []model.Rule{historyOffRule, historyClearRule, define.KeywordRule},
 		}),
 	define.LinuxCheck("lastb", "Failed login records", model.AspectLog,
-		[]model.Probe{{Label: "lastb", Inv: model.NewCommand("lastb", "-n", "400")}},
+		[]model.Probe{{Label: "lastb", Inv: model.Dual{Run: nativeLastb, Script: "lastb -n 400"}}},
 		define.CheckOpt{Syntax: "table"}),
 	define.LinuxCheck("viminfo", "vim command history", model.AspectLog,
 		tailFilesCheck(200, "/root/.viminfo", "/home/*/.viminfo"),

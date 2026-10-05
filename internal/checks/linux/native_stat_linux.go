@@ -19,13 +19,15 @@ type statFields struct {
 	gid   int
 	mtime time.Time
 	ctime time.Time
+	atime time.Time
 	dev   uint64
 }
 
 func statOf(info os.FileInfo) statFields {
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return statFields{nlink: 1, mtime: info.ModTime(), ctime: info.ModTime()}
+		now := info.ModTime()
+		return statFields{nlink: 1, mtime: now, ctime: now, atime: now}
 	}
 	return statFields{
 		nlink: int(st.Nlink),
@@ -33,6 +35,7 @@ func statOf(info os.FileInfo) statFields {
 		gid:   int(st.Gid),
 		mtime: time.Unix(st.Mtim.Sec, st.Mtim.Nsec),
 		ctime: time.Unix(st.Ctim.Sec, st.Ctim.Nsec),
+		atime: time.Unix(st.Atim.Sec, st.Atim.Nsec),
 		dev:   uint64(st.Dev),
 	}
 }

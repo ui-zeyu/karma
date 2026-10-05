@@ -1,7 +1,8 @@
-// Local channel: turns an Invocation into a subprocess. The project's only
-// subprocess spawn point. Command goes through exec without a shell; Shell goes
-// through /bin/sh -c (rendering shared with SSH via shellcmd, POSIX only). A
-// timeout kills the whole process tree; output already produced is kept.
+// Local channel: turns an Invocation into a subprocess, or runs a Dual tier's
+// in-process body itself. The project's only subprocess spawn point. Command
+// goes through exec without a shell; Shell goes through /bin/sh -c (rendering
+// shared with SSH via shellcmd, POSIX only). A timeout kills the whole process
+// tree; output already produced is kept.
 
 package session
 
@@ -40,10 +41,21 @@ func (LocalSession) Name() string { return "local" }
 func (LocalSession) Channel() model.Channel { return model.ChanLocal }
 
 // Run sends the invocation to run locally. A Dual tier runs its in-process
-// body; everything else becomes a subprocess.
+// body first; everything else becomes a subprocess.
+//
+// A body that cannot answer on this host — it reads a kernel interface the
+// host lacks, /proc on a non-Linux developer host — reports
+// model.ErrTierUnavailable, and the tier then runs its script side through the
+// local shell. So the local channel answers wherever the ssh channel would,
+// and the in-process body is what a Linux target uses.
 func (s LocalSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
 	if d, ok := inv.(model.Dual); ok {
-		return runNative(ctx, d.Run, timeout, lineLimit)
+		// Exit 127 is runNative's mapping of ErrTierUnavailable, the same code
+		// a missing binary yields; it is the only 127 a body can produce.
+		if result := runNative(ctx, d.Run, timeout, lineLimit); result.ExitCode != 127 || d.Script == "" {
+			return result
+		}
+		return runLocal(ctx, posixShell(d.Script), timeout, lineLimit)
 	}
 	return runLocal(ctx, ArgvFor(inv), timeout, lineLimit)
 }

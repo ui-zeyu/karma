@@ -325,11 +325,14 @@ exit 0
 
 // ProcessChecks covers processes.
 var ProcessChecks = []*model.Check{
+	// Locally every tier renders the in-process /proc snapshot (native_ps);
+	// forest nesting is pstree's job there. On ssh the same labels run the
+	// host binaries.
 	define.LinuxCheck("ps", "Process tree", model.AspectProcess,
 		[]model.Probe{
-			{Label: "ps", Inv: model.NewCommand("ps", "auxwwf")},
-			{Label: "pstree", Inv: model.NewCommand("pstree", "-ap")},
-			{Label: "ps-ef", Inv: model.NewCommand("ps", "-ef")},
+			{Label: "ps", Inv: model.Dual{Run: nativePsAux, Script: "ps auxwwf"}},
+			{Label: "pstree", Inv: model.Dual{Run: nativePstree, Script: "pstree -ap"}},
+			{Label: "ps-ef", Inv: model.Dual{Run: nativePsEf, Script: "ps -ef"}},
 		},
 		define.CheckOpt{
 			Syntax: "table",
@@ -360,9 +363,9 @@ var ProcessChecks = []*model.Check{
 		[]model.Probe{
 			// head is the shape this probe wants: stop when enough is read, count it as a
 			// complete answer, and do not mark it "truncated"
-			{Label: "top", Inv: model.NewCommand("top", "-b", "-n", "1"), Head: 25},
-			{Label: "ps-cpu", Inv: model.NewCommand("ps", "aux", "--sort=-%cpu"), Head: 10},
-			{Label: "ps-mem", Inv: model.NewCommand("ps", "aux", "--sort=-%mem"), Head: 10},
+			{Label: "top", Inv: model.Dual{Run: nativeTop, Script: "top -b -n 1"}, Head: 25},
+			{Label: "ps-cpu", Inv: model.Dual{Run: nativePsCPU, Script: "ps aux --sort=-%cpu"}, Head: 10},
+			{Label: "ps-mem", Inv: model.Dual{Run: nativePsMem, Script: "ps aux --sort=-%mem"}, Head: 10},
 		},
 		define.CheckOpt{Syntax: "top", Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,

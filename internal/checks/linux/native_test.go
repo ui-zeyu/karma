@@ -207,6 +207,34 @@ func TestVerifyChangedParsesMd5Flag(t *testing.T) {
 	}
 }
 
+// The forensics rows keep ls -l's own order (ls sorts its arguments) and its
+// symlink arrow; a file that is gone costs only its row.
+func TestLsRowsSortsAndKeepsLinkTargets(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "a.txt")
+	second := filepath.Join(dir, "b.txt")
+	link := filepath.Join(dir, "c-link")
+	for _, path := range []string{second, first} {
+		if err := writeFile(t, path, []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("a.txt", link); err != nil {
+		t.Fatal(err)
+	}
+	rows := strings.Split(strings.TrimRight(
+		lsRows([]string{second, link, first, filepath.Join(dir, "gone")}), "\n"), "\n")
+	if len(rows) != 3 {
+		t.Fatalf("wanted three rows (the missing file drops out), got %v", rows)
+	}
+	if !strings.HasSuffix(rows[0], " "+first) || !strings.HasSuffix(rows[1], " "+second) {
+		t.Fatalf("rows should be sorted by path: %v", rows)
+	}
+	if !strings.HasSuffix(rows[2], "c-link -> a.txt") {
+		t.Fatalf("symlink row should keep the arrow: %q", rows[2])
+	}
+}
+
 func TestNativeSuidScanFiltersModeBit(t *testing.T) {
 	dir := t.TempDir()
 	plain := filepath.Join(dir, "plain")
@@ -230,21 +258,24 @@ func TestNativeSuidScanFiltersModeBit(t *testing.T) {
 }
 
 func TestNativeMinerPsFilter(t *testing.T) {
-	restore := runHost
-	t.Cleanup(func() { runHost = restore })
-	runHost = func(ctx context.Context, argv []string, cLocale bool) hostResult {
-		switch {
-		case slices.Equal(argv, []string{"ps", "auxww"}):
-			return hostResult{out: "root 1 xmrig --donate\nuser 2 grep xmrig\nuser 3 stratum+tcp://pool\nuser 4 bash\n", ok: true}
-		default:
-			return hostResult{ok: true}
-		}
+	now := time.Now()
+	boot := now.Add(-time.Hour)
+	entry := func(user string, pid int, args string) procEntry {
+		return procEntry{pid: pid, user: user, args: args, state: 'S'}
 	}
-	body, err := nativeMiner(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	entries := []procEntry{
+		entry("root", 1, "xmrig --donate"),
+		entry("user", 2, "grep xmrig"),
+		entry("user", 3, "stratum+tcp://pool"),
+		entry("user", 4, "bash"),
 	}
-	if !strings.Contains(body, "root 1 xmrig") || !strings.Contains(body, "stratum+tcp") {
+	var b strings.Builder
+	for _, line := range minerPsLines(entries, boot, now, 3600, 1<<30) {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	body := b.String()
+	if !strings.Contains(body, "xmrig --donate") || !strings.Contains(body, "stratum+tcp") {
 		t.Fatalf("miner ps window lost hits:\n%s", body)
 	}
 	if strings.Contains(body, "grep") || strings.Contains(body, "bash") {

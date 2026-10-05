@@ -25,6 +25,45 @@ func TestRunNativeUnavailableFallsThroughLikeAMissingBinary(t *testing.T) {
 	}
 }
 
+// A body that cannot answer on this host yields to the tier's script side: the
+// local channel then answers the way the ssh channel would (a non-Linux host
+// runs the host's ps, df, last).
+func TestRunNativeUnavailableFallsBackToTheScript(t *testing.T) {
+	res := LocalSession{}.Run(context.Background(),
+		model.Dual{
+			Run:    func(context.Context) (string, error) { return "", model.ErrTierUnavailable },
+			Script: "echo from-script",
+		}, 10*time.Second, 0)
+	if res.ExitCode != 0 || res.Stdout != "from-script\n" {
+		t.Fatalf("wanted the script side's answer, got %+v", res)
+	}
+}
+
+// An answered body is the answer: the script side does not run.
+func TestRunNativeAnsweredBodySkipsTheScript(t *testing.T) {
+	res := LocalSession{}.Run(context.Background(),
+		model.Dual{
+			Run:    func(context.Context) (string, error) { return "in-process\n", nil },
+			Script: "echo from-script",
+		}, 10*time.Second, 0)
+	if res.Stdout != "in-process\n" {
+		t.Fatalf("wanted the in-process body, got %+v", res)
+	}
+}
+
+// The fallback runs the script once: a script that is itself missing stays the
+// 127 the runner reads as an unavailable tier.
+func TestRunNativeFallbackDoesNotRetryTheBody(t *testing.T) {
+	res := LocalSession{}.Run(context.Background(),
+		model.Dual{
+			Run:    func(context.Context) (string, error) { return "", model.ErrTierUnavailable },
+			Script: "exit 127",
+		}, 10*time.Second, 0)
+	if res.ExitCode != 127 {
+		t.Fatalf("wanted the script's own 127, got %+v", res)
+	}
+}
+
 func TestRunNativeErrorReportsStderr(t *testing.T) {
 	res := LocalSession{}.Run(context.Background(),
 		model.Dual{Run: func(context.Context) (string, error) { return "", errors.New("boom") }}, 0, 0)

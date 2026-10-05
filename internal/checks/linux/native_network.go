@@ -6,8 +6,30 @@ package linux
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
+
+	"karma/internal/model"
 )
+
+// nativeHostnameIps mirrors `hostname -I`: every interface address except
+// loopback, gathered over netlink — no hostname binary, no NSS.
+func nativeHostnameIps(ctx context.Context) (string, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", model.ErrTierUnavailable
+	}
+	var ips []string
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			ips = append(ips, ipnet.IP.String())
+		}
+	}
+	if len(ips) == 0 {
+		return "", model.ErrTierUnavailable
+	}
+	return strings.Join(ips, " ") + "\n", nil
+}
 
 // nativeProcNet mirrors procNetScript: each /proc/net socket table becomes
 // one section; parseProcNet (the probe's Adapt) restores the hex endpoints.

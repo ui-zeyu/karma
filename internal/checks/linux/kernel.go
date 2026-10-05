@@ -143,9 +143,10 @@ var KernelChecks = []*model.Check{
 			},
 		}),
 	// dmesg's module lines are the evidence surface for load activity; placed last,
-	// before the big lsmod table
+	// before the big lsmod table. Locally the ring buffer is read through
+	// syslog(2) in-process (native_dmesg_linux).
 	define.LinuxCheck("dmesg", "Kernel module logs", model.AspectKernel,
-		[]model.Probe{{Label: "dmesg", Inv: model.NewCommand("dmesg")}},
+		[]model.Probe{{Label: "dmesg", Inv: model.Dual{Run: nativeDmesg, Script: "dmesg"}}},
 		define.CheckOpt{
 			Syntax: "dmesg",
 			// The keep filter leaves only module lines: load/taint records in the kernel ring
@@ -163,7 +164,7 @@ var KernelChecks = []*model.Check{
 	// aspect so it does not block the targeted checks before it
 	define.LinuxCheck("lsmod", "Kernel modules", model.AspectKernel,
 		[]model.Probe{
-			{Label: "lsmod", Inv: model.NewCommand("lsmod")},
+			{Label: "lsmod", Inv: model.Dual{Run: nativeLsmod, Script: "lsmod"}},
 			{Label: "proc-modules", Inv: model.Dual{Run: nativeProcModules, Script: "cat /proc/modules 2>/dev/null"}},
 		},
 		// The Used by tail can contain spaces, which the generic table word-by-word

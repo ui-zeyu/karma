@@ -130,16 +130,17 @@ var tunnelToolRule = model.NewRule("tunnel-tool",
 
 // FilesystemChecks covers disks and files.
 var FilesystemChecks = []*model.Check{
+	// Locally df reads /proc/self/mounts and statfs in-process (native_fs).
 	define.LinuxCheck("df", "Disk usage", model.AspectFilesystem,
-		[]model.Probe{{Label: "df", Inv: model.NewCommand("df", "-h")}},
+		[]model.Probe{{Label: "df", Inv: model.Dual{Run: nativeDf, Script: "df -h"}}},
 		define.CheckOpt{Syntax: "df"}),
 	define.LinuxCheck("fstab", "Filesystem mount config (fstab)", model.AspectFilesystem,
 		readFilesCheck("/etc/fstab"),
 		define.CheckOpt{Syntax: "fstab", Rules: []model.Rule{mountRemoteFsRule}}),
 	define.LinuxCheck("mounts", "Mount points", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "findmnt", Inv: model.NewCommand("findmnt")},
-			{Label: "mount", Inv: model.NewCommand("mount")},
+			{Label: "findmnt", Inv: model.Dual{Run: nativeFindmnt, Script: "findmnt"}},
+			{Label: "mount", Inv: model.Dual{Run: nativeMount, Script: "mount"}},
 		},
 		define.CheckOpt{
 			Filters: []model.LineFilter{

@@ -6,6 +6,8 @@ package linux
 
 import (
 	"context"
+	"os"
+	"slices"
 	"strings"
 
 	"karma/internal/model"
@@ -40,18 +42,43 @@ func verifyChanged(verifyOut string) []string {
 }
 
 // forensics appends the in-place forensics sections for one file list —
-// forensicsBlock's mirror: `file` when installed, then LC_ALL=C ls -l; an
-// empty list appends nothing.
-func forensics(b *strings.Builder, ctx context.Context, files []string) {
+// forensicsBlock's mirror: the type rows, then the ls -l rows; an empty list
+// appends nothing. Both sections are built in process, so no hooked libc or
+// PATH shadow stands between the evidence and this process.
+func forensics(b *strings.Builder, files []string) {
 	if len(files) == 0 {
 		return
 	}
-	if haveBinary("file") {
-		b.WriteString("== file\n")
-		b.WriteString(runHost(ctx, append([]string{"file"}, files...), false).out)
-	}
+	b.WriteString("== file\n")
+	b.WriteString(fileRows(files))
 	b.WriteString("== ls\n")
-	b.WriteString(runHost(ctx, append([]string{"ls", "-l"}, files...), true).out)
+	b.WriteString(lsRows(files))
+}
+
+// sortedPaths returns the paths in the listing tier's sorted order.
+func sortedPaths(files []string) []string {
+	sorted := slices.Clone(files)
+	slices.Sort(sorted)
+	return sorted
+}
+
+// lsRows renders the `== ls` forensics section for one file list. The
+// attributes come from lstat in process, not from a hooked libc: a setuid bit
+// added to an auth binary is the kind of fact an LD_PRELOAD ls would hide.
+// Rows are the listing tier's shape (script.LSBodyPrintf) — the same rows every
+// other local listing prints — so they differ from GNU ls's column padding, and
+// the date is clock-shaped. ls sorts its arguments itself, and a vanished file
+// costs only its row (ls reports it on stderr, which the script tier drops).
+func lsRows(files []string) string {
+	names := newNameCache()
+	var b strings.Builder
+	for _, path := range sortedPaths(files) {
+		if info, err := os.Lstat(path); err == nil {
+			b.WriteString(lsBody(info, path, names))
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 // nativePkgVerify mirrors verifyScript: the verifier's own output when
@@ -68,7 +95,7 @@ func nativePkgVerify(argv []string) func(context.Context) (string, error) {
 		if strings.TrimRight(res.out, "\n") != "" {
 			b.WriteString(res.out)
 		}
-		forensics(&b, ctx, verifyChanged(res.out))
+		forensics(&b, verifyChanged(res.out))
 		return b.String(), nil
 	}
 }
@@ -112,6 +139,6 @@ var authBinPaths = []string{
 // shared forensics block.
 func nativeAuthBinaries(ctx context.Context) (string, error) {
 	var b strings.Builder
-	forensics(&b, ctx, expandFiles(authBinPaths))
+	forensics(&b, expandFiles(authBinPaths))
 	return b.String(), nil
 }

@@ -3,8 +3,6 @@
 package linux
 
 import (
-	"slices"
-
 	"karma/internal/define"
 	"karma/internal/model"
 )
@@ -79,16 +77,13 @@ var pamDirs = []string{
 
 // IdentityChecks covers identity.
 var IdentityChecks = []*model.Check{
+	// Raw files only: NSS (getent) is deliberately bypassed — it is the
+	// interposition surface, and directory-sourced accounts live on the
+	// directory server anyway. The dash-suffixed copy is what user tools
+	// leave behind; one that changed while the live file did not is a
+	// tamper sign.
 	define.LinuxCheck("accounts", "Accounts", model.AspectIdentity,
-		slices.Concat(
-			[]model.Probe{
-				// getent covers NSS (LDAP etc.); the file tier catches minimal
-				// systems. The dash-suffixed copy is what user tools leave behind;
-				// one that changed while the live file did not is a tamper sign.
-				{Label: "getent", Inv: model.NewCommand("getent", "passwd")},
-			},
-			readFilesCheck("/etc/passwd", "/etc/passwd-"),
-		),
+		readFilesCheck("/etc/passwd", "/etc/passwd-"),
 		// passwd/group are colon-separated tables; color fields in a cycle to separate columns
 		define.CheckOpt{
 			Syntax: "colon",
@@ -152,17 +147,19 @@ var IdentityChecks = []*model.Check{
 					"group password set (newgrp escalation)").WithExclude(`^[^:\n]+:[*!x]`),
 			},
 		}),
+	// Locally the utmp/wtmp files are parsed in-process (native_utmp); on ssh
+	// the same labels run the util-linux binaries.
 	define.LinuxCheck("logins", "Current logins", model.AspectIdentity,
 		[]model.Probe{
-			{Label: "w", Inv: model.NewCommand("w")},
-			{Label: "who", Inv: model.NewCommand("who")},
+			{Label: "w", Inv: model.Dual{Run: nativeW, Script: "w"}},
+			{Label: "who", Inv: model.Dual{Run: nativeWho, Script: "who"}},
 		},
 		define.CheckOpt{Syntax: "table"}),
 	define.LinuxCheck("last", "Login history (last)", model.AspectIdentity,
-		[]model.Probe{{Label: "last", Inv: model.NewCommand("last", "-n", "200")}},
+		[]model.Probe{{Label: "last", Inv: model.Dual{Run: nativeLast, Script: "last -n 200"}}},
 		define.CheckOpt{Syntax: "table"}),
 	define.LinuxCheck("lastlog", "Last account login (lastlog)", model.AspectIdentity,
-		[]model.Probe{{Label: "lastlog", Inv: model.NewCommand("lastlog")}},
+		[]model.Probe{{Label: "lastlog", Inv: model.Dual{Run: nativeLastlog, Script: "lastlog"}}},
 		define.CheckOpt{
 			Syntax: "table",
 			Filters: []model.LineFilter{

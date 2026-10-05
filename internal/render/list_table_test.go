@@ -23,7 +23,7 @@ func testCatalog() []*model.Check {
 	return []*model.Check{
 		check("os-release", "Distro and kernel", model.Linux, model.AspectSystem, "cat"),
 		check("uptime", "Hostname and boot time", model.Linux, model.AspectSystem, "uptime", "proc-uptime"),
-		check("accounts", "Accounts", model.Linux, model.AspectIdentity, "getent", "cat"),
+		check("accounts", "Accounts", model.Linux, model.AspectIdentity, "cat"),
 		check("authorized-keys", "SSH authorized keys", model.Linux, model.AspectIdentity, "find"),
 		check("run-keys", "Autorun Entries (Run Keys and Startup Folders)", model.Windows, model.AspectPersistence,
 			"reg", "hklm-run", "hklm-runonce", "hklm-wow", "hkcu-run", "hkcu-runonce"),
