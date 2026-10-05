@@ -3,6 +3,8 @@
 package linux
 
 import (
+	"slices"
+
 	"karma/internal/define"
 	"karma/internal/model"
 )
@@ -78,13 +80,15 @@ var pamDirs = []string{
 // IdentityChecks covers identity.
 var IdentityChecks = []*model.Check{
 	define.LinuxCheck("accounts", "Accounts", model.AspectIdentity,
-		[]model.Probe{
-			// Two probes: getent covers NSS (LDAP etc.), the files catch minimal systems.
-			// The dash-suffixed copy is what user tools leave behind; one that changed
-			// while the live file did not is a tamper sign.
-			{Label: "getent", Inv: model.NewCommand("getent", "passwd")},
-			readFilesProbe("/etc/passwd", "/etc/passwd-"),
-		},
+		slices.Concat(
+			[]model.Probe{
+				// getent covers NSS (LDAP etc.); the file tier catches minimal
+				// systems. The dash-suffixed copy is what user tools leave behind;
+				// one that changed while the live file did not is a tamper sign.
+				{Label: "getent", Inv: model.NewCommand("getent", "passwd")},
+			},
+			readFilesCheck("/etc/passwd", "/etc/passwd-"),
+		),
 		// passwd/group are colon-separated tables; color fields in a cycle to separate columns
 		define.CheckOpt{
 			Syntax: "colon",
@@ -111,7 +115,7 @@ var IdentityChecks = []*model.Check{
 	// password, so after filtering the body holds only live hashes and anomalies.
 	// An empty root password is its own CRITICAL, matching the uid0 wording.
 	define.LinuxCheck("shadow", "Shadow passwords (/etc/shadow)", model.AspectIdentity,
-		[]model.Probe{readFilesProbe("/etc/shadow", "/etc/shadow-")},
+		readFilesCheck("/etc/shadow", "/etc/shadow-"),
 		define.CheckOpt{
 			Syntax: "colon",
 			// Ubuntu locks with !*, RedHat with !; only entries whose field 2 is entirely
@@ -130,7 +134,7 @@ var IdentityChecks = []*model.Check{
 	// readable only by root); both are colon-separated, so filters and rules are shared.
 	// The dash-suffixed copies go along for the same reason as passwd-.
 	define.LinuxCheck("groups", "Groups (/etc/group, /etc/gshadow)", model.AspectIdentity,
-		[]model.Probe{readFilesProbe("/etc/group", "/etc/gshadow", "/etc/group-", "/etc/gshadow-")},
+		readFilesCheck("/etc/group", "/etc/gshadow", "/etc/group-", "/etc/gshadow-"),
 		define.CheckOpt{
 			Syntax: "colon",
 			// Only entries with no members and a normal placeholder password (x/*/!/!*) are
@@ -167,7 +171,7 @@ var IdentityChecks = []*model.Check{
 		}),
 	define.LinuxCheck("sudoers", "Sudo grants", model.AspectIdentity,
 		[]model.Probe{
-			{Label: "cat", Inv: model.Shell{Script: sudoersScript}},
+			{Label: "cat", Inv: model.Dual{Run: nativeSudoers, Script: sudoersScript}},
 			{Label: "sudo", Inv: model.NewCommand("sudo", "-n", "-l")},
 		},
 		define.CheckOpt{
@@ -178,10 +182,12 @@ var IdentityChecks = []*model.Check{
 				define.KeywordRule,
 			},
 		}),
-	define.ListingCheck("pam", "PAM config and module directories", model.AspectIdentity, pamDirs, 100,
+	listingCheck("pam", "PAM config and module directories", model.AspectIdentity, pamDirs, 100,
 		[]model.Rule{define.KeywordRule}),
 	define.LinuxCheck("authorized-keys", "SSH authorized keys", model.AspectIdentity,
-		[]model.Probe{{Label: "find", Inv: model.Shell{Script: authorizedKeysScript}}},
+		[]model.Probe{
+			{Label: "find", Inv: model.Dual{Run: nativeAuthorizedKeys, Script: authorizedKeysScript}},
+		},
 		define.CheckOpt{
 			Syntax: "ssh-pubkey",
 			Rules: []model.Rule{
@@ -193,7 +199,7 @@ var IdentityChecks = []*model.Check{
 	// A modified sshd_config (redirected AuthorizedKeysFile, root access opened) is
 	// the easiest key-based backdoor
 	define.LinuxCheck("sshd-config", "sshd config", model.AspectIdentity,
-		[]model.Probe{readFilesProbe("/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/*.conf")},
+		readFilesCheck("/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/*.conf"),
 		define.CheckOpt{
 			Syntax: "sshd-config",
 			Rules: []model.Rule{
@@ -208,7 +214,7 @@ var IdentityChecks = []*model.Check{
 	// Client-side ProxyCommand/LocalCommand are backdoor vectors too: a login runs the
 	// command. The directive form matches sshd_config, so the lexer is the same.
 	define.LinuxCheck("ssh-client-config", "SSH client config", model.AspectIdentity,
-		[]model.Probe{readFilesProbe(sshClientConfigPaths...)},
+		readFilesCheck(sshClientConfigPaths...),
 		define.CheckOpt{
 			Syntax: "sshd-config",
 			Rules: []model.Rule{

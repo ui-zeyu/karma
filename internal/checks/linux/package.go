@@ -5,6 +5,7 @@ package linux
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"karma/internal/define"
@@ -38,9 +39,13 @@ var forensicsTail = "\nchanged=$(printf '%s\\n' \"$verify\" | awk 'substr($1, 3,
 // verifyScript stores the package-verify output in $verify, prints it only when
 // non-empty, then gathers forensics in place. The verifier has already run: no
 // differences is an empty answer with exit code 0, not a fall-through to another
-// package manager.
+// package manager. The leading command -v gate keeps that exit 0 from answering
+// for a missing package manager: the tier answers 127 instead and the chain
+// falls to the other package manager's tier.
 func verifyScript(command string) string {
-	head := fmt.Sprintf("verify=$(%s 2>/dev/null)\n[ -n \"$verify\" ] && printf '%%s\\n' \"$verify\"\n", command)
+	binary, _, _ := strings.Cut(command, " ")
+	head := fmt.Sprintf("command -v %s >/dev/null 2>&1 || exit 127\nverify=$(%s 2>/dev/null)\n[ -n \"$verify\" ] && printf '%%s\\n' \"$verify\"\n",
+		binary, command)
 	return head + forensicsTail + "exit 0\n"
 }
 
@@ -87,12 +92,14 @@ var binNotElfRule = model.NewRule("bin-not-elf",
 // PackageChecks covers packages.
 var PackageChecks = []*model.Check{
 	define.LinuxCheck("containers", "Containers (Docker)", model.AspectPackage,
-		[]model.Probe{{Label: "docker", Inv: model.Shell{Script: dockerScript}, Requires: []string{"docker"}}},
+		[]model.Probe{
+			{Label: "docker", Inv: model.Dual{Run: nativeDocker, Script: dockerScript}},
+		},
 		define.CheckOpt{Syntax: "table", Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("pkg-verify", "Package integrity verification", model.AspectPackage,
 		[]model.Probe{
-			{Label: "dpkg", Inv: model.Shell{Script: verifyScript(pkgVerifyDpkg)}, Requires: []string{"dpkg"}},
-			{Label: "rpm", Inv: model.Shell{Script: verifyScript(pkgVerifyRpm)}, Requires: []string{"rpm"}},
+			{Label: "dpkg", Inv: model.Dual{Run: nativePkgVerify([]string{"dpkg", "-V"}), Script: verifyScript(pkgVerifyDpkg)}},
+			{Label: "rpm", Inv: model.Dual{Run: nativePkgVerify([]string{"rpm", "-Va"}), Script: verifyScript(pkgVerifyRpm)}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -106,10 +113,14 @@ var PackageChecks = []*model.Check{
 			Timeout: pkgVerifyTimeout,
 		}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
-		[]model.Probe{{Label: "log", Inv: model.Shell{Script: pkgHistoryScript}}},
+		[]model.Probe{
+			{Label: "log", Inv: model.Dual{Run: nativePkgHistory, Script: pkgHistoryScript}},
+		},
 		define.CheckOpt{Rules: pkgHistoryRules}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
-		[]model.Probe{{Label: "file", Inv: model.Shell{Script: authBinScript}}},
+		[]model.Probe{
+			{Label: "file", Inv: model.Dual{Run: nativeAuthBinaries, Script: authBinScript}},
+		},
 		define.CheckOpt{
 			Syntax: "ls-l",
 			Rules:  []model.Rule{binNotElfRule, define.KeywordRule},

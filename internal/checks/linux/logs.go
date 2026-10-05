@@ -15,7 +15,6 @@ import (
 
 	"karma/internal/define"
 	"karma/internal/model"
-	"karma/internal/script"
 	"karma/internal/textutil"
 )
 
@@ -67,18 +66,16 @@ func runsBy[T any, K comparable](items []T, key func(T) K) [][]T {
 	return runs
 }
 
-var historyScript = script.ReadFiles([]string{
+// historyPaths: bash, zsh, and fish histories under root and every home —
+// fish stores its history as YAML (`- cmd: …`) under the data directory.
+var historyPaths = []string{
 	"/root/.bash_history",
 	"/home/*/.bash_history",
 	"/root/.zsh_history",
 	"/home/*/.zsh_history",
-	// fish stores its history as YAML (`- cmd: …`) under the data directory
 	"/root/.local/share/fish/fish_history",
 	"/home/*/.local/share/fish/fish_history",
-}, `tail -n 400 "$f"`, true)
-
-var viminfoScript = script.ReadFiles([]string{"/root/.viminfo", "/home/*/.viminfo"},
-	`tail -n 200 "$f"`, true)
+}
 
 // historyOff: the settings and commands that silence command history. The file
 // keeps earlier lines, so this is a present-tense signal.
@@ -93,7 +90,7 @@ var historyClearRule = model.NewRule("history-clear", `\bhistory\s+-c\b`, model.
 // LogsChecks covers logs.
 var LogsChecks = []*model.Check{
 	define.LinuxCheck("history", "User command history (tail)", model.AspectLog,
-		[]model.Probe{{Label: "tail", Inv: model.Shell{Script: historyScript}}},
+		tailFilesCheck(400, historyPaths...),
 		define.CheckOpt{
 			Syntax:    "bash",
 			Normalize: collapseRepeats,
@@ -103,7 +100,7 @@ var LogsChecks = []*model.Check{
 		[]model.Probe{{Label: "lastb", Inv: model.NewCommand("lastb", "-n", "400")}},
 		define.CheckOpt{Syntax: "table"}),
 	define.LinuxCheck("viminfo", "vim command history", model.AspectLog,
-		[]model.Probe{{Label: "tail", Inv: model.Shell{Script: viminfoScript}}},
+		tailFilesCheck(200, "/root/.viminfo", "/home/*/.viminfo"),
 		define.CheckOpt{
 			Filters: []model.LineFilter{
 				// viminfo is mostly registers and file marks; the command-line history section
@@ -112,7 +109,7 @@ var LogsChecks = []*model.Check{
 			},
 			Rules: []model.Rule{define.KeywordRule},
 		}),
-	define.ListingCheck("log-dirs", "Log directory listing (by mtime)", model.AspectLog,
+	listingCheck("log-dirs", "Log directory listing (by mtime)", model.AspectLog,
 		[]string{"/var/log", "/var/log/journal"}, 100,
 		[]model.Rule{
 			model.NewRule("logdir-middleware",

@@ -21,9 +21,11 @@ type scriptedSession struct {
 	reply func(model.Invocation) model.RunResult
 }
 
-func (s *scriptedSession) Name() string   { return "scripted" }
-func (s *scriptedSession) Target() string { return "scripted" }
-func (s *scriptedSession) Close() error   { return nil }
+func (s *scriptedSession) Name() string { return "scripted" }
+
+func (s *scriptedSession) Channel() model.Channel { return model.ChanSSH }
+
+func (s *scriptedSession) Close() error { return nil }
 
 func (s *scriptedSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ int) model.RunResult {
 	s.mu.Lock()

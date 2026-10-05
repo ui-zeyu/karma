@@ -23,6 +23,8 @@ type stubSession struct {
 
 func (s *stubSession) Name() string { return "stub" }
 
+func (s *stubSession) Channel() model.Channel { return model.ChanLocal }
+
 func (s *stubSession) Run(context.Context, model.Invocation, time.Duration, int) model.RunResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -64,6 +66,9 @@ type scriptSession struct {
 }
 
 func (s *scriptSession) Name() string { return "script" }
+
+func (s *scriptSession) Channel() model.Channel { return model.ChanLocal }
+
 func (s *scriptSession) Close() error { return nil }
 
 func (s *scriptSession) Run(context.Context, model.Invocation, time.Duration, int) model.RunResult {
@@ -260,5 +265,25 @@ func TestRunCatalogStopsOnCancelledContext(t *testing.T) {
 	RunCatalog(ctx, sess, bins("a"), []*model.Check{check}, model.RunOptions{Concurrency: 2}, deadObserver{})
 	if got := sess.ranCount(); got != 0 {
 		t.Fatalf("a cancelled run must not execute checks: ran %d", got)
+	}
+}
+
+// A tier with no branch for the session's channel is not part of that
+// channel's chain: it neither runs nor appears among the skipped labels.
+func TestRunCheckSkipsTierAbsentOnThisChannel(t *testing.T) {
+	check := &model.Check{ID: "asym", Aspect: model.AspectProcess, Probes: []model.Probe{
+		{Label: "walk", Inv: model.Dual{Script: "walk-script"}}, // exists on ssh only
+		{Label: "next", Inv: model.NewCommand("tool-next")},
+	}}
+	sess := &scriptSession{reply: []model.RunResult{{ExitCode: 0, Stdout: "rows\n"}}}
+	result := runCheck(context.Background(), sess, bins("next"), check, model.RunOptions{Timeout: time.Second})
+	if result.ProbeLabel != "next" || result.Outcome != model.Collected {
+		t.Fatalf("the channel-absent tier should be invisible: %+v", result)
+	}
+	if len(result.SkippedLabels) != 0 {
+		t.Fatalf("a tier absent on this channel is not a skip: %v", result.SkippedLabels)
+	}
+	if sess.ranCount() != 1 {
+		t.Fatalf("only the channel's tier should run: ran %d", sess.ranCount())
 	}
 }

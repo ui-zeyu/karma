@@ -74,7 +74,9 @@ var moduleDirs = []string{
 // KernelChecks covers the kernel.
 var KernelChecks = []*model.Check{
 	define.LinuxCheck("modules-load", "Boot-loaded modules (/etc/modules, modules-load.d)", model.AspectKernel,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: modulesLoadScript}}},
+		[]model.Probe{
+			{Label: "cat", Inv: model.Dual{Run: nativeModulesLoad, Script: modulesLoadScript}},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				// Exclude a leading /: an == section title is a file path and should not light
@@ -85,7 +87,9 @@ var KernelChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("modules-hidden", "Hidden module cross-check (/sys/module vs /proc/modules)", model.AspectKernel,
-		[]model.Probe{{Label: "proc-modules-diff", Inv: model.Shell{Script: hiddenModuleScript}}},
+		[]model.Probe{
+			{Label: "proc-modules-diff", Inv: model.Dual{Run: nativeModulesHidden, Script: hiddenModuleScript}},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("module-hidden", `^HIDDEN `, model.Critical,
@@ -98,14 +102,16 @@ var KernelChecks = []*model.Check{
 	// in brackets. grep is both collector and filter — no hit is a clean exit 1,
 	// which stays silent, exactly like webshell-grep.
 	define.LinuxCheck("kallsyms", "Kernel symbol table rootkit signatures (/proc/kallsyms)", model.AspectKernel,
-		[]model.Probe{{Label: "grep", Inv: model.Shell{Script: kallsymsScript}, LineLimit: 200}},
+		[]model.Probe{
+			{Label: "grep", Inv: model.Dual{Run: nativeKallsyms, Script: kallsymsScript}, LineLimit: 200},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("kallsyms-rootkit", `\b(?:`+rootkitSyms+`)\b`, model.Critical,
 					"known LKM rootkit symbol in the kernel symbol table"),
 			},
 		}),
-	define.ListingCheck("module-files", "Out-of-tree kernel modules (updates/dkms, extra, etc.)", model.AspectKernel,
+	listingCheck("module-files", "Out-of-tree kernel modules (updates/dkms, extra, etc.)", model.AspectKernel,
 		moduleDirs, 100,
 		[]model.Rule{
 			// The filename is at the end of an ls line (symlink lines carry " -> target", so
@@ -115,7 +121,9 @@ var KernelChecks = []*model.Check{
 				"out-of-tree module file"),
 		}),
 	define.LinuxCheck("tainted", "Kernel tainted flags", model.AspectKernel,
-		[]model.Probe{{Label: "tainted", Inv: model.Shell{Script: "cat /proc/sys/kernel/tainted 2>/dev/null"}}},
+		[]model.Probe{
+			{Label: "tainted", Inv: model.Dual{Run: nativeTainted, Script: "cat /proc/sys/kernel/tainted 2>/dev/null"}},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("kernel-tainted", `^[1-9]`, model.Medium,
@@ -123,7 +131,9 @@ var KernelChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("module-sig-config", "Kernel module signature config", model.AspectKernel,
-		[]model.Probe{{Label: "zcat", Inv: model.Shell{Script: moduleSigScript}}},
+		[]model.Probe{
+			{Label: "zcat", Inv: model.Dual{Run: nativeModuleSig, Script: moduleSigScript}},
+		},
 		define.CheckOpt{
 			Syntax: "env",
 			Rules: []model.Rule{
@@ -154,7 +164,7 @@ var KernelChecks = []*model.Check{
 	define.LinuxCheck("lsmod", "Kernel modules", model.AspectKernel,
 		[]model.Probe{
 			{Label: "lsmod", Inv: model.NewCommand("lsmod")},
-			{Label: "proc-modules", Inv: model.Shell{Script: "cat /proc/modules 2>/dev/null"}},
+			{Label: "proc-modules", Inv: model.Dual{Run: nativeProcModules, Script: "cat /proc/modules 2>/dev/null"}},
 		},
 		// The Used by tail can contain spaces, which the generic table word-by-word
 		// coloring would split apart

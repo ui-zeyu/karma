@@ -20,7 +20,11 @@ func bodyText(inv model.Invocation) string {
 		return script.Join(v.Argv)
 	case model.Shell:
 		return v.Script
+	case model.Dual:
+		return v.Script
 	}
+	// An invocation with no shell rendering never reaches this point: the
+	// local channel runs a Dual in process, and every other kind carries text.
 	return ""
 }
 

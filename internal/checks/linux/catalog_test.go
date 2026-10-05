@@ -47,6 +47,7 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"deleted-exe", `/proc/1234/exe -> /tmp/.x (deleted)`, "deleted-binary"},
 		{"deleted-exe", `sleep 2686147 root 0r REG 0,36 4 0 21655 /tmp/karma-del-test (deleted)`, "deleted-binary"},
 		{"hidden-procs", `1234`, "proc-not-in-ps"},
+		{"hidden-pids", `PID 42  fd=yes  comm=bash  cmd='/bin/bash -i'`, "hidden-pid"},
 		{"cwd-tmp", `/proc/1234 -> /tmp/.x`, "proc-cwd-tmp"},
 		{"firewall", `-A INPUT -p tcp --dport 22 -j ACCEPT`, "firewall-active"},
 		{"tcp-wrappers", `sshd: ALL: spawn /tmp/x`, "wrappers-exec"},

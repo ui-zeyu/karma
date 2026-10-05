@@ -86,14 +86,6 @@ var unitDirs = []string{
 	"/home/*/.config/systemd/user",
 }
 
-var rcLocalScript = script.ReadFiles([]string{"/etc/rc.local", "/etc/rc.d/rc.local"},
-	`cat "$f"`, false)
-
-var ldConfScript = script.Lines(
-	script.ReadFiles([]string{"/etc/ld.so.conf"}, `cat "$f"`, true),
-	script.ReadFiles([]string{"/etc/ld.so.conf.d/*"}, `cat "$f"`, true),
-)
-
 // udevScript: the writable layers of udev rules: /etc is admin overrides and /run
 // is runtime-generated; the /usr and /lib layer is a sea of official rules and is
 // not scanned. The listing is sorted by mtime and clustered, and grep catches only
@@ -106,9 +98,8 @@ var udevScript = script.Lines(
 	"done",
 )
 
-// motdScript: motd and update-motd.d are script surfaces run as root on login
+// motd: motd and update-motd.d are script surfaces run as root on login
 // (mainly Ubuntu).
-var motdScript = readFilesProbe("/etc/motd", "/etc/update-motd.d/*")
 
 // pthScript: a .pth in site/dist-packages is processed at Python startup, and a
 // line starting with import is code; setuptools' two legitimate precedence files
@@ -147,7 +138,9 @@ var generatorsScript = script.Lines(
 // PersistenceChecks covers persistence.
 var PersistenceChecks = []*model.Check{
 	define.LinuxCheck("cron", "Scheduled tasks", model.AspectPersistence,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: cronScript}}},
+		[]model.Probe{
+			{Label: "cat", Inv: model.Dual{Run: nativeCron, Script: cronScript}},
+		},
 		define.CheckOpt{
 			// pygments has no crontab lexer; the bash lexer approximates the command part well
 			// enough
@@ -170,7 +163,7 @@ var PersistenceChecks = []*model.Check{
 			Syntax: "table",
 		}),
 	define.LinuxCheck("rc-local", "rc.local boot script", model.AspectPersistence,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: rcLocalScript}}},
+		readFilesCheck("/etc/rc.local", "/etc/rc.d/rc.local"),
 		define.CheckOpt{
 			Syntax: "bash",
 			Rules: []model.Rule{
@@ -185,12 +178,15 @@ var PersistenceChecks = []*model.Check{
 	// to rc.d/init.d. The runlevel directories (rc0.d…rc6.d) hold the same links
 	// multiplied by runlevel, so they would flood the report for little extra signal;
 	// the dropped script itself lands in init.d and the boot-time layer is rcS.d.
-	define.ListingCheck("sysv-init", "SysV init scripts", model.AspectPersistence,
-		[]string{"/etc/init.d/", "/etc/rc.d", "/etc/rcS.d"}, 100, []model.Rule{define.KeywordRule}),
-	define.ListingCheck("xinetd", "xinetd service directory", model.AspectPersistence,
+	listingCheck("sysv-init", "SysV init scripts", model.AspectPersistence,
+		[]string{"/etc/init.d/", "/etc/rc.d", "/etc/rcS.d"}, 100,
+		[]model.Rule{define.KeywordRule}),
+	listingCheck("xinetd", "xinetd service directory", model.AspectPersistence,
 		[]string{"/etc/xinetd.d"}, 100, []model.Rule{define.KeywordRule}),
 	define.LinuxCheck("ld-preload", "Dynamic library preload (ld.so.preload)", model.AspectPersistence,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: "cat /etc/ld.so.preload 2>/dev/null"}}},
+		[]model.Probe{
+			{Label: "cat", Inv: model.Dual{Run: nativeLdPreload, Script: "cat /etc/ld.so.preload 2>/dev/null"}},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("preload-entry", `^[^#\n]\S+`, model.High, "preloaded shared library configured"),
@@ -200,17 +196,19 @@ var PersistenceChecks = []*model.Check{
 	// present, so it only gets a LOW hint; kept separate from ld.so.preload so one
 	// HIGH rule does not flag the whole directory list.
 	define.LinuxCheck("ld-conf", "Dynamic library search path (ld.so.conf)", model.AspectPersistence,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: ldConfScript}}},
+		readFilesCheck("/etc/ld.so.conf", "/etc/ld.so.conf.d/*"),
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("ld-conf-entry", `^[^#\n]\S+`, model.Low, "library search path entry"),
 			},
 		}),
 	define.LinuxCheck("shell-rc", "Shell startup files", model.AspectPersistence,
-		[]model.Probe{readFilesProbe(shellRcPaths...)},
+		readFilesCheck(shellRcPaths...),
 		define.CheckOpt{Rules: []model.Rule{historyOffRule, define.KeywordRule}, Syntax: "bash"}),
 	define.LinuxCheck("skel", "Home directory templates (/etc/skel)", model.AspectPersistence,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: skelScript}}},
+		[]model.Probe{
+			{Label: "cat", Inv: model.Dual{Run: nativeSkel, Script: skelScript}},
+		},
 		define.CheckOpt{
 			Syntax:    "bash",
 			Normalize: cluster.ListingNormalize(time.Now),
@@ -221,17 +219,21 @@ var PersistenceChecks = []*model.Check{
 	define.LinuxCheck("at", "at one-shot job queue", model.AspectPersistence,
 		[]model.Probe{{Label: "at", Inv: model.NewCommand("atq")}},
 		define.CheckOpt{Syntax: "table"}),
-	define.ListingCheck("unit-dirs", "systemd unit directories (by mtime)", model.AspectPersistence,
+	listingCheck("unit-dirs", "systemd unit directories (by mtime)", model.AspectPersistence,
 		unitDirs, 100, nil),
 	define.LinuxCheck("systemd-generators", "systemd generator directories", model.AspectPersistence,
-		[]model.Probe{{Label: "find", Inv: model.Shell{Script: generatorsScript}}},
+		[]model.Probe{
+			{Label: "find", Inv: model.Dual{Run: nativeGenerators, Script: generatorsScript}},
+		},
 		define.CheckOpt{
 			Syntax:    "ls-l",
 			Normalize: cluster.ListingNormalize(time.Now),
 			Rules:     []model.Rule{define.KeywordRule},
 		}),
 	define.LinuxCheck("udev-rules", "udev rules (writable layers)", model.AspectPersistence,
-		[]model.Probe{{Label: "find", Inv: model.Shell{Script: udevScript}}},
+		[]model.Probe{
+			{Label: "find", Inv: model.Dual{Run: nativeUdev, Script: udevScript}},
+		},
 		define.CheckOpt{
 			Syntax:    "ls-l",
 			Normalize: cluster.ListingNormalize(time.Now),
@@ -241,12 +243,14 @@ var PersistenceChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("motd", "motd login banner", model.AspectPersistence,
-		[]model.Probe{motdScript},
+		readFilesCheck("/etc/motd", "/etc/update-motd.d/*"),
 		define.CheckOpt{Syntax: "bash", Rules: []model.Rule{define.KeywordRule}}),
 	// setuptools' two legitimate precedence files are already excluded by the
 	// collection script, so the rule stays minimal
 	define.LinuxCheck("python-pth", "Python .pth injection", model.AspectPersistence,
-		[]model.Probe{{Label: "grep", Inv: model.Shell{Script: pthScript}}},
+		[]model.Probe{
+			{Label: "grep", Inv: model.Dual{Run: nativePth, Script: pthScript}},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("pth-import", `\.pth:[0-9]+:import`, model.High,

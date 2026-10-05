@@ -112,7 +112,7 @@ func listColumnWidths(selected []*model.Check) (idW, chainW int) {
 	return idW, chainW
 }
 
-// probeChain is the fallback chain as displayed: probe labels joined by arrows.
+// probeChain is the chain as displayed: the fallback ladder of tier labels.
 func probeChain(check *model.Check) string {
 	labels := make([]string, 0, len(check.Probes))
 	for _, probe := range check.Probes {

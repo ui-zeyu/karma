@@ -2,6 +2,11 @@
 // through probe tiers. Results travel back through the Observer on completion;
 // the presentation layer places the panels in catalog order itself.
 //
+// A tier whose Dual has no branch for the session's channel is skipped
+// silently — it is not part of that channel's chain. Tier fallback covers
+// availability discovered at run time only — a missing binary, a 127 — never
+// which side of the wire karma runs on.
+//
 // Runner only depends on session.Session's Run callback: it knows neither SSH
 // nor any concrete command. The tier that wins is sent to the target as a
 // whole, with row limits declared by the probe itself (head is the wanted
@@ -103,6 +108,7 @@ type probeFailure struct {
 // target's environment lacks the command, which is not a finding.
 func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, check *model.Check, options model.RunOptions) *model.CheckResult {
 	timeout := cmp.Or(check.Timeout, options.Timeout)
+	ch := sess.Channel()
 
 	var (
 		unavailable bool
@@ -114,6 +120,10 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 			break
 		}
 		probe := &check.Probes[i]
+		inv := probe.InvocationFor(ch)
+		if inv == nil {
+			continue // this tier exists on the other channel only
+		}
 		if !facts.HasAll(probe.RequiredBins()) {
 			unavailable = true
 			skipped = append(skipped, probe.Label)
@@ -121,7 +131,7 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 		}
 		// head is the shape this tier wants (stopping once it has enough rows
 		// counts as success); line_limit only caps open scans
-		result := sess.Run(ctx, probe.Inv, timeout, cmp.Or(probe.Head, probe.LineLimit))
+		result := sess.Run(ctx, inv, timeout, cmp.Or(probe.Head, probe.LineLimit))
 		switch {
 		case result.TimedOut || result.Answered():
 			// "truncated" is marked for an explicit line_limit and the byte

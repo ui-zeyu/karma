@@ -21,6 +21,9 @@ import (
 type Session interface {
 	// Name is the channel's display name in the report header ("local", "ssh").
 	Name() string
+	// Channel is which side of the wire karma runs on: the runner resolves
+	// each probe tier against it while walking the chain.
+	Channel() model.Channel
 	// Run executes one invocation, with a per-command timeout and an optional
 	// line limit, and harvests its output. A cancelled context stops the data
 	// source and keeps the output already produced.
@@ -30,8 +33,9 @@ type Session interface {
 }
 
 // Transport is the channel factory: a successful Open returns a usable Session.
+// The display name and the channel live on the Session alone — the report
+// header and the chain resolution start only after a connection exists.
 type Transport interface {
-	Name() string
 	Platform() model.Platform
 	Open() (Session, error)
 }

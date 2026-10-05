@@ -191,7 +191,9 @@ func timeline(groups [][]*cluster.FindRow) []string {
 // at the end of the catalog for this run.
 func HuntCheck(dirs []string) *model.Check {
 	return define.LinuxCheck(huntID, "Mtime clustering (user-specified directories)", model.AspectFilesystem,
-		[]model.Probe{{Label: "find", Inv: model.Shell{Script: huntScript(dirs)}, Requires: []string{"find"}}},
+		[]model.Probe{
+			{Label: "find", Inv: model.Dual{Run: nativeHunt(dirs), Script: huntScript(dirs)}},
+		},
 		define.CheckOpt{
 			Normalize: huntNormalize(time.Now),
 			ScanBytes: scanBytes,

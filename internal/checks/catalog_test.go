@@ -13,8 +13,8 @@ import (
 
 func TestCatalogShape(t *testing.T) {
 	linux := checks.ChecksFor(model.Linux)
-	if len(linux) != 73 {
-		t.Fatalf("the Linux catalog should hold 73 checks, got %d", len(linux))
+	if len(linux) != 74 {
+		t.Fatalf("the Linux catalog should hold 74 checks, got %d", len(linux))
 	}
 	windows := checks.ChecksFor(model.Windows)
 	if len(windows) != 42 {
@@ -60,11 +60,11 @@ func TestChecksForUnknownPlatformPanics(t *testing.T) {
 }
 
 // Catalog invariants, locked here instead of in an init(): probe labels are
-// unique within a fallback chain (the fallback note joins `skipped → current`,
-// and a repeated label would present two indistinguishable tiers), head and
+// unique within one chain (the fallback note joins `skipped → current`, and a
+// repeated label would present two indistinguishable tiers), head and
 // line_limit are mutually exclusive (their truncation semantics differ), and
-// rule and filter ids are unique within a check (a repeated filter id would fold
-// two filters' hidden-line counts into one).
+// rule and filter ids are unique within a check (a repeated filter id would
+// fold two filters' hidden-line counts into one).
 func TestCatalogInvariants(t *testing.T) {
 	for _, catalog := range [][]*model.Check{checks.ChecksFor(model.Linux), checks.ChecksFor(model.Windows)} {
 		ids := map[string]bool{}
@@ -81,6 +81,15 @@ func TestCatalogInvariants(t *testing.T) {
 				labels[probe.Label] = true
 				if probe.Head > 0 && probe.LineLimit > 0 {
 					t.Errorf("check %s probe %s: Head and LineLimit are mutually exclusive", check.ID, probe.Label)
+				}
+			}
+			// A check with no tier on one channel would silently drop from that
+			// channel's run.
+			for _, ch := range []model.Channel{model.ChanLocal, model.ChanSSH} {
+				if !slices.ContainsFunc(check.Probes, func(p model.Probe) bool {
+					return p.InvocationFor(ch) != nil
+				}) {
+					t.Errorf("check %s has no tier for channel %d", check.ID, ch)
 				}
 			}
 			rules := map[string]bool{}
@@ -101,9 +110,9 @@ func TestCatalogInvariants(t *testing.T) {
 	}
 }
 
-// Every dash script in the catalog passes sh -n: the syntax check for generated
-// scripts is a test instead of a manual step. mtime is a dynamically built
-// check, so a sample directory stands in for one.
+// Every /bin/sh script in the catalog passes sh -n: the syntax check for
+// generated scripts is a test instead of a manual step. mtime is a dynamically
+// built check, so a sample directory stands in for one.
 func TestShellScriptsParse(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh, skipping the script syntax check")
@@ -111,17 +120,19 @@ func TestShellScriptsParse(t *testing.T) {
 	var scripts []string
 	for _, check := range checks.ChecksFor(model.Linux) {
 		for _, probe := range check.Probes {
-			if shell, ok := probe.Inv.(model.Shell); ok {
-				scripts = append(scripts, check.ID+": "+shell.Script)
+			if dual, ok := probe.Inv.(model.Dual); ok && dual.Script != "" {
+				scripts = append(scripts, check.ID+": "+dual.Script)
 			}
 		}
 	}
 	hunt := linux.HuntCheck([]string{"/tmp/demo", "/var/www"})
 	for _, probe := range hunt.Probes {
-		scripts = append(scripts, hunt.ID+": "+probe.Inv.(model.Shell).Script)
+		if dual, ok := probe.Inv.(model.Dual); ok && dual.Script != "" {
+			scripts = append(scripts, hunt.ID+": "+dual.Script)
+		}
 	}
 	if len(scripts) == 0 {
-		t.Fatal("the catalog should yield Shell scripts")
+		t.Fatal("the catalog should yield shell scripts")
 	}
 	for _, item := range scripts {
 		id, body, _ := strings.Cut(item, ": ")

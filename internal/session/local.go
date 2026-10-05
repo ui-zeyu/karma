@@ -22,9 +22,6 @@ type LocalSession struct{}
 // LocalTransport is the local channel factory: the directory follows the host OS (the Windows directory on Windows).
 type LocalTransport struct{}
 
-// Name is the channel display name.
-func (LocalTransport) Name() string { return "local" }
-
 // Platform follows the host OS.
 func (LocalTransport) Platform() model.Platform {
 	if runtime.GOOS == "windows" {
@@ -39,8 +36,15 @@ func (LocalTransport) Open() (Session, error) { return LocalSession{}, nil }
 // Name is the channel display name.
 func (LocalSession) Name() string { return "local" }
 
-// Run sends the invocation to run locally.
+// Channel is which side of the wire karma runs on: karma itself is the target.
+func (LocalSession) Channel() model.Channel { return model.ChanLocal }
+
+// Run sends the invocation to run locally. A Dual tier runs its in-process
+// body; everything else becomes a subprocess.
 func (s LocalSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
+	if d, ok := inv.(model.Dual); ok {
+		return runNative(ctx, d.Run, timeout, lineLimit)
+	}
 	return runLocal(ctx, ArgvFor(inv), timeout, lineLimit)
 }
 

@@ -5,6 +5,8 @@
 package model
 
 import (
+	"context"
+	"errors"
 	"regexp"
 	"slices"
 	"strings"
@@ -158,11 +160,11 @@ const (
 
 // Invocation is one call that can run on the target. Command goes through exec
 // without a shell; Shell is a script that must go through /bin/sh -c (globs,
-// redirections, loops). The unexported method seals the implementation set.
+// redirections, loops); Dual pairs a per-channel implementation of one tier.
+// The unexported method seals the implementation set.
 type Invocation interface{ isInvocation() }
 
-// Command is an argv call. A nil Requires derives the required binary from
-// Argv's first word.
+// Command is an argv call; the required binary is Argv's first word.
 type Command struct{ Argv []string }
 
 // NewCommand builds an argv call; an empty argv fails during catalog
@@ -180,6 +182,34 @@ func (Command) isInvocation() {}
 type Shell struct{ Script string }
 
 func (Shell) isInvocation() {}
+
+// Dual is one tier with a per-channel implementation: Run is the in-process
+// body for the channel where karma itself runs on the target, Script is the
+// /bin/sh body for the ssh channel. A zero field means the tier exists on the
+// other channel only. Both branches print the same shape, so rules, filters,
+// and lexers apply unchanged, and each branch decides its own availability —
+// Run answers model.ErrTierUnavailable, the script answers 127 — so the chain
+// falls to the next tier within the channel.
+type Dual struct {
+	Run    func(ctx context.Context) (string, error) // local channel, in process
+	Script string                                    // ssh channel, /bin/sh -c
+}
+
+func (Dual) isInvocation() {}
+
+// For returns the invocation one channel executes: the Dual itself on a
+// channel it exists for, nil when this tier does not exist there.
+func (d Dual) For(ch Channel) Invocation {
+	if (ch == ChanLocal && d.Run != nil) || (ch == ChanSSH && d.Script != "") {
+		return d
+	}
+	return nil
+}
+
+// ErrTierUnavailable marks a Dual.Run call that cannot run in this environment
+// (wrong platform, no /proc): the session reports it like a missing binary
+// (exit 127) so the probe chain falls to the next tier.
+var ErrTierUnavailable = errors.New("native tier unavailable in this environment")
 
 // RunResult is the result of one call. ExitCode -1 means the call was killed
 // on timeout or cancelled and has no exit code.
@@ -359,27 +389,46 @@ type FilterCount struct {
 	Count int
 }
 
+// Channel is which side of the wire karma itself runs on. The session answers
+// with the channel it is (ChanLocal, ChanSSH); the runner resolves each probe
+// against that answer while walking the chain.
+type Channel int8
+
+const (
+	// ChanLocal: karma itself runs on the collected host.
+	ChanLocal Channel = iota + 1
+	// ChanSSH: the target is reached over ssh.
+	ChanSSH
+)
+
 // Probe is one tier. A nil Requires derives from the invocation (Command
-// takes Argv's first word, Shell is the empty set); Adapt only turns this
-// tier's output into the same shape as the other tiers and runs within the
-// section; normalization that must run whichever tier wins hangs on
-// Check.Normalize.
+// takes Argv's first word); Adapt only turns this tier's output into the same
+// shape as the other tiers and runs within the section; normalization that
+// must run whichever tier wins hangs on Check.Normalize.
 type Probe struct {
 	Label     string
 	Inv       Invocation
-	Requires  []string
 	Adapt     Normalizer
 	LineLimit int // line limit for open scans, 0 for none
 	Head      int // the row shape this tier wants, 0 for none
 }
 
-// RequiredBins is the binary names this tier requires. With a nil Requires it
-// derives from Command's argv[0]; the returned slice is new, so the caller's
-// appends never write through Argv.
-func (p Probe) RequiredBins() []string {
-	if p.Requires != nil {
-		return p.Requires
+// InvocationFor returns the invocation one channel executes for this tier:
+// nil when the tier does not exist on that channel (a Dual with only the
+// other side set). The runner skips such a tier silently — it is not part of
+// that channel's chain.
+func (p Probe) InvocationFor(ch Channel) Invocation {
+	if d, ok := p.Inv.(Dual); ok {
+		return d.For(ch)
 	}
+	return p.Inv
+}
+
+// RequiredBins is the binary names this tier requires: the Command's argv[0].
+// Scripts and in-process tiers decide availability themselves at run time (a
+// guard in the script, ErrTierUnavailable in the function). The returned
+// slice is new, so the caller's appends never write through Argv.
+func (p Probe) RequiredBins() []string {
 	if cmd, ok := p.Inv.(Command); ok && len(cmd.Argv) > 0 {
 		return []string{cmd.Argv[0]}
 	}

@@ -4,6 +4,7 @@
 package linux
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -53,8 +54,11 @@ const findDeletedScript = `find /proc/[0-9]*/fd /proc/[0-9]*/exe /proc/[0-9]*/cw
 // (the target's /bin/sh is dash, no <()); a final /proc recheck verifies: a process
 // that happened to exit between the two listings (including karma's own concurrent
 // probes) is gone by then, while a process hidden from ps remains in /proc, so only
-// the latter stays in the difference.
-const hiddenProcsScript = `{ ls /proc | grep -E '^[0-9]+$'; ps -eo pid= | tr -d ' '; } | sort -n | uniq -u` +
+// the latter stays in the difference. The leading command -v gate is correctness,
+// not economy: the pipeline would swallow a missing ps and report every /proc pid
+// as hidden.
+const hiddenProcsScript = `command -v ps >/dev/null 2>&1 || exit 127
+` + `{ ls /proc | grep -E '^[0-9]+$'; ps -eo pid= | tr -d ' '; } | sort -n | uniq -u` +
 	` | while read -r p; do [ -d "/proc/$p" ] && echo "$p"; done`
 
 // sessionCapsScript collects the session's own capability set. Inside a
@@ -178,6 +182,147 @@ echo "== temp names"
 find /tmp /var/tmp /dev/shm -xdev -maxdepth 4 -type f \( -iname '*xmrig*' -o -iname '*minerd*' -o -iname '*cpuminer*' -o -iname 'kworkerds*' -o -iname 'kdevtmpfsi*' -o -iname 'kinsing*' -o -iname 'watchbog*' -o -iname 'sustes*' -o -iname 'sysupdate*' -o -iname 'sysguard*' -o -iname 'networkservice*' -o -iname 'config.json' \) -exec ls -l {} + 2>/dev/null
 `
 
+// hidden-pids (atrk-style brute force, migrated 2026-10): a rootkit that
+// filters the /proc readdir path still cannot hide from the kernel's own
+// kill(pid, 0) existence check, so the two views are crossed. Both tiers
+// print the same text: one scan context line, then a "hidden" section with
+// one row per confirmed PID, so the rules fire on either tier. The native
+// tier's scan cap lives in pids_native_linux.go; the shell tier caps at
+// 131072 because its loop runs interpreted.
+
+// hiddenPidScan is the brute-force comparison with every oracle injected, so
+// the algorithm is testable without touching the live /proc.
+type hiddenPidScan struct {
+	pidMax   int
+	scanCap  int
+	euid     int
+	kill0    func(pid int) bool               // kernel-side existence oracle
+	fdExists func(pid int) bool               // /proc/PID/fd lookup oracle (evidence)
+	listPIDs func() []int                     // readdir view: PIDs and thread IDs
+	readFile func(path string) (string, bool) // best-effort /proc reads for the report
+}
+
+func (s hiddenPidScan) run(ctx context.Context) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "scan: pid_max=%d scanned=1-%d oracle=kill(pid,0) vs /proc readdir (threads included)\n",
+		s.pidMax, s.scanCap)
+	if s.euid != 0 {
+		b.WriteString("note: not running as root: readdir may hide other users' processes\n")
+	}
+	normal := map[int]bool{}
+	for _, p := range s.listPIDs() {
+		normal[p] = true
+	}
+	var candidates []int
+	for pid := 1; pid <= s.scanCap; pid++ {
+		// ctx.Err() is one atomic load; checking every iteration keeps
+		// cancellation honest even for small caps
+		if ctx.Err() != nil {
+			return b.String(), ctx.Err()
+		}
+		if !normal[pid] && s.kill0(pid) {
+			candidates = append(candidates, pid)
+		}
+	}
+	if len(candidates) == 0 {
+		return b.String(), nil
+	}
+	// Confirmation pass kills both races: a process that exited fails the
+	// oracle again, and a process created between the two listings shows up
+	// in the fresh readdir view.
+	fresh := map[int]bool{}
+	for _, p := range s.listPIDs() {
+		fresh[p] = true
+	}
+	var hidden []int
+	for _, pid := range candidates {
+		if !fresh[pid] && s.kill0(pid) {
+			hidden = append(hidden, pid)
+		}
+	}
+	if len(hidden) == 0 {
+		return b.String(), nil
+	}
+	b.WriteString("== hidden\n")
+	for _, pid := range hidden {
+		fd := "no"
+		if s.fdExists(pid) {
+			fd = "yes"
+		}
+		comm, _ := s.readFile(fmt.Sprintf("/proc/%d/comm", pid))
+		cmd, _ := s.readFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		fmt.Fprintf(&b, "PID %d  fd=%s  comm=%s  cmd='%s'\n", pid, fd,
+			strings.TrimSpace(comm), strings.TrimRight(strings.ReplaceAll(cmd, "\x00", " "), " "))
+	}
+	return b.String(), nil
+}
+
+// hiddenPidsScript is the script branch of the same hunt — the branch the ssh
+// channel runs. kill -0 is a shell builtin on every practical /bin/sh, so the
+// brute-force loop forks nothing; the readdir views come from glob expansion,
+// which is the getdents path a rootkit hooks.
+const hiddenPidsScript = `
+[ -d /proc/1 ] || exit 1
+pidmax=$(cat /proc/sys/kernel/pid_max 2>/dev/null) || exit 1
+case $pidmax in ''|*[!0-9]*) exit 1;; esac
+cap=$pidmax
+[ "$cap" -gt 131072 ] && cap=131072
+echo "scan: pid_max=$pidmax scanned=1-$cap oracle=kill(pid,0) vs /proc readdir (threads included)"
+[ "$(id -u)" = 0 ] || echo "note: not running as root: readdir may hide other users' processes"
+norm=' '
+for p in /proc/[0-9]*; do
+  case $p in
+    */[0-9]*) norm="$norm ${p##*/} ";;
+  esac
+done
+for t in /proc/[0-9]*/task/[0-9]*; do
+  case $t in
+    */task/[0-9]*) norm="$norm ${t##*/} ";;
+  esac
+done
+cand=' '
+i=1
+while [ "$i" -le "$cap" ]; do
+  kill -0 "$i" 2>/dev/null && {
+    case "$norm" in
+      *" $i "*) ;;
+      *) cand="$cand $i ";;
+    esac
+  }
+  i=$((i + 1))
+done
+[ "$cand" = ' ' ] && exit 0
+norm=' '
+for p in /proc/[0-9]*; do
+  case $p in
+    */[0-9]*) norm="$norm ${p##*/} ";;
+  esac
+done
+for t in /proc/[0-9]*/task/[0-9]*; do
+  case $t in
+    */task/[0-9]*) norm="$norm ${t##*/} ";;
+  esac
+done
+out=
+for i in $cand; do
+  case "$norm" in
+    *" $i "*) continue;;
+  esac
+  kill -0 "$i" 2>/dev/null || continue
+  fd=no
+  [ -e /proc/$i/fd ] && fd=yes
+  comm=$(cat /proc/$i/comm 2>/dev/null)
+  cmd=$(tr "\000" " " </proc/$i/cmdline 2>/dev/null)
+  out="$out
+PID $i  fd=$fd  comm=$comm  cmd='$cmd'"
+done
+[ -n "$out" ] && {
+  echo "== hidden"
+  echo "$out"
+}
+exit 0
+`
+
 // ProcessChecks covers processes.
 var ProcessChecks = []*model.Check{
 	define.LinuxCheck("ps", "Process tree", model.AspectProcess,
@@ -221,7 +366,9 @@ var ProcessChecks = []*model.Check{
 		},
 		define.CheckOpt{Syntax: "top", Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,
-		[]model.Probe{{Label: "caps", Inv: model.Shell{Script: sessionCapsScript}, Adapt: decodeCapMasks}},
+		[]model.Probe{
+			{Label: "caps", Inv: model.Dual{Run: nativeProcCaps, Script: sessionCapsScript}, Adapt: decodeCapMasks},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("cap-container-context", `^context: container`, model.Medium,
@@ -239,16 +386,17 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("deleted-exe", "Deleted files still in use", model.AspectProcess,
+		// The lsof tier is dual: locally nativeDeletedExe ladders from lsof to
+		// the /proc walk in one pass, so the two script-only tiers below exist
+		// on the ssh channel alone — find covers the fd/cwd/exe links in one
+		// process, the shell walk is the portable last resort for hosts whose
+		// find has neither -lname nor -printf. lsof runs raw and is capped by
+		// the reader's scan budget: a source-side line cap would cut the
+		// stream before the keep filter sees the deleted rows.
 		[]model.Probe{
-			// Three tiers: lsof is the richest (command, user, fd mode per open
-			// file, plus mapped libraries); find covers the fd/cwd/exe links in
-			// one process; the shell walk is the portable last resort for hosts
-			// whose find has neither -lname nor -printf. lsof runs raw and is
-			// capped by the reader's scan budget: a source-side line cap would
-			// cut the stream before the keep filter sees the deleted rows.
-			{Label: "lsof", Inv: model.Shell{Script: lsofScript}, Requires: []string{"lsof"}},
-			{Label: "find", Inv: model.Shell{Script: findDeletedScript}, LineLimit: 200},
-			{Label: "proc-links", Inv: model.Shell{Script: deletedLinksScript}, LineLimit: 200},
+			{Label: "lsof", Inv: model.Dual{Run: nativeDeletedExe, Script: lsofScript}},
+			{Label: "find", Inv: model.Dual{Script: findDeletedScript}, LineLimit: 200},
+			{Label: "proc-links", Inv: model.Dual{Script: deletedLinksScript}, LineLimit: 200},
 		},
 		define.CheckOpt{
 			// Keep only rows the kernel marked deleted; signal rows bypass keep
@@ -258,7 +406,9 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("cwd-tmp", "Processes with cwd in a temp directory", model.AspectProcess,
-		[]model.Probe{{Label: "proc-cwd", Inv: model.Shell{Script: cwdTmpScript}}},
+		[]model.Probe{
+			{Label: "proc-cwd", Inv: model.Dual{Run: nativeCwdTmp, Script: cwdTmpScript}},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("proc-cwd-tmp", `^/proc/\d+ -> /(?:tmp|var/tmp|dev/shm)/`, model.High,
@@ -266,7 +416,9 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("hidden-procs", "proc vs ps process comparison", model.AspectProcess,
-		[]model.Probe{{Label: "ps", Inv: model.Shell{Script: hiddenProcsScript}, Requires: []string{"ps"}}},
+		[]model.Probe{
+			{Label: "ps", Inv: model.Dual{Run: nativeHiddenProcs, Script: hiddenProcsScript}},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("proc-not-in-ps", `^[0-9]+$`, model.High,
@@ -274,7 +426,9 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("miner", "Cryptominer hunt (processes and drop paths)", model.AspectProcess,
-		[]model.Probe{{Label: "scan", Inv: model.Shell{Script: minerScript}, LineLimit: 200}},
+		[]model.Probe{
+			{Label: "scan", Inv: model.Dual{Run: nativeMiner, Script: minerScript}, LineLimit: 200},
+		},
 		define.CheckOpt{
 			Syntax: "table",
 			// The drop-path and temp-name sections are ls -l shape, the ps section a
@@ -292,6 +446,17 @@ var ProcessChecks = []*model.Check{
 					"Stratum mining-pool protocol in a command line"),
 				model.NewRule("miner-config", `/(?:tmp|var/tmp|dev/shm)/config\.json(?:\s|$)`, model.High,
 					"miner config at a known drop path"),
+			},
+		}),
+	define.LinuxCheck("hidden-pids", "Hidden process brute-force (kill(0) vs /proc)", model.AspectProcess,
+		// Both branches print the same text shape, so the rules are shared.
+		[]model.Probe{
+			{Label: "brute", Inv: model.Dual{Run: nativeHiddenPIDs, Script: hiddenPidsScript}, LineLimit: 200},
+		},
+		define.CheckOpt{
+			Rules: []model.Rule{
+				model.NewRule("hidden-pid", `^PID \d+ `, model.Critical,
+					"alive for the kernel, hidden from /proc listing"),
 			},
 		}),
 }

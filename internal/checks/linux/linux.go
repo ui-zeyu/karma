@@ -3,16 +3,32 @@
 package linux
 
 import (
+	"context"
+	"fmt"
 	"slices"
 
 	"karma/internal/model"
 	"karma/internal/script"
 )
 
-// readFilesProbe is the cat-a-file-list probe: one `== path` section per file,
-// missing files skipped and read noise quiet.
-func readFilesProbe(paths ...string) model.Probe {
-	return model.Probe{Label: "cat", Inv: model.Shell{Script: script.ReadFiles(paths, `cat "$f"`, true)}}
+// filesTier is the read-a-file-list tier: one `== path` section per file,
+// missing files skipped, each body shaped by the shell command's native
+// counterpart (cat reads the file whole, tail keeps the last n lines).
+func filesTier(label string, shellCmd string, transform func(string) string, paths []string) model.Probe {
+	return model.Probe{Label: label, Inv: model.Dual{
+		Run:    func(context.Context) (string, error) { return readSections(paths, transform), nil },
+		Script: script.ReadFiles(paths, shellCmd, true),
+	}}
+}
+
+// readFilesCheck is the cat-a-file-list tier pair.
+func readFilesCheck(paths ...string) []model.Probe {
+	return []model.Probe{filesTier("cat", `cat "$f"`, nil, paths)}
+}
+
+// tailFilesCheck reads the tail of every file in the list.
+func tailFilesCheck(n int, paths ...string) []model.Probe {
+	return []model.Probe{filesTier("tail", fmt.Sprintf(`tail -n %d "$f"`, n), tailLines(n), paths)}
 }
 
 // All is every Linux check; catalog-level validation lives in the checks package.

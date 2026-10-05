@@ -4,6 +4,7 @@
 package linux
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -103,9 +104,10 @@ const webshellGrep = "grep -rInEi --include='*.php' --include='*.phtml' --includ
 var keyDirs = []string{"/", "/home", "/opt", "/root", "/srv", "/usr/local"}
 
 // homeTreeFind: the whole /home tree, four levels deep (down to files in home
-// directories, deeper project trees truncated); tree is used if present, else 127
-// falls through to find. find's -printf is arranged in ls -l shape, which the ls-l
-// pseudo-lexer colors directly.
+// directories, deeper project trees truncated); tree is used if present, else
+// 127 falls through to find. find's -printf is arranged in ls -l shape, which
+// the ls-l pseudo-lexer colors directly. This tier exists on ssh alone: the
+// dual tree tier's local branch ladders from tree to its own walk in process.
 const homeTreeArgs = "-a -p -u -g -s -D --timefmt '%Y-%m-%d %H:%M' -L 4"
 
 var homeTreeFind = "LC_ALL=C find /home -xdev -maxdepth 4 -printf '" + script.LSBodyPrintf + "' 2>/dev/null"
@@ -132,7 +134,7 @@ var FilesystemChecks = []*model.Check{
 		[]model.Probe{{Label: "df", Inv: model.NewCommand("df", "-h")}},
 		define.CheckOpt{Syntax: "df"}),
 	define.LinuxCheck("fstab", "Filesystem mount config (fstab)", model.AspectFilesystem,
-		[]model.Probe{{Label: "cat", Inv: model.Shell{Script: "cat /etc/fstab 2>/dev/null"}}},
+		readFilesCheck("/etc/fstab"),
 		define.CheckOpt{Syntax: "fstab", Rules: []model.Rule{mountRemoteFsRule}}),
 	define.LinuxCheck("mounts", "Mount points", model.AspectFilesystem,
 		[]model.Probe{
@@ -146,7 +148,7 @@ var FilesystemChecks = []*model.Check{
 			Syntax: "table",
 			Rules:  []model.Rule{mountRemoteFsRule},
 		}),
-	define.ListingCheck("tmp-listing", "Temp directory listing", model.AspectFilesystem, tmpDirs, 200,
+	listingCheck("tmp-listing", "Temp directory listing", model.AspectFilesystem, tmpDirs, 200,
 		[]model.Rule{
 			// RE2 has no lookahead: standard system hidden entries (socket directories like
 			// .X11-unix, display locks) become an exclusion
@@ -162,7 +164,9 @@ var FilesystemChecks = []*model.Check{
 	// quiet evidence (GTFOBins has no separate sgid list, so the suid names
 	// stand in).
 	define.LinuxCheck("suid", "SUID files", model.AspectFilesystem,
-		[]model.Probe{{Label: "find", Inv: model.Shell{Script: suidFind}}},
+		[]model.Probe{
+			{Label: "find", Inv: model.Dual{Run: nativeSuidScan(os.ModeSetuid), Script: suidFind}},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("suid-gtfobins", gtfobinsPattern, model.Critical,
@@ -171,7 +175,9 @@ var FilesystemChecks = []*model.Check{
 			Timeout: suidTimeout,
 		}),
 	define.LinuxCheck("sgid", "SGID files", model.AspectFilesystem,
-		[]model.Probe{{Label: "find", Inv: model.Shell{Script: sgidFind}}},
+		[]model.Probe{
+			{Label: "find", Inv: model.Dual{Run: nativeSuidScan(os.ModeSetgid), Script: sgidFind}},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("sgid-gtfobins", gtfobinsPattern, model.High,
@@ -179,19 +185,21 @@ var FilesystemChecks = []*model.Check{
 			},
 			Timeout: suidTimeout,
 		}),
-	define.ListingCheck("key-dirs", "Key directory listing (by mtime)", model.AspectFilesystem,
+	listingCheck("key-dirs", "Key directory listing (by mtime)", model.AspectFilesystem,
 		keyDirs, 100, []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}),
 	define.LinuxCheck("home-tree", "/home directory tree (four levels deep, including hidden files)", model.AspectFilesystem,
 		[]model.Probe{
-			{Label: "tree", Inv: model.Shell{Script: "tree " + homeTreeArgs + " /home 2>/dev/null"}},
-			{Label: "find", Inv: model.Shell{Script: homeTreeFind}},
+			{Label: "tree", Inv: model.Dual{Run: nativeHomeTree, Script: "tree " + homeTreeArgs + " /home 2>/dev/null"}},
+			{Label: "find", Inv: model.Dual{Script: homeTreeFind}},
 		},
 		define.CheckOpt{
 			Syntax: "ls-l",
 			Rules:  []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule},
 		}),
 	define.LinuxCheck("web-dirs", "Recently changed scripts in web directories", model.AspectFilesystem,
-		[]model.Probe{{Label: "find", Inv: model.Shell{Script: webScriptFind}, LineLimit: 200}},
+		[]model.Probe{
+			{Label: "find", Inv: model.Dual{Run: nativeWebDirs, Script: webScriptFind}, LineLimit: 200},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("web-script", `\.(?:php[3-5]?|phtml|jsp|jspx|sh|py)$`, model.Medium,
@@ -203,7 +211,9 @@ var FilesystemChecks = []*model.Check{
 	// grep and the rules share one signature regex: filter lines on the target, grade
 	// by group locally
 	define.LinuxCheck("webshell-grep", "Webshell content signatures", model.AspectFilesystem,
-		[]model.Probe{{Label: "grep", Inv: model.Shell{Script: webshellGrep}, LineLimit: 200}},
+		[]model.Probe{
+			{Label: "grep", Inv: model.Dual{Run: nativeWebshellGrep, Script: webshellGrep}, LineLimit: 200},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("webshell-direct", `(?i)`+webshellDirect, model.Critical,
@@ -217,8 +227,9 @@ var FilesystemChecks = []*model.Check{
 		}),
 	// Capabilities are another escalation path besides SUID: cap_setuid equals SUID
 	define.LinuxCheck("caps", "File capabilities (getcap)", model.AspectFilesystem,
-		[]model.Probe{{Label: "getcap", Inv: model.Shell{Script: "getcap -r / 2>/dev/null"},
-			Requires: []string{"getcap"}, LineLimit: 200}},
+		[]model.Probe{
+			{Label: "getcap", Inv: model.Dual{Run: nativeCaps, Script: "getcap -r / 2>/dev/null"}, LineLimit: 200},
+		},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("caps-setuid", `cap_setuid[+=]`, model.Critical,

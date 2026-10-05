@@ -9,9 +9,7 @@ import (
 	"slices"
 	"time"
 
-	"karma/internal/cluster"
 	"karma/internal/model"
-	"karma/internal/script"
 )
 
 // CheckOpt is the optional surface of a check: rules, filters, body
@@ -137,15 +135,4 @@ func build(platform model.Platform, id, title string, aspect model.Aspect, probe
 		Normalize:     opt.Normalize,
 		ScanBytes:     opt.ScanBytes,
 	}
-}
-
-// ListingCheck is a directory-listing check: find -printf rows are collected in
-// ls -l shape and clustered locally to mark outliers. One section per
-// directory, each capped at head rows — the remote head is the row limit, so
-// the probe no longer carries an alignment duty; the severity of an outlier
-// row is stated as a span by the clustering while normalizing.
-func ListingCheck(id, title string, aspect model.Aspect, dirs []string, head int, rules []model.Rule) *model.Check {
-	return LinuxCheck(id, title, aspect,
-		[]model.Probe{{Label: "find", Inv: model.Shell{Script: script.ListingSections(dirs, head)}}},
-		CheckOpt{Rules: rules, Syntax: "ls-l", Normalize: cluster.ListingNormalize(time.Now)})
 }

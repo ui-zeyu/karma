@@ -25,6 +25,9 @@ type SSHSession struct {
 // Name is the channel display name.
 func (s *SSHSession) Name() string { return "ssh" }
 
+// Channel is which side of the wire karma runs on: the target is remote.
+func (s *SSHSession) Channel() model.Channel { return model.ChanSSH }
+
 // Run sends the command string rendered through /bin/sh -c to the channel for execution.
 func (s *SSHSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
 	script := RenderShell(inv)

@@ -134,7 +134,7 @@ var NetworkChecks = []*model.Check{
 			{Label: "netstat", Inv: model.NewCommand("netstat", "-tunap")},
 			// The proc-net hex address restore is this probe's own dialect (adapt carries the
 			// section title to tell TCP/UDP); ss and netstat already output the target shape.
-			{Label: "proc-net", Inv: model.Shell{Script: procNetScript}, Adapt: parseProcNet},
+			{Label: "proc-net", Inv: model.Dual{Run: nativeProcNet, Script: procNetScript}, Adapt: parseProcNet},
 		},
 		define.CheckOpt{
 			Syntax: "listen",
@@ -176,7 +176,7 @@ var NetworkChecks = []*model.Check{
 		define.CheckOpt{Syntax: "ip-keyval"}),
 	define.LinuxCheck("firewall", "Firewall rules", model.AspectNetwork,
 		[]model.Probe{
-			{Label: "iptables", Inv: model.Shell{Script: firewallScript}},
+			{Label: "iptables", Inv: model.Dual{Run: nativeFirewall, Script: firewallScript}},
 			{Label: "nft", Inv: model.NewCommand("nft", "list", "ruleset")},
 		},
 		define.CheckOpt{
@@ -188,7 +188,7 @@ var NetworkChecks = []*model.Check{
 	// backdoor vector; on a default system both files are all comments, so even a live
 	// line is worth a look.
 	define.LinuxCheck("tcp-wrappers", "TCP Wrappers (hosts.allow/deny)", model.AspectNetwork,
-		[]model.Probe{readFilesProbe("/etc/hosts.allow", "/etc/hosts.deny")},
+		readFilesCheck("/etc/hosts.allow", "/etc/hosts.deny"),
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("wrappers-exec", `\b(?:spawn|twist)\b`, model.High,
@@ -198,7 +198,7 @@ var NetworkChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("hosts-file", "hosts and DNS config", model.AspectNetwork,
-		[]model.Probe{readFilesProbe("/etc/hosts", "/etc/resolv.conf")},
+		readFilesCheck("/etc/hosts", "/etc/resolv.conf"),
 		define.CheckOpt{
 			Rules: []model.Rule{
 				// "maps to a non-loopback address" becomes an exclusion (RE2 has no lookahead)

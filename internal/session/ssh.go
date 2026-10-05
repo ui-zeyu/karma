@@ -83,9 +83,6 @@ type SSHTransport struct {
 	Password    string // empty string uses only public keys; password comes from --password
 }
 
-// Name is the channel display name.
-func (t *SSHTransport) Name() string { return "ssh" }
-
 // Platform is always the Linux directory: the SSH channel never targets Windows.
 func (t *SSHTransport) Platform() model.Platform { return model.Linux }
 

@@ -57,12 +57,18 @@ var windowsFactsScript = strings.Join([]string{
 	"}",
 }, "\n")
 
-// CollectFor dispatches fact collection by platform; platform dispatch lives only here.
+// CollectFor dispatches fact collection: Windows always collects through a
+// session (its facts come from PowerShell and the registry); Linux collects
+// in process on the local channel and over the session everywhere else.
 func CollectFor(ctx context.Context, platform model.Platform, sess session.Session, bins []string) model.HostFacts {
-	if platform == model.Windows {
+	switch {
+	case platform == model.Windows:
 		return CollectWindows(ctx, sess, bins)
+	case sess.Channel() == model.ChanLocal:
+		return collectLocal(bins)
+	default:
+		return Collect(ctx, sess, bins)
 	}
-	return Collect(ctx, sess, bins)
 }
 
 // Collect concurrently gathers binary presence and host facts (Linux directory).
