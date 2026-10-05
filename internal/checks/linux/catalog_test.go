@@ -2,6 +2,7 @@ package linux
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"karma/internal/model"
@@ -96,10 +97,22 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"pkg-history", `Commandline: apt-get install -y nginx`, "pkg-apt-record"},
 		{"modules-load", `evil_module`, "modules-boot-entry"},
 		{"modules-hidden", `HIDDEN rootkit`, "module-hidden"},
+		// the two evidence shapes a hidden module leaves: the sysfs one carries
+		// what identifies it, the kallsyms one the symbol count
+		{"modules-hidden", `HIDDEN rootkit size 16384 init 16384 refs 0 state live taint O text 0xffffffffc05a4000`, "module-hidden"},
+		{"modules-hidden", `HIDDEN rootkit symbols 41`, "module-hidden"},
+		// the taint marker at the end of a /proc/modules line: (POE) is
+		// proprietary, out-of-tree and unsigned together, (E) unsigned alone
+		{"lsmod", `nvidia 1234 5 - Live 0x0000000000000000 (POE)`, "module-out-of-tree"},
+		{"lsmod", `vboxdrv 1234 5 - Live 0x0000000000000000 (E)`, "module-unsigned"},
 		{"module-files", `-rw-r--r-- 1 root root 184320 Jun  1 10:00 rc_kernel.ko`, "module-files-out-of-tree"},
 		{"tainted", `64`, "kernel-tainted"},
 		{"module-sig-config", `CONFIG_MODULE_SIG=n`, "module-sig-off"},
 		{"dmesg", `[    0.000000] module verification failed: taint flag set`, "dmesg-taint"},
+		// a hooked kernel prints the table it found and the syscalls it replaced; the
+		// keep filter carries the same vocabulary, so these lines reach the panel
+		{"dmesg", `[  123.456789] real_sys_call_table: 00000000c05a4000`, "dmesg-syscall-hook"},
+		{"dmesg", `[  123.456789] update __NR_openat: 0000000000000000->0000000000000000`, "dmesg-syscall-hook"},
 		{"log-dirs", `-rw-r----- 1 www adm 0 Jun  1 10:00 access.log`, "logdir-middleware"},
 	}
 
@@ -147,6 +160,18 @@ func TestLinuxRuleExclusions(t *testing.T) {
 		{"pkg-verify", `/etc/logrotate.conf: ASCII text`, "pkg-changed-elf"},
 		// a directory row carries execute bits but is not a program
 		{"pkg-verify", `drwxr-xr-x 2 root root 4096 May 16 15:05 /usr/share/x`, "pkg-changed-exec"},
+		// the hook rule is for the table, not for every line about modules, and
+		// the kernel's own write-protect line is why `protect` is not in the
+		// widened allowlist
+		{"dmesg", `[    0.000000] module verification failed: taint flag set`, "dmesg-syscall-hook"},
+		{"dmesg", `[    0.673491] Write protecting the kernel read-only data: 14336k`, "dmesg-syscall-hook"},
+		// a module the list does carry is not a hidden module, an unmarked
+		// /proc/modules row carries no taint letters, and the lsmod tier's own
+		// layout has no marker column at all
+		{"modules-hidden", `nf_tables 409600 0 - Live 0xffffffffc0567000`, "module-hidden"},
+		{"lsmod", `nf_tables 409600 0 - Live 0xffffffffc0567000`, "module-out-of-tree"},
+		{"lsmod", `nf_tables 409600 0 - Live 0xffffffffc0567000`, "module-unsigned"},
+		{"lsmod", `nvidia             1234  5`, "module-out-of-tree"},
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.check)
@@ -209,6 +234,16 @@ func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
 		// the verifier's line for a regular package file is the whole record,
 		// the flags and the name together
 		{"pkg-verify", `??5??????   /bin/ls`, "pkg-changed-file", `??5??????   /bin/ls`},
+		// the hook rule paints the identifier that names the table, prefix and all
+		{"dmesg", `[  123.456789] real_sys_call_table: 00000000c05a4000`, "dmesg-syscall-hook",
+			`real_sys_call_table`},
+		{"dmesg", `[  123.456789] update __NR_openat: 0000000000000000->0000000000000000`, "dmesg-syscall-hook",
+			`__NR_openat`},
+		// the hidden-module rule paints the marker and the module's name; the
+		// taint rules paint the marker the module list appends
+		{"modules-hidden", `HIDDEN rootkit size 16384 taint O`, "module-hidden", `HIDDEN rootkit`},
+		{"lsmod", `nvidia 1234 5 - Live 0x0000000000000000 (POE)`, "module-out-of-tree", `(POE)`},
+		{"lsmod", `vboxdrv 1234 5 - Live 0x0000000000000000 (E)`, "module-unsigned", `(E)`},
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.check)
@@ -230,5 +265,37 @@ func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
 		if spans == 0 {
 			t.Errorf("%s should light %s: %q", tc.check, tc.rule, tc.text)
 		}
+	}
+}
+
+// The dmesg allowlist is a precision filter, not a net: the loader's own records
+// and the words a hooked kernel prints come through, ordinary kernel messages do
+// not, and a line that names the syscall table is a High finding rather than a
+// quiet row. An LKM's prints that carry none of the vocabulary ("Changing
+// 0x…->0x…") are still dropped — the allowlist is deliberately narrow.
+func TestDmesgKeepFilterPrecision(t *testing.T) {
+	check := testkit.CheckByID(t, All, "dmesg")
+	text := "[    0.000000] Linux version 6.8.0-45-generic (buildd@lcy02)\n" +
+		"[    0.673491] Write protecting the kernel read-only data: 14336k\n" +
+		"[    1.234567] rootkit: loading out-of-tree module taints kernel.\n" +
+		"[  123.456789] real_sys_call_table: 00000000c05a4000\n" +
+		"[  123.456789] Changing 0000000000000000->0000000000000000.\n"
+	document := reader.Analyze(text, check.Rules, check.Filters, check.Normalize, 0)
+
+	var kept []string
+	for _, section := range document.Sections {
+		for _, line := range section.Lines {
+			kept = append(kept, line.Text)
+			if strings.Contains(line.Text, "sys_call_table") && line.Severity != model.High {
+				t.Errorf("the syscall-table line should be High, got %v", line.Severity)
+			}
+		}
+	}
+	want := []string{
+		"[    1.234567] rootkit: loading out-of-tree module taints kernel.",
+		"[  123.456789] real_sys_call_table: 00000000c05a4000",
+	}
+	if !slices.Equal(kept, want) {
+		t.Errorf("the allowlist kept %q, want %q", kept, want)
 	}
 }
