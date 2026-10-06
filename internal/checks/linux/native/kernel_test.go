@@ -174,10 +174,15 @@ func fieldCell(name, size, count string) string {
 // which is what the check exists for), one carrying a symbol tagged with a
 // module the list does not carry, and an allocation from an unrelated caller
 // that is not executable module memory at all.
+//
+// The core file is pointed at nothing, so a test that reads the body here never
+// reads this host's own kernel memory; the dig's own tests drive it from a
+// synthetic core.
 func moduleMemoryFixture(t *testing.T) (views script.ModuleMemoryViews, allocations, modules, symbols string) {
 	t.Helper()
 	root := t.TempDir()
 	views = ModuleMemoryViews()
+	views.CorePath = filepath.Join(root, "no-core")
 	allocations = filepath.Join(root, "vmallocinfo")
 	body := "0xffff800001206000-0xffff80000120e000   32768 move_module+0x2c/0x1b4 pages=7 vmalloc N0=7\n" +
 		"0xffff8000017c5000-0xffff8000017cb000   24576 move_module+0x2c/0x1b4 pages=5 vmalloc N0=5\n" +
@@ -209,7 +214,7 @@ func moduleMemoryFixture(t *testing.T) (views script.ModuleMemoryViews, allocati
 // leaves. A caller that is not an allocator is not executable module memory.
 func TestModuleMemoryBodyReportsUnexplainedRegions(t *testing.T) {
 	views, _, _, _ := moduleMemoryFixture(t)
-	got, err := ModuleMemory(views)(context.Background())
+	got, err := ModuleMemory(views, kitNames)(context.Background())
 	if err != nil {
 		t.Fatalf("the body failed: %v", err)
 	}

@@ -138,6 +138,10 @@ func TestLinuxCheckRules(t *testing.T) {
 		// in the unexplained count is visible across two runs
 		{"module-memory", `UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module`, "module-memory-unowned"},
 		{"module-memory", `UNOWNED 0xffffffffc02a4000-0xffffffffc02a7000 size 12288 caller shared diamorphine 2`, "module-memory-unowned"},
+		// the deeper read of such a memory: the bytes of a region nothing explains
+		// carried a module image's own naming, which is the registry a kit that
+		// scrubbed /proc/modules and /sys/module still cannot edit
+		{"module-memory", `IMAGE 0xffff8000017c5000-0xffff8000017cb000 size 24576 name:diamorphine source:/home/lab/Diamorphine/diamorphine.c marker:__this_module`, "module-image"},
 		{"module-memory", `VMAP regions 132 modules 50 explained 104 unexplained 28`, "module-memory-accounting"},
 		{"dmesg", `[    0.000000] module verification failed: taint flag set`, "dmesg-taint"},
 		// a hooked kernel prints the table it found and the syscalls it replaced; the
@@ -366,6 +370,10 @@ func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
 		// analyst looks up in /proc/kcore or a dump
 		{"module-memory", `UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module`,
 			"module-memory-unowned", `UNOWNED 0xffff8000017c5000-0xffff8000017cb000`},
+		// the image row is painted the same way, at its head: the name or path
+		// the rest of the row carries is what the analyst reads
+		{"module-memory", `IMAGE 0xffff8000017c5000-0xffff8000017cb000 size 24576 name:diamorphine`,
+			"module-image", `IMAGE 0xffff8000017c5000-0xffff8000017cb000`},
 		{"home-tree", `-rw-r--r-- 1 root root 13 Oct 06 02:45 /home/.hacker`, "hidden-nonhome-path",
 			`/home/.hacker`},
 	}

@@ -52,6 +52,23 @@ type ModuleMemoryViews struct {
 	// PseudoTags are the kallsyms tags that are not modules: the tags the
 	// kernel gives its own executable allocations.
 	PseudoTags []string
+	// CorePath is the running kernel's own core file (/proc/kcore). Only the
+	// local channel can read it: the dig behind the rows goes through it to name
+	// the memory nothing else explains, and a remote shell has no way to. The
+	// pipeline ignores this field.
+	CorePath string
+}
+
+// UnownedRegion is one region the join could not explain: the range and size as
+// the row prints them, and the same range as numbers. A caller that can read the
+// memory behind it (the local channel's core dig) takes the numbers, so it never
+// has to parse the row back; the spelling stays the one /proc/vmallocinfo wrote,
+// so a dig's row and the row it belongs to name the same bytes.
+type UnownedRegion struct {
+	Range      string // "0xstart-0xend", as the UNOWNED row spells it
+	Start, End uint64
+	Size       int
+	Caller     string // the allocator class: module or shared
 }
 
 // The allocator class words the region rows carry and the join grades on.
@@ -182,12 +199,16 @@ END {
 }`
 }
 
-// ModuleMemoryBody is the local channel's join over the same marked stream
+// ModuleMemoryRows is the local channel's join over the same marked stream
 // ModuleMemoryScript produces, rendering the rows that script's awk mirror
-// renders, in the same order. The views are the same value the pipeline is built
-// from: the pseudo-module tags are the one piece of that configuration the join
-// itself needs, because it is what tells an explained region from a hidden one.
-func ModuleMemoryBody(views ModuleMemoryViews, marked string) string {
+// renders, in the same order: one row per region nothing explains, then the
+// accounting line. The views are the same value the pipeline is built from: the
+// pseudo-module tags are the one piece of that configuration the join itself
+// needs, because it is what tells an explained region from a hidden one.
+//
+// The regions the rows name come back with them, so a caller can go on to read
+// the memory they point at.
+func ModuleMemoryRows(views ModuleMemoryViews, marked string) ([]string, []UnownedRegion) {
 	type region struct {
 		rawStart string
 		rawEnd   string
@@ -253,7 +274,10 @@ func ModuleMemoryBody(views ModuleMemoryViews, marked string) string {
 
 	explained := 0
 	unexplained := 0
-	var rows []string
+	var (
+		rows    []string
+		unowned []UnownedRegion
+	)
 	for _, id := range order {
 		tags := symbolOrder[id]
 		ok := len(tags) > 0 || untagged[id]
@@ -275,9 +299,34 @@ func ModuleMemoryBody(views ModuleMemoryViews, marked string) string {
 		if entry.class == allocModule || labels.Len() > 0 {
 			rows = append(rows, fmt.Sprintf("UNOWNED %s-%s size %d caller %s%s",
 				entry.rawStart, entry.rawEnd, entry.size, entry.class, labels.String()))
+			unowned = append(unowned, UnownedRegion{
+				Range:  entry.rawStart + "-" + entry.rawEnd,
+				Start:  parseAddress(entry.rawStart),
+				End:    parseAddress(entry.rawEnd),
+				Size:   entry.size,
+				Caller: entry.class,
+			})
 		}
 	}
 	rows = append(rows, fmt.Sprintf("VMAP regions %d modules %d explained %d unexplained %d",
 		len(order), modules, explained, unexplained))
+	return rows, unowned
+}
+
+// ModuleMemoryBody is the rendering of those rows: the local channel's whole
+// body, byte for byte what ModuleMemoryScript's awk prints.
+func ModuleMemoryBody(views ModuleMemoryViews, marked string) string {
+	rows, _ := ModuleMemoryRows(views, marked)
 	return strings.Join(rows, "\n") + "\n"
+}
+
+// parseAddress reads one /proc/vmallocinfo address. A shape the kernel does not
+// write leaves zero, which no memory is mapped at, so a dig over it reads
+// nothing rather than the wrong bytes.
+func parseAddress(text string) uint64 {
+	value, err := strconv.ParseUint(strings.TrimPrefix(text, "0x"), 16, 64)
+	if err != nil {
+		return 0
+	}
+	return value
 }

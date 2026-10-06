@@ -202,9 +202,12 @@ func TestModuleMemoryPipelineMatchesTheLocalBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	views.VMallocPath, views.ModulesPath, views.SymbolsPath = allocations, modules, symbols
+	// The dig behind the local body reads the core file: point it at nothing, so
+	// this test compares the two joins and never this host's own kernel memory.
+	views.CorePath = filepath.Join(root, "no-core")
 
 	got := runPipeline(t, script.ModuleMemoryScript(views))
-	want, err := native.ModuleMemory(views)(context.Background())
+	want, err := native.ModuleMemory(views, moduleImagesRe)(context.Background())
 	if err != nil {
 		t.Fatalf("the local body failed: %v", err)
 	}
@@ -244,6 +247,7 @@ func TestModuleMemoryPipelineIsQuietAboutKernelJitMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	views.VMallocPath, views.ModulesPath, views.SymbolsPath = allocations, modules, symbols
+	views.CorePath = filepath.Join(root, "no-core")
 	got := runPipeline(t, script.ModuleMemoryScript(views))
 	if want := "VMAP regions 1 modules 1 explained 1 unexplained 0\n"; got != want {
 		t.Errorf("the pipeline rendered %q, want %q", got, want)

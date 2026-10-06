@@ -41,11 +41,13 @@ type ModuleAttr struct {
 // exist — as a Critical finding — on every host with such trampolines.
 var PseudoModuleTags = []string{"bpf", "__builtin__ftrace", "__builtin__kprobes"}
 
-// The three kernel surfaces the hidden-module diff reads.
+// The three kernel surfaces the hidden-module diff reads, and the core file the
+// module-memory dig reads behind its rows.
 const (
 	sysModuleRoot    = "/sys/module"
 	procModulesFile  = "/proc/modules"
 	procKallsymsFile = "/proc/kallsyms"
+	procKcoreFile    = "/proc/kcore"
 )
 
 // ModuleDiffViews is the one value both channels of the hidden-module diff
@@ -160,6 +162,7 @@ func ModuleMemoryViews() script.ModuleMemoryViews {
 		ModuleAllocators: moduleAllocators,
 		SharedAllocators: sharedAllocators,
 		PseudoTags:       PseudoModuleTags,
+		CorePath:         procKcoreFile,
 	}
 }
 
@@ -169,7 +172,13 @@ func ModuleMemoryViews() script.ModuleMemoryViews {
 // renders the rows the pipeline's awk mirrors. The symbol table is required —
 // without it every region would look unexplained — and so are the allocation
 // list and the module list, which the shell block's `exit 1` mirrors.
-func ModuleMemory(views script.ModuleMemoryViews) func(context.Context) (string, error) {
+//
+// The rows that join could not explain are then read out of the running kernel's
+// core file (ModuleImages), which is this channel's own step: a remote shell has
+// no way to read the core, so the pipeline's rows stand alone there. The read is
+// bounded and silent when it cannot happen or finds nothing, so a host without a
+// readable core answers exactly the rows the pipeline prints.
+func ModuleMemory(views script.ModuleMemoryViews, kitNames *regexp.Regexp) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
 		allocations, err := os.ReadFile(views.VMallocPath)
 		if err != nil {
@@ -184,7 +193,14 @@ func ModuleMemory(views script.ModuleMemoryViews) func(context.Context) (string,
 			return "", model.ErrTierUnavailable
 		}
 		stream := moduleMemoryText(views, string(allocations), string(modules), string(symbols))
-		return script.ModuleMemoryBody(views, stream), nil
+		rows, unowned := script.ModuleMemoryRows(views, stream)
+		if images := ModuleImages(views.CorePath, unowned, kitNames); len(images) > 0 {
+			// The dig's rows belong with the memory they name: after the rows
+			// nothing explains, and before the accounting line that closes the
+			// report.
+			rows = slices.Insert(rows, len(rows)-1, images...)
+		}
+		return strings.Join(rows, "\n") + "\n", nil
 	}
 }
 

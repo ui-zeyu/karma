@@ -8,6 +8,7 @@ package script
 
 import (
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -117,5 +118,55 @@ func TestModuleMemoryJoinAlwaysAccounts(t *testing.T) {
 	want := "VMAP regions 2 modules 3 explained 2 unexplained 0\n"
 	if got := compareJoins(t, stream); got != want {
 		t.Errorf("the join rendered\n%q\nwant\n%q", got, want)
+	}
+}
+
+// The rows come back with the regions they name, so a caller that wants to read
+// the memory behind them (the local channel's core dig) takes the addresses
+// instead of parsing the row back. The two have to name the same bytes: the
+// spelling stays the one /proc/vmallocinfo wrote, and the numbers are the same
+// range.
+func TestModuleMemoryRowsReturnsTheRegionsItsRowsName(t *testing.T) {
+	stream := "R 1 0xffff8000017c5000 0xffff8000017cb000 24576 module\n" +
+		"R 2 0xffffffffc02a4000 0xffffffffc02a7000 12288 shared\n" +
+		"R 3 0xffff800001200000 0xffff800001206000 24576 module\n" +
+		"P nf_tables\n" +
+		"Y 2 diamorphine\n" +
+		"Y 3 nf_tables\n"
+	rows, unowned := ModuleMemoryRows(memoryViews(), stream)
+	want := []string{
+		"UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module",
+		"UNOWNED 0xffffffffc02a4000-0xffffffffc02a7000 size 12288 caller shared diamorphine 1",
+		"VMAP regions 3 modules 1 explained 1 unexplained 2",
+	}
+	if !slices.Equal(rows, want) {
+		t.Fatalf("the join rendered\n%q\nwant\n%q", rows, want)
+	}
+	if len(unowned) != 2 {
+		t.Fatalf("the join returned %d regions, want the 2 its rows name: %+v", len(unowned), unowned)
+	}
+	if first := unowned[0]; first != (UnownedRegion{
+		Range: "0xffff8000017c5000-0xffff8000017cb000",
+		Start: 0xffff8000017c5000, End: 0xffff8000017cb000, Size: 24576, Caller: "module",
+	}) {
+		t.Errorf("the anonymous module region came back as %+v", first)
+	}
+	if second := unowned[1]; second.Range != "0xffffffffc02a4000-0xffffffffc02a7000" ||
+		second.Start != 0xffffffffc02a4000 || second.Caller != "shared" {
+		t.Errorf("the tagged region came back as %+v", second)
+	}
+	for index, region := range unowned {
+		if !strings.HasPrefix(rows[index], "UNOWNED "+region.Range+" size ") {
+			t.Errorf("row %d and region %d name different bytes: %q vs %+v", index, index, rows[index], region)
+		}
+	}
+}
+
+// A range the kernel would not write leaves the addresses zero, which no memory
+// is mapped at, so the dig reads nothing rather than the wrong bytes.
+func TestModuleMemoryRowsLeavesAMalformedRangeUnreadable(t *testing.T) {
+	rows, unowned := ModuleMemoryRows(memoryViews(), "R 1 junk junk 4096 module\nP nf_tables\n")
+	if len(unowned) != 1 || unowned[0].Start != 0 || unowned[0].End != 0 || unowned[0].Size != 4096 {
+		t.Fatalf("a malformed range came back as %+v (rows %q)", unowned, rows)
 	}
 }

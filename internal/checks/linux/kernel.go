@@ -108,6 +108,15 @@ var hiddenModuleScript = script.HiddenModuleScript(hiddenModuleViews)
 // read different paths or classify an allocator differently.
 var moduleMemoryViews = native.ModuleMemoryViews()
 
+// moduleImagesRe is the catalog's rootkit name list as a memory signature: the
+// module-memory check reads the bytes of the memory nothing explains and this is
+// what it looks for in them. The separator continuation is what makes a kit's own
+// literals count (`diamorphine_secret`, the prefix Diamorphine hides files by)
+// while a word that merely starts with a name does not (`reptilian` is not
+// `reptile`); the same list is what the kallsyms and lsmod rules name, so one
+// vocabulary covers the registries, the symbol table and the raw image.
+var moduleImagesRe = regexp.MustCompile(`\b(?:` + define.RootkitNames + `)(?:[_-]\w+)*\b`)
+
 // KernelChecks covers the kernel.
 var KernelChecks = []*model.Check{
 	define.LinuxCheck("modules-load", "Boot-loaded modules (/etc/modules, modules-load.d)", model.AspectKernel,
@@ -201,9 +210,19 @@ var KernelChecks = []*model.Check{
 	// through the symbols inside it and reports the memory nothing accounts
 	// for. The module lists and the symbol table are the other two views; this
 	// one survives the case both of them lose.
+	//
+	// The local channel goes one step further (native.ModuleImages): the memory
+	// behind those rows is read out of the running kernel's own core file, and
+	// the regions whose bytes still carry a module's naming evidence get a row
+	// of their own. That is where a kit that scrubbed every registry is left
+	// with nothing but its own image — the build path it was compiled in, the
+	// name the loader gave it, the placeholder symbol every module carries. A
+	// remote shell cannot read the core, so the pipeline's rows stand alone
+	// there, and a kernel under lockdown or a region with no such signature adds
+	// no row either way.
 	define.LinuxCheck("module-memory", "Module memory (vmalloc regions vs the module list)", model.AspectKernel,
 		[]model.Step{{{Label: "vmap", Inv: model.Dual{
-			Run:    native.ModuleMemory(moduleMemoryViews),
+			Run:    native.ModuleMemory(moduleMemoryViews, moduleImagesRe),
 			Script: script.ModuleMemoryScript(moduleMemoryViews),
 		}}}},
 		define.CheckOpt{
@@ -212,6 +231,12 @@ var KernelChecks = []*model.Check{
 				// the analyst can read the same memory in /proc/kcore or in a dump.
 				model.NewRule("module-memory-unowned", `^UNOWNED \S+`, model.Critical,
 					"executable kernel memory belonging to no listed module"),
+				// The bytes behind such a region: whatever the registries were
+				// made to forget, a module image still names itself. The span is
+				// the row's head, like the other registry rows; the name or path
+				// it carries is what the analyst reads.
+				model.NewRule("module-image", `^IMAGE \S+`, model.Critical,
+					"module image in executable kernel memory that no module registry explains"),
 				// The accounting line is always shown: the number of allocations
 				// the kernel's own allocators made against the number the module
 				// list explains is what makes a rise in the unexplained count

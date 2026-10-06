@@ -3,7 +3,7 @@
 # test passes.
 
 GO ?= go
-VERSION ?= 0.33.1
+VERSION ?= 0.34.0
 # The practice target of `make parity`: a Linux host and, when sshd does not
 # listen on 22, its port.
 HOST ?=
