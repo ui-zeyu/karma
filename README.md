@@ -13,7 +13,7 @@ go build -o dist/karma ./cmd/karma     # this host
 make dist                              # dist/ binaries for linux/amd64, linux/arm64, windows/amd64 and this host
 ```
 
-The version is `0.34.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
+The version is `0.35.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
 
 ## Usage
 
