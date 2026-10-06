@@ -184,7 +184,7 @@ func runCheck(ctx context.Context, sess session.Session, check *model.Check, opt
 		if ctx.Err() != nil {
 			break
 		}
-		members, missing := stepMembers(ctx, sess, step)
+		members, missing := stepMembers(ctx, sess, check, step)
 		skipped = append(skipped, missing...)
 		if len(members) == 0 {
 			// Nothing in this step could run: the tier exists on the other
@@ -225,19 +225,24 @@ func runCheck(ctx context.Context, sess session.Session, check *model.Check, opt
 // the tier's tool is the tier's own answer when it runs (a guard in the script,
 // ErrTierUnavailable in the body, a 127 from a missing binary), which is what the
 // chain above reads.
-func stepMembers(ctx context.Context, sess session.Session, step model.Step) ([]answeredTier, []string) {
+func stepMembers(ctx context.Context, sess session.Session, check *model.Check, step model.Step) ([]answeredTier, []string) {
 	var (
 		members []answeredTier
 		missing []string
 	)
 	for _, probe := range step {
-		inv := probe.InvocationFor(sess.Channel())
+		inv := probe.InvocationFor(session.TierChannel(sess))
 		if inv == nil {
 			continue
 		}
 		members = append(members, answeredTier{
-			probe:  probe,
-			result: sess.Run(ctx, model.Call{Inv: inv, Cap: probe.Cap}),
+			probe: probe,
+			// The check and the probe name the tier for a channel that collects
+			// through a placed collector; a channel that runs the tier itself
+			// reads Inv.
+			result: sess.Run(ctx, model.Call{
+				Check: check.ID, Probe: probe.Label, Inv: inv, Cap: probe.Cap,
+			}),
 		})
 		if members[len(members)-1].result.Verdict.Cut() {
 			// The channel — or the walk's budget — is gone: the members after

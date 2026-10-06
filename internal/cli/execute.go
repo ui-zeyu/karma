@@ -93,6 +93,18 @@ func execute(ctx context.Context, w, warn io.Writer, transport session.Transport
 	}
 	defer sess.Close()
 
+	// A remote Linux channel collects through the binary it places on the
+	// target: one copy per run, reused when one is already there and proved to
+	// be this build. A channel that cannot carry an upload — or a target that is
+	// not Linux, where karma has no in-process bodies — runs the tiers itself.
+	if delegator, ok := sess.(session.Delegator); ok && transport.Platform() == model.Linux {
+		path, _, err := placeCollector(ctx, sess, placeOptions{find: options.FindDir, place: options.PlaceDir})
+		if err != nil {
+			return failf(ExitEnvironment, "%v", err)
+		}
+		delegator.UseCollector(path)
+	}
+
 	factsValue := facts.CollectFor(ctx, transport.Platform(), sess)
 	if factsValue.ProbeCut {
 		fmt.Fprintln(warn,

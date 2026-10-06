@@ -604,8 +604,15 @@ func (c Channel) Remote() bool { return c != ChanLocal }
 // deadline (session.Within) — so every layer of the call answers to the same
 // one, and the channel's own setup is covered by it too.
 type Call struct {
-	Inv Invocation
-	Cap RowCap
+	// Check and Probe address the tier by name in the catalog both ends carry.
+	// A channel that collects through a karma binary it placed on the target
+	// asks that binary for this tier — `local probe CHECK PROBE` — instead of
+	// running Inv here; a channel that runs the tier itself uses Inv and ignores
+	// the two names.
+	Check string
+	Probe string
+	Inv   Invocation
+	Cap   RowCap
 }
 
 // Probe is one tier: what to run, how its output becomes the body, and how much
@@ -718,4 +725,8 @@ type RunOptions struct {
 	// triage run can drop everything under one level. It filters what is shown
 	// and nothing else: the collection's raw text is what the reading reads.
 	MinSeverity SeverityFloor
+	// FindDir and PlaceDir are where a remote channel looks for the collector it
+	// places on the target and where it puts one, empty for the default order.
+	FindDir  string
+	PlaceDir string
 }

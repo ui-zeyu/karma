@@ -587,3 +587,75 @@ func (o *collectObserver) byID(id string) (*model.CheckResult, bool) {
 	result, ok := o.results[id]
 	return result, ok
 }
+
+// delegatingSession is a remote channel that collects through a karma binary on
+// the target: it records the tiers it was asked for and answers each as a probe
+// of that binary would.
+type delegatingSession struct {
+	*stubSession
+	collector string
+	mu        sync.Mutex
+	calls     []string
+}
+
+func (s *delegatingSession) UseCollector(path string) { s.collector = path }
+func (s *delegatingSession) Collector() string        { return s.collector }
+
+func (s *delegatingSession) Run(_ context.Context, call model.Call) model.RunResult {
+	s.mu.Lock()
+	s.calls = append(s.calls, call.Check+"/"+call.Probe)
+	s.mu.Unlock()
+	return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "out\n"}
+}
+
+func (s *delegatingSession) asked() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.calls)
+}
+
+// A channel collecting through a placed collector walks the local tiers, and
+// every call names the check and the probe: that pair is what the binary on the
+// target is asked for. A tier with no in-process body is not part of that walk,
+// the way it is not part of the local channel's.
+func TestDelegatedChannelAsksForTheLocalTiersByName(t *testing.T) {
+	sess := &delegatingSession{stubSession: &stubSession{}}
+	sess.UseCollector("/root/.karma/karma")
+	check := &model.Check{ID: "listen", Aspect: model.AspectNetwork, Steps: []model.Step{
+		{{Label: "ss", Inv: model.Dual{
+			Run:    func(context.Context) (string, error) { return "ss\n", nil },
+			Script: "ss -tunap",
+		}}},
+		{{Label: "netstat", Inv: model.Dual{Script: "netstat -tunap"}}},
+	}}
+	summary := RunCatalog(context.Background(), sess, []*model.Check{check}, model.RunOptions{Concurrency: 1}, &deadObserver{})
+	if summary.Results != 1 {
+		t.Fatalf("the check should have finished: %+v", summary)
+	}
+	if got := sess.asked(); !slices.Equal(got, []string{"listen/ss"}) {
+		t.Fatalf("a delegated walk asks for the in-process tiers by name, got %v", got)
+	}
+}
+
+// remoteScriptSession is the canned replay on a channel that has not been given
+// a collector: it runs its own tiers, which for a remote channel means the script
+// sides.
+type remoteScriptSession struct{ *scriptSession }
+
+func (s *remoteScriptSession) Channel() model.Channel { return model.ChanSSH }
+
+// A channel without a collector still runs the script side of a tier: nothing
+// about a remote channel that has not been given a binary changes.
+func TestUndelegatedChannelStillRunsTheScriptSide(t *testing.T) {
+	sess := &remoteScriptSession{&scriptSession{reply: []model.RunResult{{Verdict: model.VerdictAnswered, Stdout: "from-script\n"}}}}
+	check := &model.Check{ID: "listen", Aspect: model.AspectNetwork, Steps: []model.Step{
+		{{Label: "netstat", Inv: model.Dual{Script: "netstat -tunap"}}},
+	}}
+	summary := RunCatalog(context.Background(), sess, []*model.Check{check}, model.RunOptions{Concurrency: 1}, &deadObserver{})
+	if summary.Results != 1 {
+		t.Fatalf("the check should have finished: %+v", summary)
+	}
+	if sess.seen != 1 {
+		t.Fatalf("the script side should have run once, ran %d", sess.seen)
+	}
+}

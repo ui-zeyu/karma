@@ -357,3 +357,32 @@ func TestTTYDUploadRefusedByReadonlyServer(t *testing.T) {
 		t.Fatal("the file was written although the upload failed")
 	}
 }
+
+// A ttyd run that has been given a placed collector types one probe of that
+// binary instead of the invocation: the terminal receives the same command the
+// ssh channel sends, so the target's own karma answers the tier.
+func TestTTYDRunTypesTheCollectorProbe(t *testing.T) {
+	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	call := model.Call{
+		Check: "listen",
+		Probe: "ss",
+		Inv:   model.Shell{Script: "echo from-the-invocation"},
+	}
+	result := sess.Run(ctx, call)
+	if !strings.Contains(result.Stdout, "from-the-invocation") {
+		t.Fatalf("without a collector the invocation is typed: %q", result.Stdout)
+	}
+	// /bin/echo stands in for the placed collector: what comes back is the
+	// command line it was handed.
+	ttyd, ok := sess.(*TTYDSession)
+	if !ok {
+		t.Fatalf("the ttyd transport should open a ttyd session, got %T", sess)
+	}
+	ttyd.UseCollector("/bin/echo")
+	result = sess.Run(ctx, call)
+	if got := strings.TrimSpace(result.Stdout); got != "local probe listen ss" {
+		t.Fatalf("the collector probe should be typed, got %q", got)
+	}
+}

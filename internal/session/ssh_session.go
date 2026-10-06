@@ -26,6 +26,9 @@ type SSHSession struct {
 	agent  io.Closer
 	target string // the destination as the report header names it, empty in a bare test session
 	lost   atomic.Bool
+	// collector is the karma binary placed on the target, empty when this channel
+	// runs the tiers itself. UseCollector sets it before the walk starts.
+	collector string
 }
 
 // Name is the channel display name.
@@ -42,6 +45,15 @@ func (s *SSHSession) Describe() string {
 // Channel is which side of the wire karma runs on: the target is remote.
 func (s *SSHSession) Channel() model.Channel { return model.ChanSSH }
 
+// UseCollector names the karma binary placed on the target: every later call is
+// one probe of that binary instead of the invocation run here. It is set once,
+// before the walk starts, which is why the field needs no lock.
+func (s *SSHSession) UseCollector(path string) { s.collector = path }
+
+// Collector is the placed binary's path, empty when the channel runs the tiers
+// itself.
+func (s *SSHSession) Collector() string { return s.collector }
+
 // Lost reports whether the connection is gone — closed, or the server stopped
 // answering. A channel the server refused leaves the connection alive and fails
 // one tier instead, so a host that limits concurrent sessions does not end the
@@ -53,7 +65,7 @@ func (s *SSHSession) Lost() bool { return s.lost.Load() }
 // the session and handing it the command — go through setup, which is what puts
 // them inside the call's deadline.
 func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	command := RenderShell(call.Inv)
+	command := RenderShell(model.Shell{Script: commandText(s.collector, call)})
 	sess, err := setup(ctx, "ssh channel open", sshTimeout, s.client.NewSession)
 	if err != nil {
 		return s.setupResult(ctx, err)

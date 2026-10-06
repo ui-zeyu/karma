@@ -54,6 +54,9 @@ type TTYDSession struct {
 	header   http.Header
 	client   *http.Client
 	lost     atomic.Bool
+	// collector is the karma binary placed on the target, empty when this channel
+	// types the tiers itself. UseCollector sets it before the walk starts.
+	collector string
 }
 
 // Name is the channel display name.
@@ -71,6 +74,15 @@ func (s *TTYDSession) Describe() string {
 
 // Channel is which side of the wire karma runs on: the target is remote.
 func (s *TTYDSession) Channel() model.Channel { return model.ChanTTYD }
+
+// UseCollector names the karma binary placed on the target: every later call is
+// one probe of that binary instead of the invocation typed here. It is set once,
+// before the walk starts.
+func (s *TTYDSession) UseCollector(path string) { s.collector = path }
+
+// Collector is the placed binary's path, empty when the channel runs the tiers
+// itself.
+func (s *TTYDSession) Collector() string { return s.collector }
 
 // Lost reports whether the endpoint can no longer be dialled — the server or
 // the network to it died. Latched on the first failed dial that was not this
@@ -93,7 +105,7 @@ func (s *TTYDSession) Run(ctx context.Context, call model.Call) model.RunResult 
 		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
 	terminal := &ttydCall{conn: conn, spawned: make(chan struct{})}
-	return terminal.collect(ctx, mustShellText(call.Inv), call.Cap)
+	return terminal.collect(ctx, commandText(s.collector, call), call.Cap)
 }
 
 // connect dials the endpoint and sends the JSON handshake. ttyd spawns the

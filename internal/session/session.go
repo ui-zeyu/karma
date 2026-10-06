@@ -82,3 +82,28 @@ type Uploader interface {
 type LostChannel interface {
 	Lost() bool
 }
+
+// Delegator is the capability of a remote session that collects through a karma
+// binary placed on the target: UseCollector names it, and every call after that
+// is one probe of that binary — run there, in process — instead of the
+// invocation run here. Collector is empty until one is named, and a session that
+// is not given one runs the invocation itself.
+//
+// It is a capability rather than a method on Session because placement happens
+// after the connection exists (the target has to answer uname first) and because
+// a channel that cannot carry an upload never has one.
+type Delegator interface {
+	UseCollector(path string)
+	Collector() string
+}
+
+// TierChannel is the channel whose tier bodies this session runs: a session
+// collecting through a placed collector runs the local ones, because that binary
+// stands on the target, and every other session runs its own. The runner asks
+// this to resolve each probe; Channel stays what the transport is.
+func TierChannel(sess Session) model.Channel {
+	if delegator, ok := sess.(Delegator); ok && delegator.Collector() != "" {
+		return model.ChanLocal
+	}
+	return sess.Channel()
+}
