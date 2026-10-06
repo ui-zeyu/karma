@@ -54,3 +54,11 @@ type Transport interface {
 type Uploader interface {
 	Upload(ctx context.Context, path string, content []byte) error
 }
+
+// LostChannel is the capability of a session whose transport can die under it:
+// Lost reports whether that already happened — every further call would fail
+// the same way. The runner stops queueing checks then, and the command line
+// says so once, instead of one identical failure panel per remaining check.
+type LostChannel interface {
+	Lost() bool
+}

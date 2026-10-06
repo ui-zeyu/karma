@@ -34,13 +34,13 @@ type ModuleAttr struct {
 }
 
 // PseudoModuleTags are the module tags in /proc/kallsyms that are not modules:
-// JITed BPF programs carry [bpf], and the kernel's own ftrace trampolines carry
-// [__builtin__ftrace] (ftrace_mod_address_lookup names them so a stack trace can
-// tell them apart from a module's symbols). The loader registered neither, so
-// /proc/modules never lists them and the cross-check would report a hidden
-// module that does not exist — on every host whose kernel has ftrace
-// trampolines, container or not.
-var PseudoModuleTags = []string{"bpf", "__builtin__ftrace"}
+// JITed BPF programs carry [bpf], and the pages the kernel allocates for ftrace
+// and kprobes trampolines carry [__builtin__ftrace] and [__builtin__kprobes]
+// (kernel/kallsyms.c names them itself, so a stack trace can tell those pages
+// from a module's). The loader registered none of them, so /proc/modules never
+// lists them and the cross-check would report a hidden module that does not
+// exist — as a Critical finding — on every host with such trampolines.
+var PseudoModuleTags = []string{"bpf", "__builtin__ftrace", "__builtin__kprobes"}
 
 // The three kernel surfaces the hidden-module cross-check diffs.
 const (
@@ -150,8 +150,8 @@ func loadedModuleNames(body string) map[string]bool {
 // symbolModuleNames counts the module tags in a /proc/kallsyms body. A tagged
 // line ends with the module in brackets after a tab
 // ("__kstrtab_nft_do_chain\t[nf_tables]"); an untagged line is a kernel symbol.
-// The pseudo-module tags — [bpf], [__builtin__ftrace] — are left out, so the
-// difference against /proc/modules stays a hidden-module signal.
+// The pseudo-module tags in PseudoModuleTags are left out, so the difference
+// against /proc/modules stays a hidden-module signal.
 func symbolModuleNames(body string) map[string]int {
 	counts := map[string]int{}
 	for line := range strings.SplitSeq(body, "\n") {
@@ -321,7 +321,7 @@ func ModuleSig(ctx context.Context) (string, error) {
 }
 
 func configSigRows(path string, gzipped bool) string {
-	data, err := os.ReadFile(path)
+	data, err := localfs.ReadRegular(path)
 	if err != nil {
 		return ""
 	}

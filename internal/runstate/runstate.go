@@ -22,10 +22,13 @@ type Store struct {
 	entries map[any]*entry
 }
 
-// entry is where the store's mutex stops helping: once keeps the computation to
-// a single caller while any later caller of the same key blocks on it.
+// entry is one memo slot: the value and the completion signal a caller waits
+// on. The signal is a channel rather than a sync.Once so the wait can be
+// abandoned — the slot's owner may be parked in a syscall the tier boundary has
+// already walked away from, and a wait that cannot be given up would cost every
+// later caller its whole deadline.
 type entry struct {
-	once sync.Once
+	done chan struct{}
 	val  any
 }
 
@@ -48,15 +51,52 @@ func From(ctx context.Context) *Store {
 // runs compute and the rest wait for its result, so a shared read happens
 // once per run. compute runs on the winning caller's goroutine, so the read it
 // performs is bounded by that caller's context.
-func Memo[T any](s *Store, key any, compute func() T) T {
+//
+// A waiting caller never waits past its own context. Giving up drops the slot,
+// so the next caller starts a fresh computation instead of queueing behind the
+// same stuck one; the abandoned owner keeps running and closes its own slot
+// whenever — and if ever — its read returns. A slot that already holds its
+// value is always used, even for a caller whose context has just ended: only a
+// computation still in flight can be given up on.
+func Memo[T any](ctx context.Context, s *Store, key any, compute func() T) T {
 	s.mu.Lock()
-	slot, ok := s.entries[key]
-	if !ok {
-		slot = &entry{}
+	slot, shared := s.entries[key]
+	if !shared {
+		slot = &entry{done: make(chan struct{})}
 		s.entries[key] = slot
 	}
 	s.mu.Unlock()
-	slot.once.Do(func() { slot.val = compute() })
-	value, _ := slot.val.(T)
+
+	if shared {
+		select {
+		case <-slot.done:
+			value, _ := slot.val.(T)
+			return value
+		default:
+		}
+		select {
+		case <-slot.done:
+			value, _ := slot.val.(T)
+			return value
+		case <-ctx.Done():
+			// Re-checked: the computation may have landed while this caller
+			// was deciding to give up on it.
+			select {
+			case <-slot.done:
+				value, _ := slot.val.(T)
+				return value
+			default:
+			}
+			s.mu.Lock()
+			if s.entries[key] == slot {
+				delete(s.entries, key)
+			}
+			s.mu.Unlock()
+			return compute()
+		}
+	}
+	value := compute()
+	slot.val = value // written before the close, so waiters read it after
+	close(slot.done)
 	return value
 }

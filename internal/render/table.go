@@ -74,9 +74,9 @@ func newTableStyler(headers []*regexp.Regexp, cycle bool) *tableStyler {
 	return &tableStyler{headers: headers, cycle: cycle}
 }
 
-func (t *tableStyler) style(line string) []Span {
+func (t *tableStyler) style(line string) []paintSpan {
 	if uptimeBanner.MatchString(line) {
-		return []Span{{Start: 0, End: len(line), Style: mutedStyle}}
+		return []paintSpan{{Start: 0, End: len(line), Style: mutedStyle}}
 	}
 	if logTrailer.MatchString(line) {
 		return nil
@@ -105,10 +105,10 @@ func (t *tableStyler) style(line string) []Span {
 		}
 		return nil
 	}
-	var spans []Span
+	var spans []paintSpan
 	for _, column := range columns {
 		if pos := columnIndex(t.starts, column.start); pos < len(t.starts)-1 {
-			spans = append(spans, Span{
+			spans = append(spans, paintSpan{
 				Start: column.start, End: column.end,
 				Style: tableColumnStyles[pos%len(tableColumnStyles)],
 			})
@@ -165,9 +165,9 @@ func wholeToken(re *regexp.Regexp, text string) bool {
 
 // cycleColumns falls back to cycling word by word when there is no header to
 // anchor on; the last word keeps the default color.
-func cycleColumns(columns []word) []Span {
-	return lo.Map(columns[:len(columns)-1], func(column word, index int) Span {
-		return Span{
+func cycleColumns(columns []word) []paintSpan {
+	return lo.Map(columns[:len(columns)-1], func(column word, index int) paintSpan {
+		return paintSpan{
 			Start: column.start, End: column.end,
 			Style: tableColumnStyles[index%len(tableColumnStyles)],
 		}

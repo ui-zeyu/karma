@@ -17,8 +17,8 @@ var chromaLexers = map[string]chroma.Lexer{
 // chromaLineStyler is the chroma lexical surface: Comment dimmed, Keyword dark
 // magenta, String and Number blue. Syntax colors stay low-saturation so they do
 // not compete with the severity colors.
-func chromaLineStyler(lexer chroma.Lexer) LineStyler {
-	return func(line string) []Span {
+func chromaLineStyler(lexer chroma.Lexer) lineStyler {
+	return func(line string) []paintSpan {
 		if lexer == nil {
 			return nil
 		}
@@ -26,11 +26,11 @@ func chromaLineStyler(lexer chroma.Lexer) LineStyler {
 		if err != nil {
 			return nil
 		}
-		var spans []Span
+		var spans []paintSpan
 		offset := 0
 		for _, token := range iterator.Tokens() {
 			if st, ok := chromaTokenStyle(token.Type); ok && token.Value != "" {
-				spans = append(spans, Span{Start: offset, End: offset + len(token.Value), Style: st})
+				spans = append(spans, paintSpan{Start: offset, End: offset + len(token.Value), Style: st})
 			}
 			offset += len(token.Value)
 		}

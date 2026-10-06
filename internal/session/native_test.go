@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,6 +88,20 @@ func TestRunNativeErrorReportsStderr(t *testing.T) {
 	}
 }
 
+// A body parses whatever the target holds, and it runs on its own goroutine,
+// outside the runner's recover: an unrecovered panic there would end the
+// process and lose the whole report. It fails as one tier instead.
+func TestRunNativeSurvivesAPanickingBody(t *testing.T) {
+	res := LocalSession{}.Run(context.Background(),
+		model.Dual{Run: func(context.Context) (string, error) {
+			var empty []byte
+			return string(empty[1:]), nil // the shape an unguarded slice takes
+		}}, 0, 0)
+	if res.ExitCode != 1 || !strings.Contains(res.Stderr, "in-process tier panicked") {
+		t.Fatalf("wanted a failed tier naming the panic, got %+v", res)
+	}
+}
+
 func TestRunNativeTimeoutKeepsPartialOutput(t *testing.T) {
 	res := LocalSession{}.Run(context.Background(),
 		model.Dual{Run: func(ctx context.Context) (string, error) {
@@ -109,6 +124,44 @@ func TestRunNativeCancelKeepsPartialOutput(t *testing.T) {
 		}}, 5*time.Second, 0)
 	if !res.Interrupted || res.Stdout != "partial" {
 		t.Fatalf("wanted an interrupted result with the partial body, got %+v", res)
+	}
+}
+
+// The deadline is enforced rather than offered: a body parked in a syscall has
+// no context to observe, so the caller must stop waiting by itself. Before
+// this, such a body parked the whole collection — no signal could break it.
+func TestRunNativeAbandonsABodyThatIgnoresTheDeadline(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	started := time.Now()
+	res := LocalSession{}.Run(context.Background(),
+		model.Dual{Run: func(context.Context) (string, error) {
+			<-release // the shape of an open(2) waiting for a writer
+			return "late", nil
+		}}, 20*time.Millisecond, 0)
+	if !res.TimedOut || res.ExitCode != -1 || res.Stdout != "" {
+		t.Fatalf("wanted a bare timeout, got %+v", res)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("the caller waited %s for a body stuck in a syscall", elapsed)
+	}
+}
+
+// The same body under a cancelled run reads as interrupted, which is what
+// Ctrl-C must mean: the operator ended the run, not the target's clock.
+func TestRunNativeAbandonsABodyThatIgnoresTheCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	time.AfterFunc(20*time.Millisecond, cancel)
+	res := LocalSession{}.Run(ctx,
+		model.Dual{Run: func(context.Context) (string, error) {
+			<-release
+			return "late", nil
+		}}, time.Minute, 0)
+	if !res.Interrupted || res.TimedOut {
+		t.Fatalf("wanted an interrupted result, got %+v", res)
 	}
 }
 

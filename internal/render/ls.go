@@ -13,9 +13,9 @@ var (
 		`(?P<name>.+)$`)
 )
 
-func styleLsL(line string) []Span {
+func styleLsL(line string) []paintSpan {
 	if lsTotal.MatchString(line) {
-		return []Span{{Start: 0, End: len(line), Style: mutedStyle}}
+		return []paintSpan{{Start: 0, End: len(line), Style: mutedStyle}}
 	}
 	matched, ok := matchLine(lsLine, line)
 	if !ok {
@@ -27,20 +27,20 @@ func styleLsL(line string) []Span {
 	nameAt, _, _ := matched.span("name")
 	perms := line[permsStart:permsEnd]
 	// The metadata is muted as a whole first, then lit up column by column
-	spans := make([]Span, 0, len(perms)+4)
-	spans = append(spans, Span{Start: 0, End: nameAt, Style: mutedStyle})
+	spans := make([]paintSpan, 0, len(perms)+4)
+	spans = append(spans, paintSpan{Start: 0, End: nameAt, Style: mutedStyle})
 	spans = append(spans, permissionSpans(perms)...)
-	spans = append(spans, Span{Start: sizeStart, End: sizeEnd, Style: style{fg: "247"}})
+	spans = append(spans, paintSpan{Start: sizeStart, End: sizeEnd, Style: style{fg: "247"}})
 	dateStyle := style{fg: "2"} // dark_green: with a time it is a recent change
 	if !strings.Contains(line[dateStart:dateEnd], ":") {
 		dateStyle = style{fg: "6"} // year only, cyan
 	}
-	spans = append(spans, Span{Start: dateStart, End: dateEnd, Style: dateStyle})
+	spans = append(spans, paintSpan{Start: dateStart, End: dateEnd, Style: dateStyle})
 	if kind, ok := lsKindStyle(perms); ok {
-		spans = append(spans, Span{Start: nameAt, End: len(line), Style: kind})
+		spans = append(spans, paintSpan{Start: nameAt, End: len(line), Style: kind})
 		if perms[0] == 'l' { // symlink: the arrow is dimmed, name and target share a color
 			if arrow := strings.Index(line[nameAt:], " -> "); arrow >= 0 {
-				spans = append(spans, Span{Start: nameAt + arrow, End: nameAt + arrow + 4, Style: mutedStyle})
+				spans = append(spans, paintSpan{Start: nameAt + arrow, End: nameAt + arrow + 4, Style: mutedStyle})
 			}
 		}
 	}
@@ -49,15 +49,15 @@ func styleLsL(line string) []Span {
 
 // permissionSpans paints the permission bits one by one; the first character is
 // the type, and missing bits plus a trailing ACL indicator (. +) stay muted.
-func permissionSpans(perms string) []Span {
-	spans := make([]Span, 0, len(perms))
+func permissionSpans(perms string) []paintSpan {
+	spans := make([]paintSpan, 0, len(perms))
 	for offset := range len(perms) {
 		st, ok := lsFlagStyle(perms[offset])
 		if offset == 0 {
 			st, ok = lsTypeStyle(perms[offset])
 		}
 		if ok {
-			spans = append(spans, Span{Start: offset, End: offset + 1, Style: st})
+			spans = append(spans, paintSpan{Start: offset, End: offset + 1, Style: st})
 		}
 	}
 	return spans

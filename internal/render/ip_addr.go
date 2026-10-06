@@ -13,7 +13,7 @@ var brStateStyles = map[string]style{
 	"UNKNOWN": {faint: true},
 }
 
-func styleIPAddr(line string) []Span {
+func styleIPAddr(line string) []paintSpan {
 	// ip -br addr rows are colored by column: interface blue, state by meaning,
 	// the addresses themselves at the default color
 	matched, ok := matchLine(brAddrRow, line)
@@ -22,9 +22,9 @@ func styleIPAddr(line string) []Span {
 	}
 	ifaceStart, ifaceEnd, _ := matched.span("iface")
 	stateStart, stateEnd, _ := matched.span("state")
-	spans := []Span{{Start: ifaceStart, End: ifaceEnd, Style: style{fg: "4"}}}
+	spans := []paintSpan{{Start: ifaceStart, End: ifaceEnd, Style: style{fg: "4"}}}
 	if st, ok := brStateStyles[line[stateStart:stateEnd]]; ok {
-		spans = append(spans, Span{Start: stateStart, End: stateEnd, Style: st})
+		spans = append(spans, paintSpan{Start: stateStart, End: stateEnd, Style: st})
 	}
 	return spans
 }

@@ -33,7 +33,7 @@ var sysvServiceStyles = map[string]style{
 // sysvServiceSpans paints one `service --status-all` row: the marker as a
 // single span in its state color, the name in the first table-column color —
 // the same color the systemd table gives its UNIT column.
-func sysvServiceSpans(line string) ([]Span, bool) {
+func sysvServiceSpans(line string) ([]paintSpan, bool) {
 	matched, ok := matchLine(sysvServiceLine, line)
 	if !ok {
 		return nil, false
@@ -47,9 +47,9 @@ func sysvServiceSpans(line string) ([]Span, bool) {
 	if !ok {
 		return nil, false
 	}
-	spans := []Span{{Start: markerStart, End: markerEnd, Style: state}}
+	spans := []paintSpan{{Start: markerStart, End: markerEnd, Style: state}}
 	if nameStart, nameEnd, ok := matched.span("name"); ok {
-		spans = append(spans, Span{Start: nameStart, End: nameEnd, Style: tableColumnStyles[0]})
+		spans = append(spans, paintSpan{Start: nameStart, End: nameEnd, Style: tableColumnStyles[0]})
 	}
 	return spans, true
 }
@@ -65,7 +65,7 @@ type unitStyler struct {
 
 func newUnitStyler() *unitStyler { return &unitStyler{table: newTableStyler(nil, true)} }
 
-func (u *unitStyler) style(line string) []Span {
+func (u *unitStyler) style(line string) []paintSpan {
 	if spans, ok := sysvServiceSpans(line); ok {
 		return spans
 	}
@@ -79,7 +79,7 @@ func (u *unitStyler) style(line string) []Span {
 		}
 		switch pos := columnIndex(u.table.starts, column.start); pos {
 		case 2, 3:
-			spans = append(spans, Span{
+			spans = append(spans, paintSpan{
 				Start: column.start, End: column.end,
 				Style: unitStateStyles[column.text],
 			})

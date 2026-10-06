@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"maps"
 	"os"
@@ -72,6 +73,10 @@ func Execute(ctx context.Context, w io.Writer, transport session.Transport, opti
 
 	bins := catalogBins(selected)
 	factsValue := facts.CollectFor(ctx, transport.Platform(), sess, bins)
+	if factsValue.ProbeCut {
+		fmt.Fprintln(os.Stderr,
+			"karma: the capability probe timed out: binaries it did not reach read as missing and their checks are skipped")
+	}
 	width := terminalWidth(w)
 	render.RenderHeader(w, factsValue, render.HeaderInfo{
 		Channel:   sess.Describe(),
@@ -93,6 +98,9 @@ func Execute(ctx context.Context, w io.Writer, transport session.Transport, opti
 		observer = saver
 	}
 	runner.RunCatalog(ctx, sess, factsValue, selected, options, observer)
+	if lost, ok := sess.(session.LostChannel); ok && lost.Lost() {
+		return failf(2, "channel lost mid-run: the checks still queued were not collected")
+	}
 	return nil
 }
 

@@ -208,25 +208,32 @@ func checkTargetPlatform(ctx context.Context, sess session.Session) error {
 	return nil
 }
 
-// unamePlatform maps `uname -s -m` to the GOOS/GOARCH pair a binary must be
-// built for; an unknown machine name is an error rather than a guess, because
-// the run would fail on the target.
-func unamePlatform(system, machine string) (string, string, error) {
-	goos := map[string]string{
+// unameGOOS and unameGOARCH map `uname -s -m`'s words to the GOOS/GOARCH pair
+// a binary must be built for.
+var (
+	unameGOOS = map[string]string{
 		"Linux": "linux", "Darwin": "darwin", "FreeBSD": "freebsd",
 		"OpenBSD": "openbsd", "NetBSD": "netbsd", "SunOS": "solaris",
-	}[system]
-	if goos == "" {
-		return "", "", fmt.Errorf("unsupported target system %q", system)
 	}
-	goarch := map[string]string{
+	unameGOARCH = map[string]string{
 		"x86_64": "amd64", "amd64": "amd64",
 		"i386": "386", "i486": "386", "i586": "386", "i686": "386",
 		"aarch64": "arm64", "arm64": "arm64",
 		"armv6l": "arm", "armv7l": "arm", "armv8l": "arm",
 		"riscv64": "riscv64", "ppc64le": "ppc64le", "ppc64": "ppc64", "s390x": "s390x",
 		"mips": "mips", "mips64": "mips64", "loongarch64": "loong64",
-	}[machine]
+	}
+)
+
+// unamePlatform maps `uname -s -m` to the GOOS/GOARCH pair a binary must be
+// built for; an unknown machine name is an error rather than a guess, because
+// the run would fail on the target.
+func unamePlatform(system, machine string) (string, string, error) {
+	goos := unameGOOS[system]
+	if goos == "" {
+		return "", "", fmt.Errorf("unsupported target system %q", system)
+	}
+	goarch := unameGOARCH[machine]
 	if goarch == "" {
 		return "", "", fmt.Errorf("unsupported target machine %q", machine)
 	}

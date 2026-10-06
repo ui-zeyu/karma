@@ -56,3 +56,31 @@ func TestLinesMatchesSplitlines(t *testing.T) {
 		}
 	}
 }
+
+// Head is the line cap two tiers share: the streaming harvest's boundary (each
+// kept line's own terminator, one line past the cap deciding) and `head -n`.
+// The split is on \n alone, so a body of CR-separated output is one long line
+// here even though Lines breaks it.
+func TestHead(t *testing.T) {
+	cases := []struct {
+		in        string
+		n         int
+		want      string
+		truncated bool
+	}{
+		{"a\nb\n", 2, "a\nb\n", false},
+		{"a\nb", 2, "a\nb", false},
+		{"a\nb\nc\n", 2, "a\nb\n", true},
+		{"a\nb\nc", 2, "a\nb\n", true},
+		{"", 2, "", false},
+		{"\n", 1, "\n", false},
+		{"a\nb\nc\n", 0, "a\nb\nc\n", false},
+		{"a\rb\r", 1, "a\rb\r", false},
+	}
+	for _, tc := range cases {
+		got, truncated := textutil.Head(tc.in, tc.n)
+		if got != tc.want || truncated != tc.truncated {
+			t.Errorf("Head(%q, %d) = %q, %v; want %q, %v", tc.in, tc.n, got, truncated, tc.want, tc.truncated)
+		}
+	}
+}

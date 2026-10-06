@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 
+	"karma/internal/localfs"
 	"karma/internal/model"
 )
 
@@ -51,7 +52,7 @@ func localHostname() string {
 
 // localOsRelease reads the distro's pretty name source.
 func localOsRelease() string {
-	data, err := os.ReadFile("/etc/os-release")
+	data, err := localfs.ReadRegular("/etc/os-release")
 	if err != nil {
 		return ""
 	}

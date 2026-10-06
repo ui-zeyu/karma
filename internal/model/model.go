@@ -318,6 +318,10 @@ type HostFacts struct {
 	// Collection identity (USERDOMAIN\user on Windows; empty on Linux because
 	// the report header already carries the uid)
 	User string
+	// ProbeCut marks a capability probe cut short by its deadline: every name
+	// it did not reach reads as missing, so the checks needing it report
+	// skipped rather than failed — the run owes the operator that explanation.
+	ProbeCut bool
 }
 
 // IsRoot reports whether the uid is 0.

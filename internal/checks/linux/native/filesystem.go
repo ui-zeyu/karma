@@ -128,7 +128,7 @@ func sharedPrivWalk(ctx context.Context, fsTypes []string) privWalk {
 	if store == nil {
 		return scan()
 	}
-	walk := runstate.Memo(store, privWalkKey{}, scan)
+	walk := runstate.Memo(ctx, store, privWalkKey{}, scan)
 	if walkCut(walk.err) && ctx.Err() == nil {
 		// Another check's deadline cut the shared walk while this one still has
 		// time: read our own rather than inherit the fragment, the rule

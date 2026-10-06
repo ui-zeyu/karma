@@ -183,35 +183,36 @@ var (
 	stringColor  = style{fg: "4"} // blue, same as Number
 )
 
-// Span is one painted span (byte offsets).
-type Span struct {
+// paintSpan is one stretch of a line to paint: its byte range and the style it
+// takes.
+type paintSpan struct {
 	Start int
 	End   int
 	Style style
 }
 
-// LineStyler produces syntax spans for one body line; a lexer that carries
+// lineStyler produces syntax spans for one body line; a lexer that carries
 // state across lines (table column anchors) gets one instance per check, built
 // by newLineStyler.
-type LineStyler func(line string) []Span
+type lineStyler func(line string) []paintSpan
 
 // newLineStyler returns the inline coloring function for the declared syntax,
 // with insurance: a lexer panic (odd target output hitting a hard-coded line
 // shape) permanently degrades this check's syntax coloring to plain text,
 // while hit highlighting and body output carry on.
-func newLineStyler(syntax model.Syntax) LineStyler {
+func newLineStyler(syntax model.Syntax) lineStyler {
 	return safeLineStyler(buildLineStyler(syntax))
 }
 
 // safeLineStyler wraps a lexer with insurance: an instance that blew up once is
 // permanently degraded to plain text (its cross-line state may already be
 // polluted, and coloring against a wrong anchor is worse than plain text).
-func safeLineStyler(styler LineStyler) LineStyler {
+func safeLineStyler(styler lineStyler) lineStyler {
 	if styler == nil {
 		return nil
 	}
 	poisoned := false
-	return func(line string) (spans []Span) {
+	return func(line string) (spans []paintSpan) {
 		if poisoned {
 			return nil
 		}
@@ -227,7 +228,7 @@ func safeLineStyler(styler LineStyler) LineStyler {
 // buildLineStyler is the syntax table. Built-in pseudo-lexers are reused
 // directly; bash goes through chroma; an unknown declaration means no
 // highlighting.
-func buildLineStyler(syntax model.Syntax) LineStyler {
+func buildLineStyler(syntax model.Syntax) lineStyler {
 	switch syntax {
 	case model.SyntaxLsL:
 		return styleLsL
@@ -290,7 +291,7 @@ func buildLineStyler(syntax model.Syntax) LineStyler {
 // into one run. Every maximal run of bytes painted by the same span is bounded
 // by span boundaries, so the result matches the per-byte rule without touching
 // each byte.
-func paintLine(text string, spans []Span) string {
+func paintLine(text string, spans []paintSpan) string {
 	if len(spans) == 0 {
 		return text
 	}

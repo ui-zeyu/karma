@@ -173,3 +173,41 @@ func TestHarvestGraceExpiryKeepsReadOutput(t *testing.T) {
 		t.Fatalf("output read before the stop should be kept: %q", result.Stdout)
 	}
 }
+
+// A panic inside a harvest goroutine has no recover above it — it would end the
+// process and lose the report — so the barrier reports it instead: the body is
+// marked truncated (a reader that died cannot have read everything) and the
+// reason lands in the source's stderr.
+func TestHarvestSurvivesAPanickingReader(t *testing.T) {
+	chunks := []fakeChunk{line("a\n"), line("b\n"), line("c\n")}
+	src := fakeSource(chunks)
+	readLine := src.readLine
+	reads := 0
+	src.readLine = func() (string, bool) {
+		reads++
+		if reads == 3 {
+			panic("reader blew up")
+		}
+		return readLine()
+	}
+	result := harvest(context.Background(), src, 2*time.Second, 0)
+	if result.Stdout != "a\nb\n" {
+		t.Fatalf("output read before the panic should be kept: %q", result.Stdout)
+	}
+	if !result.Truncated {
+		t.Fatal("a dead reader means the body is not known to be complete")
+	}
+	if !strings.Contains(result.Stderr, "harvest panic: reader blew up") {
+		t.Fatalf("the reason should reach the source's stderr: %q", result.Stderr)
+	}
+
+	// The waiter's close(done) is deferred inside the barrier too: a panicking
+	// wait must not leave the caller waiting for a signal that never comes.
+	var once sync.Once
+	hung := fakeSource(nil)
+	hung.wait = func() { once.Do(func() { panic("wait blew up") }) }
+	waited := harvest(context.Background(), hung, time.Second, 0)
+	if !strings.Contains(waited.Stderr, "harvest panic: wait blew up") {
+		t.Fatalf("a panicking wait should be reported, got %+v", waited)
+	}
+}

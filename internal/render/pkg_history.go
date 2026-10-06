@@ -31,20 +31,20 @@ var (
 	historyTailStyle    = dimStyle       // the arch suffix and the version pair
 )
 
-func stylePkgHistory(line string) []Span {
+func stylePkgHistory(line string) []paintSpan {
 	if matched, ok := matchLine(dpkgLogLine, line); ok {
 		dateStart, _, _ := matched.span("date")
 		_, timeEnd, _ := matched.span("time")
 		actionStart, actionEnd, _ := matched.span("action")
 		packageStart, packageEnd, _ := matched.span("package")
-		spans := []Span{
+		spans := []paintSpan{
 			{Start: dateStart, End: timeEnd, Style: mutedStyle},
 			{Start: actionStart, End: actionEnd, Style: historyActionStyle},
 			{Start: packageStart, End: packageEnd, Style: historySubjectStyle},
 		}
 		for _, name := range []string{"arch", "versions"} {
 			if start, end, ok := matched.span(name); ok {
-				spans = append(spans, Span{Start: start, End: end, Style: historyTailStyle})
+				spans = append(spans, paintSpan{Start: start, End: end, Style: historyTailStyle})
 			}
 		}
 		return spans
@@ -54,7 +54,7 @@ func stylePkgHistory(line string) []Span {
 		valueStart, valueEnd, _ := matched.span("value")
 		// The key and its colon are the label; the date beside "Start-Date" is
 		// the value and keeps the body's own color.
-		spans := []Span{{Start: keyStart, End: keyEnd + 1, Style: mutedStyle}}
+		spans := []paintSpan{{Start: keyStart, End: keyEnd + 1, Style: mutedStyle}}
 		if line[keyStart:keyEnd] == "Commandline" {
 			spans = append(spans, commandLineSpans(line, [2]int{valueStart, valueEnd})...)
 		}
@@ -66,8 +66,8 @@ func stylePkgHistory(line string) []Span {
 
 // commandLineSpans colors a Commandline value: the program, then its arguments
 // — an option is green, an operand keeps the body color.
-func commandLineSpans(line string, value [2]int) []Span {
-	var spans []Span
+func commandLineSpans(line string, value [2]int) []paintSpan {
+	var spans []paintSpan
 	first := true
 	for word := range matches(historyWord, line) {
 		if word.start < value[0] {
@@ -75,10 +75,10 @@ func commandLineSpans(line string, value [2]int) []Span {
 		}
 		switch {
 		case first:
-			spans = append(spans, Span{Start: word.start, End: word.end, Style: historySubjectStyle})
+			spans = append(spans, paintSpan{Start: word.start, End: word.end, Style: historySubjectStyle})
 			first = false
 		case wholeToken(historyFlag, word.text):
-			spans = append(spans, Span{Start: word.start, End: word.end, Style: historyArgStyle})
+			spans = append(spans, paintSpan{Start: word.start, End: word.end, Style: historyArgStyle})
 		}
 	}
 	return spans

@@ -18,13 +18,29 @@ func Cat(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// ReadRegular reads a whole file for an in-process tier, opening it without
+// blocking (see openRegular): the fixed paths these tiers read — the utmp
+// records, /etc/passwd, /etc/ld.so.preload, a boot config — are host-writable,
+// and a FIFO planted at one of them would hang the collection with no way out
+// but SIGKILL. A FIFO reads as empty here instead, which is the same answer an
+// empty file gives.
+func ReadRegular(path string) ([]byte, error) {
+	file, err := openRegular(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(file)
+}
+
 // Tail is the reader form of `tail -c n`: the file's last n bytes, or the whole
 // file when it is smaller. The read is bounded by n, so a log that has grown
 // for years costs what the window costs — and it starts exactly on the offset
 // tail starts on, partial first line and all, so both channels see the same
-// bytes. A directory is not a body and reports an error.
+// bytes. A path that is not a regular file is not a body and reports an error
+// (the open is non-blocking, so a FIFO cannot hang it).
 func Tail(path string, n int64) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := openRegular(path)
 	if err != nil {
 		return nil, err
 	}
@@ -33,8 +49,8 @@ func Tail(path string, n int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("%s is a directory", path)
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
 	size := info.Size()
 	if size > n {
@@ -58,7 +74,9 @@ func ReadSections(patterns []string, transform func(string) string) string {
 	for _, path := range ExpandFiles(patterns) {
 		fmt.Fprintf(&b, "== %s\n", path)
 		text := ""
-		if body, err := os.ReadFile(path); err == nil {
+		// ReadRegular rather than os.ReadFile: these paths are host files, and
+		// the shell counterpart skips a non-regular name outright.
+		if body, err := ReadRegular(path); err == nil {
 			text = string(body)
 		}
 		if transform != nil {

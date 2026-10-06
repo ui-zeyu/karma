@@ -127,11 +127,12 @@ done
 // hiddenSymbolDiffText is the kallsyms half over a given module list and symbol
 // table: the module tags in the symbol table are a second registry, and one that
 // /proc/modules does not name is a hidden module. The pseudo-module tags
-// (native.PseudoModuleTags: JITed BPF programs and the kernel's own ftrace
-// trampolines) are dropped, because they are not modules and would otherwise be
-// reported as hidden on every host that has them. One awk pass reads the module
-// list first and the symbol table second — no temporary file on the target —
-// and the count is how many of the module's symbols are still there.
+// (native.PseudoModuleTags: JITed BPF programs, and the pages the kernel
+// allocates for ftrace and kprobes trampolines) are dropped, because they are
+// not modules and would otherwise be reported as hidden on every host that has
+// them. One awk pass reads the module list first and the symbol table second —
+// no temporary file on the target — and the count is how many of the module's
+// symbols are still there.
 // The first operand is picked by name (ARGV[1]): the NR==FNR idiom reads the
 // second file as the first when the module list is empty or unreadable. The two
 // file operands are substituted, so the tests run this same pipeline over

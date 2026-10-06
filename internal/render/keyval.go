@@ -33,19 +33,19 @@ func newKeyvalStyler() *keyvalStyler {
 	return &keyvalStyler{table: newTableStyler([]*regexp.Regexp{routeTableHeader, arpTableHeader}, false)}
 }
 
-func (k *keyvalStyler) style(line string) []Span {
+func (k *keyvalStyler) style(line string) []paintSpan {
 	columns := slices.Collect(matches(wsColumn, line))
 	if len(columns) < 2 {
 		return nil
 	}
 	first, last := columns[0], columns[len(columns)-1]
 	if keyvalKeys.MatchString(line) && keyvalDest.MatchString(first.text) {
-		spans := []Span{{Start: first.start, End: first.end, Style: style{fg: "4"}}}
+		spans := []paintSpan{{Start: first.start, End: first.end, Style: style{fg: "4"}}}
 		for key := range matches(keyvalKeys, line) {
-			spans = append(spans, Span{Start: key.start, End: key.end, Style: style{fg: "5"}})
+			spans = append(spans, paintSpan{Start: key.start, End: key.end, Style: style{fg: "5"}})
 		}
 		if wholeToken(headerToken, last.text) {
-			spans = append(spans, Span{Start: last.start, End: last.end, Style: style{fg: "6"}})
+			spans = append(spans, paintSpan{Start: last.start, End: last.end, Style: style{fg: "6"}})
 		}
 		return spans
 	}

@@ -75,7 +75,7 @@ func decodeUtmp(rec []byte) utmpRec {
 // absent, the "binary missing" case of the script tier. A truncated tail
 // (a crash mid-write) is dropped, whole records survive.
 func readUtmpRecords(path string) ([]utmpRec, bool) {
-	data, err := os.ReadFile(path)
+	data, err := localfs.ReadRegular(path)
 	if err != nil {
 		return nil, false
 	}
@@ -385,7 +385,7 @@ func Lastlog(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", model.ErrTierUnavailable
 	}
-	data, err := os.ReadFile("/var/log/lastlog")
+	data, err := localfs.ReadRegular("/var/log/lastlog")
 	if err != nil {
 		return "", model.ErrTierUnavailable
 	}
@@ -395,13 +395,9 @@ func Lastlog(ctx context.Context) (string, error) {
 	}
 	b.WriteString(lastlogHeaderLine() + "\n")
 	for _, u := range users {
-		off := u.uid * lastlogSize
 		line, host, latest := "", "", lastlogNever
-		if off+lastlogSize <= len(data) {
-			rec := data[off : off+lastlogSize]
-			when := int32(binary.LittleEndian.Uint32(rec[:4]))
-			line = textutil.CStr(rec[lastlogLineOff : lastlogLineOff+utmpLineLen])
-			host = textutil.CStr(rec[lastlogHostOff : lastlogHostOff+utmpHostLen])
+		if l, h, when, ok := lastlogEntry(data, u.uid); ok {
+			line, host = l, h
 			if when > 0 {
 				latest = time.Unix(int64(when), 0).Format(lastlogTimeFormat)
 			}
@@ -409,6 +405,22 @@ func Lastlog(ctx context.Context) (string, error) {
 		b.WriteString(lastlogRow(u.name, line, host, latest) + "\n")
 	}
 	return b.String(), nil
+}
+
+// lastlogEntry reads one account's slot: the port and host it holds and the time
+// of its newest login. ok is false when the account has no slot — a uid past the
+// end of the file, and the ones a hand-edited passwd can carry. The arithmetic is
+// 64-bit and the offset is checked for a negative result: the file is indexed by
+// uid, so a negative field or one near 2^31 would otherwise slice out of range.
+func lastlogEntry(data []byte, uid int) (line, host string, when int32, ok bool) {
+	off := int64(uid) * lastlogSize
+	if off < 0 || off+lastlogSize > int64(len(data)) {
+		return "", "", 0, false
+	}
+	rec := data[off : off+lastlogSize]
+	return textutil.CStr(rec[lastlogLineOff : lastlogLineOff+utmpLineLen]),
+		textutil.CStr(rec[lastlogHostOff : lastlogHostOff+utmpHostLen]),
+		int32(binary.LittleEndian.Uint32(rec[:4])), true
 }
 
 // lastlog's columns, taken from the tool this tier replaces: the account in 16
@@ -445,7 +457,7 @@ type passwdUser struct {
 // what getpwent() reports, which on a files-backed NSS is the passwd file's own
 // order (so a later account of the same uid gets its own row).
 func passwdUsers() ([]passwdUser, error) {
-	data, err := os.ReadFile("/etc/passwd")
+	data, err := localfs.ReadRegular("/etc/passwd")
 	if err != nil {
 		return nil, err
 	}

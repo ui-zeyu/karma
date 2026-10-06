@@ -14,6 +14,8 @@ package session
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -228,4 +230,26 @@ func parsePin(pin string) ([sha256.Size]byte, error) {
 	}
 	copy(fingerprint[:], raw)
 	return fingerprint, nil
+}
+
+// everything in the clear, this only says so for wss.
+func insecureTLS() *tls.Config {
+	return &tls.Config{InsecureSkipVerify: true}
+}
+
+// pinnedTLS verifies the leaf certificate's SHA-256 against the fingerprint
+// instead of the chain: the self-signed answer. InsecureSkipVerify is set
+// because the pin itself is the verification.
+func pinnedTLS(fingerprint [sha256.Size]byte) *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true,
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			for _, raw := range rawCerts {
+				if sha256.Sum256(raw) == fingerprint {
+					return nil
+				}
+			}
+			return fmt.Errorf("no certificate in the chain matches the pinned fingerprint")
+		},
+	}
 }

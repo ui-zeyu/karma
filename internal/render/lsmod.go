@@ -12,7 +12,7 @@ var lsmodHeader = compile(`^Module\s+Size\s+Used by\b`)
 // count by column. The Used by tail (which may contain spaces) and the
 // dependency and state fields of /proc/modules keep the default color; the
 // header row is not painted.
-func styleLsmod(line string) []Span {
+func styleLsmod(line string) []paintSpan {
 	if lsmodHeader.MatchString(line) {
 		return nil
 	}
@@ -20,9 +20,9 @@ func styleLsmod(line string) []Span {
 	if len(columns) < 3 {
 		return nil
 	}
-	spans := make([]Span, 0, 3)
+	spans := make([]paintSpan, 0, 3)
 	for i := range 3 {
-		spans = append(spans, Span{
+		spans = append(spans, paintSpan{
 			Start: columns[i].start, End: columns[i].end,
 			Style: tableColumnStyles[i],
 		})

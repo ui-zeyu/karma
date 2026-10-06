@@ -37,12 +37,23 @@ func FileRows(files []string) string {
 }
 
 // fileTypeWords describes one path with the words the bin-not-elf rule grades.
+// A path that is not a regular file is named from its mode instead of read (the
+// open is non-blocking, so a planted FIFO cannot hang this): file(1) spells
+// those types from stat alone, and printing them keeps the local section equal
+// to the ssh channel's, where the tool reports the same planted FIFO.
 func fileTypeWords(path string) string {
-	f, err := os.Open(path)
+	f, err := openRegular(path)
 	if err != nil {
 		return "cannot open"
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "cannot open"
+	}
+	if !info.Mode().IsRegular() {
+		return specialWords(info.Mode())
+	}
 	buf := make([]byte, fileHeadBytes)
 	n, _ := io.ReadFull(f, buf)
 	head := buf[:n]
@@ -54,6 +65,25 @@ func fileTypeWords(path string) string {
 	}
 	if words, ok := textWords(head); ok {
 		return words
+	}
+	return "data"
+}
+
+// specialWords spells the file types file(1) names from stat alone: the ones
+// the local channel opens its own paths for, so a FIFO or device node planted
+// at one of them is reported rather than followed.
+func specialWords(mode os.FileMode) string {
+	switch {
+	case mode.IsDir():
+		return "directory"
+	case mode&os.ModeNamedPipe != 0:
+		return "fifo (named pipe)"
+	case mode&os.ModeSocket != 0:
+		return "socket"
+	case mode&os.ModeDevice != 0 && mode&os.ModeCharDevice != 0:
+		return "character special"
+	case mode&os.ModeDevice != 0:
+		return "block special"
 	}
 	return "data"
 }

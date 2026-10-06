@@ -169,3 +169,28 @@ func TestLastlogRowsMatchTheTool(t *testing.T) {
 		t.Errorf("long fields should keep the account and cut the port: %q", long)
 	}
 }
+
+// The file is indexed by uid, so an account the passwd file gives a negative or
+// huge uid — a hand-edited table, the shape this tool reads — has no slot in it
+// rather than one computed from a wrapped offset.
+func TestLastlogEntryReadsOnlySlotsInsideTheFile(t *testing.T) {
+	data := make([]byte, 2*lastlogSize)
+	copy(data[lastlogLineOff:], "pts/9")
+	copy(data[lastlogHostOff:], "10.0.0.9")
+	binary.LittleEndian.PutUint32(data[:4], uint32(time.Now().Unix()))
+
+	line, host, when, ok := lastlogEntry(data, 0)
+	if !ok || line != "pts/9" || host != "10.0.0.9" || when <= 0 {
+		t.Fatalf("slot 0 = (%q, %q, %d, %v)", line, host, when, ok)
+	}
+	// a slot inside the file that no login ever wrote is an empty one, which the
+	// panel prints as never logged in
+	if _, _, when, ok := lastlogEntry(data, 1); !ok || when != 0 {
+		t.Errorf("an untouched slot should read as empty, got (%d, %v)", when, ok)
+	}
+	for _, uid := range []int{-1, -20000, 2, 1 << 31} {
+		if _, _, _, ok := lastlogEntry(data, uid); ok {
+			t.Errorf("uid %d has no slot in a two-record file", uid)
+		}
+	}
+}

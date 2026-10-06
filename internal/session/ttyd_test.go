@@ -4,9 +4,13 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
+
+	"karma/internal/model"
 )
 
 func TestParseTTYDEndpoint(t *testing.T) {
@@ -142,5 +146,30 @@ func TestTTYDProbeMarkerVersusEcho(t *testing.T) {
 	heard := bytes.Contains(echo, echo)
 	if payload || !heard {
 		t.Fatal("an echo frame must classify as echo, never as the payload")
+	}
+}
+
+// Ctrl-C is the operator ending the run, not the endpoint dying: a dial cut by
+// our own cancellation must not latch the channel lost, or the command line
+// would report a lost channel (exit 2) where the interrupt (130) is the truth.
+func TestTTYDCancelledDialDoesNotLoseTheChannel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sess := &TTYDSession{endpoint: "ws://127.0.0.1:1/ws"}
+	if result := sess.Run(ctx, model.Shell{Script: "true"}, time.Second, 0); result.ExitCode != -1 {
+		t.Fatalf("wanted a failed call, got %+v", result)
+	}
+	if sess.Lost() {
+		t.Fatal("our own cancellation is not the endpoint going away")
+	}
+}
+
+// An endpoint nothing answers is latched: every later call would fail the same
+// way, so the runner stops queueing checks and the command line says so once.
+func TestTTYDUnreachableEndpointIsLost(t *testing.T) {
+	sess := &TTYDSession{endpoint: "ws://127.0.0.1:1/ws"}
+	sess.Run(context.Background(), model.Shell{Script: "true"}, time.Second, 0)
+	if !sess.Lost() {
+		t.Fatal("a dial nothing answers must latch lost")
 	}
 }

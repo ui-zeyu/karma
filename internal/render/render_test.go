@@ -401,7 +401,7 @@ func TestTopStylerKeepsTheSummaryPlain(t *testing.T) {
 }
 
 func TestPaintLineOverlaysLaterSpans(t *testing.T) {
-	got := paintLine("0123456789", []Span{
+	got := paintLine("0123456789", []paintSpan{
 		{Start: 0, End: 10, Style: mutedStyle},
 		{Start: 2, End: 4, Style: highStyle},
 	})
@@ -465,7 +465,7 @@ func TestLsmodKeepsUsedByTailPlain(t *testing.T) {
 }
 
 func TestLineStylerPanicFallsBackToPlain(t *testing.T) {
-	boomer := safeLineStyler(func(string) []Span { panic("odd output") })
+	boomer := safeLineStyler(func(string) []paintSpan { panic("odd output") })
 	if spans := boomer("any line"); spans != nil {
 		t.Fatalf("a panic should return no spans: %v", spans)
 	}
@@ -792,7 +792,7 @@ func TestUnitStateCellsPaintedByMeaning(t *testing.T) {
 	if spans := styler(header); spans != nil {
 		t.Fatalf("the header should only record anchors: %v", spans)
 	}
-	hasSpan := func(spans []Span, line, word string, want style) bool {
+	hasSpan := func(spans []paintSpan, line, word string, want style) bool {
 		start := strings.Index(line, word)
 		for _, span := range spans {
 			if span.Start == start && span.End == start+len(word) && span.Style == want {
@@ -801,7 +801,7 @@ func TestUnitStateCellsPaintedByMeaning(t *testing.T) {
 		}
 		return false
 	}
-	covered := func(spans []Span, start, end int) bool {
+	covered := func(spans []paintSpan, start, end int) bool {
 		for _, span := range spans {
 			if span.Start <= start && span.End >= end {
 				return true

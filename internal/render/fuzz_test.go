@@ -15,12 +15,12 @@ func FuzzPaintLine(f *testing.F) {
 	f.Add("plain", int64(-5), uint8(2))
 	f.Fuzz(func(t *testing.T, text string, seed int64, count uint8) {
 		rng := rand.New(rand.NewSource(seed))
-		spans := make([]Span, int(count)%6)
+		spans := make([]paintSpan, int(count)%6)
 		for i := range spans {
 			// end may precede start: malformed spans must be ignored, not panic
 			start := rng.Intn(len(text) + 1)
 			end := rng.Intn(len(text)+2) - 1
-			spans[i] = Span{Start: start, End: end, Style: fuzzStyles[rng.Intn(len(fuzzStyles))]}
+			spans[i] = paintSpan{Start: start, End: end, Style: fuzzStyles[rng.Intn(len(fuzzStyles))]}
 		}
 		if len(spans) == 0 {
 			if got := paintLine(text, spans); got != text {

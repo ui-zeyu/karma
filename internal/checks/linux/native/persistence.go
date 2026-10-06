@@ -6,7 +6,6 @@ package native
 import (
 	"context"
 	"karma/internal/localfs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -25,7 +24,7 @@ func Cron(paths []string) func(context.Context) (string, error) {
 // `== path` section title would run the entry rule (titles meet the rules
 // too) and flag the file's mere existence.
 func LdPreload(ctx context.Context) (string, error) {
-	body, err := os.ReadFile("/etc/ld.so.preload")
+	body, err := localfs.ReadRegular("/etc/ld.so.preload")
 	if err != nil {
 		return "", nil
 	}

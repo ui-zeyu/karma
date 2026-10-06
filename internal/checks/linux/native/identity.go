@@ -22,7 +22,7 @@ func Sudoers(paths []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
 		for _, path := range localfs.ExpandFiles(paths) {
-			if body, err := os.ReadFile(path); err == nil {
+			if body, err := localfs.ReadRegular(path); err == nil {
 				fmt.Fprintf(&b, "== %s\n", path)
 				b.WriteString(string(body))
 			}
@@ -41,10 +41,12 @@ func expandHomes(homeGlobs []string) []string {
 	return localfs.ExpandGlobs(homeGlobs, func(info os.FileInfo) bool { return info.IsDir() })
 }
 
-// printBody appends one "== path" section with the file's best-effort body.
+// printBody appends one "== path" section with the file's best-effort body. The
+// read goes through the non-blocking open: sshd's AuthorizedKeysFile can name any
+// path, a FIFO planted at one must read as empty rather than hang.
 func printBody(b *strings.Builder, path string) {
 	fmt.Fprintf(b, "== %s\n", path)
-	if body, err := os.ReadFile(path); err == nil {
+	if body, err := localfs.ReadRegular(path); err == nil {
 		b.WriteString(string(body))
 	}
 }

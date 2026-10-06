@@ -11,7 +11,7 @@ import (
 
 // spansOf returns the spans as "text=color" pairs, in order, for a compact
 // comparison in the table below.
-func spansOf(line string, spans []Span) string {
+func spansOf(line string, spans []paintSpan) string {
 	out := make([]string, 0, len(spans))
 	for _, span := range spans {
 		out = append(out, line[span.Start:span.End]+"="+string(span.Style.fg))

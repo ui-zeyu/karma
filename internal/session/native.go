@@ -3,17 +3,38 @@
 // cancellation keep the partial text, ErrTierUnavailable maps to the
 // missing-binary 127 so the probe chain falls through, and the line and byte
 // caps mirror harvest's.
+//
+// The deadline is enforced, not merely offered. A body parked in a syscall — a
+// FIFO planted at a path it reads, a wedged mount, a blocked device read —
+// never observes a cancelled context, and nothing else can stop it either: no
+// signal breaks an open(2) wait, and Go cannot kill a goroutine. So the body
+// runs on its own goroutine and the caller stops waiting at the deadline,
+// keeping the run bounded for every in-process tier rather than for the read
+// sites that were audited. A body that does respect the context gets a short
+// grace to hand back what it read, which keeps the cooperative path's partial
+// output.
 
 package session
 
 import (
 	"context"
 	"errors"
-	"strings"
+	"fmt"
 	"time"
 
 	"karma/internal/model"
+	"karma/internal/textutil"
 )
+
+// bodyGrace is how long a body that is already unwinding (every walk checks the
+// context) has to hand back its partial answer before the caller abandons it.
+const bodyGrace = 250 * time.Millisecond
+
+// nativeResult is one finished in-process body.
+type nativeResult struct {
+	text string
+	err  error
+}
 
 func runNative(ctx context.Context, fn func(context.Context) (string, error), timeout time.Duration, lineLimit int) model.RunResult {
 	if fn == nil {
@@ -24,25 +45,63 @@ func runNative(ctx context.Context, fn func(context.Context) (string, error), ti
 		// other unavailable body.
 		return model.RunResult{Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
 	}
+	bodyCtx := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
+		bodyCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	text, err := fn(ctx)
+	// Buffered: an abandoned body must never block on its own send.
+	done := make(chan nativeResult, 1)
+	go func() {
+		// A body parses whatever the target holds, and this goroutine is
+		// outside the runner's own recover: an unrecovered panic here ends the
+		// process and takes the whole report with it, where the contract is
+		// that one broken check fails alone.
+		defer func() {
+			if problem := recover(); problem != nil {
+				done <- nativeResult{err: fmt.Errorf("in-process tier panicked: %v", problem)}
+			}
+		}()
+		text, err := fn(bodyCtx)
+		done <- nativeResult{text: text, err: err}
+	}()
+	select {
+	case result := <-done:
+		return finishNative(result, ctx, lineLimit)
+	case <-bodyCtx.Done():
+		select {
+		case result := <-done:
+			return finishNative(result, ctx, lineLimit)
+		case <-time.After(bodyGrace):
+		}
+		// The body is behind a syscall that ignores the context. Report the
+		// deadline and leave the goroutine where it is: it holds nothing the
+		// report needs, and the process exits without waiting for it.
+		if ctx.Err() != nil {
+			return model.RunResult{ExitCode: -1, Interrupted: true}
+		}
+		return model.RunResult{ExitCode: -1, TimedOut: true}
+	}
+}
+
+// finishNative turns one finished body into the tier's result. ctx is the
+// caller's own context, so Interrupted means the operator cancelled the run
+// rather than a body that noticed someone else's deadline.
+func finishNative(result nativeResult, ctx context.Context, lineLimit int) model.RunResult {
 	switch {
-	case err == nil:
-	case errors.Is(err, model.ErrTierUnavailable):
-		return model.RunResult{Stderr: err.Error(), ExitCode: 127}
-	case errors.Is(err, context.DeadlineExceeded):
-		return model.RunResult{Stdout: validText(text), ExitCode: -1, TimedOut: true}
+	case result.err == nil:
+	case errors.Is(result.err, model.ErrTierUnavailable):
+		return model.RunResult{Stderr: result.err.Error(), ExitCode: 127}
+	case errors.Is(result.err, context.DeadlineExceeded):
+		return model.RunResult{Stdout: validText(result.text), ExitCode: -1, TimedOut: true}
 	case ctx.Err() != nil:
-		return model.RunResult{Stdout: validText(text), ExitCode: -1, Interrupted: true}
+		return model.RunResult{Stdout: validText(result.text), ExitCode: -1, Interrupted: true}
 	default:
-		return model.RunResult{Stderr: err.Error(), ExitCode: 1}
+		return model.RunResult{Stderr: result.err.Error(), ExitCode: 1}
 	}
 
-	text, truncated := capLines(text, lineLimit)
+	text, truncated := capLines(result.text, lineLimit)
 	if int64(len(text)) > maxHarvestBytes {
 		text = text[:maxHarvestBytes]
 		truncated = true
@@ -54,17 +113,8 @@ func runNative(ctx context.Context, fn func(context.Context) (string, error), ti
 // followed. The boundary is the streaming harvest's: one probe past the limit
 // decides, and a trailing newline is not another line. Keeping the two in step
 // is what makes the in-process tier and the subprocess/ssh tiers mark the same
-// body truncated, and keep the same text.
-//
-// SplitN stops one line past the cap, so a body of a million lines costs the
-// cap rather than a slice entry per line.
+// body truncated, and keep the same text. The arithmetic is textutil.Head's,
+// shared with the tiers that cap a body at a line count.
 func capLines(text string, limit int) (string, bool) {
-	if limit <= 0 {
-		return text, false
-	}
-	lines := strings.SplitN(strings.TrimSuffix(text, "\n"), "\n", limit+1)
-	if len(lines) <= limit {
-		return text, false
-	}
-	return strings.Join(lines[:limit], "\n") + "\n", true
+	return textutil.Head(text, limit)
 }

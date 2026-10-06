@@ -93,6 +93,7 @@ func Collect(ctx context.Context, sess session.Session, bins []string) model.Hos
 		Kernel:        firstLine(results["kernel"].Stdout, ""),
 		OsPretty:      prettyName(results["os"].Stdout),
 		UID:           parseUID(results["uid"].Stdout),
+		ProbeCut:      results["bins"].TimedOut,
 	}
 }
 
@@ -106,7 +107,8 @@ func Collect(ctx context.Context, sess session.Session, bins []string) model.Hos
 // usual for "missing powershell".
 func CollectWindows(ctx context.Context, sess session.Session, bins []string) model.HostFacts {
 	names := probeBins(bins, windowsFactBins)
-	available := availableBins(runPS(ctx, sess, probeScript(names), 15*time.Second).Stdout, names)
+	probe := runPS(ctx, sess, probeScript(names), 15*time.Second)
+	available := availableBins(probe.Stdout, names)
 
 	if available["powershell"] {
 		// one PS cold start brings back all facts; the four paths are evaluated eagerly, 15s is the grace
@@ -118,6 +120,7 @@ func CollectWindows(ctx context.Context, sess session.Session, bins []string) mo
 			OsPretty:      cmp.Or(values["os"], "unknown version"),
 			UID:           -1,
 			User:          values["user"],
+			ProbeCut:      probe.TimedOut,
 		}
 	}
 
@@ -151,6 +154,7 @@ func CollectWindows(ctx context.Context, sess session.Session, bins []string) mo
 		OsPretty:      cmp.Or(strings.TrimSpace(values["ProductName"]+" "+values["DisplayVersion"]), "unknown version"),
 		UID:           -1,
 		User:          regLastData(results["username"].Stdout, ""),
+		ProbeCut:      probe.TimedOut,
 	}
 }
 

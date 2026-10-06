@@ -220,14 +220,14 @@ func sectionSyntax(check *model.Check, title string) model.Syntax {
 // their severity color, the reason ⟨…⟩ at the end, moved to its own line
 // aligned with the body when it does not fit.
 func sourceTitle(section model.Section, width int) []string {
-	spans := []Span{{Start: 0, End: len(section.Title), Style: style{bold: true}}}
+	spans := []paintSpan{{Start: 0, End: len(section.Title), Style: style{bold: true}}}
 	spans = append(spans, hitSpans(section.TitleMatches)...)
 	return withReason(paintLine(section.Title, spans), section.TitleMatches, width)
 }
 
 // plannedRows emits rows as planned: visible rows render the body, omitted rows
 // collapse into one counted gap.
-func plannedRows(lines []model.Line, sequence []linePlan, lineStyler LineStyler, width int) []string {
+func plannedRows(lines []model.Line, sequence []linePlan, lineStyler lineStyler, width int) []string {
 	var rows []string
 	for _, item := range sequence {
 		if item.visible {
@@ -297,22 +297,22 @@ type linePlan struct {
 
 // lineRows is one body row: findings show up as painted spans and a trailing
 // reason, with no bullet.
-func lineRows(line model.Line, lineStyler LineStyler, width int) []string {
+func lineRows(line model.Line, lineStyler lineStyler, width int) []string {
 	return withReason(lineText(line, lineStyler), line.Matches, width)
 }
 
 // lineText renders one line: syntax coloring goes down first and hit spans
 // cover it; comments are not filtered (important information may hide in them)
 // but are painted muted to set them apart.
-func lineText(line model.Line, lineStyler LineStyler) string {
-	var spans []Span
+func lineText(line model.Line, lineStyler lineStyler) string {
+	var spans []paintSpan
 	if lineStyler != nil {
 		spans = append(spans, lineStyler(line.Text)...)
 	}
 	hits := hitSpans(line.Matches)
 	spans = append(spans, hits...)
 	if len(hits) == 0 && commentLine.MatchString(line.Text) {
-		spans = append(spans, Span{Start: 0, End: len(line.Text), Style: mutedStyle})
+		spans = append(spans, paintSpan{Start: 0, End: len(line.Text), Style: mutedStyle})
 	}
 	return paintLine(line.Text, spans)
 }
@@ -321,15 +321,15 @@ func lineText(line model.Line, lineStyler LineStyler) string {
 // order, so where two rules cover the same text the more severe one wins — the
 // span the trailing reason names, rather than whichever rule happened to be
 // declared later.
-func hitSpans(matches []model.Match) []Span {
+func hitSpans(matches []model.Match) []paintSpan {
 	signals := lo.Filter(matches, func(match model.Match, _ int) bool {
 		return match.Severity.IsSignal()
 	})
 	slices.SortStableFunc(signals, func(a, b model.Match) int {
 		return cmp.Compare(b.Severity, a.Severity)
 	})
-	return lo.Map(signals, func(match model.Match, _ int) Span {
-		return Span{Start: match.Start, End: match.End, Style: severityStyle(match.Severity)}
+	return lo.Map(signals, func(match model.Match, _ int) paintSpan {
+		return paintSpan{Start: match.Start, End: match.End, Style: severityStyle(match.Severity)}
 	})
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,6 +55,37 @@ func TestObserverPanicDoesNotKillRun(t *testing.T) {
 	RunCatalog(context.Background(), sess, facts, checks, model.RunOptions{Concurrency: 2}, deadObserver{})
 	if got := sess.runCount(); got != len(checks) {
 		t.Fatalf("both checks should finish after an observer panic: ran %d/%d", got, len(checks))
+	}
+}
+
+// lostSession turns lost on its first run, the way a connection dropped under
+// the first check does: every further call would fail the same way.
+type lostSession struct {
+	stubSession
+	lost atomic.Bool
+}
+
+func (s *lostSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
+	s.lost.Store(true)
+	return s.stubSession.Run(ctx, inv, timeout, lineLimit)
+}
+
+func (s *lostSession) Lost() bool { return s.lost.Load() }
+
+func TestLostChannelStopsTheQueue(t *testing.T) {
+	sess := &lostSession{}
+	checks := []*model.Check{
+		{ID: "a", Aspect: model.AspectSystem,
+			Probes: []model.Probe{{Label: "a", Inv: model.NewCommand("true")}}},
+		{ID: "b", Aspect: model.AspectSystem,
+			Probes: []model.Probe{{Label: "b", Inv: model.NewCommand("true")}}},
+		{ID: "c", Aspect: model.AspectSystem,
+			Probes: []model.Probe{{Label: "c", Inv: model.NewCommand("true")}}},
+	}
+	facts := model.HostFacts{AvailableBins: map[string]bool{"true": true}}
+	RunCatalog(context.Background(), sess, facts, checks, model.RunOptions{Concurrency: 1}, deadObserver{})
+	if got := sess.runCount(); got != 1 {
+		t.Fatalf("a channel lost under the first check should stop the queue: ran %d checks", got)
 	}
 }
 
@@ -188,6 +220,17 @@ func TestRunCheckFallbackChain(t *testing.T) {
 			wantOutcome: model.Collected,
 			wantNote:    "timeout (2s), partial output kept",
 			wantRaw:     "partial\n",
+		},
+		{
+			// A tier the boundary abandoned (a body stuck in a syscall) kept
+			// nothing, and the note must not promise output that is not there.
+			name:        "a timeout with nothing read claims nothing",
+			check:       chain("lsof", "proc"),
+			facts:       bins("lsof", "proc"),
+			reply:       []model.RunResult{{TimedOut: true, ExitCode: -1}},
+			wantProbe:   "lsof",
+			wantOutcome: model.Collected,
+			wantNote:    "timeout (2s)",
 		},
 		{
 			name:        "a cancel keeps the partial output and does not move on",

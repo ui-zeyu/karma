@@ -77,6 +77,7 @@ func hiddenModuleFixture(t *testing.T) (sysfs, modules, symbols string) {
 		"ffffffffc0700000 t bpf_prog_1\t[bpf]",
 		"ffffffff82000000 t ftrace_trampoline\t[__builtin__ftrace]",
 		"ffffffff82000010 t ftrace_trampoline\t[__builtin__ftrace]",
+		"ffffffff82000020 t kprobe_trampoline\t[__builtin__kprobes]",
 		"",
 	}, "\n")
 	if err := os.WriteFile(symbols, []byte(kallsyms), 0o644); err != nil {
@@ -101,7 +102,8 @@ func TestHiddenSysfsDiffFindsAHiddenModule(t *testing.T) {
 
 // The kallsyms diff reads two files in one awk pass: the module list decides
 // what is expected, the symbol tags are the second registry. The pseudo-modules
-// ([bpf], [__builtin__ftrace]) and the modules the list carries stay out.
+// ([bpf], [__builtin__ftrace], [__builtin__kprobes]) and the modules the list
+// carries stay out.
 func TestHiddenSymbolDiffFindsAHiddenModule(t *testing.T) {
 	requireSh(t, "sh", "awk", "sort", "uniq")
 	_, modules, symbols := hiddenModuleFixture(t)
@@ -125,7 +127,8 @@ func TestHiddenSymbolDiffReadsTheTableFromItsFirstLine(t *testing.T) {
 	symbols := filepath.Join(root, "kallsyms")
 	body := "ffffffffc05a4000 t my_init\t[rootkit]\n" +
 		"ffffffffc05a4010 t my_exit\t[rootkit]\n" +
-		"ffffffff82000000 t ftrace_trampoline\t[__builtin__ftrace]\n"
+		"ffffffff82000000 t ftrace_trampoline\t[__builtin__ftrace]\n" +
+		"ffffffff82000020 t kprobe_trampoline\t[__builtin__kprobes]\n"
 	if err := os.WriteFile(symbols, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

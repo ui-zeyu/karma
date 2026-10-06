@@ -43,7 +43,9 @@ type Observer interface {
 // the Observer as soon as it finishes in its own goroutine; catalog order is
 // released by the presentation layer by check index, and no conclusions are
 // gathered here. A cancelled context stops queuing new checks and in-flight
-// tiers return promptly with the output they had already read.
+// tiers return promptly with the output they had already read; a session that
+// reports its channel lost stops the queue the same way — the command line
+// says so once instead of a failure panel per remaining check.
 //
 // The run's shared reads live in a store on the context (runstate), so checks
 // that want the same expensive view of the host read it once between them.
@@ -53,11 +55,19 @@ func RunCatalog(ctx context.Context, sess session.Session, facts model.HostFacts
 	var g errgroup.Group
 	g.SetLimit(max(1, options.Concurrency))
 	for _, check := range checks {
+		if sessionLost(sess) {
+			break
+		}
 		g.Go(func() error {
 			select {
 			case <-ctx.Done():
 				return nil
 			default:
+			}
+			// re-checked here: the loss can land between the loop's check and
+			// this worker's turn on the semaphore
+			if sessionLost(sess) {
+				return nil
 			}
 			runObserver(observer, func() { observer.CheckStarted(check) })
 			result := recoverPanic(check, func() *model.CheckResult {
@@ -71,6 +81,15 @@ func RunCatalog(ctx context.Context, sess session.Session, facts model.HostFacts
 		})
 	}
 	_ = g.Wait()
+}
+
+// sessionLost reports whether the session's transport died mid-run (a channel
+// that can no longer run anything): the queue stops, and in-flight checks keep
+// the results they already produced. A session without the capability — the
+// local channel — never stops early.
+func sessionLost(sess session.Session) bool {
+	lost, ok := sess.(session.LostChannel)
+	return ok && lost.Lost()
 }
 
 // recoverPanic keeps one broken check from dragging down the whole run.
@@ -185,9 +204,9 @@ func commandResult(check *model.Check, probe *model.Probe, result model.RunResul
 	note := ""
 	switch {
 	case result.TimedOut:
-		note = fmt.Sprintf("timeout (%gs), partial output kept", opt.timeout.Seconds())
+		note = fmt.Sprintf("timeout (%gs)", opt.timeout.Seconds()) + keptTail(result)
 	case result.Interrupted:
-		note = "interrupted, partial output kept"
+		note = "interrupted" + keptTail(result)
 	case opt.failure:
 		note = failureNote(result)
 	}
@@ -212,6 +231,16 @@ func commandResult(check *model.Check, probe *model.Probe, result model.RunResul
 		Note:     note,
 		Document: reading,
 	}
+}
+
+// keptTail marks a cut-off tier that has output to keep: a body the deadline
+// abandoned (a syscall that never returned) keeps nothing, and the note should
+// not claim otherwise.
+func keptTail(result model.RunResult) string {
+	if strings.TrimSpace(result.Stdout) == "" {
+		return ""
+	}
+	return ", partial output kept"
 }
 
 // failureNote is the note on a failing tier: exit code first, the first stderr

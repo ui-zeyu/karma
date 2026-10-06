@@ -77,7 +77,7 @@ func TestGrepWalk(t *testing.T) {
 	files := map[string]string{
 		filepath.Join(dir, "a.php"):                  "<?php eval($_POST['x']); ?>\nclean\n",
 		filepath.Join(dir, "b.txt"):                  "eval($_POST['x'])\n",
-		filepath.Join(dir, "skip.php"):               "a\x00b eval($_POST['x'])\n",
+		filepath.Join(dir, "skip.php"):               "eval($_POST['x'])\nlater\x00nul\n",
 		filepath.Join(sub, "c.php"):                  "line\n<?php eval($_REQUEST['y']);\n",
 		filepath.Join(dir, "node_modules", "d.php"):  "eval($_POST['x'])\n",
 		filepath.Join(dir, ".git", "e.php"):          "eval($_POST['x'])\n",

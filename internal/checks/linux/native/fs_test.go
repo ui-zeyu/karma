@@ -20,7 +20,7 @@ func TestPrivWalkTiersReadSharedStore(t *testing.T) {
 		lists: [][]string{{"/planted/suid"}, {"/planted/sgid", "/also/sgid"}},
 		caps:  []string{"/planted/ping cap_net_raw=ep"},
 	}
-	runstate.Memo(runstate.From(ctx), privWalkKey{}, func() privWalk { return planted })
+	runstate.Memo(ctx, runstate.From(ctx), privWalkKey{}, func() privWalk { return planted })
 
 	suid, err := ModeBitScan(os.ModeSetuid, nil)(ctx)
 	if err != nil {

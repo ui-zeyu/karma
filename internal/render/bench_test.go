@@ -47,7 +47,7 @@ func listingPanel(tb testing.TB, rows int, hit bool) *model.CheckResult {
 func BenchmarkCheckPanelListing(b *testing.B) {
 	result := listingPanel(b, 400, true)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		checkPanel(result, 400, 120)
 	}
 }
@@ -58,7 +58,7 @@ func BenchmarkCheckPanelListing(b *testing.B) {
 func BenchmarkCheckPanelQuietRail(b *testing.B) {
 	result := listingPanel(b, 400, false)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		checkPanel(result, 400, 120)
 	}
 }
@@ -69,7 +69,7 @@ func BenchmarkPaintLine(b *testing.B) {
 	const row = "drwxr-xr-x 2 root root 4096 Oct 06 12:00 /tmp/sub"
 	spans := styleLsL(row)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		paintLine(row, spans)
 	}
 }

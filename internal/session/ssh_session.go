@@ -25,6 +25,7 @@ type SSHSession struct {
 	client *ssh.Client
 	agent  io.Closer
 	target string // the destination as the report header names it, empty in a bare test session
+	lost   atomic.Bool
 }
 
 // Name is the channel display name.
@@ -41,11 +42,20 @@ func (s *SSHSession) Describe() string {
 // Channel is which side of the wire karma runs on: the target is remote.
 func (s *SSHSession) Channel() model.Channel { return model.ChanSSH }
 
+// Lost reports whether the connection is gone — closed, or the server stopped
+// answering. A channel the server refused leaves the connection alive and fails
+// one tier instead, so a host that limits concurrent sessions does not end the
+// run.
+func (s *SSHSession) Lost() bool { return s.lost.Load() }
+
 // Run sends the command string rendered through /bin/sh -c to the channel for execution.
 func (s *SSHSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
 	script := RenderShell(inv)
 	sess, err := s.client.NewSession()
 	if err != nil {
+		if channelLost(err) {
+			s.lost.Store(true)
+		}
 		return channelError(err)
 	}
 	defer sess.Close()
@@ -172,6 +182,17 @@ func writeUpload(w io.Writer, content []byte, stalled *atomic.Bool, abort func()
 
 func channelError(err error) model.RunResult {
 	return model.RunResult{Stderr: fmt.Sprintf("ssh channel error: %v", err), ExitCode: -1}
+}
+
+// channelLost reports whether a failed channel open means the connection itself
+// is gone rather than this one channel being refused. The server's refusal comes
+// back as its own typed answer (ssh.OpenChannelError: its session limit, a
+// rejected request), which leaves the transport answering every later call — the
+// refusal belongs to this tier alone. Everything else (a closed connection, a
+// disconnect, an unanswered open) is the transport going away.
+func channelLost(err error) bool {
+	var refused *ssh.OpenChannelError
+	return !errors.As(err, &refused)
 }
 
 // commandExitCode translates the ssh.Session.Wait error into an exit code. Wait

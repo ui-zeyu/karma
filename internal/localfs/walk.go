@@ -4,6 +4,7 @@
 package localfs
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -145,26 +146,55 @@ func GrepWalk(ctx context.Context, root string, opt GrepScan) []string {
 		} else if !info.Mode().IsRegular() {
 			return true
 		}
-		data, err := os.ReadFile(path)
-		if err != nil || bytes.IndexByte(data, 0) >= 0 {
+		before := len(hits)
+		binary := grepFile(path, opt.Pattern, func(number int, line string) bool {
+			hits = append(hits, fmt.Sprintf("%s:%d:%s", path, number, line))
+			return opt.MaxHits <= 0 || len(hits) < opt.MaxHits
+		})
+		if binary {
+			hits = hits[:before]
 			return true
 		}
-		// SplitSeq splits on \n alone, the way grep does, and without building the
-		// file's whole line slice (a scanned log can be tens of MB).
-		number := 0
-		for line := range strings.SplitSeq(string(data), "\n") {
-			number++
-			if opt.Pattern.MatchString(line) {
-				hits = append(hits, fmt.Sprintf("%s:%d:%s", path, number, line))
-				if opt.MaxHits > 0 && len(hits) >= opt.MaxHits {
-					return false
-				}
-			}
+		if opt.MaxHits > 0 && len(hits) >= opt.MaxHits {
+			return false
 		}
 		return true
 	}
 	_ = WalkTree(ctx, root, 0, false, prune, visit)
 	return hits
+}
+
+// grepFile streams one file and hands every matching line to onHit with its
+// 1-based number; onHit returns false to stop at the cap. Lines are read one
+// at a time, the way grep reads them, so a huge file under a scanned root (a
+// packed upload in /var/www) never sits whole in memory. A NUL byte makes the
+// file binary (-I) and is reported as such, so the caller drops what the file
+// had already contributed; an unreadable file reports nothing, like grep with
+// its stderr suppressed.
+func grepFile(path string, pattern *regexp.Regexp, onHit func(number int, line string) bool) (binary bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	reader := bufio.NewReader(file)
+	number := 0
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			if bytes.IndexByte(line, 0) >= 0 {
+				return true
+			}
+			number++
+			text := strings.TrimSuffix(string(line), "\n")
+			if pattern.MatchString(text) && !onHit(number, text) {
+				return false
+			}
+		}
+		if err != nil {
+			return false
+		}
+	}
 }
 
 // MatchAny reports whether a basename matches any of the globs, the test

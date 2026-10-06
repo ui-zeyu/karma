@@ -177,7 +177,7 @@ find %s -maxdepth %d -type f \( %s \) -exec ls -l {} + 2>/dev/null
 `, minerPsSource, strings.Join(minerDropPaths, " "), strings.Join(tmpDirs, " "),
 	minerWalkDepth, findNameArgs("-iname", minerNameGlobs))
 
-// hidden-pids (atrk-style brute force, migrated 2026-10): a rootkit that
+// hidden-pids (atrk-style brute force): a rootkit that filters the /proc
 // filters the /proc readdir path still cannot hide from the kernel's own
 // kill(pid, 0) existence check, so the two views are crossed. Both tiers
 // print the same text: one scan context line, then a "hidden" section with

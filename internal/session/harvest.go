@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"cmp"
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -107,6 +108,17 @@ func (h *harvestState) markTruncated() {
 	h.truncated = true
 }
 
+// markPanicked records a harvest goroutine that panicked. The body is marked
+// truncated because a reader that died mid-stream cannot have read everything,
+// and the reason joins the source's stderr — the same place every other
+// diagnostic of a call goes.
+func (h *harvestState) markPanicked(reason string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.truncated = true
+	h.errS.WriteString("harvest panic: " + reason + "\n")
+}
+
 func (h *harvestState) snapshot() (string, string, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -135,8 +147,7 @@ func harvest(ctx context.Context, src source, timeout time.Duration, lineLimit i
 	var readers sync.WaitGroup
 	readers.Add(2)
 	byteLimit := cmp.Or(src.byteLimit, maxHarvestBytes)
-	go func() {
-		defer readers.Done()
+	go safeSource(&state, readers.Done, func() {
 		var lines, buffered int64
 		for {
 			select {
@@ -171,18 +182,16 @@ func harvest(ctx context.Context, src source, timeout time.Duration, lineLimit i
 				return
 			}
 		}
-	}()
-	go func() {
-		defer readers.Done()
+	})
+	go safeSource(&state, readers.Done, func() {
 		state.addErr(src.readAll())
-	}()
+	})
 
 	done := make(chan struct{})
-	go func() {
+	go safeSource(&state, func() { close(done) }, func() {
 		readers.Wait()
 		src.wait()
-		close(done)
-	}()
+	})
 
 	// A timeout of zero or less is no deadline, the same reading the in-process
 	// tier gives it: only the context then ends the call.
@@ -201,6 +210,21 @@ func harvest(ctx context.Context, src source, timeout time.Duration, lineLimit i
 	case <-ctx.Done():
 		return stopAndCollect(done, stopSource, src, &state, true)
 	}
+}
+
+// safeSource runs one harvest goroutine and signals its completion. A panic in a
+// goroutine has no recover above it, so it would end the process and take the
+// whole report with it, where the contract is that one broken check fails alone.
+// The signal is sent from the same deferred call as the recover, so a waiter is
+// never woken before the panic is recorded on the state.
+func safeSource(state *harvestState, finished func(), run func()) {
+	defer func() {
+		if problem := recover(); problem != nil {
+			state.markPanicked(fmt.Sprint(problem))
+		}
+		finished()
+	}()
+	run()
 }
 
 // stopAndCollect stops the data source and keeps what was read: the reads drain

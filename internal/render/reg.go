@@ -15,12 +15,12 @@ var (
 // styleReg colors a reg query dump: the key path whole-line blue, a value row's
 // name blue, its type dark magenta, and hex data dimmed, with other data at the
 // default color.
-func styleReg(line string) []Span {
+func styleReg(line string) []paintSpan {
 	if strings.HasPrefix(line, "HKEY_") {
-		return []Span{{Start: 0, End: len(line), Style: style{fg: "4"}}}
+		return []paintSpan{{Start: 0, End: len(line), Style: style{fg: "4"}}}
 	}
 	if regContin.MatchString(line) {
-		return []Span{{Start: 0, End: len(line), Style: dimStyle}}
+		return []paintSpan{{Start: 0, End: len(line), Style: dimStyle}}
 	}
 	matched, ok := matchLine(regValueRow, line)
 	if !ok {
@@ -29,12 +29,12 @@ func styleReg(line string) []Span {
 	nameStart, nameEnd, _ := matched.span("name")
 	typeStart, typeEnd, _ := matched.span("type")
 	dataStart, dataEnd, _ := matched.span("data")
-	spans := []Span{
+	spans := []paintSpan{
 		{Start: nameStart, End: nameEnd, Style: style{fg: "4"}},
 		{Start: typeStart, End: typeEnd, Style: keywordColor},
 	}
 	if regHexData.MatchString(line[dataStart:dataEnd]) {
-		spans = append(spans, Span{Start: dataStart, End: dataEnd, Style: dimStyle})
+		spans = append(spans, paintSpan{Start: dataStart, End: dataEnd, Style: dimStyle})
 	}
 	return spans
 }

@@ -29,8 +29,8 @@ func TestLoadedModuleNames(t *testing.T) {
 
 // The tag is the last field, and the pseudo-module tags are not modules:
 // counting them would make the diff report modules the kernel never loaded —
-// [bpf] JITed programs, and the ftrace trampolines a modern kernel tags
-// [__builtin__ftrace] on every host, container or not.
+// [bpf] JITed programs, and the pages the kernel tags [__builtin__ftrace] and
+// [__builtin__kprobes] for its ftrace and kprobes trampolines.
 func TestSymbolModuleNamesCountsTagsAndSkipsPseudoModules(t *testing.T) {
 	body := "ffffffff81000000 T startup_64\n" +
 		"ffffffffc0567000 t nf_tables_init\t[nf_tables]\n" +
@@ -38,6 +38,7 @@ func TestSymbolModuleNamesCountsTagsAndSkipsPseudoModules(t *testing.T) {
 		"ffffffffc00a6c98 t bpf_prog_772db7720b2728e9_sd_fw_egress\t[bpf]\n" +
 		"ffffffff82000000 t ftrace_trampoline\t[__builtin__ftrace]\n" +
 		"ffffffff82000010 t ftrace_trampoline\t[__builtin__ftrace]\n" +
+		"ffffffff82000020 t kprobe_trampoline\t[__builtin__kprobes]\n" +
 		"ffffffffc05a4000 t my_sys_openat\t[rootkit]\n" +
 		"ffffffffc05a4100 t fake_seq_show\t[rootkit]\n"
 	want := map[string]int{"nf_tables": 2, "rootkit": 2}

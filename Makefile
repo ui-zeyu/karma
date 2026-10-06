@@ -20,9 +20,10 @@ test:
 	$(GO) test -count=1 ./...
 
 # The packages whose code runs across goroutines (presentation, channels,
-# orchestration, and the run's shared-read store) under the race detector.
+# orchestration, the run's shared-read store, and the checks that publish and
+# read that store from several workers) under the race detector.
 race:
-	$(GO) test -race -count=1 ./internal/render/ ./internal/session/ ./internal/runner/ ./internal/cli/ ./internal/runstate/
+	$(GO) test -race -count=1 ./internal/render/ ./internal/session/ ./internal/runner/ ./internal/cli/ ./internal/runstate/ ./internal/checks/...
 
 staticcheck:
 	staticcheck -checks=all ./...

@@ -66,7 +66,7 @@ func TestProcessTierReportsACutWalk(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	ctx = runstate.WithStore(ctx)
-	runstate.Memo(runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
+	runstate.Memo(ctx, runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
 		return processSnapshot{
 			entries: []procEntry{
 				{pid: 1, comm: "half", args: "half", state: 'S', numThreads: 1},
@@ -89,7 +89,7 @@ func TestProcessTierReportsACutWalk(t *testing.T) {
 // check.
 func TestProcessTiersReadTheSharedSnapshot(t *testing.T) {
 	ctx := runstate.WithStore(t.Context())
-	runstate.Memo(runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
+	runstate.Memo(ctx, runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
 		return processSnapshot{
 			entries: []procEntry{
 				{pid: 1, comm: "quiet", args: "quiet --arg", state: 'S', numThreads: 1},
@@ -132,7 +132,7 @@ func TestProcessTiersReadTheSharedSnapshot(t *testing.T) {
 func TestProcessSnapshotDropsACutWalk(t *testing.T) {
 	ctx := runstate.WithStore(t.Context())
 	const sentinel = 1 << 30
-	runstate.Memo(runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
+	runstate.Memo(ctx, runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
 		return processSnapshot{entries: []procEntry{{pid: sentinel}}, ok: true}
 	})
 	for _, e := range procSnapshot(ctx).entries {
@@ -153,6 +153,10 @@ func TestTtyName(t *testing.T) {
 		{(4 << 8) | 65, "ttyS1"},
 		{(5 << 8), "tty"},
 		{(253 << 8) | 7, "253:7"},
+		// a minor past 255 carries its high bits at bit 12 (new_encode_dev)
+		{(136 << 8) | 44 | (0x100 << 12), "pts/300"},
+		{(136 << 8) | 0xe8 | (0x300 << 12), "pts/1000"},
+		{(4 << 8) | 8 | (0x100 << 12), "ttyS200"},
 	}
 	for _, c := range cases {
 		if got := ttyName(c.nr); got != c.want {

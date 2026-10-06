@@ -15,6 +15,7 @@ import (
 	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/script"
+	"karma/internal/textutil"
 )
 
 // Docker mirrors dockerScript: containers then images, one blank line
@@ -101,13 +102,14 @@ func pkgHistoryBody(ctx context.Context, paths []string, lines int) string {
 	return body
 }
 
-// headLines caps a body at n lines.
+// headLines caps a body at n lines the way `| head -n` does: the first n lines,
+// each terminated, so the section that follows cannot glue onto the last one.
 func headLines(text string, n int) string {
-	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
-	if len(lines) > n {
-		lines = lines[:n]
+	head, _ := textutil.Head(text, n)
+	if !strings.HasSuffix(head, "\n") {
+		head += "\n"
 	}
-	return strings.Join(lines, "\n") + "\n"
+	return head
 }
 
 // AuthBinaries mirrors the check's authBinScript: the existing programs among

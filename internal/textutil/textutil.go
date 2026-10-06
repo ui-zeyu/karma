@@ -49,6 +49,23 @@ func CollectLines(text string) []string {
 	return slices.Collect(Lines(text))
 }
 
+// Head keeps the first n lines of text, each with the terminator it had, and
+// reports whether it dropped any: a body whose cap cut it ends with the newline
+// of its last kept line, and one that was short enough already comes back
+// untouched. n <= 0 is no cap. The split is on \n alone — a reader mirroring a
+// stream's line cap counts the stream's lines, where Lines also breaks on a lone
+// \r.
+func Head(text string, n int) (string, bool) {
+	if n <= 0 {
+		return text, false
+	}
+	lines := strings.SplitN(strings.TrimSuffix(text, "\n"), "\n", n+1)
+	if len(lines) <= n {
+		return text, false
+	}
+	return strings.Join(lines[:n], "\n") + "\n", true
+}
+
 // CString reads the NUL-terminated string a fixed-size C field holds: uname(2)'s
 // utsname spells its fields int8 on some architectures and byte on others, so the
 // reader is generic over the two, and it stops at the terminator rather than at the

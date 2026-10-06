@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"karma/internal/localfs"
 	"karma/internal/model"
 )
 
@@ -25,7 +26,7 @@ func OsRelease(ctx context.Context) (string, error) {
 		return "", model.ErrTierUnavailable
 	}
 	text := ""
-	if body, err := os.ReadFile("/etc/os-release"); err == nil {
+	if body, err := localfs.ReadRegular("/etc/os-release"); err == nil {
 		text = string(body)
 	} else if res := runHost(ctx, []string{"lsb_release", "-a"}, false); res.out != "" {
 		text = res.out
@@ -80,13 +81,28 @@ func userCount() int {
 // makes with strncmp(class, "user", 4). ok is false when this host has no
 // session directory or logind reports no session at all.
 func logindUserCount() (int, bool) {
-	entries, err := os.ReadDir("/run/systemd/sessions")
+	return logindSessionsIn("/run/systemd/sessions")
+}
+
+// logindSessionsIn is that count over a given directory, the one the tests
+// substitute a fixture for. Systemd 255+ also drops each live session's
+// reference FIFO here (<audit-id>.ref): logind watches its end for hangup, and
+// a reader that opens the other end blocks forever — a block no tier timeout
+// can interrupt, since the in-process bodies time out cooperatively. Only the
+// plain state files carry the CLASS= line, so everything that is not a regular
+// file is skipped before it is ever opened.
+func logindSessionsIn(dir string) (int, bool) {
+	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) == 0 {
 		return 0, false
 	}
 	count := 0
 	for _, entry := range entries {
-		data, err := os.ReadFile(filepath.Join("/run/systemd/sessions", entry.Name()))
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			continue
 		}
