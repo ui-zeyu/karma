@@ -6,19 +6,22 @@
 // the same name.
 //
 // manifest.json records the run's provenance — karma version, channel, host
-// facts, UTC start time — and one entry per file with its size and sha256, so
-// a bundle can be identified and checked for tampering without opening the
-// files.
+// facts, UTC start time — and one entry per evidence file, ordered by path, with
+// its size and sha256, so a bundle can be identified and checked for tampering
+// without opening the files, and two runs of one host can be diffed.
 
 package cli
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -56,13 +59,16 @@ type manifest struct {
 type saveObserver struct {
 	dir    string
 	record manifest
+	warn   io.Writer
 	mu     sync.Mutex
 	next   runner.Observer
 }
 
 // newSaveObserver freezes the run's provenance at construction time, so the
-// manifest describes exactly the run that wrote the files.
-func newSaveObserver(dir, version, channel string, facts model.HostFacts, next runner.Observer) *saveObserver {
+// manifest describes exactly the run that wrote the files. warn is where a
+// write karma could not make is reported: the run carries on, and the report's
+// reader is the one who needs to know the bundle is short a file.
+func newSaveObserver(dir, version, channel string, facts model.HostFacts, warn io.Writer, next runner.Observer) *saveObserver {
 	return &saveObserver{
 		dir: dir,
 		record: manifest{
@@ -76,6 +82,7 @@ func newSaveObserver(dir, version, channel string, facts model.HostFacts, next r
 			User:     facts.User,
 			Started:  time.Now().UTC(),
 		},
+		warn: warn,
 		next: next,
 	}
 }
@@ -104,16 +111,16 @@ const crashName = "_karma-internal-error.txt"
 // saveCrash writes one internal error beside the evidence. A run without --save
 // has nowhere to put it, and the command line's message is then the whole
 // account.
-func saveCrash(dir string, crash *fault.Panic) {
+func saveCrash(warn io.Writer, dir string, crash *fault.Panic) {
 	if dir == "" {
 		return
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintln(os.Stderr, "save failed: "+err.Error())
+		fmt.Fprintln(warn, "save failed: "+err.Error())
 		return
 	}
 	if err := os.WriteFile(filepath.Join(dir, crashName), []byte(crash.Detail()), 0o600); err != nil {
-		fmt.Fprintln(os.Stderr, "save failed: "+err.Error())
+		fmt.Fprintln(warn, "save failed: "+err.Error())
 	}
 }
 
@@ -121,7 +128,7 @@ func saveCrash(dir string, crash *fault.Panic) {
 // manifest lists exactly the files this run wrote.
 func (s *saveObserver) finalize() {
 	if err := s.writeManifest(); err != nil {
-		fmt.Fprintln(os.Stderr, "save failed: "+err.Error())
+		fmt.Fprintln(s.warn, "save failed: "+err.Error())
 	}
 }
 
@@ -131,12 +138,12 @@ func (s *saveObserver) write(check *model.Check, result *model.CheckResult) {
 	aspect := string(check.Aspect)
 	dir := filepath.Join(s.dir, aspect)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintln(os.Stderr, "save failed: "+err.Error())
+		fmt.Fprintln(s.warn, "save failed: "+err.Error())
 		return
 	}
 	name := check.ID + ".txt"
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(result.Raw), 0o600); err != nil {
-		fmt.Fprintln(os.Stderr, "save failed: "+err.Error())
+		fmt.Fprintln(s.warn, "save failed: "+err.Error())
 		return
 	}
 	sum := sha256.Sum256([]byte(result.Raw))
@@ -152,6 +159,10 @@ func (s *saveObserver) write(check *model.Check, result *model.CheckResult) {
 
 func (s *saveObserver) writeManifest() error {
 	s.mu.Lock()
+	// The entries are ordered here rather than appended in order: the checks
+	// finish in whatever order the workers happen to, and a manifest whose list
+	// follows that order cannot be diffed against another run's.
+	slices.SortFunc(s.record.Files, func(a, b manifestFile) int { return cmp.Compare(a.Path, b.Path) })
 	data, err := json.MarshalIndent(s.record, "", "  ")
 	s.mu.Unlock()
 	if err != nil {

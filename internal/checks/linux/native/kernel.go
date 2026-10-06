@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -69,18 +70,20 @@ func ModuleDiffViews(attrs []ModuleAttr) script.ModuleDiffViews {
 	}
 }
 
-// ModulesHidden is the merged diff body, mirroring script.HiddenModuleScript:
-// the marked stream is built in process and joined by the same Go join the
-// pipeline's awk mirrors. Either view can be unavailable on its own (no /sys
-// mounted, no symbol table in a container); the module list is the baseline, so
-// without it the tier reports itself unavailable and the channel falls through.
+// ModulesHidden is the local channel's half of the diff, mirroring
+// script.HiddenModuleScript: the marked stream is built in process, and the
+// check's Assemble renders it — script.HiddenModuleBody, one join for this
+// channel and the pipeline alike. Either view can be unavailable on its own (no
+// /sys mounted, no symbol table in a container); the module list is the
+// baseline, so without it the tier reports itself unavailable and the channel
+// falls through.
 func ModulesHidden(views script.ModuleDiffViews) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
 		modules, err := os.ReadFile(views.ModulesPath)
 		if err != nil {
 			return "", model.ErrTierUnavailable
 		}
-		return script.HiddenModuleBody(hiddenModuleViewsText(views, string(modules))), nil
+		return hiddenModuleViewsText(views, string(modules)), nil
 	}
 }
 
@@ -118,16 +121,20 @@ func hiddenModuleViewsText(views script.ModuleDiffViews, modules string) string 
 	for _, name := range moduleListNames(modules) {
 		b.WriteString("P " + name + "\n")
 	}
+	// The shell block's K lines are sorted by tag (awk's array iteration has no
+	// order), and this emitter has to match: the stream is evidence, compared
+	// between channels and between runs.
 	if symbolsErr == nil {
-		for name, count := range symbolModuleNames(string(symbols)) {
-			fmt.Fprintf(&b, "K %s %d\n", name, count)
+		counts := symbolModuleNames(string(symbols))
+		for _, name := range slices.Sorted(maps.Keys(counts)) {
+			fmt.Fprintf(&b, "K %s %d\n", name, counts[name])
 		}
 	}
 	return b.String()
 }
 
-// viewSysfsName and viewKallsymsName are the view names script's body and awk
-// program use in the availability flags and the row verdicts.
+// viewSysfsName and viewKallsymsName are the view names the emitters write into
+// the availability flags and the join renders into the row verdicts.
 const (
 	viewSysfsName    = "sysfs"
 	viewKallsymsName = "kallsyms"
@@ -168,16 +175,20 @@ func ModuleMemoryViews() script.ModuleMemoryViews {
 
 // ModuleMemory is the local tier of the module-memory diff, mirroring
 // script.ModuleMemoryScript: the three surfaces are read in process, the marked
-// stream is built the way the shell block builds it, and the same Go join
-// renders the rows the pipeline's awk mirrors. The symbol table is required —
-// without it every region would look unexplained — and so are the allocation
-// list and the module list, which the shell block's `exit 1` mirrors.
+// stream is built the way the shell block builds it, and the check's Assemble
+// (script.ModuleMemoryBody) renders the rows for either channel. The symbol
+// table is required — without it every region would look unexplained — and so
+// are the allocation list and the module list, which the shell block's `exit 1`
+// mirrors.
 //
 // The rows that join could not explain are then read out of the running kernel's
 // core file (ModuleImages), which is this channel's own step: a remote shell has
-// no way to read the core, so the pipeline's rows stand alone there. The read is
-// bounded and silent when it cannot happen or finds nothing, so a host without a
-// readable core answers exactly the rows the pipeline prints.
+// no way to read the core, so the pipeline's rows stand alone there. The dig's
+// rows join the stream as I records — the join places them after the regions
+// nothing explains and before the accounting line that closes the report, so the
+// local channel is the pipeline's rows plus those records and never a different
+// join. The read is bounded and silent when it cannot happen or finds nothing,
+// so a host without a readable core answers exactly the rows the pipeline prints.
 func ModuleMemory(views script.ModuleMemoryViews, kitNames *regexp.Regexp) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
 		allocations, err := os.ReadFile(views.VMallocPath)
@@ -193,14 +204,15 @@ func ModuleMemory(views script.ModuleMemoryViews, kitNames *regexp.Regexp) func(
 			return "", model.ErrTierUnavailable
 		}
 		stream := moduleMemoryText(views, string(allocations), string(modules), string(symbols))
-		rows, unowned := script.ModuleMemoryRows(views, stream)
-		if images := ModuleImages(views.CorePath, unowned, kitNames); len(images) > 0 {
-			// The dig's rows belong with the memory they name: after the rows
-			// nothing explains, and before the accounting line that closes the
-			// report.
-			rows = slices.Insert(rows, len(rows)-1, images...)
+		// The dig needs the regions the join could not explain, so it reads them
+		// out of the join's own output rather than parsing a row back.
+		_, unowned := script.ModuleMemoryRows(views, stream)
+		var b strings.Builder
+		b.WriteString(stream)
+		for _, row := range ModuleImages(views.CorePath, unowned, kitNames) {
+			b.WriteString("I " + row + "\n")
 		}
-		return strings.Join(rows, "\n") + "\n", nil
+		return b.String(), nil
 	}
 }
 
@@ -215,7 +227,10 @@ type moduleMemoryRegion struct {
 
 // moduleMemoryText is the in-process emitter of the marked stream
 // ModuleMemoryScript's shell block produces: one R line per allocation, one P
-// line per module-list name, one Y line per symbol inside an allocation.
+// line per module-list name, one Y line per tag the symbols inside a region
+// carry with how many of them do. The counting is the shell side's fold too
+// (moduleSymbolAwk): the symbol table is megabytes, and the join reads the count
+// from the record rather than counting the symbols again.
 func moduleMemoryText(views script.ModuleMemoryViews, allocations, modules, symbols string) string {
 	classes := map[string]string{}
 	for _, name := range views.ModuleAllocators {
@@ -252,6 +267,14 @@ func moduleMemoryText(views script.ModuleMemoryViews, allocations, modules, symb
 	}
 	sorted := slices.Clone(regions)
 	slices.SortFunc(sorted, func(a, b moduleMemoryRegion) int { return cmp.Compare(a.start, b.start) })
+	// The tags of one region with their counts, in the order the symbol table
+	// named them: the Y records the shell block's fold emits.
+	type tagTotal struct {
+		tag   string
+		count int
+	}
+	byRegion := make(map[int][]*tagTotal, len(regions))
+	seen := make(map[int]map[string]*tagTotal, len(regions))
 	for line := range strings.SplitSeq(symbols, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 3 {
@@ -280,7 +303,22 @@ func moduleMemoryText(views script.ModuleMemoryViews, allocations, modules, symb
 				tag = line[open+1 : len(line)-1]
 			}
 		}
-		fmt.Fprintf(&b, "Y %d %s\n", sorted[index].index, tag)
+		id := sorted[index].index
+		if seen[id] == nil {
+			seen[id] = map[string]*tagTotal{}
+		}
+		if total, ok := seen[id][tag]; ok {
+			total.count++
+			continue
+		}
+		total := &tagTotal{tag: tag, count: 1}
+		seen[id][tag] = total
+		byRegion[id] = append(byRegion[id], total)
+	}
+	for _, region := range regions {
+		for _, total := range byRegion[region.index] {
+			fmt.Fprintf(&b, "Y %d %s %d\n", region.index, total.tag, total.count)
+		}
 	}
 	return b.String()
 }

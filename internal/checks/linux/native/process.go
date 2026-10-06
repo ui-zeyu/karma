@@ -18,6 +18,7 @@ import (
 	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/script"
+	"karma/internal/section"
 )
 
 // ProcCaps mirrors sessionCapsScript: the host's own container markers
@@ -33,10 +34,10 @@ func ProcCaps(cgroupMarkers *regexp.Regexp) func(context.Context) (string, error
 		var b strings.Builder
 		b.WriteString("context: container\n")
 		if haveBinary("capsh") {
-			b.WriteString("== capsh --print\n")
+			b.WriteString(section.Line("capsh --print"))
 			b.WriteString(runHost(ctx, []string{"capsh", "--print"}, false).out)
 		} else {
-			b.WriteString("== /proc/self/status\n")
+			b.WriteString(section.Line("/proc/self/status"))
 			b.WriteString(capStatusLines())
 		}
 		return b.String(), nil
@@ -224,12 +225,12 @@ func Miner(scan MinerScan) func(context.Context) (string, error) {
 		names := localfs.NewNameCache()
 		now := time.Now()
 		var b strings.Builder
-		b.WriteString("== ps\n")
+		b.WriteString(section.Line("ps"))
 		for _, line := range minerPsLines(snap, now, scan.Pattern) {
 			b.WriteString(line)
 			b.WriteByte('\n')
 		}
-		b.WriteString("== drop paths\n")
+		b.WriteString(section.Line("drop paths"))
 		// The script tier hands the same list to `LC_ALL=C ls -l`, which sorts
 		// its arguments; the in-process rows are sorted the same way.
 		var present []string
@@ -244,7 +245,7 @@ func Miner(scan MinerScan) func(context.Context) (string, error) {
 				b.WriteByte('\n')
 			}
 		}
-		b.WriteString("== temp names\n")
+		b.WriteString(section.Line("temp names"))
 		var hits []string
 		for _, dir := range scan.TempDirs {
 			err := localfs.WalkTree(ctx, dir, scan.MaxDepth, false, nil, func(path string, info os.FileInfo) bool {
@@ -324,7 +325,7 @@ func (s hiddenPidScan) run(ctx context.Context) (string, error) {
 	if len(hidden) == 0 {
 		return b.String(), nil
 	}
-	b.WriteString("== hidden\n")
+	b.WriteString(section.Line("hidden"))
 	for _, pid := range hidden {
 		fd := "no"
 		if s.fdExists(pid) {

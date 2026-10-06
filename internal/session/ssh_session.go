@@ -54,7 +54,7 @@ func (s *SSHSession) Lost() bool { return s.lost.Load() }
 // the session and handing it the command — go through setup, which is what puts
 // them inside the call's deadline.
 func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	script := RenderShell(call.Inv)
+	command := RenderShell(call.Inv)
 	sess, err := setup(ctx, "ssh channel open", sshTimeout, s.client.NewSession)
 	if err != nil {
 		return s.setupResult(ctx, err)
@@ -68,7 +68,7 @@ func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
 	if err != nil {
 		return channelError(err)
 	}
-	if err := setupErr(ctx, "ssh exec request", sshTimeout, func() error { return sess.Start(script) }); err != nil {
+	if err := setupErr(ctx, "ssh exec request", sshTimeout, func() error { return sess.Start(command) }); err != nil {
 		return s.setupResult(ctx, err)
 	}
 	// The decoding strategy matches the local channel: line reads clean bad

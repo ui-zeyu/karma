@@ -6,11 +6,11 @@ package localfs
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 
 	"karma/internal/script"
+	"karma/internal/section"
 )
 
 // ListingSection renders one "== dir" section with its ListingFind rows. An
@@ -18,7 +18,7 @@ import (
 // drops its stderr.
 func ListingSection(dir string, head int, names *NameCache) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "== %s\n", dir)
+	b.WriteString(section.Line(dir))
 	rows, _ := listingRows(dir, head, names)
 	for _, row := range rows {
 		b.WriteString(row)
@@ -69,7 +69,7 @@ func Ls(paths []string) (string, error) {
 			continue
 		}
 		if len(paths) > 1 {
-			fmt.Fprintf(&b, "== %s\n", path)
+			b.WriteString(section.Line(path))
 		}
 		for _, row := range script.AlignLsBodies(rows) {
 			b.WriteString(row)

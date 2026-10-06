@@ -155,6 +155,11 @@ func buildSSHTransport(flags *pflag.FlagSet, target string) (session.Transport, 
 			return nil, fmt.Errorf("cannot access identity file %s: %v", path, err)
 		case info.IsDir():
 			return nil, fmt.Errorf("identity file is a directory: %s", path)
+		case !info.Mode().IsRegular():
+			// A FIFO or device node would park the connection in open(2), where no
+			// deadline and no signal reaches it; the operator named this path, so
+			// saying what it holds beats reading it.
+			return nil, fmt.Errorf("identity file is not a regular file: %s", path)
 		}
 	}
 	rawOptions := stringSliceFlag(flags, "ssh-option")

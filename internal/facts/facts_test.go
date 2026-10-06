@@ -82,21 +82,26 @@ func TestCollectLinux(t *testing.T) {
 		t.Errorf("unexpected call: %+v", inv)
 		return model.RunResult{Verdict: model.VerdictFailed, ExitCode: 1}
 	}}
-	got := facts.Collect(context.Background(), fake, []string{"find"})
-	if got.AvailableBins["find"] {
-		t.Fatalf("find missing from probe output: %+v", got.AvailableBins)
-	}
-	if !got.AvailableBins["hostname"] || !got.AvailableBins["uname"] || !got.AvailableBins["id"] {
-		t.Fatalf("wrong capability bits: %+v", got.AvailableBins)
-	}
+	got := facts.Collect(context.Background(), fake)
 	if got.Hostname != "web-01" || got.Kernel != "5.15.0-91-generic" {
 		t.Fatalf("wrong host facts: %+v", got)
 	}
 	if got.OsPretty != "Ubuntu 22.04.3 LTS" || got.UID != 0 || !got.IsRoot() {
 		t.Fatalf("wrong host facts: %+v", got)
 	}
+	// The capability probe searches exactly this package's own names, one PATH
+	// search per name in a for loop: a check's tiers are not part of it, so no
+	// name a catalog carries can appear here.
 	if !strings.Contains(fake.joinedCalls(), "for name in") {
 		t.Fatalf("capability probe should be a for loop: %q", fake.joinedCalls())
+	}
+	for _, name := range []string{"'hostname'", "'id'", "'uname'"} {
+		if !strings.Contains(fake.joinedCalls(), name) {
+			t.Errorf("the probe should search %s: %q", name, fake.joinedCalls())
+		}
+	}
+	if strings.Contains(fake.joinedCalls(), "'find'") {
+		t.Errorf("the probe should search only this package's names: %q", fake.joinedCalls())
 	}
 }
 
@@ -118,7 +123,7 @@ func TestCollectWindowsPowershellPresent(t *testing.T) {
 			return model.RunResult{Verdict: model.VerdictFailed, ExitCode: 1}
 		}
 	}}
-	got := facts.CollectWindows(context.Background(), fake, nil)
+	got := facts.CollectWindows(context.Background(), fake)
 	if got.Hostname != "WS2019" || got.User != "CORP\\admin" {
 		t.Fatalf("wrong host facts: %+v", got)
 	}
@@ -127,9 +132,6 @@ func TestCollectWindowsPowershellPresent(t *testing.T) {
 	}
 	if got.OsPretty != "Windows Server 2019 Datacenter 1809" {
 		t.Fatalf("wrong OS name: %q", got.OsPretty)
-	}
-	if !got.AvailableBins["powershell"] || !got.AvailableBins["reg"] {
-		t.Fatalf("wrong capability bits: %+v", got.AvailableBins)
 	}
 	// PS cold start is expensive: capability probe + facts are two paths, the other four are merged into one sectioned output
 	if calls := strings.Count(fake.joinedCalls(), "powershell -NoProfile"); calls != 2 {
@@ -155,7 +157,7 @@ func TestCollectWindowsPowershellDegraded(t *testing.T) {
 			return model.RunResult{Verdict: model.VerdictFailed, ExitCode: 1}
 		}
 	}}
-	got := facts.CollectWindows(context.Background(), fake, nil)
+	got := facts.CollectWindows(context.Background(), fake)
 	if got.Hostname != "WIN-XP" || got.User != "BOX\\john" {
 		t.Fatalf("wrong host facts: %+v", got)
 	}
@@ -195,9 +197,16 @@ func TestCollectWindowsFallsBackToRegistry(t *testing.T) {
 			return model.RunResult{Verdict: model.VerdictFailed, ExitCode: 1}
 		}
 	}}
-	got := facts.CollectWindows(context.Background(), fake, nil)
-	if !got.AvailableBins["reg"] || got.AvailableBins["powershell"] {
-		t.Fatalf("after fallback only reg should be in capability bits: %+v", got.AvailableBins)
+	got := facts.CollectWindows(context.Background(), fake)
+	// The registry path is the observable half of "there is no PowerShell here":
+	// every fact comes from a reg query, and the one PS cold start that would
+	// have brought them back (the USERDOMAIN script, whose probe timed out) never
+	// ran.
+	if !strings.Contains(fake.joinedCalls(), "reg query") {
+		t.Errorf("the fallback should read the registry: %q", fake.joinedCalls())
+	}
+	if strings.Contains(fake.joinedCalls(), "USERDOMAIN") {
+		t.Errorf("the fallback should not run the PS facts script: %q", fake.joinedCalls())
 	}
 	if got.Hostname != "OLD-XP" || got.User != "john" {
 		t.Fatalf("wrong registry facts: %+v", got)

@@ -7,10 +7,12 @@ package native
 import (
 	"context"
 	"fmt"
-	"karma/internal/localfs"
 	"os"
 	"slices"
 	"strings"
+
+	"karma/internal/localfs"
+	"karma/internal/section"
 )
 
 // Hunt renders one directory's rows in findPrintf shape: epoch mtime,
@@ -21,7 +23,7 @@ func Hunt(dirs, pruneDirs []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
 		for _, dir := range dirs {
-			fmt.Fprintf(&b, "== %s\n", dir)
+			b.WriteString(section.Line(dir))
 			err := localfs.WalkTree(ctx, dir, 0, true, func(path string, _ os.FileInfo) bool {
 				return slices.Contains(pruneDirs, path)
 			}, func(path string, info os.FileInfo) bool {

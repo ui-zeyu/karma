@@ -5,13 +5,13 @@ package native
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"karma/internal/localfs"
 	"karma/internal/model"
+	"karma/internal/section"
 )
 
 // Sudoers mirrors the check's sudoersScript: every readable surface it hands
@@ -23,7 +23,7 @@ func Sudoers(paths []string) func(context.Context) (string, error) {
 		var b strings.Builder
 		for _, path := range localfs.ExpandFiles(paths) {
 			if body, err := localfs.ReadRegular(path); err == nil {
-				fmt.Fprintf(&b, "== %s\n", path)
+				b.WriteString(section.Line(path))
 				b.WriteString(string(body))
 			}
 		}
@@ -45,7 +45,7 @@ func expandHomes(homeGlobs []string) []string {
 // read goes through the non-blocking open: sshd's AuthorizedKeysFile can name any
 // path, a FIFO planted at one must read as empty rather than hang.
 func printBody(b *strings.Builder, path string) {
-	fmt.Fprintf(b, "== %s\n", path)
+	b.WriteString(section.Line(path))
 	if body, err := localfs.ReadRegular(path); err == nil {
 		b.WriteString(string(body))
 	}
@@ -105,7 +105,10 @@ func AuthorizedKeys(homeGlobs []string, depth int, sshdConfigPaths []string) fun
 func authorizedKeyFileSpecs(sshdConfigPaths []string) []string {
 	var specs []string
 	for _, path := range localfs.ExpandFiles(sshdConfigPaths) {
-		body, err := os.ReadFile(path)
+		// ReadRegular rather than os.ReadFile: the config stack is host-writable,
+		// and a planted FIFO must read as an empty config instead of parking the
+		// tier in open(2) (localfs owns that guarantee).
+		body, err := localfs.ReadRegular(path)
 		if err != nil {
 			continue
 		}

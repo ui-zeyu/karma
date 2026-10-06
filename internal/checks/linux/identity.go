@@ -36,9 +36,6 @@ exit "$ok"
 // same directories rather than two spellings of the list drifting apart.
 var homeGlobs = []string{"/root", "/home/*"}
 
-// homeGlobWords is homeGlobs in the shell's spelling, spliced into the script.
-var homeGlobWords = strings.Join(homeGlobs, " ")
-
 // sshdConfigPaths: the sshd config stack. The sshd-config check reads it as
 // evidence, the authorized-keys check takes its AuthorizedKeysFile directives
 // from the same files, and authorizedKeysScript greps them for those directives,
@@ -54,25 +51,39 @@ const authorizedKeysDepth = 3
 // AuthorizedKeysFile directive are read too: %u expands to the user name, %h to
 // the home directory, and a relative path lands in that user's home. Default names
 // find already reports are skipped to avoid duplicate sections.
-var authorizedKeysScript = `
+//
+// Every path it opens is a regular file, tested before the open: the in-process
+// tier of this check reads the same stack through localfs (which reads a planted
+// FIFO as empty), and a shell arm that opened one would park in open(2) — the
+// walk's deadline would cut the check and spend its budget on a private door.
+var authorizedKeysScript = authorizedKeysScriptAt(sshdConfigPaths, homeGlobs)
+
+// authorizedKeysScriptAt is the same script over given surfaces, which is how a
+// test drives the whole pipeline — the find under the homes, the config stack,
+// the directive expansion — over a fixture.
+func authorizedKeysScriptAt(configPaths, homes []string) string {
+	homeWords := strings.Join(homes, " ")
+	return `
 seen=
 pseen=
-for d in ` + homeGlobWords + `; do
+for d in ` + homeWords + `; do
   [ -d "$d" ] || continue
   find "$d" -maxdepth ` + strconv.Itoa(authorizedKeysDepth) + ` -name 'authorized_keys*' -type f 2>/dev/null | while read -r f; do
     echo "== $f"
     cat "$f" 2>/dev/null
   done
 done
-awk '$1 == "AuthorizedKeysFile" { for (i = 2; i <= NF; i++) print $i }' \
-  ` + strings.Join(sshdConfigPaths, " ") + ` 2>/dev/null |
+for f in ` + strings.Join(configPaths, " ") + `; do
+  [ -f "$f" ] || continue
+  awk '$1 == "AuthorizedKeysFile" { for (i = 2; i <= NF; i++) print $i }' "$f" 2>/dev/null
+done |
 while read -r spec; do
   case " $seen " in *" $spec "*) continue;; esac
   seen="$seen $spec"
   case "$spec" in
     none|authorized_keys|authorized_keys2|.ssh/authorized_keys|.ssh/authorized_keys2) continue;;
   esac
-  for d in ` + homeGlobWords + `; do
+  for d in ` + homeWords + `; do
     [ -d "$d" ] || continue
     p=$(printf '%s\n' "$spec" | sed "s/%u/$(basename "$d")/g")
     p=$(printf '%s\n' "$p" | sed "s|%h|$d|g")
@@ -87,6 +98,7 @@ while read -r spec; do
   done
 done
 `
+}
 
 var sshClientConfigPaths = []string{
 	"/etc/ssh/ssh_config",

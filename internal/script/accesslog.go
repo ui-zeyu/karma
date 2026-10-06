@@ -23,6 +23,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"karma/internal/section"
 )
 
 // AccessLogWindow is how much of a log file the summary is built from: the tail
@@ -115,7 +117,7 @@ func AccessLogBody(path string, lines []string, keep *regexp.Regexp) string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "== %s\n", path)
+	b.WriteString(section.Line(path))
 	b.WriteString("clients\n")
 	writeTop(&b, clients, accessLogTopClients)
 	b.WriteString("minutes\n")

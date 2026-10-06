@@ -73,6 +73,9 @@ func TestFileTypeWordsFlagsScripts(t *testing.T) {
 	}
 }
 
+// The rows keep the order the caller gave, which is the order the shell tier's
+// `file $list` prints (file(1) reads its arguments in order): the fixture's
+// second path sorts before its first, so a re-added sort fails here.
 func TestFileRows(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "b.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
@@ -90,11 +93,11 @@ func TestFileRows(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("want 2 rows (the missing path drops), got %d:\n%s", len(lines), out)
 	}
-	if !strings.HasSuffix(lines[0], ": ELF 64-bit LSB shared object") {
-		t.Errorf("rows are not sorted by path, or the ELF words are wrong: %q", lines[0])
+	if !strings.Contains(lines[0], "b.sh: a /bin/sh script") {
+		t.Errorf("the first row should be the caller's first path: %q", lines[0])
 	}
-	if !strings.Contains(lines[1], "script") {
-		t.Errorf("script row = %q", lines[1])
+	if !strings.HasSuffix(lines[1], "a.elf: ELF 64-bit LSB shared object") {
+		t.Errorf("the ELF row is %q; the words or the order are wrong", lines[1])
 	}
 }
 

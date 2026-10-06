@@ -72,9 +72,8 @@ func TestObserverPanicDoesNotKillRun(t *testing.T) {
 		{ID: "b", Aspect: model.AspectSystem,
 			Steps: []model.Step{{{Label: "b", Inv: model.NewCommand("true")}}}},
 	}
-	facts := model.HostFacts{AvailableBins: map[string]bool{"true": true}}
 	observer := &deadObserver{}
-	summary := RunCatalog(context.Background(), sess, facts, checks, model.RunOptions{Concurrency: 2}, observer)
+	summary := RunCatalog(context.Background(), sess, checks, model.RunOptions{Concurrency: 2}, observer)
 	if got := sess.runCount(); got != len(checks) {
 		t.Fatalf("both checks should finish after an observer panic: ran %d/%d", got, len(checks))
 	}
@@ -110,8 +109,7 @@ func TestLostChannelStopsTheQueue(t *testing.T) {
 		{ID: "c", Aspect: model.AspectSystem,
 			Steps: []model.Step{{{Label: "c", Inv: model.NewCommand("true")}}}},
 	}
-	facts := model.HostFacts{AvailableBins: map[string]bool{"true": true}}
-	summary := RunCatalog(context.Background(), sess, facts, checks, model.RunOptions{Concurrency: 1}, &deadObserver{})
+	summary := RunCatalog(context.Background(), sess, checks, model.RunOptions{Concurrency: 1}, &deadObserver{})
 	if got := sess.runCount(); got != 1 {
 		t.Fatalf("a channel lost under the first check should stop the queue: ran %d checks", got)
 	}
@@ -172,15 +170,6 @@ func chain(labels ...string) *model.Check {
 	return &model.Check{ID: "chain", Aspect: model.AspectSystem, Steps: steps}
 }
 
-// bins marks every label's tool present.
-func bins(labels ...string) model.HostFacts {
-	available := map[string]bool{}
-	for _, label := range labels {
-		available["tool-"+label] = true
-	}
-	return model.HostFacts{AvailableBins: available}
-}
-
 // deadlineSession records the deadline the runner stated in the context, which
 // is how one number reaches the channel and every step of the walk.
 type deadlineSession struct {
@@ -201,7 +190,7 @@ func (s *deadlineSession) Run(ctx context.Context, call model.Call) model.RunRes
 func TestRunCheckStatesTheBudgetInTheContext(t *testing.T) {
 	sess := &deadlineSession{seen: make(chan time.Time, 1)}
 	budget := 30 * time.Second
-	runCheck(context.Background(), sess, bins("ss"), chain("ss"), model.RunOptions{Timeout: budget})
+	runCheck(context.Background(), sess, chain("ss"), model.RunOptions{Timeout: budget})
 	select {
 	case deadline := <-sess.seen:
 		if remaining := time.Until(deadline); remaining <= budget-time.Second || remaining > budget {
@@ -217,7 +206,6 @@ func TestRunCheckFallbackChain(t *testing.T) {
 	cases := []struct {
 		name        string
 		check       *model.Check
-		facts       model.HostFacts
 		reply       []model.RunResult
 		wantProbe   string
 		wantOutcome model.Outcome
@@ -228,7 +216,6 @@ func TestRunCheckFallbackChain(t *testing.T) {
 		{
 			name:        "first tier answers",
 			check:       chain("ss", "netstat"),
-			facts:       bins("ss", "netstat"),
 			reply:       []model.RunResult{{Verdict: model.VerdictAnswered, Stdout: "rows\n"}},
 			wantProbe:   "ss",
 			wantOutcome: model.Collected,
@@ -237,7 +224,6 @@ func TestRunCheckFallbackChain(t *testing.T) {
 		{
 			name:        "127 falls to the next tier",
 			check:       chain("ss", "netstat"),
-			facts:       bins("ss", "netstat"),
 			reply:       []model.RunResult{{Verdict: model.VerdictUnavailable, Stderr: "command not found", ExitCode: 127}, {Verdict: model.VerdictAnswered, Stdout: "rows\n"}},
 			wantProbe:   "netstat",
 			wantOutcome: model.Collected,
@@ -247,7 +233,6 @@ func TestRunCheckFallbackChain(t *testing.T) {
 		{
 			name:        "a non-zero exit with empty stdout falls to the next tier",
 			check:       chain("ss", "proc"),
-			facts:       bins("ss", "proc"),
 			reply:       []model.RunResult{{Verdict: model.VerdictFailed, Stderr: "permission denied", ExitCode: 1}, {Verdict: model.VerdictAnswered, Stdout: "rows\n"}},
 			wantProbe:   "proc",
 			wantOutcome: model.Collected,
@@ -255,19 +240,23 @@ func TestRunCheckFallbackChain(t *testing.T) {
 			wantRaw:     "rows\n",
 		},
 		{
-			name:        "every tier lacks its binaries: skipped, nothing runs",
-			check:       chain("ss", "netstat"),
-			facts:       model.HostFacts{AvailableBins: map[string]bool{}},
-			reply:       nil,
+			name:  "every tier reports 127: skipped, the chain names both",
+			check: chain("ss", "netstat"),
+			reply: []model.RunResult{
+				{Verdict: model.VerdictUnavailable, Stderr: "command not found", ExitCode: 127},
+				{Verdict: model.VerdictUnavailable, Stderr: "command not found", ExitCode: 127},
+			},
 			wantProbe:   "",
 			wantOutcome: model.Skipped,
 			wantSkipped: []string{"ss", "netstat"},
 		},
 		{
-			name:        "a missing first tier falls to the second",
-			check:       chain("ss", "proc"),
-			facts:       bins("proc"),
-			reply:       []model.RunResult{{Verdict: model.VerdictAnswered, Stdout: "rows\n"}},
+			name:  "a first tier whose tool is missing falls to the second",
+			check: chain("ss", "proc"),
+			reply: []model.RunResult{
+				{Verdict: model.VerdictUnavailable, Stderr: "command not found", ExitCode: 127},
+				{Verdict: model.VerdictAnswered, Stdout: "rows\n"},
+			},
 			wantProbe:   "proc",
 			wantOutcome: model.Collected,
 			wantSkipped: []string{"ss"},
@@ -276,7 +265,6 @@ func TestRunCheckFallbackChain(t *testing.T) {
 		{
 			name:        "a timeout keeps the partial output and does not move on",
 			check:       chain("lsof", "proc"),
-			facts:       bins("lsof", "proc"),
 			reply:       []model.RunResult{{Verdict: model.VerdictTimedOut, ExitCode: -1, Stdout: "partial\n"}},
 			wantProbe:   "lsof",
 			wantOutcome: model.Collected,
@@ -288,7 +276,6 @@ func TestRunCheckFallbackChain(t *testing.T) {
 			// nothing, and the note must not promise output that is not there.
 			name:        "a timeout with nothing read claims nothing",
 			check:       chain("lsof", "proc"),
-			facts:       bins("lsof", "proc"),
 			reply:       []model.RunResult{{Verdict: model.VerdictTimedOut, ExitCode: -1}},
 			wantProbe:   "lsof",
 			wantOutcome: model.Collected,
@@ -297,7 +284,6 @@ func TestRunCheckFallbackChain(t *testing.T) {
 		{
 			name:        "a cancel keeps the partial output and does not move on",
 			check:       chain("lsof", "proc"),
-			facts:       bins("lsof", "proc"),
 			reply:       []model.RunResult{{Verdict: model.VerdictInterrupted, ExitCode: -1, Stdout: "partial\n"}},
 			wantProbe:   "lsof",
 			wantOutcome: model.Collected,
@@ -307,7 +293,6 @@ func TestRunCheckFallbackChain(t *testing.T) {
 		{
 			name:        "a failing last tier puts the error text in the panel",
 			check:       chain("ss"),
-			facts:       bins("ss"),
 			reply:       []model.RunResult{{Verdict: model.VerdictFailed, Stderr: "no such file\n", ExitCode: 1}},
 			wantProbe:   "ss",
 			wantOutcome: model.Collected,
@@ -316,7 +301,6 @@ func TestRunCheckFallbackChain(t *testing.T) {
 		{
 			name:        "a silent last tier stays silent",
 			check:       chain("ss"),
-			facts:       bins("ss"),
 			reply:       []model.RunResult{{Verdict: model.VerdictFailed, ExitCode: 1}},
 			wantProbe:   "",
 			wantOutcome: model.Collected,
@@ -326,7 +310,7 @@ func TestRunCheckFallbackChain(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sess := &scriptSession{reply: tc.reply}
-			result := runCheck(context.Background(), sess, tc.facts, tc.check, options)
+			result := runCheck(context.Background(), sess, tc.check, options)
 			if result.ProbeLabel != tc.wantProbe {
 				t.Errorf("probe = %q, want %q", result.ProbeLabel, tc.wantProbe)
 			}
@@ -357,7 +341,7 @@ func TestRunCheckStopsWalkingOnCancel(t *testing.T) {
 		onRun: cancel, // the interrupt lands while the first step runs
 	}
 	check := chain("lsof", "proc")
-	result := runCheck(ctx, sess, bins("lsof", "proc"), check, model.RunOptions{Timeout: time.Second})
+	result := runCheck(ctx, sess, check, model.RunOptions{Timeout: time.Second})
 	if sess.ranCount() != 1 {
 		t.Fatalf("a cancelled run must not try the next step: ran %d steps", sess.ranCount())
 	}
@@ -371,7 +355,7 @@ func TestRunCatalogStopsOnCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	check := chain("a")
-	summary := RunCatalog(ctx, sess, bins("a"), []*model.Check{check}, model.RunOptions{Concurrency: 2}, &deadObserver{})
+	summary := RunCatalog(ctx, sess, []*model.Check{check}, model.RunOptions{Concurrency: 2}, &deadObserver{})
 	if got := sess.ranCount(); got != 0 {
 		t.Fatalf("a cancelled run must not execute checks: ran %d", got)
 	}
@@ -388,7 +372,7 @@ func TestRunCheckSkipsStepAbsentOnThisChannel(t *testing.T) {
 		{{Label: "next", Inv: model.NewCommand("tool-next")}},
 	}}
 	sess := &scriptSession{reply: []model.RunResult{{Verdict: model.VerdictAnswered, Stdout: "rows\n"}}}
-	result := runCheck(context.Background(), sess, bins("next"), check, model.RunOptions{Timeout: time.Second})
+	result := runCheck(context.Background(), sess, check, model.RunOptions{Timeout: time.Second})
 	if result.ProbeLabel != "next" || result.Outcome != model.Collected {
 		t.Fatalf("the channel-absent tier should be invisible: %+v", result)
 	}
@@ -414,17 +398,19 @@ func TestRunCheckStepRunsEveryMember(t *testing.T) {
 		},
 	}}
 	sess := &scriptSession{reply: []model.RunResult{
+		// The target has no PowerShell: the plain step answers 127 and the walk
+		// moves to the set, which is what a PS-less host does (the local Windows
+		// channel has no shell to loop in, so the set is one process per key).
+		{Verdict: model.VerdictUnavailable, Stderr: "command not found", ExitCode: 127},
 		{Verdict: model.VerdictAnswered, Stdout: "== run\nA\n"},
 		{Verdict: model.VerdictAnswered, Stdout: "== run-once\nB\n"},
 		// A member the target's registry does not carry: its stderr is not the
 		// check's verdict while the step still has an answer.
 		{Verdict: model.VerdictFailed, Stderr: "ERROR: not found\n", ExitCode: 1},
 	}}
-	// powershell absent: the plain step is skipped, and the set is entered.
-	facts := bins("run", "run-once", "services")
-	result := runCheck(context.Background(), sess, facts, check, model.RunOptions{Timeout: time.Second})
-	if sess.ranCount() != 3 {
-		t.Fatalf("every member of the step should run: ran %d", sess.ranCount())
+	result := runCheck(context.Background(), sess, check, model.RunOptions{Timeout: time.Second})
+	if got := sess.ranCount(); got != 4 {
+		t.Fatalf("the PS step and every member of the set should run: ran %d", got)
 	}
 	if result.Outcome != model.Collected || result.ProbeLabel != "run + run-once + services" {
 		t.Fatalf("the step should answer with every member named: %+v", result)
@@ -452,7 +438,7 @@ func TestJoinStepSeparatesBodiesWithoutATrailingNewline(t *testing.T) {
 		{Verdict: model.VerdictAnswered, Stdout: "last line of a"},
 		{Verdict: model.VerdictAnswered, Stdout: "b\n"},
 	}}
-	result := runCheck(context.Background(), sess, bins("a", "b"), check, model.RunOptions{Timeout: time.Second})
+	result := runCheck(context.Background(), sess, check, model.RunOptions{Timeout: time.Second})
 	if result.Raw != "last line of a\nb\n" {
 		t.Fatalf("raw = %q, want the two bodies on their own lines", result.Raw)
 	}
@@ -469,7 +455,7 @@ func TestRunCheckStepWithNoAnswerIsAFailure(t *testing.T) {
 		{Verdict: model.VerdictFailed, Stderr: "ERROR: a\n", ExitCode: 1},
 		{Verdict: model.VerdictFailed, Stderr: "ERROR: b\n", ExitCode: 1},
 	}}
-	result := runCheck(context.Background(), sess, bins("a", "b"), check, model.RunOptions{Timeout: time.Second})
+	result := runCheck(context.Background(), sess, check, model.RunOptions{Timeout: time.Second})
 	if result.Outcome != model.Collected || !strings.Contains(result.Note, "exit code 1") {
 		t.Fatalf("a step with no answer should report the failure: %+v", result)
 	}
@@ -489,7 +475,7 @@ func TestRunCheckStepOfUnavailableMembersIsUnavailable(t *testing.T) {
 		{Verdict: model.VerdictUnavailable, ExitCode: 127},
 		{Verdict: model.VerdictUnavailable, ExitCode: 127},
 	}}
-	result := runCheck(context.Background(), sess, bins("a", "b"), check, model.RunOptions{Timeout: time.Second})
+	result := runCheck(context.Background(), sess, check, model.RunOptions{Timeout: time.Second})
 	if result.Outcome != model.Skipped {
 		t.Fatalf("a step the environment lacks is a skip, not a failure: %+v", result)
 	}
@@ -509,7 +495,7 @@ func TestRunCheckStepStopsAtACutMember(t *testing.T) {
 		{Verdict: model.VerdictInterrupted, Stdout: "half\n", ExitCode: -1},
 		{Verdict: model.VerdictAnswered, Stdout: "late\n"},
 	}}
-	result := runCheck(context.Background(), sess, bins("a", "b"), check, model.RunOptions{Timeout: time.Second})
+	result := runCheck(context.Background(), sess, check, model.RunOptions{Timeout: time.Second})
 	if sess.ranCount() != 1 {
 		t.Fatalf("a cut member should end the set: ran %d", sess.ranCount())
 	}
@@ -534,7 +520,7 @@ func TestRunCheckMarksOnlyAScanCapsCut(t *testing.T) {
 		{"a scan cap", scan, true},
 	} {
 		sess := &scriptSession{reply: []model.RunResult{{Verdict: model.VerdictAnswered, Stdout: "rows\n", Truncated: true}}}
-		result := runCheck(context.Background(), sess, bins("top", "find"), tc.check, model.RunOptions{Timeout: time.Second})
+		result := runCheck(context.Background(), sess, tc.check, model.RunOptions{Timeout: time.Second})
 		if result.Document.Truncated != tc.want {
 			t.Errorf("%s: truncated = %v, want %v", tc.name, result.Document.Truncated, tc.want)
 		}
@@ -550,9 +536,8 @@ func TestRunCheckSurvivesAPanickingSession(t *testing.T) {
 		{ID: "boom", Aspect: model.AspectSystem, Steps: []model.Step{{{Label: "x", Inv: model.NewCommand("boom")}}}},
 		{ID: "fine", Aspect: model.AspectSystem, Steps: []model.Step{{{Label: "y", Inv: model.NewCommand("true")}}}},
 	}
-	facts := model.HostFacts{AvailableBins: map[string]bool{"boom": true, "true": true}}
 	results := &collectObserver{}
-	summary := RunCatalog(context.Background(), sess, facts, checks, model.RunOptions{Concurrency: 1}, results)
+	summary := RunCatalog(context.Background(), sess, checks, model.RunOptions{Concurrency: 1}, results)
 	if summary.Results != 2 {
 		t.Fatalf("both checks should produce a result: %+v", summary)
 	}

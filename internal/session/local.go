@@ -51,7 +51,18 @@ func (LocalSession) Channel() model.Channel { return model.ChanLocal }
 // parity`: a Linux host collects twice — once in process, once through the
 // scripts an ssh or ttyd target runs — and the two bundles are diffed check by
 // check, which is the only way to see the two spellings drift.
-var scriptOnly = os.Getenv("KARMA_NO_NATIVE") != ""
+var scriptOnly = envSwitch("KARMA_NO_NATIVE")
+
+// envSwitch reads a boolean environment switch: unset, "0", "false" and "no"
+// are off and any other value is on, so `KARMA_NO_NATIVE=0` leaves the
+// in-process tiers in place — the value a script that wants them writes.
+func envSwitch(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "", "0", "false", "no":
+		return false
+	}
+	return true
+}
 
 // Run sends the invocation to run locally. A Dual tier runs its in-process
 // body first; everything else becomes a subprocess.
@@ -121,9 +132,9 @@ func runLocal(ctx context.Context, argv []string, cap model.RowCap) model.RunRes
 	}
 	process := prepareStop(cmd)
 	if err := cmd.Start(); err != nil {
-		// The capability probe passed and the exec still failed (the binary was
-		// deleted in between): unavailable is the 127 a missing binary gives, so
-		// the chain falls to the next tier.
+		// The tool is not on this host (or was deleted between the lookups):
+		// unavailable is the 127 a missing binary gives, so the chain falls to
+		// the next tier and the panel names it in the skipped chain.
 		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: err.Error(), ExitCode: 127}
 	}
 	return harvest(ctx, &localCall{

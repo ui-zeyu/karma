@@ -148,9 +148,9 @@ make parity HOST=user@host   # the in-process tiers against the script tiers, on
 ```
 
 `make parity` collects one host twice — once through the local tiers that read the kernel in process,
-once through the script side every remote channel runs (`KARMA_NO_NATIVE=1` makes the local channel
-skip the in-process bodies) — and diffs the two saved bundles check by check. A difference is the two
-spellings having drifted.
+once through the script side every remote channel runs (`KARMA_NO_NATIVE` set to anything but `0`,
+`false` or `no` makes the local channel skip the in-process bodies) — and diffs the two saved bundles
+check by check. A difference is the two spellings having drifted.
 
 The code lives in `cmd/karma` and `internal/`: `model` is the domain, `define` builds the catalogs,
 `session` runs the channels, `runner` walks the probes, `reader` reads the collected text into a

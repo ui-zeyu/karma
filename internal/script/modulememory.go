@@ -77,12 +77,17 @@ const (
 	allocShared = "shared"
 )
 
-// ModuleMemoryScript is the ssh and ttyd channels' tier: the regions, the module
-// list and the symbols inside the regions in one block, joined by one awk pass.
-// Both the allocation list and the module list have to be readable — without
-// the first there is nothing to check, without the second no region can be
-// explained — and a target that cannot give them exits 1, which the chain reads
-// as an unavailable tier.
+// ModuleMemoryScript is the ssh and ttyd channels' half of the diff: the marked
+// stream the check's Assemble turns into rows. Both the allocation list and the
+// module list have to be readable — without the first there is nothing to check,
+// without the second no region can be explained — and a target that cannot give
+// them exits 1, which the chain reads as an unavailable tier.
+//
+// The two folds run on the target because the data is there: the region pass
+// reduces /proc/vmallocinfo to the allocations the kernel's own allocators made,
+// and the symbol pass walks the megabytes of /proc/kallsyms to count the tags
+// inside those regions. The join above them — which region is explained, which
+// row it prints, in what order — runs once, in Go, for both channels.
 func ModuleMemoryScript(views ModuleMemoryViews) string {
 	var b strings.Builder
 	b.WriteString("vmi=" + views.VMallocPath + "\n")
@@ -92,12 +97,12 @@ func ModuleMemoryScript(views ModuleMemoryViews) string {
 	b.WriteString("  " + moduleRegionAwk(views) + "\n")
 	b.WriteString("  awk '{print \"P \" $1}' \"$mods\" 2>/dev/null\n")
 	b.WriteString("  " + moduleSymbolAwk(views) + "\n")
-	b.WriteString("} | awk -v pseudo=\"" + strings.Join(views.PseudoTags, " ") + "\" '" + moduleMemoryAwk() + "'\n")
+	b.WriteString("}\n")
 	return b.String()
 }
 
-// moduleAllocatorClass maps a caller function name to its class, as the awk
-// program's table: "move_module:module,module_alloc:module,execmem_alloc:shared".
+// moduleAllocatorClass maps a caller function name to its class, as the region
+// pass's table: "move_module:module,module_alloc:module,execmem_alloc:shared".
 func moduleAllocatorClass(views ModuleMemoryViews) string {
 	pairs := make([]string, 0, len(views.ModuleAllocators)+len(views.SharedAllocators))
 	for _, name := range views.ModuleAllocators {
@@ -124,13 +129,16 @@ func moduleRegionAwk(views ModuleMemoryViews) string {
   }' %s`, moduleAllocatorClass(views), views.VMallocPath)
 }
 
-// moduleSymbolAwk emits the Y lines: every symbol that falls inside one of those
-// regions, tagged with the module kallsyms names it as. The ranges are compared
-// as fixed-width lowercase hex strings — awk has no hex conversion — which
-// order the same way the numbers do. The region index is the same one the R
-// pass assigned, both passes reading /proc/vmallocinfo in file order. An
-// untagged symbol is emitted as "-": it is a published kernel address, which is
-// what explains a region whose symbols name no module.
+// moduleSymbolAwk emits the Y lines: one per tag the symbols inside a region
+// carry, with how many of them do, in the order the tags were first seen. The
+// counting is the reason this pass exists — /proc/kallsyms is megabytes and its
+// quiet lines carry no evidence — and the join above needs the count, so the
+// fold and the row are the same record. The ranges are compared as fixed-width
+// lowercase hex strings (awk has no hex conversion), which order the same way
+// the numbers do; the region index is the same one the R pass assigned, both
+// passes reading /proc/vmallocinfo in file order. An untagged symbol is emitted
+// as "-": it is a published kernel address, which is what explains a region
+// whose symbols name no module.
 func moduleSymbolAwk(views ModuleMemoryViews) string {
 	allocators := slices.Concat(views.ModuleAllocators, views.SharedAllocators)
 	return fmt.Sprintf(`awk '
@@ -149,65 +157,37 @@ func moduleSymbolAwk(views ModuleMemoryViews) string {
       if (a >= lo[i] && a < hi[i]) {
         tag = "-"
         if ($NF ~ /^\[/) { tag = $NF; gsub(/[][]/, "", tag) }
-        print "Y " i " " tag
+        if (!((i, tag) in seen)) { seen[i, tag] = 1; order[i] = order[i] " " tag }
+        count[i, tag]++
         break
       }
+    }
+  }
+  END {
+    for (i = 1; i <= nr; i++) {
+      n = split(order[i], tags, " ")
+      for (j = 1; j <= n; j++) print "Y " i " " tags[j] " " count[i, tags[j]]
     }
   }' %s %s 2>/dev/null`, strings.Join(allocators, "|"), views.VMallocPath, views.SymbolsPath)
 }
 
-// moduleMemoryAwk is the join, the mirror of ModuleMemoryBody: a region is
-// explained when every symbol in it is either a pseudo-module tag, an untagged
-// kernel symbol, or a module the list carries; the rest is reported. A region
-// with no symbols at all is unexplained too — that is the shape a payload
-// copied into module memory leaves (kopycat) — and it is printed only when the
-// allocator is the module loader's own, because on a kernel whose modules share
-// execmem_alloc with BPF and kprobes an anonymous region is the kernel's
-// business (28 of them on a stock 7.0 desktop). The accounting line closes the
-// report, so the analyst can see how much executable memory was not named.
-func moduleMemoryAwk() string {
-	return `BEGIN {
-  np = split(pseudo, names, " ")
-  for (k = 1; k <= np; k++) ptags[names[k]] = 1
-  nr = 0; modules = 0; explained = 0; unexplained = 0
-}
-$1 == "R" { i = $2; raw_lo[i] = $3; raw_hi[i] = $4; size[i] = $5; class[i] = $6; nr = (i > nr ? i : nr); next }
-$1 == "P" { listed[$2] = 1; modules++; next }
-$1 == "Y" { i = $2; t = $3; count[i, t]++; if (!((i, t) in seen)) { seen[i, t] = 1; order[i] = order[i] " " t }; next }
-END {
-  for (i = 1; i <= nr; i++) {
-    ok = (order[i] != "")
-    if (ok) {
-      n = split(order[i], tags, " ")
-      for (k = 1; k <= n; k++) {
-        t = tags[k]
-        if (t != "-" && !(t in ptags) && !(t in listed)) ok = 0
-      }
-    }
-    if (ok) { explained++; continue }
-    unexplained++
-    labels = ""
-    if (order[i] != "") {
-      n = split(order[i], tags, " ")
-      for (k = 1; k <= n; k++) labels = labels " " tags[k] " " count[i, tags[k]]
-    }
-    if (class[i] == "` + allocModule + `" || labels != "") {
-      print "UNOWNED " raw_lo[i] "-" raw_hi[i] " size " size[i] " caller " class[i] labels
-    }
-  }
-  print "VMAP regions " nr " modules " modules " explained " explained " unexplained " unexplained
-}`
-}
-
-// ModuleMemoryRows is the local channel's join over the same marked stream
-// ModuleMemoryScript produces, rendering the rows that script's awk mirror
-// renders, in the same order: one row per region nothing explains, then the
-// accounting line. The views are the same value the pipeline is built from: the
-// pseudo-module tags are the one piece of that configuration the join itself
-// needs, because it is what tells an explained region from a hidden one.
+// ModuleMemoryRows is the join over the marked stream both emitters produce
+// (ModuleMemoryScript on the target, native.moduleMemoryText in process): one
+// row per region nothing explains, then the accounting line. The views are the
+// same value the emitters are built from: the pseudo-module tags are the one
+// piece of that configuration the join itself needs, because they are what tells
+// an explained region from a hidden one.
 //
-// The regions the rows name come back with them, so a caller can go on to read
-// the memory they point at.
+// A row's label list carries every tag the region holds — the untagged kernel
+// symbol as "-" among them, with its count, which is the fold's record rather
+// than arithmetic here — so a region holding both a published kernel address and
+// a hidden module's symbol prints one row naming both.
+//
+// An I record is a row the local channel's core dig produced for the memory a
+// region names, which a remote shell cannot read: it belongs with that memory,
+// so those rows come after the unexplained regions and before the accounting
+// line that closes the report. The regions the rows name come back with them, so
+// the caller can go on to read the memory they point at.
 func ModuleMemoryRows(views ModuleMemoryViews, marked string) ([]string, []UnownedRegion) {
 	type region struct {
 		rawStart string
@@ -215,13 +195,15 @@ func ModuleMemoryRows(views ModuleMemoryViews, marked string) ([]string, []Unown
 		size     int
 		class    string
 	}
-	var order []int
-	regions := map[int]*region{}
-	listed := map[string]bool{}
-	pseudo := map[string]bool{}
-	counts := map[int]map[string]int{}
-	symbolOrder := map[int][]string{}
-	untagged := map[int]bool{}
+	var (
+		order    []int
+		regions  = map[int]*region{}
+		listed   = map[string]bool{}
+		pseudo   = map[string]bool{}
+		counts   = map[int]map[string]int{}
+		tagOrder = map[int][]string{}
+		images   []string
+	)
 	modules := 0
 
 	for line := range textutil.Lines(marked) {
@@ -248,22 +230,27 @@ func ModuleMemoryRows(views ModuleMemoryViews, marked string) ([]string, []Unown
 			listed[rest] = true
 			modules++
 		case "Y":
-			index, tag, _ := strings.Cut(rest, " ")
+			index, tail, _ := strings.Cut(rest, " ")
 			id, err := strconv.Atoi(index)
 			if err != nil {
 				continue
 			}
-			if tag == "-" {
-				untagged[id] = true
+			tag, folded, _ := strings.Cut(tail, " ")
+			count, err := strconv.Atoi(folded)
+			if err != nil {
 				continue
 			}
+			// An untagged symbol is a tag of its own ("-"): it explains the
+			// region, and it carries its count into the row like any other.
 			if counts[id] == nil {
 				counts[id] = map[string]int{}
 			}
 			if counts[id][tag] == 0 {
-				symbolOrder[id] = append(symbolOrder[id], tag)
+				tagOrder[id] = append(tagOrder[id], tag)
 			}
-			counts[id][tag]++
+			counts[id][tag] += count
+		case "I":
+			images = append(images, rest)
 		}
 	}
 	// The pseudo-module tags are the one piece of the views the join needs:
@@ -279,10 +266,12 @@ func ModuleMemoryRows(views ModuleMemoryViews, marked string) ([]string, []Unown
 		unowned []UnownedRegion
 	)
 	for _, id := range order {
-		tags := symbolOrder[id]
-		ok := len(tags) > 0 || untagged[id]
+		tags := tagOrder[id]
+		// A region with no symbol at all is unexplained; a symbol of the kernel
+		// itself ("-") explains it, and it joins the label list below.
+		ok := len(tags) > 0
 		for _, tag := range tags {
-			if !pseudo[tag] && !listed[tag] {
+			if tag != "-" && !pseudo[tag] && !listed[tag] {
 				ok = false
 			}
 		}
@@ -308,13 +297,15 @@ func ModuleMemoryRows(views ModuleMemoryViews, marked string) ([]string, []Unown
 			})
 		}
 	}
+	rows = append(rows, images...)
 	rows = append(rows, fmt.Sprintf("VMAP regions %d modules %d explained %d unexplained %d",
 		len(order), modules, explained, unexplained))
 	return rows, unowned
 }
 
-// ModuleMemoryBody is the rendering of those rows: the local channel's whole
-// body, byte for byte what ModuleMemoryScript's awk prints.
+// ModuleMemoryBody is the join as one body: the check's Assemble for this tier,
+// rendering the stream the target's shell block and the in-process emitter both
+// produce.
 func ModuleMemoryBody(views ModuleMemoryViews, marked string) string {
 	rows, _ := ModuleMemoryRows(views, marked)
 	return strings.Join(rows, "\n") + "\n"

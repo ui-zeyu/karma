@@ -233,6 +233,7 @@ func parsePin(pin string) ([sha256.Size]byte, error) {
 	return fingerprint, nil
 }
 
+// insecureTLS accepts any server certificate: the ws:// form already carries
 // everything in the clear, this only says so for wss.
 func insecureTLS() *tls.Config {
 	return &tls.Config{InsecureSkipVerify: true}

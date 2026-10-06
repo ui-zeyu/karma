@@ -5,10 +5,12 @@ package native
 
 import (
 	"context"
-	"karma/internal/localfs"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"karma/internal/localfs"
+	"karma/internal/section"
 )
 
 // Cron mirrors the check's cronScript: the crontab files and spool layers it
@@ -16,7 +18,7 @@ import (
 func Cron(paths []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		body := localfs.ReadSections(paths, nil)
-		return body + "== crontab -l\n" + runHost(ctx, []string{"crontab", "-l"}, false).out, nil
+		return body + section.Line("crontab -l") + runHost(ctx, []string{"crontab", "-l"}, false).out, nil
 	}
 }
 

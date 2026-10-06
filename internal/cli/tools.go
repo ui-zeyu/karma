@@ -22,6 +22,7 @@ import (
 	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/render"
+	"karma/internal/section"
 )
 
 func newCatCmd() *cobra.Command {
@@ -74,7 +75,7 @@ func newLsCmd() *cobra.Command {
 				st := stylesFor(w)
 				for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
 					// section headers read like the panels' source titles
-					if strings.HasPrefix(line, "== ") {
+					if _, ok := section.Title(line); ok {
 						line = st.bold(line)
 					} else {
 						line = render.SyntaxLine(model.SyntaxLsL, line)
@@ -134,6 +135,11 @@ func readError(op, path string, err error) error {
 		return fmt.Errorf("%s %s: no such file or directory", op, path)
 	case errors.Is(err, fs.ErrPermission):
 		return fmt.Errorf("%s %s: permission denied", op, path)
+	case errors.Is(err, localfs.ErrNotRegular):
+		// The kind a path holds rather than the read's errno: a reader that
+		// refuses a FIFO or a device (localfs.Cat) is named the way the
+		// directory operand above is.
+		return fmt.Errorf("%s %s: not a regular file", op, path)
 	default:
 		return fmt.Errorf("%s %s: %w", op, path, err)
 	}

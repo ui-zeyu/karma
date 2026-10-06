@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -92,12 +93,71 @@ func fixtureViews(sysfs, modules, symbols string) script.ModuleDiffViews {
 	return views
 }
 
+// hiddenModuleBody runs the tier and then the check's Assemble over its stream,
+// the way the runner does: this tier emits the marked stream, script renders it.
+func hiddenModuleBody(t *testing.T, views script.ModuleDiffViews) (string, error) {
+	t.Helper()
+	stream, err := ModulesHidden(views)(context.Background())
+	if err != nil {
+		return "", err
+	}
+	return script.HiddenModuleBody(stream), nil
+}
+
+// moduleMemoryBody is the same two steps for the module-memory tier, whose
+// Assemble is bound to the views the tier was built from.
+func moduleMemoryBody(t *testing.T, views script.ModuleMemoryViews) string {
+	t.Helper()
+	stream, err := ModuleMemory(views, kitNames)(context.Background())
+	if err != nil {
+		t.Fatalf("the local tier failed: %v", err)
+	}
+	return script.ModuleMemoryBody(views, stream)
+}
+
+// runShellBlock runs one collection block the way a remote channel does, through
+// the target's own /bin/sh.
+func runShellBlock(t *testing.T, block string) string {
+	t.Helper()
+	for _, tool := range []string{"sh", "awk"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("no %s on this host", tool)
+		}
+	}
+	out, err := exec.Command("/bin/sh", "-c", block).Output()
+	if err != nil {
+		t.Fatalf("the shell block failed: %v (output %q)", err, out)
+	}
+	return string(out)
+}
+
+// The two emitters of the marked stream have to agree, byte for byte: the target
+// runs the shell block, the local channel builds the stream in process, and the
+// one join renders whichever the channel ran — so a count, an attribute that
+// reads back, an availability flag or the record order drifting between them
+// would show up as two different reports of one host. This is the drift the
+// single join does not remove, and the reason the streams are compared here
+// rather than only the rows they render.
+func TestHiddenModuleEmittersAgree(t *testing.T) {
+	sysfs, modules, symbols := hiddenModuleFixture(t)
+	views := fixtureViews(sysfs, modules, symbols)
+	list, err := os.ReadFile(modules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := hiddenModuleViewsText(views, string(list))
+	remote := runShellBlock(t, script.HiddenModuleScript(views))
+	if local != remote {
+		t.Errorf("the in-process emitter produced\n%q\nthe target's shell block produced\n%q", local, remote)
+	}
+}
+
 // The local channel's body is one tier: the three views are read in one call and
 // the disagreements come out in one panel, with the attribute that reads back
 // empty left off the line.
 func TestModulesHiddenBodyReportsTheDisagreements(t *testing.T) {
 	sysfs, modules, symbols := hiddenModuleFixture(t)
-	got, err := ModulesHidden(fixtureViews(sysfs, modules, symbols))(context.Background())
+	got, err := hiddenModuleBody(t, fixtureViews(sysfs, modules, symbols))
 	if err != nil {
 		t.Fatalf("the body failed: %v", err)
 	}
@@ -114,7 +174,7 @@ func TestModulesHiddenBodyReportsTheDisagreements(t *testing.T) {
 func TestModulesHiddenBodyMarksAnAbsentViewUnknown(t *testing.T) {
 	_, modules, symbols := hiddenModuleFixture(t)
 	views := fixtureViews(filepath.Join(t.TempDir(), "no-sys"), modules, symbols)
-	got, err := ModulesHidden(views)(context.Background())
+	got, err := hiddenModuleBody(t, views)
 	if err != nil {
 		t.Fatalf("the body failed: %v", err)
 	}
@@ -214,10 +274,7 @@ func moduleMemoryFixture(t *testing.T) (views script.ModuleMemoryViews, allocati
 // leaves. A caller that is not an allocator is not executable module memory.
 func TestModuleMemoryBodyReportsUnexplainedRegions(t *testing.T) {
 	views, _, _, _ := moduleMemoryFixture(t)
-	got, err := ModuleMemory(views, kitNames)(context.Background())
-	if err != nil {
-		t.Fatalf("the body failed: %v", err)
-	}
+	got := moduleMemoryBody(t, views)
 	want := "UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module\n" +
 		"UNOWNED 0xffff800001900000-0xffff800001902000 size 28672 caller module diamorphine 2\n" +
 		"VMAP regions 3 modules 1 explained 1 unexplained 2\n"
@@ -226,10 +283,11 @@ func TestModuleMemoryBodyReportsUnexplainedRegions(t *testing.T) {
 	}
 }
 
-// The marked stream is what the shell block emits too: one R line per
-// allocation in file order (an unrelated caller is not a region at all), the
-// module-list names, then a Y line per symbol inside an allocation, indexed by
-// the allocation pass's own index and tagged the way kallsyms tags it.
+// The marked stream is what the shell block emits too: one R line per allocation
+// in file order (an unrelated caller is not a region at all), the module-list
+// names, then one Y line per tag the symbols inside an allocation carry, counted
+// and indexed by the allocation pass's own index — the fold the join reads, so
+// the two emitters have to agree on the count as well as on the index.
 func TestModuleMemoryTextCarriesTheRegionIndex(t *testing.T) {
 	views, _, _, _ := moduleMemoryFixture(t)
 	allocations, _ := os.ReadFile(views.VMallocPath)
@@ -240,9 +298,8 @@ func TestModuleMemoryTextCarriesTheRegionIndex(t *testing.T) {
 		"R 2 0xffff8000017c5000 0xffff8000017cb000 24576 module\n" +
 		"R 3 0xffff800001900000 0xffff800001902000 28672 module\n" +
 		"P nf_tables\n" +
-		"Y 1 nf_tables\n" +
-		"Y 3 diamorphine\n" +
-		"Y 3 diamorphine\n"
+		"Y 1 nf_tables 1\n" +
+		"Y 3 diamorphine 2\n"
 	if got != want {
 		t.Errorf("the stream is\n%q\nwant\n%q", got, want)
 	}

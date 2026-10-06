@@ -21,7 +21,9 @@ import (
 // openScanLines is the row cap an open scan carries: a listing, a walk or a
 // signature grep that has produced this many rows has produced volume rather
 // than evidence, so the source is stopped and the panel marks the body
-// truncated. A tier that stops at the shape it wants uses Probe.Head instead.
+// truncated. A tier that wants a fixed number of rows instead declares
+// model.Shape (a listing head, a sorted view's top N), which reports the rows
+// it asked for rather than a cut.
 const openScanLines = 200
 
 // filesTier is the read-a-file-list tier: one `== path` section per file,

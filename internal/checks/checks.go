@@ -22,8 +22,8 @@ type platformCatalog struct {
 // catalogs is the single registry of platform catalogs: ChecksFor resolves a
 // platform through it and AllChecks concatenates it in declaration order, so a
 // platform is registered once. The catalog's own invariants (unique check ids,
-// unique probe labels within a chain, Head and LineLimit mutually exclusive,
-// unique rule and filter ids within a check) are locked by the tests; nothing
+// unique probe labels within a chain, unique rule and filter ids within a
+// check, a tier that exists on every channel) are locked by the tests; nothing
 // validates at run time.
 var catalogs = []platformCatalog{
 	{model.Linux, linux.All, linux.HuntCheck},

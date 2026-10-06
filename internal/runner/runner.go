@@ -16,9 +16,10 @@
 // Runner only depends on session.Session's Run method: it knows neither SSH nor
 // any concrete command. The step that wins is sent to the target as a whole,
 // with row limits declared by the probe itself (a shape cap is the row set the
-// tier asked for, a scan cap only bounds an open walk). Reading first aligns the
-// winning tier's dialect (adapt) and then normalizes the body for the check
-// (normalize); both run per section and carry the section title.
+// tier asked for, a scan cap only bounds an open walk). Reading first assembles
+// the winning tier's raw output into the body (assemble), then aligns its
+// dialect (adapt) and normalizes it for the check (normalize); the last two run
+// per section and carry the section title.
 package runner
 
 import (
@@ -74,7 +75,7 @@ type Summary struct {
 //
 // The run's shared reads live in a store on the context (runstate), so checks
 // that want the same expensive view of the host read it once between them.
-func RunCatalog(ctx context.Context, sess session.Session, facts model.HostFacts, checks []*model.Check,
+func RunCatalog(ctx context.Context, sess session.Session, checks []*model.Check,
 	options model.RunOptions, observer Observer) Summary {
 	ctx = runstate.WithStore(ctx)
 	var (
@@ -102,7 +103,7 @@ func RunCatalog(ctx context.Context, sess session.Session, facts model.HostFacts
 			}
 			guardedObserver(observer, check, func() { observer.CheckStarted(check) })
 			result, damage := fault.Result("check "+check.ID, func() *model.CheckResult {
-				return runCheck(ctx, sess, facts, check, options)
+				return runCheck(ctx, sess, check, options)
 			})
 			if damage != nil {
 				// One broken check fails alone: the panel names the boundary,
@@ -167,9 +168,9 @@ type answeredTier struct {
 // failed step leaves the walk going. A step of several probes answers as a whole
 // (model.Step). If the last step has both streams empty the check stays silent;
 // error text alone goes into the panel. A walk whose steps were all unavailable
-// (binary absent from the capability probe, or 127 at run time) is Skipped: the
-// target's environment lacks the command, which is not a finding.
-func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, check *model.Check, options model.RunOptions) *model.CheckResult {
+// (a 127, or a body that cannot run here) is Skipped: the target's environment
+// lacks the command, which is not a finding.
+func runCheck(ctx context.Context, sess session.Session, check *model.Check, options model.RunOptions) *model.CheckResult {
 	budget := cmp.Or(check.Timeout, options.Timeout)
 	ctx, cancel := session.Within(ctx, budget)
 	defer cancel()
@@ -183,7 +184,7 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 		if ctx.Err() != nil {
 			break
 		}
-		members, missing := stepMembers(ctx, sess, facts, step)
+		members, missing := stepMembers(ctx, sess, step)
 		skipped = append(skipped, missing...)
 		if len(members) == 0 {
 			// Nothing in this step could run: the tier exists on the other
@@ -219,10 +220,12 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 }
 
 // stepMembers runs every probe of one step that this channel can run. A tier
-// whose Dual has no branch here is not part of this channel's walk, and a
-// missing binary belongs to the target's environment; the labels of the probes
-// that did not run come back for the panel's chain.
-func stepMembers(ctx context.Context, sess session.Session, facts model.HostFacts, step model.Step) ([]answeredTier, []string) {
+// whose Dual has no branch here is not part of this channel's walk, so it is
+// skipped silently and never named in the panel's chain; whether the target has
+// the tier's tool is the tier's own answer when it runs (a guard in the script,
+// ErrTierUnavailable in the body, a 127 from a missing binary), which is what the
+// chain above reads.
+func stepMembers(ctx context.Context, sess session.Session, step model.Step) ([]answeredTier, []string) {
 	var (
 		members []answeredTier
 		missing []string
@@ -230,10 +233,6 @@ func stepMembers(ctx context.Context, sess session.Session, facts model.HostFact
 	for _, probe := range step {
 		inv := probe.InvocationFor(sess.Channel())
 		if inv == nil {
-			continue
-		}
-		if name := probe.RequiredBin(); name != "" && !facts.Has(name) {
-			missing = append(missing, probe.Label)
 			continue
 		}
 		members = append(members, answeredTier{
@@ -325,7 +324,7 @@ func finishStep(check *model.Check, step model.Step, joined model.RunResult, lab
 	case model.VerdictFailed:
 		note = failureNote(joined)
 	}
-	reading := reader.Analyze(joined.Stdout, check.Rules, check.Filters,
+	reading := reader.Analyze(assembleBody(step, joined.Stdout), check.Rules, check.Filters,
 		check.ScanBytes, options.MinSeverity, transforms(stepAdapt(step), check)...)
 	reading.Truncated = reading.Truncated || joined.Truncated
 	// Stderr from a zero exit is incidental noise; only a non-zero exit keeps
@@ -380,6 +379,22 @@ func stepAdapt(step model.Step) model.Normalizer {
 		return step[0].Adapt
 	}
 	return nil
+}
+
+// assembleBody runs the winning tier's own join over its raw output, before the
+// reading layer caps or splits anything: the join is the tier's own reduction
+// (a marked record stream becomes the body), so capping its input would cut the
+// very records it groups. A step of several probes has no single tier to ask
+// (stepAssemble is nil) and a tier without one keeps its output as it stands.
+//
+// A panic here is karma's own defect rather than odd target output — the stream
+// is this catalog's own emitter's shape — so it travels to the check's boundary
+// (RunCatalog), which fails that one check with a note naming it.
+func assembleBody(step model.Step, stream string) string {
+	if len(step) != 1 || step[0].Assemble == nil {
+		return stream
+	}
+	return step[0].Assemble(stream)
 }
 
 // transforms is the winning tier's dialect alignment followed by the check's

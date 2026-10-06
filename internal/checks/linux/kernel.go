@@ -98,15 +98,22 @@ var hiddenModuleAttrs = []native.ModuleAttr{
 var hiddenModuleViews = native.ModuleDiffViews(hiddenModuleAttrs)
 
 // hiddenModuleScript is the whole diff as one tier, the way native.ModulesHidden
-// is one body: the three views travel in one script — a tier that stopped after
-// the first would answer for the whole tier (an exit 0 with no rows is still an
-// answer) and the chain would never reach the others.
+// is one emitter: the three views travel in one script — a tier that stopped
+// after the first would answer for the whole tier (an exit 0 with no rows is
+// still an answer) and the chain would never reach the others.
 var hiddenModuleScript = script.HiddenModuleScript(hiddenModuleViews)
 
 // moduleMemoryViews is the module-memory diff's surfaces and allocator lists:
-// one value for both channels, so the pipeline and the in-process body cannot
-// read different paths or classify an allocator differently.
+// one value for both channels, so the shell block and the in-process emitter
+// cannot read different paths or classify an allocator differently.
 var moduleMemoryViews = native.ModuleMemoryViews()
+
+// moduleMemoryBody is the module-memory tier's join, the tier's Assemble: both
+// channels emit the same marked stream, and this one function renders it, bound
+// to the same views the emitters are built from.
+var moduleMemoryBody = func(text string) string {
+	return script.ModuleMemoryBody(moduleMemoryViews, text)
+}
 
 // moduleImagesRe is the catalog's rootkit name list as a memory signature: the
 // module-memory check reads the bytes of the memory nothing explains and this is
@@ -187,7 +194,8 @@ var KernelChecks = []*model.Check{
 	// one tier: probes in a chain would let the first one's empty exit-0 diff
 	// answer for the whole check.
 	define.LinuxCheck("modules-hidden", "Hidden module cross-check (sysfs, kallsyms vs /proc/modules)", model.AspectKernel,
-		[]model.Step{{{Label: "diff", Inv: model.Dual{Run: native.ModulesHidden(hiddenModuleViews), Script: hiddenModuleScript}}}},
+		[]model.Step{{{Label: "diff", Inv: model.Dual{Run: native.ModulesHidden(hiddenModuleViews), Script: hiddenModuleScript},
+			Assemble: script.HiddenModuleBody}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				// The span carries the name: the reason is about that module, and the
@@ -224,7 +232,7 @@ var KernelChecks = []*model.Check{
 		[]model.Step{{{Label: "vmap", Inv: model.Dual{
 			Run:    native.ModuleMemory(moduleMemoryViews, moduleImagesRe),
 			Script: script.ModuleMemoryScript(moduleMemoryViews),
-		}}}},
+		}, Assemble: moduleMemoryBody}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				// The row carries the range, the caller and the symbols inside, so

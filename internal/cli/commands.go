@@ -7,6 +7,7 @@ package cli
 
 import (
 	"context"
+	"io"
 	"os"
 	"strings"
 
@@ -104,7 +105,7 @@ func runTargetCommand(cmd *cobra.Command, args []string, form string,
 	if err != nil {
 		return err
 	}
-	return Execute(cmd.Context(), os.Stdout, transport, options, nil)
+	return Execute(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), transport, options, nil)
 }
 
 // modeArgs splits a channel command's mode word out of its positional
@@ -144,18 +145,18 @@ func runMtimeMode(cmd *cobra.Command, transport session.Transport, dirs []string
 	if err != nil {
 		return err
 	}
-	return runMtime(cmd.Context(), transport, dirs, options)
+	return runMtime(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), transport, dirs, options)
 }
 
 // runMtime is the mtime mode's body: one dynamic check appended after the
 // directories. Which platforms have a tree to walk is the catalog registry's
 // answer, so the command line carries no platform of its own.
-func runMtime(ctx context.Context, transport session.Transport, dirs []string, options model.RunOptions) error {
+func runMtime(ctx context.Context, w, warn io.Writer, transport session.Transport, dirs []string, options model.RunOptions) error {
 	check, err := checks.HuntCheckFor(transport.Platform(), dirs)
 	if err != nil {
 		return err
 	}
-	return Execute(ctx, os.Stdout, transport, options, []*model.Check{check})
+	return Execute(ctx, w, warn, transport, options, []*model.Check{check})
 }
 
 func newLocalCmd() *cobra.Command {
@@ -175,7 +176,7 @@ func newLocalCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return Execute(cmd.Context(), os.Stdout, session.LocalTransport{}, options, nil)
+			return Execute(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), session.LocalTransport{}, options, nil)
 		},
 	}
 	addRunFlags(cmd)

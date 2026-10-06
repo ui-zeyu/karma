@@ -323,9 +323,6 @@ func TestRegistryChecksCarryRegFallback(t *testing.T) {
 		if !ok || argv.Argv[0] != "powershell" {
 			continue
 		}
-		if first.RequiredBin() != "powershell" {
-			t.Fatalf("%s first probe should be powershell: %v", check.ID, first.RequiredBin())
-		}
 		if !slices.Equal(argv.Argv[:4], []string{"powershell", "-NoProfile", "-NonInteractive", "-Command"}) {
 			t.Fatalf("%s first probe argv wrong: %v", check.ID, argv.Argv[:4])
 		}
@@ -339,7 +336,7 @@ func TestRegistryChecksCarryRegFallback(t *testing.T) {
 			}
 			for _, probe := range check.Steps[1] {
 				rest, ok := probe.Inv.(model.Command)
-				if !ok || probe.RequiredBin() != "reg" || rest.Argv[0] != "reg" || rest.Argv[1] != "query" {
+				if !ok || rest.Argv[0] != "reg" || rest.Argv[1] != "query" {
 					t.Fatalf("%s fallback probe should be reg query: %+v", check.ID, probe.Inv)
 				}
 			}

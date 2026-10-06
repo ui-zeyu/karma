@@ -503,5 +503,3 @@ func ttydPayload(script, marker string) string {
 // carries no character a shell, printf or the marker match reads, and its 128
 // bits keep two runs' markers apart.
 func markerSalt() string { return rand.Text() }
-
-// insecureTLS accepts any server certificate: the ws:// form already carries

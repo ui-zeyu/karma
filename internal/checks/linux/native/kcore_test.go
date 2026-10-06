@@ -8,7 +8,6 @@
 package native
 
 import (
-	"context"
 	"debug/elf"
 	"encoding/binary"
 	"fmt"
@@ -241,10 +240,7 @@ func TestModuleMemoryPlacesTheImageRowBeforeTheAccountingLine(t *testing.T) {
 	copy(payload, "/home/lab/Diamorphine/diamorphine.c\x00diamorphine\x00__this_module\x00")
 	views.CorePath = writeCore(t, coreSegment{vaddr: 0xffff8000017c5000, payload: payload})
 
-	got, err := ModuleMemory(views, kitNames)(context.Background())
-	if err != nil {
-		t.Fatalf("the local body failed: %v", err)
-	}
+	got := moduleMemoryBody(t, views)
 	want := []string{
 		"UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module",
 		"UNOWNED 0xffff800001900000-0xffff800001902000 size 28672 caller module diamorphine 2",
@@ -269,10 +265,7 @@ func TestModuleMemoryPlacesTheImageRowBeforeTheAccountingLine(t *testing.T) {
 // the dig adds nothing, not a line about itself.
 func TestModuleMemoryWithoutAReadableCoreIsThePipelineRows(t *testing.T) {
 	views, _, _, _ := moduleMemoryFixture(t)
-	got, err := ModuleMemory(views, kitNames)(context.Background())
-	if err != nil {
-		t.Fatalf("the local body failed: %v", err)
-	}
+	got := moduleMemoryBody(t, views)
 	want := "UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module\n" +
 		"UNOWNED 0xffff800001900000-0xffff800001902000 size 28672 caller module diamorphine 2\n" +
 		"VMAP regions 3 modules 1 explained 1 unexplained 2\n"

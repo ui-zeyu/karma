@@ -7,12 +7,18 @@
 // three verdicts, so the panel says which registry is missing the module rather
 // than only that something is.
 //
-// Two implementations render those rows and must agree word for word: this
-// file's Go side (HiddenModuleBody, the local channel) and the shell pipeline
-// the ssh and ttyd channels run (HiddenModuleScript). Both read the same marked
-// stream — A an availability flag, S a sysfs module with its attributes, P a
-// /proc/modules name, K a kallsyms tag with its symbol count — and
-// hiddenmodule_test.go runs them over one fixture and compares.
+// Both emitters produce one marked record stream — A an availability flag, S a
+// sysfs module with its attributes, P a /proc/modules name, K a kallsyms tag
+// with its symbol count — and one Go join renders it: HiddenModuleBody, which
+// the check hangs on the tier as its Assemble.
+//
+// Two emitters, one join: this file's shell block (the ssh and ttyd channels)
+// and native.hiddenModuleViewsText (the local channel) produce the stream, and
+// the shape is rendered in one place, so the join cannot drift between the two
+// languages the way it could when the target ran its own awk mirror. The stream
+// is a few lines per module. hiddenmodule_test.go pins the join over built
+// streams; the linux catalog's test runs both emitters over one fixture tree
+// and compares the streams, which is the half that can still drift.
 
 package script
 
@@ -52,12 +58,20 @@ const (
 	viewKallsyms = "kallsyms"
 )
 
-// HiddenModuleScript is the ssh and ttyd channels' diff tier: three collectors
-// in one block, joined by one awk pass, ordered by module name. The module list
-// has to be readable — it is the baseline every verdict is relative to — and a
-// target that cannot give it exits 1, which the chain reads as an unavailable
-// tier. The other two views report themselves unavailable instead (sysfs=?), so
-// a half that is missing on the target does not turn into a verdict.
+// HiddenModuleScript is the ssh and ttyd channels' half of the diff: the marked
+// stream the check's Assemble turns into rows. The three views travel in one
+// script — a tier that stopped after the first would answer for the whole tier
+// (an exit 0 with no rows is still an answer) and the chain would never reach
+// the others. The module list has to be readable — it is the baseline every
+// verdict is relative to — and a target that cannot give it exits 1, which the
+// chain reads as an unavailable tier. The other two views report themselves
+// unavailable instead (sysfs=?), so a half that is missing on the target does
+// not turn into a verdict.
+//
+// The symbol count is folded on the target (moduleTagAwk): the table it counts
+// in is megabytes and its quiet lines carry no evidence, so the fold belongs
+// where the data is. Everything above the fold — the verdicts, the order, the
+// rows — is the join's, and the join runs once, in Go.
 func HiddenModuleScript(views ModuleDiffViews) string {
 	var b strings.Builder
 	b.WriteString("mods=" + views.ModulesPath + "\n")
@@ -71,20 +85,23 @@ func HiddenModuleScript(views ModuleDiffViews) string {
 	b.WriteString("    line=\"S $n\"\n")
 	b.WriteString("    for pair in " + strings.Join(views.Attrs, " ") + "; do\n")
 	b.WriteString("      v=\n")
-	b.WriteString("      [ -r \"$d/${pair#*:}\" ] && read -r v < \"$d/${pair#*:}\"\n")
+	b.WriteString("      [ -f \"$d/${pair#*:}\" ] && read -r v < \"$d/${pair#*:}\"\n")
 	b.WriteString("      [ -n \"$v\" ] && line=\"$line ${pair%%:*} $v\"\n")
 	b.WriteString("    done\n")
 	b.WriteString("    echo \"$line\"\n")
 	b.WriteString("  done\n")
 	b.WriteString("  awk '{print \"P \" $1}' \"$mods\" 2>/dev/null\n")
 	b.WriteString("  " + moduleTagAwk(views.SymbolsPath, views.PseudoTags) + "\n")
-	b.WriteString("} | awk '" + hiddenModuleAwk() + "' | LC_ALL=C sort -k2,2\n")
+	b.WriteString("}\n")
 	return b.String()
 }
 
 // moduleTagAwk emits the K lines: one per module tag in the symbol table, with
 // how many symbols carry it. The pseudo-module tags are dropped here, the way
-// the in-process emitter drops them, so both counts mean the same thing.
+// the in-process emitter drops them, so both counts mean the same thing. The
+// lines are sorted by tag because awk's array iteration has no order: the stream
+// is evidence, and two channels' — or two runs' — streams are diffed against
+// each other (make parity), so a set must not travel in an arbitrary sequence.
 func moduleTagAwk(symbolsPath string, pseudo []string) string {
 	drops := make([]string, 0, len(pseudo))
 	for _, tag := range pseudo {
@@ -95,47 +112,18 @@ func moduleTagAwk(symbolsPath string, pseudo []string) string {
 		keep = strings.Join(drops, " && ")
 	}
 	return fmt.Sprintf(`awk '{n=$NF; if (n ~ /^\[/) {gsub(/[][]/,"",n); if (%s) cnt[n]++}} `+
-		`END {for (n in cnt) print "K " n " " cnt[n]}' %s 2>/dev/null`, keep, symbolsPath)
+		`END {for (n in cnt) print "K " n " " cnt[n]}' %s 2>/dev/null | LC_ALL=C sort`,
+		keep, symbolsPath)
 }
 
-// hiddenModuleAwk is the join, the mirror of HiddenModuleBody: every name any
-// view carries, printed once when the views disagree — HIDDEN when the module
-// list has forgotten it, GAP when the list has it and the sysfs registry does
-// not. A name only the symbol table is missing stays out: a kernel built
-// without CONFIG_KALLSYMS_ALL tags few of its modules, and that is not a
-// finding. The program text carries no shell quotes: HiddenModuleScript wraps
-// it.
-func hiddenModuleAwk() string {
-	return `{
-  if ($1 == "A") { avail[$2] = $3; next }
-  if ($1 == "S") { n = $2; s[n] = 1; attrs[n] = $0; sub(/^S [^ ]+ ?/, "", attrs[n]); next }
-  if ($1 == "P") { p[$2] = 1; next }
-  if ($1 == "K") { n = $2; k[n] = 1; cnt[n] = $3; next }
-}
-END {
-  for (n in s) names[n] = 1
-  for (n in p) names[n] = 1
-  for (n in k) names[n] = 1
-  for (n in names) {
-    sv = (n in s) ? "yes" : (avail["` + viewSysfs + `"] == "1" ? "no" : "?")
-    kv = (n in k) ? "yes" : (avail["` + viewKallsyms + `"] == "1" ? "no" : "?")
-    if (!(n in p)) {
-      line = "HIDDEN " n " ` + viewSysfs + `=" sv " proc=no ` + viewKallsyms + `=" kv
-      if ((n in s) && attrs[n] != "") line = line " " attrs[n]
-      if (n in k) line = line " symbols " cnt[n]
-      print line
-    } else if (!(n in s) && avail["` + viewSysfs + `"] == "1") {
-      line = "GAP " n " ` + viewSysfs + `=no proc=yes ` + viewKallsyms + `=" kv
-      if (n in k) line = line " symbols " cnt[n]
-      print line
-    }
-  }
-}`
-}
-
-// HiddenModuleBody is the local channel's join over the same marked stream
-// HiddenModuleScript produces. It renders the rows HiddenModuleBody's awk
-// mirror renders, in the same order.
+// HiddenModuleBody is the join: the marked stream HiddenModuleScript and
+// native.hiddenModuleViewsText emit, rendered as the rows the panel shows. Every
+// name any view carries is printed once when the views disagree — HIDDEN when
+// the module list has forgotten it, GAP when the list has it and the sysfs
+// registry does not. A name only the symbol table is missing stays out: a kernel
+// built without CONFIG_KALLSYMS_ALL tags few of its modules, and that is not a
+// finding. The rows are ordered by module name (byte order, which is what the
+// target's LC_ALL=C sort produced).
 func HiddenModuleBody(marked string) string {
 	attrs := map[string]string{}
 	sysfsPresent := map[string]bool{}

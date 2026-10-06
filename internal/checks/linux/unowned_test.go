@@ -22,15 +22,30 @@ import (
 	"karma/internal/testkit"
 )
 
-// fakeManager writes one package manager into a directory of its own and
-// returns a PATH with that directory in front.
-func fakeManager(t *testing.T, name, body string) string {
+// managerFixture writes one package manager into a directory of its own, links
+// the tools the pipeline needs beside it, and returns that directory as the
+// whole PATH. The closed PATH is what makes the branch a test names the branch
+// the pipeline takes: both tiers ask `command -v dpkg` first, so on a host that
+// has dpkg installed — Debian, Ubuntu — an open PATH answers through the host's
+// own dpkg and the rpm case never runs. The tools are linked because closing the
+// PATH hides them as well.
+func managerFixture(t *testing.T, name, body string) string {
 	t.Helper()
+	requireSh(t, "sh", "awk", "sed", "find", "readlink", "sort")
 	dir := t.TempDir()
+	for _, tool := range []string{"awk", "sed", "find", "readlink", "sort"} {
+		path, err := exec.LookPath(tool)
+		if err != nil {
+			t.Fatalf("no %s on this host", tool)
+		}
+		if err := os.Symlink(path, filepath.Join(dir, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return dir + ":" + os.Getenv("PATH")
+	return dir
 }
 
 // unownedFixture is one system directory: three files the fake package manager
@@ -77,9 +92,8 @@ done
 // directory and the fake answers as dpkg does, so a pattern that does not reach
 // the manager leaves every file looking unowned and the expectation fails.
 func TestUnownedScriptAndNativeAgreeOnDpkg(t *testing.T) {
-	requireSh(t, "sh", "awk", "sed", "find", "readlink", "sort")
 	root := unownedFixture(t)
-	path := fakeManager(t, "dpkg", fakeOwns(`*evil*|*/-t|*/.hidden`))
+	path := managerFixture(t, "dpkg", fakeOwns(`*evil*|*/-t|*/.hidden`))
 	t.Setenv("PATH", path)
 
 	want := strings.Join([]string{root + "/-t", root + "/.hidden", root + "/evil.so"}, "\n") + "\n"
@@ -94,9 +108,8 @@ func TestUnownedScriptAndNativeAgreeOnDpkg(t *testing.T) {
 // The rpm branch: the manager prints every file it ships, in one list, and the
 // same comparison runs over it.
 func TestUnownedScriptAndNativeAgreeOnRpm(t *testing.T) {
-	requireSh(t, "sh", "awk", "sed", "find", "readlink", "sort")
 	root := unownedFixture(t)
-	path := fakeManager(t, "rpm", `for f in `+strings.Join([]string{
+	path := managerFixture(t, "rpm", `for f in `+strings.Join([]string{
 		root + "/keep", root + "/link",
 	}, " ")+`; do
   echo "$f"
@@ -131,7 +144,7 @@ func TestUnownedScriptWithoutAPackageManagerExits127(t *testing.T) {
 // answer is the rows, and an empty body is a complete one.
 func TestUnownedBodyEmptyWhenEverythingIsOwned(t *testing.T) {
 	root := unownedFixture(t)
-	path := fakeManager(t, "dpkg", fakeOwns(""))
+	path := managerFixture(t, "dpkg", fakeOwns(""))
 	t.Setenv("PATH", path)
 	if got := unownedNative(t, root); got != "" {
 		t.Errorf("a directory the database covers rendered %q, want nothing", got)

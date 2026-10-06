@@ -16,6 +16,13 @@
 // built-in `karma local cat` / `local ls` readers are a thin shell over Cat and
 // Ls.
 //
+// No read in this package can block: every host file is opened non-blocking
+// (openRegular), so a planted FIFO reads as empty or is reported, never as a
+// hang. Nothing above can recover from the alternative — an in-process tier's
+// deadline abandons a body parked in a syscall rather than breaking it, so a
+// blocking open in this layer would silently cost the tier its evidence and leak
+// the goroutine for good.
+//
 // The platform-specific metadata read lives in build-tagged files; it has no
 // unavailable case to report, because a host without the syscall still has
 // os.FileInfo and the row shape is built from whatever it carries.

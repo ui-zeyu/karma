@@ -11,9 +11,17 @@ PORT ?=
 PARCH ?= amd64
 # The checks the parity diff compares by default: these agree byte for byte.
 # df, lsmod and mounts are deliberately left out — their two spellings differ in
-# padding and in the kernel's own order, which is the recorded state of the
-# remaining known differences, so a diff over them is noise; name them
-# explicitly (SELECTORS="df lsmod mounts") to eyeball those rows.
+# padding and in the kernel's own order — and so are pkg-verify, auth-binaries
+# and miner, whose forensics sections come from the target's file(1) and ls -l
+# on the remote channels and from localfs' own renderers locally. Three recorded
+# differences there, all measured on the lab (2026-10-06): the type column
+# (file(1)'s full line with setuid/build-id versus the words the rules grade),
+# ls -l's date column (a year past six months or an hour into the future, where
+# the local row prints the clock), and a path holding whitespace or a glob
+# character, which the remote `file $paths` splits or expands. The `== file`
+# rows' order is not among them: both sides keep the producer's order.
+# Name them explicitly (SELECTORS="df lsmod mounts pkg-verify") to eyeball those
+# rows, and compare the diff against this list before calling it a regression.
 SELECTORS ?= fstab accounts groups shadow
 
 .PHONY: all fmt vet test race staticcheck build linux-arm64 dist parity clean

@@ -8,9 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
-	"slices"
 	"time"
 
 	"golang.org/x/term"
@@ -55,25 +53,30 @@ func terminalWidth(w io.Writer) int {
 // partial report is still presented. The returned error is printed by the
 // command-line layer.
 //
+// w carries the report and warn the run's own warnings — a capability probe cut
+// short, an evidence write that failed, the crash record below — so a caller
+// that captured the report can also read why something is missing from it, and
+// neither stream is a hard-coded process handle.
+//
 // This is also the run's own damage boundary. Nothing above it recovers: main
 // only turns the returned error into an exit status, so a panic on this path
 // would print a Go stack trace, lose the report written so far, and leave the
 // same status a failed connection uses. Here it becomes one message, the exit
 // code that says the tool itself broke, and — with --save — a record of what
 // went wrong beside the evidence.
-func Execute(ctx context.Context, w io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
-	err := fault.Catch("collection", func() error { return execute(ctx, w, transport, options, catalog) })
+func Execute(ctx context.Context, w, warn io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
+	err := fault.Catch("collection", func() error { return execute(ctx, w, warn, transport, options, catalog) })
 	var crash *fault.Panic
 	if !errors.As(err, &crash) {
 		return err
 	}
-	saveCrash(options.SaveDir, crash)
+	saveCrash(warn, options.SaveDir, crash)
 	return failf(ExitInternal, "%s", crash.Error())
 }
 
 // execute is the run itself. The boundary above it owns the panic contract, so
 // nothing here guards against one escaping.
-func execute(ctx context.Context, w io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
+func execute(ctx context.Context, w, warn io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
 	started := time.Now()
 	target := catalog
 	if target == nil {
@@ -92,11 +95,10 @@ func execute(ctx context.Context, w io.Writer, transport session.Transport, opti
 	}
 	defer sess.Close()
 
-	bins := catalogBins(selected)
-	factsValue := facts.CollectFor(ctx, transport.Platform(), sess, bins)
+	factsValue := facts.CollectFor(ctx, transport.Platform(), sess)
 	if factsValue.ProbeCut {
-		fmt.Fprintln(os.Stderr,
-			"karma: the capability probe timed out: binaries it did not reach read as missing and their checks are skipped")
+		fmt.Fprintln(warn,
+			"karma: the capability probe timed out: a tool it did not reach reads as absent, so the host facts may be thinner than they look")
 	}
 	width := terminalWidth(w)
 	render.RenderHeader(w, factsValue, render.HeaderInfo{
@@ -114,11 +116,11 @@ func execute(ctx context.Context, w io.Writer, transport session.Transport, opti
 	defer live.Close()
 	var observer runner.Observer = live
 	if options.SaveDir != "" {
-		saver := newSaveObserver(options.SaveDir, buildVersion, sess.Name(), factsValue, live)
+		saver := newSaveObserver(options.SaveDir, buildVersion, sess.Name(), factsValue, warn, live)
 		defer saver.finalize()
 		observer = saver
 	}
-	summary := runner.RunCatalog(ctx, sess, factsValue, selected, options, observer)
+	summary := runner.RunCatalog(ctx, sess, selected, options, observer)
 	// The run reports how it ended: the exit status and the message come from
 	// what it saw, so a signal that lands after the last check cannot turn a
 	// complete report into an interrupted one, and a run that stopped early says
@@ -132,20 +134,4 @@ func execute(ctx context.Context, w io.Writer, transport session.Transport, opti
 			len(selected)-summary.Results, len(selected))
 	}
 	return nil
-}
-
-// catalogBins is the union of the binaries every probe in the list requires,
-// used for the capability probe: one PATH search per name.
-func catalogBins(selected []*model.Check) []string {
-	names := map[string]bool{}
-	for _, check := range selected {
-		for _, step := range check.Steps {
-			for _, probe := range step {
-				if name := probe.RequiredBin(); name != "" {
-					names[name] = true
-				}
-			}
-		}
-	}
-	return slices.Sorted(maps.Keys(names))
 }

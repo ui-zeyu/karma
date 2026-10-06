@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 
+	"karma/internal/section"
 	"karma/internal/textutil"
 )
 
@@ -48,7 +49,7 @@ command -v file >/dev/null 2>&1 && havefile=1
   printf '%%s\n' "$verify" | sed 's/^/V /'
   [ "$havefile" = 1 ] && LC_ALL=C file $paths 2>/dev/null | sed 's/^/F /'
   LC_ALL=C ls -l $paths 2>/dev/null | sed 's/^/L /'
-} | awk -v havefile=$havefile '%[3]s'
+} | LC_ALL=C awk -v havefile=$havefile '%[3]s'
 exit 0
 `, binary, command, pkgVerifyAwk())
 }
@@ -59,7 +60,14 @@ exit 0
 // V verifier line, F `path: type` from file(1), L an ls -l row — and every
 // input line is held until the whole stream is read, because a group's size is
 // only known once all of it is in. The program text carries no shell quotes:
-// PkgVerifyScript wraps it.
+// PkgVerifyScript wraps it, and runs it under LC_ALL=C so its string
+// comparisons are the byte order the local channel sorts and groups by.
+//
+// The two sections keep the order their sources printed: `== file` follows the
+// verifier's own order (file(1) reads its arguments in order, and
+// localfs.FileRows renders the list it is handed without sorting), while `== ls`
+// is path-sorted by ls itself and by localfs.LsRows. Sorting the file rows here
+// would put the two channels' sections in different orders.
 func pkgVerifyAwk() string {
 	return fmt.Sprintf(`BEGIN { mass = %[1]d; listed = %[2]d }
 {
@@ -117,6 +125,9 @@ END {
   }
   if (named) print "%[3]s"
   for (i = 1; i <= n; i++) if (name[i]) print vline[i] (havefile && gone[vpath[i]] ? " (missing)" : "")
+  # Both sections keep the order their source printed: the F rows the argument
+  # order file(1) reads, the L rows the order ls sorted its arguments into. The
+  # local channel renders them the same way, so nothing is re-ordered here.
   for (i = 1; i <= fn; i++) if (namedpath[fpath[i]] && !fseen[fpath[i]]) { if (!inf) { print "%[5]s"; inf = 1 }; fseen[fpath[i]] = 1; print fline[i] }
   for (i = 1; i <= ln; i++) if (namedpath[lpath[i]] && !lseen[lpath[i]]) { if (!inl) { print "%[6]s"; inl = 1 }; lseen[lpath[i]] = 1; print lline[i] }
   if (!other) exit
@@ -148,10 +159,10 @@ END {
 const (
 	verifyMassFiles    = 20
 	verifyListedFiles  = 3
-	verifyKeyTitle     = "== executables, libraries and conffiles"
-	verifyOtherTitle   = "== other changed files (grouped by directory)"
-	verifyFilesSection = "== file"
-	verifyLsSection    = "== ls"
+	verifyKeyTitle     = section.Marker + "executables, libraries and conffiles"
+	verifyOtherTitle   = section.Marker + "other changed files (grouped by directory)"
+	verifyFilesSection = section.Marker + "file"
+	verifyLsSection    = section.Marker + "ls"
 )
 
 // VerifyRow is one verifier line split into the parts the body groups by: dpkg

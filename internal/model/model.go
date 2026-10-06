@@ -389,25 +389,25 @@ func (c RowCap) Cut() bool { return c.Rows > 0 && !c.Answer }
 
 // HostFacts are the target's basic facts, collected in one opening round trip.
 type HostFacts struct {
-	AvailableBins map[string]bool
-	Hostname      string
-	Kernel        string
-	OsPretty      string
-	UID           int
+	Hostname string
+	Kernel   string
+	OsPretty string
+	UID      int
 	// Collection identity (USERDOMAIN\user on Windows; empty on Linux because
 	// the report header already carries the uid)
 	User string
-	// ProbeCut marks a capability probe cut short by its deadline: every name
-	// it did not reach reads as missing, so the checks needing it report
-	// skipped rather than failed — the run owes the operator that explanation.
+	// ProbeCut marks the capability probe — the fact layer's own "which tools
+	// can this target answer with" search — cut short by its deadline. A name it
+	// did not reach reads as absent, so the fact layer takes a path it would not
+	// have taken (on Windows, the registry instead of PowerShell), and the run
+	// owes the operator that explanation. No check's walk depends on it: a tier
+	// whose tool is missing says so itself when it runs, and the chain falls
+	// through then.
 	ProbeCut bool
 }
 
 // IsRoot reports whether the uid is 0.
 func (f HostFacts) IsRoot() bool { return f.UID == 0 }
-
-// Has reports whether the capability probe found one binary.
-func (f HostFacts) Has(name string) bool { return f.AvailableBins[name] }
 
 // Rule is one highlight rule: text matching pattern is painted.
 // Exclude is the line-level exclusion — RE2 has no lookaround, so "does not
@@ -538,6 +538,13 @@ type Shaped struct {
 // body is used as is.
 type Normalizer func(title string, body string) *Shaped
 
+// Transformer is a whole-body shaping step: a tier's raw output in, the body the
+// reading pipeline splits into sections out. It is Probe.Assemble's type, for a
+// tier whose output is a marked record stream rather than the body itself — the
+// join runs once on the Go side for every channel instead of once per language
+// on the target.
+type Transformer func(text string) string
+
 // Line is one line after folding and before filtering. Number is the line
 // number in the whole text; filtered-out lines still consume a number.
 type Line struct {
@@ -599,15 +606,28 @@ type Call struct {
 	Cap RowCap
 }
 
-// Probe is one tier. A nil Requires derives from the invocation (Command
-// takes Argv's first word); Adapt only turns this tier's output into the same
-// shape as the other tiers and runs within the section; normalization that
-// must run whichever tier wins hangs on Check.Normalize.
+// Probe is one tier: what to run, how its output becomes the body, and how much
+// of that body the tier wants. Assemble is the tier's own join, run on the raw
+// output before any `== ` split (nil uses the output as it stands); Adapt only
+// turns this tier's output into the same shape as the other tiers and runs
+// within the section; normalization that must run whichever tier wins hangs on
+// Check.Normalize.
+//
+// Whether the tier can run at all is its own answer at run time — the script
+// guards with `command -v`, the in-process body reports ErrTierUnavailable, a
+// missing binary exits 127 — never a declaration read before the walk: one
+// mechanism, so a tier cannot be declared present on a host that lacks it, or
+// declared missing by a probe that misread.
 type Probe struct {
 	Label string
 	Inv   Invocation
-	Adapt Normalizer
-	Cap   RowCap
+	// Assemble is the tier's own join. A channel whose side of the wire cannot
+	// shape the body the way the local channel does emits the same marked record
+	// stream instead, and this one function renders both — so the join cannot
+	// drift between the two channels, only the stream's emitter can.
+	Assemble Transformer
+	Adapt    Normalizer
+	Cap      RowCap
 }
 
 // Step is one step of a check's walk: the probes that answer as a whole. One
@@ -628,17 +648,6 @@ func (p Probe) InvocationFor(ch Channel) Invocation {
 		return d.For(ch)
 	}
 	return p.Inv
-}
-
-// RequiredBin is the one binary this tier requires, empty when it requires none:
-// the Command's argv[0]. Scripts and in-process tiers decide availability
-// themselves at run time (a guard in the script, ErrTierUnavailable in the
-// function).
-func (p Probe) RequiredBin() string {
-	if cmd, ok := p.Inv.(Command); ok && len(cmd.Argv) > 0 {
-		return cmd.Argv[0]
-	}
-	return ""
 }
 
 // Check is one check: its fallback walk, its already-composed filters and

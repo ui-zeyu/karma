@@ -176,8 +176,13 @@ var lineBreak = []byte("\n")
 // converts only what it reports. A NUL byte makes the file binary (-I) and is
 // reported as such, so the caller drops what the file had already contributed;
 // an unreadable file reports nothing, like grep with its stderr suppressed.
+//
+// The open is openRegular's, the way every other read in this package opens: the
+// walk's own type filter keeps a FIFO out (grep -r reads regular files only), and
+// the non-blocking open is what makes that a guarantee of this layer rather than
+// of the caller that happens to filter first.
 func grepFile(path string, pattern *regexp.Regexp, onHit func(number int, line string) bool) (binary bool) {
-	file, err := os.Open(path)
+	file, err := openRegular(path)
 	if err != nil {
 		return false
 	}

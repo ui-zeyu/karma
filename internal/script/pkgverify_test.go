@@ -158,6 +158,12 @@ func TestPkgVerifyBodyRollsSmallDirectoriesUp(t *testing.T) {
 // the same facts it must print the same text, key files, missing marks and
 // counts alike. The stream is the one the shell builds, so the tags, file(1)'s
 // type words and the ls -l rows are all exercised.
+//
+// The fixture's rows arrive in an order that is not the sorted one, and the
+// expected body comes from the Go renderer over the same order: the `== file`
+// section keeps the order its producer printed, so a sort added to either
+// implementation alone fails here. The other half of that contract — the local
+// producer not sorting what it is handed — is pinned by localfs.TestFileRows.
 func TestPkgVerifyAwkMatchesBody(t *testing.T) {
 	verify := []string{
 		"??5??????   /usr/bin/sshd",

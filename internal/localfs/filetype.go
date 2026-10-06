@@ -16,18 +16,24 @@ import (
 	"os"
 	"strings"
 	"unicode/utf8"
-
-	"karma/internal/script"
 )
 
 // fileHeadBytes is how much of a file the classifier reads.
 const fileHeadBytes = 4096
 
 // FileRows renders the `== file` forensics section: one `path: words` line per
-// existing file, in the listing tier's sorted order.
+// existing file, in the order the caller gave — the order the list itself
+// expresses, which is what the shell tier's `file $list` prints (file(1) reads
+// its arguments in order) and what the verifier's own output expresses. LsRows
+// sorts, because ls sorts its arguments; this section must not, or the two
+// channels' `== file` sections would list the same rows in different orders.
+//
+// A path this process may not read reads "cannot open": file(1) names the reason
+// there ("regular file, no read permission"), which is a recorded difference
+// between the channels' rows for a file the collecting user cannot read.
 func FileRows(files []string) string {
 	var b strings.Builder
-	for _, path := range script.LsSorted(files) {
+	for _, path := range files {
 		if _, err := os.Lstat(path); err != nil {
 			continue
 		}

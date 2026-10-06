@@ -12,11 +12,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/samber/lo"
+
 	"karma/internal/localfs"
 	"karma/internal/model"
+	"karma/internal/section"
 	"karma/internal/textutil"
-
-	"github.com/samber/lo"
 )
 
 // HostnameIps mirrors `hostname -I`: every interface address except
@@ -53,11 +54,11 @@ func Firewall(families, tables []string) func(context.Context) (string, error) {
 		var b strings.Builder
 		for _, binary := range families {
 			for _, table := range tables {
-				fmt.Fprintf(&b, "== %s %s\n", binary, table)
+				b.WriteString(section.Line(binary + " " + table))
 				b.WriteString(runHost(ctx, []string{binary, "-t", table, "-S"}, false).out)
 			}
 		}
-		b.WriteString("== nft\n")
+		b.WriteString(section.Line("nft"))
 		b.WriteString(runHost(ctx, []string{"nft", "list", "ruleset"}, false).out)
 		return b.String(), nil
 	}

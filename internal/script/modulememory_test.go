@@ -1,13 +1,12 @@
-// The module-memory diff is one contract with two implementations: the Go join
-// the local channel uses (ModuleMemoryBody) and the awk join the ssh and ttyd
-// channels run (inside ModuleMemoryScript). These tests pin the rows, then run
-// the awk over a marked stream built the way the shell builds it and compare the
-// two line for line.
+// ModuleMemoryBody is the one join of the module-memory diff: both channels emit
+// the marked record stream (the target's shell block and the in-process emitter)
+// and the check hangs this function on the tier as its Assemble. These tests pin
+// the rows over built streams; the emitters themselves are compared in the linux
+// catalog's test, over one fixture.
 
 package script
 
 import (
-	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -27,29 +26,9 @@ func memoryViews() ModuleMemoryViews {
 	}
 }
 
-// runsMemoryAwkJoin runs the pipeline's join over a marked stream.
-func runsMemoryAwkJoin(t *testing.T, stream string) string {
-	t.Helper()
-	if _, err := exec.LookPath("awk"); err != nil {
-		t.Skip("no awk on this host")
-	}
-	cmd := exec.Command("awk", "-v", "pseudo="+strings.Join(memoryViews().PseudoTags, " "), moduleMemoryAwk())
-	cmd.Stdin = strings.NewReader(stream)
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("the join failed: %v (output %q)", err, out)
-	}
-	return string(out)
-}
-
-// compareJoins requires both implementations to render the same text.
-func compareJoins(t *testing.T, stream string) string {
-	t.Helper()
-	want := ModuleMemoryBody(memoryViews(), stream)
-	if got := runsMemoryAwkJoin(t, stream); got != want {
-		t.Errorf("the awk join rendered\n%q\nwant\n%q", got, want)
-	}
-	return want
+// joined renders one built stream, the way the tier's Assemble does.
+func joined(stream string) string {
+	return ModuleMemoryBody(memoryViews(), stream)
 }
 
 // A region the kernel's own module allocator made, with no symbols in it and no
@@ -60,7 +39,7 @@ func TestModuleMemoryJoinReportsAnAnonymousModuleRegion(t *testing.T) {
 		"P nf_tables\nP overlay\n"
 	want := "UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module\n" +
 		"VMAP regions 1 modules 2 explained 0 unexplained 1\n"
-	if got := compareJoins(t, stream); got != want {
+	if got := joined(stream); got != want {
 		t.Errorf("the join rendered\n%q\nwant\n%q", got, want)
 	}
 }
@@ -72,7 +51,7 @@ func TestModuleMemoryJoinIsQuietAboutASharedAnonymousRegion(t *testing.T) {
 	stream := "R 1 0xffffffffc0366000 0xffffffffc0368000 8192 shared\n" +
 		"P nf_tables\n"
 	want := "VMAP regions 1 modules 1 explained 0 unexplained 1\n"
-	if got := compareJoins(t, stream); got != want {
+	if got := joined(stream); got != want {
 		t.Errorf("the join rendered\n%q\nwant\n%q", got, want)
 	}
 }
@@ -82,10 +61,10 @@ func TestModuleMemoryJoinIsQuietAboutASharedAnonymousRegion(t *testing.T) {
 func TestModuleMemoryJoinReportsARegionTaggedWithAnUnlistedModule(t *testing.T) {
 	stream := "R 1 0xffffffffc02a4000 0xffffffffc02a7000 12288 shared\n" +
 		"P nf_tables\n" +
-		"Y 1 diamorphine\nY 1 diamorphine\nY 1 nf_tables\n"
+		"Y 1 diamorphine 2\nY 1 nf_tables 1\n"
 	want := "UNOWNED 0xffffffffc02a4000-0xffffffffc02a7000 size 12288 caller shared diamorphine 2 nf_tables 1\n" +
 		"VMAP regions 1 modules 1 explained 0 unexplained 1\n"
-	if got := compareJoins(t, stream); got != want {
+	if got := joined(stream); got != want {
 		t.Errorf("the join rendered\n%q\nwant\n%q", got, want)
 	}
 }
@@ -97,14 +76,38 @@ func TestModuleMemoryJoinExplainsRegionsByTheirSymbols(t *testing.T) {
 		"R 2 0xffffffffc0625000 0xffffffffc0627000 8192 shared\n" +
 		"R 3 0xffff800001200000 0xffff800001206000 24576 module\n" +
 		"P nf_tables\n" +
-		"Y 1 bpf\n" +
-		"Y 2 -\n" +
-		"Y 3 nft_do_chain\t[nf_tables]\n"
-	// The tag in a Y line is the bare module name the shell awk writes.
-	stream = strings.ReplaceAll(stream, "nft_do_chain\t[nf_tables]", "nf_tables")
+		"Y 1 bpf 1\n" +
+		"Y 2 - 1\n" +
+		"Y 3 nf_tables 1\n"
 	want := "VMAP regions 3 modules 1 explained 3 unexplained 0\n"
-	if got := compareJoins(t, stream); got != want {
+	if got := joined(stream); got != want {
 		t.Errorf("the join rendered\n%q\nwant\n%q", got, want)
+	}
+}
+
+// A region holding both a published kernel address and a symbol of a module the
+// registry does not carry names both in one label list, in the order the symbol
+// stream brought them: the two joins agree on the count of the untagged symbol
+// ("-") as well, which is what the label list is read for.
+func TestModuleMemoryJoinCountsTheUntaggedSymbolInTheLabelList(t *testing.T) {
+	streams := []string{
+		"R 1 0xffffffffc02a4000 0xffffffffc02a7000 12288 shared\n" +
+			"P nf_tables\n" +
+			"Y 1 - 1\nY 1 diamorphine 1\n",
+		"R 1 0xffffffffc02a4000 0xffffffffc02a7000 12288 shared\n" +
+			"P nf_tables\n" +
+			"Y 1 diamorphine 1\nY 1 - 2\n",
+	}
+	wants := []string{
+		"UNOWNED 0xffffffffc02a4000-0xffffffffc02a7000 size 12288 caller shared - 1 diamorphine 1\n" +
+			"VMAP regions 1 modules 1 explained 0 unexplained 1\n",
+		"UNOWNED 0xffffffffc02a4000-0xffffffffc02a7000 size 12288 caller shared diamorphine 1 - 2\n" +
+			"VMAP regions 1 modules 1 explained 0 unexplained 1\n",
+	}
+	for index, stream := range streams {
+		if got := joined(stream); got != wants[index] {
+			t.Errorf("the join rendered\n%q\nwant\n%q", got, wants[index])
+		}
 	}
 }
 
@@ -114,9 +117,9 @@ func TestModuleMemoryJoinAlwaysAccounts(t *testing.T) {
 	stream := "R 1 0xffff800001200000 0xffff800001206000 24576 module\n" +
 		"R 2 0xffff800001206000 0xffff80000120e000 32768 module\n" +
 		"P nf_tables\nP overlay\nP xfs\n" +
-		"Y 1 nf_tables\nY 2 overlay\n"
+		"Y 1 nf_tables 1\nY 2 overlay 1\n"
 	want := "VMAP regions 2 modules 3 explained 2 unexplained 0\n"
-	if got := compareJoins(t, stream); got != want {
+	if got := joined(stream); got != want {
 		t.Errorf("the join rendered\n%q\nwant\n%q", got, want)
 	}
 }
@@ -131,8 +134,8 @@ func TestModuleMemoryRowsReturnsTheRegionsItsRowsName(t *testing.T) {
 		"R 2 0xffffffffc02a4000 0xffffffffc02a7000 12288 shared\n" +
 		"R 3 0xffff800001200000 0xffff800001206000 24576 module\n" +
 		"P nf_tables\n" +
-		"Y 2 diamorphine\n" +
-		"Y 3 nf_tables\n"
+		"Y 2 diamorphine 1\n" +
+		"Y 3 nf_tables 1\n"
 	rows, unowned := ModuleMemoryRows(memoryViews(), stream)
 	want := []string{
 		"UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module",

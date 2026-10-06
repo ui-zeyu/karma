@@ -15,6 +15,7 @@ import (
 	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/script"
+	"karma/internal/section"
 	"karma/internal/textutil"
 )
 
@@ -37,9 +38,9 @@ func forensics(b *strings.Builder, files []string) {
 	if len(files) == 0 {
 		return
 	}
-	b.WriteString("== file\n")
+	b.WriteString(section.Line("file"))
 	b.WriteString(localfs.FileRows(files))
-	b.WriteString("== ls\n")
+	b.WriteString(section.Line("ls"))
 	b.WriteString(localfs.LsRows(files))
 }
 
@@ -89,7 +90,7 @@ func PkgHistory(paths []string, lines int) func(context.Context) (string, error)
 
 func pkgHistoryBody(ctx context.Context, paths []string, lines int) string {
 	body := localfs.ReadSections(paths, localfs.TailLines(lines))
-	body += "== dnf history\n"
+	body += section.Line("dnf history")
 	// The script's `dnf history || yum history | head` keeps dnf's own output
 	// either way and only runs yum when dnf failed.
 	dnf := runHost(ctx, []string{"dnf", "history"}, false)

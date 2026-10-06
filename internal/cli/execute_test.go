@@ -8,6 +8,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +27,7 @@ func (explodingWriter) Write([]byte) (int, error) { panic("the report writer ble
 
 func TestExecuteTurnsDamageIntoAReportedRun(t *testing.T) {
 	dir := t.TempDir()
-	err := Execute(context.Background(), explodingWriter{}, session.LocalTransport{},
+	err := Execute(context.Background(), explodingWriter{}, io.Discard, session.LocalTransport{},
 		model.RunOptions{Timeout: time.Second, SaveDir: dir}, nil)
 	var coded exitError
 	if !errors.As(err, &coded) {

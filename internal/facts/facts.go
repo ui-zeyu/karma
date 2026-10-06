@@ -8,7 +8,6 @@ package facts
 import (
 	"cmp"
 	"context"
-	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -22,14 +21,21 @@ import (
 	"karma/internal/model"
 	"karma/internal/powershell"
 	"karma/internal/regout"
+	"karma/internal/section"
 	"karma/internal/session"
 	"karma/internal/textutil"
 )
 
-// linuxFactBins are the binaries collect's own commands need; callers merge them into the capability probe list.
+// linuxFactBins are the binaries this package's own Linux commands need, and
+// the whole list the capability probe searches: the facts are collected in one
+// round trip, so the probe is this layer's business. A check's tiers are not
+// part of it — a tier whose tool is missing answers so itself when it runs.
 var linuxFactBins = []string{"hostname", "uname", "id"}
 
-// windowsFactBins are the binaries collect_windows's own commands need; callers merge them into the capability probe list.
+// windowsFactBins are the binaries this package's own Windows commands need.
+// PowerShell's presence decides how the facts are collected (one PS cold start,
+// or the registry when there is no PS), and reg's is recorded when the fallback
+// answered.
 var windowsFactBins = []string{"powershell", "reg"}
 
 // Fact budgets: the capability probe searches PATH once per name, and one host
@@ -69,20 +75,20 @@ var windowsFactsScript = strings.Join([]string{
 // CollectFor dispatches fact collection: Windows always collects through a
 // session (its facts come from PowerShell and the registry); Linux collects
 // in process on the local channel and over the session everywhere else.
-func CollectFor(ctx context.Context, platform model.Platform, sess session.Session, bins []string) model.HostFacts {
+func CollectFor(ctx context.Context, platform model.Platform, sess session.Session) model.HostFacts {
 	switch {
 	case platform == model.Windows:
-		return CollectWindows(ctx, sess, bins)
+		return CollectWindows(ctx, sess)
 	case sess.Channel() == model.ChanLocal:
-		return collectLocal(bins)
+		return collectLocal()
 	default:
-		return Collect(ctx, sess, bins)
+		return Collect(ctx, sess)
 	}
 }
 
 // Collect concurrently gathers binary presence and host facts (Linux directory).
-func Collect(ctx context.Context, sess session.Session, bins []string) model.HostFacts {
-	names := probeBins(bins, linuxFactBins)
+func Collect(ctx context.Context, sess session.Session) model.HostFacts {
+	names := probeBins(linuxFactBins)
 	results := gather(ctx, map[string]func(context.Context) model.RunResult{
 		"bins": func(ctx context.Context) model.RunResult {
 			return runShell(ctx, sess, binProbe(names), factProbeBudget)
@@ -99,12 +105,11 @@ func Collect(ctx context.Context, sess session.Session, bins []string) model.Hos
 		},
 	})
 	return model.HostFacts{
-		AvailableBins: availableBins(results["bins"].Stdout, names),
-		Hostname:      firstLine(results["hostname"].Stdout, "unknown"),
-		Kernel:        firstLine(results["kernel"].Stdout, ""),
-		OsPretty:      prettyName(results["os"].Stdout),
-		UID:           parseUID(results["uid"].Stdout),
-		ProbeCut:      results["bins"].Verdict == model.VerdictTimedOut,
+		Hostname: firstLine(results["hostname"].Stdout, "unknown"),
+		Kernel:   firstLine(results["kernel"].Stdout, ""),
+		OsPretty: prettyName(results["os"].Stdout),
+		UID:      parseUID(results["uid"].Stdout),
+		ProbeCut: results["bins"].Verdict == model.VerdictTimedOut,
 	}
 }
 
@@ -116,8 +121,8 @@ func Collect(ctx context.Context, sess session.Session, bins []string) model.Hos
 // (not through a shell) and takes facts from the registry instead -- so the registry
 // checks' fallback tier stays available as usual, and PS-only checks are skipped as
 // usual for "missing powershell".
-func CollectWindows(ctx context.Context, sess session.Session, bins []string) model.HostFacts {
-	names := probeBins(bins, windowsFactBins)
+func CollectWindows(ctx context.Context, sess session.Session) model.HostFacts {
+	names := probeBins(windowsFactBins)
 	probe := runPS(ctx, sess, probeScript(names), factProbeBudget)
 	available := availableBins(probe.Stdout, names)
 
@@ -125,13 +130,12 @@ func CollectWindows(ctx context.Context, sess session.Session, bins []string) mo
 		// one PS cold start brings back all facts; the four paths are evaluated eagerly, 15s is the grace
 		values := labeledLines(runPS(ctx, sess, windowsFactsScript, factProbeBudget).Stdout)
 		return model.HostFacts{
-			AvailableBins: available,
-			Hostname:      cmp.Or(values["host"], "unknown"),
-			Kernel:        values["kernel"],
-			OsPretty:      cmp.Or(values["os"], "unknown version"),
-			UID:           -1,
-			User:          values["user"],
-			ProbeCut:      probe.Verdict == model.VerdictTimedOut,
+			Hostname: cmp.Or(values["host"], "unknown"),
+			Kernel:   values["kernel"],
+			OsPretty: cmp.Or(values["os"], "unknown version"),
+			UID:      -1,
+			User:     values["user"],
+			ProbeCut: probe.Verdict == model.VerdictTimedOut,
 		}
 	}
 
@@ -148,24 +152,19 @@ func CollectWindows(ctx context.Context, sess session.Session, bins []string) mo
 			return call(ctx, sess, model.NewCommand("reg", "query", volatileEnvReg, "/v", "USERNAME"), factBudget)
 		},
 	})
-	version := results["version"]
-	if version.Verdict == model.VerdictAnswered {
-		available = withBin(available, "reg")
-	}
-	values := regValueMap(version.Stdout)
+	values := regValueMap(results["version"].Stdout)
 	kernel := strings.Join(lo.Compact([]string{
 		values["CurrentVersion"],
 		values["CurrentBuildNumber"],
 		regDword(values["UBR"]),
 	}), ".")
 	return model.HostFacts{
-		AvailableBins: available,
-		Hostname:      regLastData(results["hostname"].Stdout, "unknown"),
-		Kernel:        kernel,
-		OsPretty:      cmp.Or(strings.TrimSpace(values["ProductName"]+" "+values["DisplayVersion"]), "unknown version"),
-		UID:           -1,
-		User:          regLastData(results["username"].Stdout, ""),
-		ProbeCut:      probe.Verdict == model.VerdictTimedOut,
+		Hostname: regLastData(results["hostname"].Stdout, "unknown"),
+		Kernel:   kernel,
+		OsPretty: cmp.Or(strings.TrimSpace(values["ProductName"]+" "+values["DisplayVersion"]), "unknown version"),
+		UID:      -1,
+		User:     regLastData(results["username"].Stdout, ""),
+		ProbeCut: probe.Verdict == model.VerdictTimedOut,
 	}
 }
 
@@ -209,11 +208,12 @@ func gather(ctx context.Context, jobs map[string]func(context.Context) model.Run
 	return results
 }
 
-// probeBins unions, sorts and dedupes the probe list; caller-supplied check dependencies come first, this package's own after.
-func probeBins(bins, extra []string) []string {
-	names := slices.Concat(bins, extra)
-	slices.Sort(names)
-	return slices.Compact(names)
+// probeBins sorts and dedupes the names one probe searches, so the command it
+// builds is stable and asks about each name once.
+func probeBins(names []string) []string {
+	sorted := slices.Clone(names)
+	slices.Sort(sorted)
+	return slices.Compact(sorted)
 }
 
 // binProbe: dash's command -v only recognizes the first name, so probe one by one for portability.
@@ -244,27 +244,26 @@ func availableBins(stdout string, wanted []string) map[string]bool {
 	return set
 }
 
-func withBin(bins map[string]bool, name string) map[string]bool {
-	out := maps.Clone(bins)
-	out[name] = true
-	return out
-}
-
-// labeledLines collapses `== title` sectioned output into a map: each section takes its first non-empty line.
+// labeledLines collapses `== title` sectioned output into a map: each section
+// takes its first non-empty line. The split is the section package's, the
+// selection is this one's — a fact is one line of the header, and a section that
+// answers with more (a version followed by a build line) shows its first.
 func labeledLines(stdout string) map[string]string {
 	out := map[string]string{}
-	title := ""
-	for line := range textutil.Lines(stdout) {
-		if head, ok := strings.CutPrefix(line, "== "); ok {
-			title = strings.TrimSpace(head)
+	for sec := range section.Parse(stdout) {
+		if !sec.Marked {
 			continue
 		}
-		text := strings.TrimSpace(line)
-		if title == "" || text == "" {
+		title := strings.TrimSpace(sec.Title)
+		if title == "" {
+			// A bare marker names no fact: the old walk skipped it the same way.
 			continue
 		}
-		if _, seen := out[title]; !seen {
-			out[title] = text
+		for _, line := range sec.Lines {
+			if text := strings.TrimSpace(line); text != "" {
+				out[title] = text
+				break
+			}
 		}
 	}
 	return out

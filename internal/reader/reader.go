@@ -1,6 +1,7 @@
-// Package reader is the reading pipeline: split sections, shape the body, and decide
-// per-line visibility, producing the Document the presentation layer renders. Pure
-// functions, with no dependency on the executor or terminal. Checks compose rules
+// Package reader is the reading pipeline: split sections (the `== ` convention,
+// owned by internal/section), shape the body, and decide per-line visibility,
+// producing the Document the presentation layer renders. Pure functions, with no
+// dependency on the executor or terminal. Checks compose rules
 // and filters at construction time; this consumes only the already-assembled slices.
 // Filtered lines are not shown but are counted per filter. Evidence is kept elsewhere:
 // the text written by --save is the channel's raw output, so nothing here touches it.
@@ -16,6 +17,7 @@ import (
 
 	"karma/internal/fault"
 	"karma/internal/model"
+	"karma/internal/section"
 	"karma/internal/textutil"
 )
 
@@ -142,18 +144,12 @@ type piece struct {
 // regex matches during the scan.
 func pieces(text string, transforms []model.Normalizer) iter.Seq[piece] {
 	return func(yield func(piece) bool) {
-		for section := range splitSections(text) {
-			if !yield(section.shaped(transforms)) {
+		for sec := range section.Parse(text) {
+			if !yield(shaped(sec, transforms)) {
 				return
 			}
 		}
 	}
-}
-
-type rawSection struct {
-	title    string
-	titleSet bool
-	lines    []string
 }
 
 // shaped shapes one section body, running every transform in turn on the text
@@ -165,12 +161,12 @@ type rawSection struct {
 // mixed output), this section uses the text as it stood then: the fallback sits
 // at the panic source, so already-collected output does not fail wholesale
 // because shaping panicked.
-func (s rawSection) shaped(transforms []model.Normalizer) piece {
-	p := piece{title: s.title, titleSet: s.titleSet, lines: s.lines}
+func shaped(sec section.Section, transforms []model.Normalizer) piece {
+	p := piece{title: sec.Title, titleSet: sec.Marked, lines: sec.Lines}
 	if !slices.ContainsFunc(transforms, func(transform model.Normalizer) bool { return transform != nil }) {
 		return p
 	}
-	text := strings.Join(s.lines, "\n")
+	text := strings.Join(sec.Lines, "\n")
 	var notes []model.LineMatch
 	for _, transform := range transforms {
 		if transform == nil {
@@ -200,29 +196,6 @@ func (s rawSection) shaped(transforms []model.Normalizer) piece {
 func safeNormalize(normalize model.Normalizer, title, body string) *model.Shaped {
 	shaped, _ := fault.Result("section shaper", func() *model.Shaped { return normalize(title, body) })
 	return shaped
-}
-
-// splitSections lazily cuts on `== ` lines. Lines before the first marker are the
-// preamble (titleSet false); empty text has no sections.
-func splitSections(text string) iter.Seq[rawSection] {
-	return func(yield func(rawSection) bool) {
-		var current rawSection
-		started := false
-		for line := range textutil.Lines(text) {
-			if head, ok := strings.CutPrefix(line, "== "); ok {
-				if started && !yield(current) {
-					return
-				}
-				current, started = rawSection{title: head, titleSet: true}, true
-				continue
-			}
-			current.lines = append(current.lines, line)
-			started = true
-		}
-		if started {
-			yield(current)
-		}
-	}
 }
 
 // lineSeverity is the line's severity: take the highest match (severity constants
