@@ -97,10 +97,10 @@ func runTargetCommand(cmd *cobra.Command, args []string, form string,
 		return err
 	}
 	rest := args[1:]
-	if dirs, ok := mtimeArgs(rest); ok {
+	if dirs, ok := modeArgs(rest, "mtime"); ok {
 		return runMtimeMode(cmd, transport, dirs, form)
 	}
-	if extra, ok := bootstrapArgs(rest); ok {
+	if extra, ok := modeArgs(rest, "bootstrap"); ok {
 		return runBootstrapMode(cmd, transport, extra)
 	}
 	options, err := runOptions(cmd.Flags(), rest)
@@ -110,22 +110,13 @@ func runTargetCommand(cmd *cobra.Command, args []string, form string,
 	return Execute(cmd.Context(), os.Stdout, transport, options, nil)
 }
 
-// mtimeArgs splits the mtime form out of a channel command's positional
-// arguments: they follow the word "mtime" — at the front under local, after the
-// target under ssh — so both channels tell the mode apart the same way.
-func mtimeArgs(args []string) ([]string, bool) {
-	if len(args) == 0 || args[0] != "mtime" {
-		return nil, false
-	}
-	return args[1:], true
-}
-
-// bootstrapArgs splits the bootstrap form out of a channel command's positional
-// arguments, the way mtimeArgs splits the mtime form: the word follows the
-// target and takes nothing with it — the mode only uploads, the operator runs
-// the binary.
-func bootstrapArgs(args []string) ([]string, bool) {
-	if len(args) == 0 || args[0] != "bootstrap" {
+// modeArgs splits a channel command's mode word out of its positional
+// arguments: the mode is the first word the channel's own form leaves (the front
+// under local, after the target under ssh and ttyd), and the words after it
+// belong to the mode. Both modes are written the same way, so their argument
+// handling cannot drift apart.
+func modeArgs(args []string, mode string) ([]string, bool) {
+	if len(args) == 0 || args[0] != mode {
 		return nil, false
 	}
 	return args[1:], true
@@ -180,7 +171,7 @@ func newLocalCmd() *cobra.Command {
 			"The built-in readers never run the host's own binaries: " +
 			"karma local cat FILE..., karma local ls [PATH...] (the current directory when no path is given).",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dirs, ok := mtimeArgs(args); ok {
+			if dirs, ok := modeArgs(args, "mtime"); ok {
 				return runMtimeMode(cmd, session.LocalTransport{}, dirs, "local")
 			}
 			options, err := runOptions(cmd.Flags(), args)

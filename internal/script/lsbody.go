@@ -16,6 +16,10 @@ import (
 // links, owner, group, size, month, day, clock, path.
 const lsBodyColumns = 9
 
+// LsBodyPath is the path column's index in SplitLsBody's result: the last of
+// the nine columns, and the field a caller reads a row's path from.
+const LsBodyPath = lsBodyColumns - 1
+
 // SplitLsBody splits one ls -l body row into its nine columns. Columns are
 // separated by one or more spaces and the path is the rest of the row, which
 // may hold spaces itself; a row that does not carry nine columns, or whose
@@ -129,7 +133,7 @@ func AlignLsBodies(rows []string) []string {
 // already carries the arrow — the local channel spells it, and a second pass
 // over an aligned listing — is returned as it is.
 func linkPath(fields []string) string {
-	path := fields[8]
+	path := fields[LsBodyPath]
 	if fields[0] == "" || fields[0][0] != 'l' || strings.Contains(path, " -> ") {
 		return path
 	}

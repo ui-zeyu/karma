@@ -272,12 +272,22 @@ func lastSessionRows(recs []utmpRec, live map[string]bool) []lastRow {
 	return rows
 }
 
+// The record files the local utmp family reads: the login records, the failed
+// attempts, the live sessions, and wtmpdb's database, which the wtmpdb-aware
+// last(1) writes instead of /var/log/wtmp.
+const (
+	utmpFile = "/var/run/utmp"
+	wtmpFile = "/var/log/wtmp"
+	btmpFile = "/var/log/btmp"
+	wtmpdb   = "/var/log/wtmp.db"
+)
+
 // wtmpdbLive reports whether logins are recorded in wtmpdb's database. The
 // wtmpdb-aware last(1) then reads the database and /var/log/wtmp stops being
 // written, so the binary file still parses — it just no longer holds the live
 // sessions, and reporting them would present stale evidence as current.
 func wtmpdbLive() bool {
-	_, err := os.Stat("/var/log/wtmp.db")
+	_, err := os.Stat(wtmpdb)
 	return err == nil
 }
 
@@ -290,28 +300,35 @@ func Last(limit int) func(context.Context) (string, error) {
 		if wtmpdbLive() {
 			return "", model.ErrTierUnavailable
 		}
-		recs, ok := readUtmpRecords("/var/log/wtmp")
+		recs, ok := readUtmpRecords(wtmpFile)
 		if !ok {
 			return "", model.ErrTierUnavailable
 		}
 		live := map[string]bool{}
-		if utmp, ok := readUtmpRecords("/var/run/utmp"); ok {
+		if utmp, ok := readUtmpRecords(utmpFile); ok {
 			for _, r := range userRecords(utmp) {
 				live[r.id] = true
 			}
 		}
-		rows := lastSessionRows(recs, live)
-		slices.Reverse(rows)
-		if len(rows) > limit {
-			rows = rows[:limit]
-		}
-		var b strings.Builder
-		for _, row := range rows {
-			renderLastRow(&b, row)
-		}
-		b.WriteString(recordTrailer("/var/log/wtmp", "wtmp", recs))
-		return b.String(), nil
+		return lastPanel(lastSessionRows(recs, live), limit, wtmpFile, "wtmp", recs), nil
 	}
+}
+
+// lastPanel renders a last(1)-shaped table: the rows newest first, capped at
+// the limit the script branch is given, closed by the trailer naming where the
+// file's records begin. rows is reversed in place, so the caller hands in a
+// slice of its own.
+func lastPanel(rows []lastRow, limit int, path, label string, recs []utmpRec) string {
+	slices.Reverse(rows)
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	var b strings.Builder
+	for _, row := range rows {
+		renderLastRow(&b, row)
+	}
+	b.WriteString(recordTrailer(path, label, recs))
+	return b.String()
 }
 
 // firstRecordTime is the oldest surviving record's time, the wtmp trailer.
@@ -337,7 +354,7 @@ func recordTrailer(path, label string, recs []utmpRec) string {
 // limit the script branch is given.
 func Lastb(limit int) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		recs, ok := readUtmpRecords("/var/log/btmp")
+		recs, ok := readUtmpRecords(btmpFile)
 		if !ok {
 			return "", model.ErrTierUnavailable
 		}
@@ -349,16 +366,7 @@ func Lastb(limit int) func(context.Context) (string, error) {
 			rows = append(rows, lastRow{user: r.user, tty: r.line, host: r.host,
 				login: r.at.Format(lastTimeFmt)})
 		}
-		slices.Reverse(rows)
-		if len(rows) > limit {
-			rows = rows[:limit]
-		}
-		var b strings.Builder
-		for _, row := range rows {
-			renderLastRow(&b, row)
-		}
-		b.WriteString(recordTrailer("/var/log/btmp", "btmp", recs))
-		return b.String(), nil
+		return lastPanel(rows, limit, btmpFile, "btmp", recs), nil
 	}
 }
 

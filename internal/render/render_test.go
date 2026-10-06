@@ -204,6 +204,26 @@ func TestCheckPanelQuietRailAndSkippedLine(t *testing.T) {
 	}
 }
 
+// A section the reading layer kept for its title alone — a rule matched the
+// `== path` header and every body row was filtered or below the floor — is
+// still a finding: the panel prints the title and its reason rather than
+// nothing at all. The reader keeps that section (it stays when its title
+// matched), and the panel used to drop it because no row was planned.
+func TestTitleOnlySectionIsShown(t *testing.T) {
+	result := &model.CheckResult{
+		Check:   &model.Check{ID: "hidden", Aspect: model.AspectFilesystem},
+		Outcome: model.Collected,
+		Document: model.Document{Sections: []model.Section{{
+			Title:        "/tmp/.evil",
+			TitleMatches: []model.Match{{ID: "evil-path", Severity: model.High, Message: "hidden payload path"}},
+		}}},
+	}
+	panel := plain(checkPanel(result, 40, 80))
+	if !strings.Contains(panel, "/tmp/.evil") || !strings.Contains(panel, "hidden payload path") {
+		t.Fatalf("a title-only finding lost its text or reason: %q", panel)
+	}
+}
+
 // The level-one heading band fills the line width, is all uppercase, white on
 // dark, and never exceeds the terminal.
 func TestHeadingBand(t *testing.T) {

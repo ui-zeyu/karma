@@ -55,11 +55,14 @@ func runNative(ctx context.Context, fn func(context.Context) (string, error), ti
 // decides, and a trailing newline is not another line. Keeping the two in step
 // is what makes the in-process tier and the subprocess/ssh tiers mark the same
 // body truncated, and keep the same text.
+//
+// SplitN stops one line past the cap, so a body of a million lines costs the
+// cap rather than a slice entry per line.
 func capLines(text string, limit int) (string, bool) {
 	if limit <= 0 {
 		return text, false
 	}
-	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	lines := strings.SplitN(strings.TrimSuffix(text, "\n"), "\n", limit+1)
 	if len(lines) <= limit {
 		return text, false
 	}

@@ -255,12 +255,19 @@ func (e procEntry) memPercent(memTotal int64) float64 {
 	if e.rss <= 0 {
 		return 0
 	}
-	rssBytes := e.rss * int64(os.Getpagesize())
+	rssBytes := e.rssBytes()
 	if rssBytes >= memTotal {
 		return 99.9
 	}
 	return float64(rssBytes*1000/memTotal) / 10
 }
+
+// rssBytes, vsizeKiB, rssKiB and shrKiB are the table columns' units: /proc
+// reports rss and shr in pages and vsize in bytes, while ps prints KiB.
+func (e procEntry) rssBytes() int64 { return e.rss * int64(os.Getpagesize()) }
+func (e procEntry) vsizeKiB() int64 { return e.vsize / 1024 }
+func (e procEntry) rssKiB() int64   { return e.rssBytes() / 1024 }
+func (e procEntry) shrKiB() int64   { return e.shr * int64(os.Getpagesize()) / 1024 }
 
 // cpuSeconds is the accumulated CPU time in seconds (ps's TIME column).
 func (e procEntry) cpuSeconds() float64 {
@@ -432,7 +439,7 @@ func psAuxForest(snap processSnapshot, now time.Time) []string {
 func psAuxRow(e procEntry, boot time.Time, now time.Time, uptime float64, memTotal int64) string {
 	return fmt.Sprintf("%-8s %5d %4.1f %4.1f %6d %5d %-7s %-4s %-5s %6s %s",
 		psUserCell(e.user), e.pid, e.cpuPercent(uptime), e.memPercent(memTotal),
-		e.vsize/1024, e.rss*int64(os.Getpagesize())/1024,
+		e.vsizeKiB(), e.rssKiB(),
 		ttyName(e.ttyNr), e.psStatString(), e.startClock(boot, now),
 		psTimeFormat(e.cpuSeconds()), e.args)
 }
@@ -534,7 +541,7 @@ func Top(ctx context.Context) (string, error) {
 	for _, e := range entries {
 		fmt.Fprintf(&b, "%7d %-8s %3d %3d %7d %6d %6d %c %5.1f %5.1f %9s %s\n",
 			e.pid, psUserCell(e.user), e.priority, e.nice,
-			e.vsize/1024, e.rss*int64(os.Getpagesize())/1024, e.shr*int64(os.Getpagesize())/1024,
+			e.vsizeKiB(), e.rssKiB(), e.shrKiB(),
 			e.state, e.cpuPercent(snap.uptime), e.memPercent(snap.memTotal),
 			topTimeFormat(e.cpuSeconds()), e.args)
 	}

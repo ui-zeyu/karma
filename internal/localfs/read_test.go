@@ -4,9 +4,11 @@
 package localfs
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -29,6 +31,31 @@ func TestReadSectionsSkipsMissingAndTails(t *testing.T) {
 	tailed := ReadSections([]string{present}, TailLines(2))
 	if !strings.HasSuffix(tailed, "l2\nl3\n") || strings.Contains(tailed, "l1") {
 		t.Fatalf("TailLines(2) kept the wrong window: %q", tailed)
+	}
+}
+
+// TailLines is the in-process form of the tail tier's `tail -n N`, so the two
+// must keep the same bytes: a body with or without its trailing newline, blank
+// lines, and a window wider than the body.
+func TestTailLinesMatchesTail(t *testing.T) {
+	if _, err := exec.LookPath("tail"); err != nil {
+		t.Skip("no tail, skipping the comparison")
+	}
+	bodies := []string{"l1\nl2\nl3\n", "l1\nl2\nl3", "", "\n", "\n\n", "one\n", "a\n\nb\n\n"}
+	for _, body := range bodies {
+		path := filepath.Join(t.TempDir(), "body")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range []int{1, 2, 3, 10} {
+			out, err := exec.Command("tail", "-n", strconv.Itoa(n), path).Output()
+			if err != nil {
+				t.Fatalf("tail -n %d: %v", n, err)
+			}
+			if got := TailLines(n)(body); got != string(out) {
+				t.Errorf("TailLines(%d)(%q) = %q, tail keeps %q", n, body, got, out)
+			}
+		}
 	}
 }
 
@@ -66,6 +93,9 @@ func TestReadSectionsMatchesTheShellLoop(t *testing.T) {
 	write("a.txt", "alpha\n")
 	write("b.txt", "")
 	write("c.txt", "x\ny\n")
+	// A file whose last line carries no newline: both sides must still close
+	// the section, or the next `== path` header glues onto it.
+	write("e.txt", "unterminated")
 	nested := filepath.Join(dir, "sub")
 	if err := os.MkdirAll(nested, 0o700); err != nil {
 		t.Fatal(err)
@@ -88,5 +118,38 @@ func TestReadSectionsMatchesTheShellLoop(t *testing.T) {
 	got, want := ReadSections(patterns, nil), string(out)
 	if got != want {
 		t.Fatalf("the two section loops disagree:\nin-process %q\nshell      %q", got, want)
+	}
+}
+
+// The tail tier's two branches must print one body too: the in-process window
+// and the shell loop's `tail -n N | awk`, for a file whose last line carries no
+// newline as much as for a terminated one.
+func TestTailSectionsMatchTheShellLoop(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh, skipping the script comparison")
+	}
+	if _, err := exec.LookPath("awk"); err != nil {
+		t.Skip("no awk, skipping the script comparison")
+	}
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	unterminated := write("unterminated.txt", "one\ntwo\nthree")
+	paths := []string{write("a.txt", "alpha\n"), unterminated, write("empty.txt", "")}
+	for _, n := range []int{1, 2, 3, 400} {
+		command := script.ReadFiles(paths, fmt.Sprintf(`tail -n %d "$f"`, n), true)
+		out, err := exec.Command("sh", "-c", command).Output()
+		if err != nil {
+			t.Fatalf("the collection loop failed: %v\n%s", err, out)
+		}
+		got, want := ReadSections(paths, TailLines(n)), string(out)
+		if got != want {
+			t.Fatalf("the two tail loops disagree at n=%d:\nin-process %q\nshell      %q", n, got, want)
+		}
 	}
 }

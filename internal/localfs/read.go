@@ -49,6 +49,10 @@ func Tail(path string, n int64) ([]byte, error) {
 // regular file, in word-list order with glob results sorted; transform shapes
 // the body (nil keeps the file as read). An unreadable file still prints its
 // section with an empty body, like `cat "$f" 2>/dev/null`.
+//
+// A body that does not end with a newline gets one, which is what the shell
+// loop's `awk '{print}'` does: without the terminator the next `== path` header
+// glues onto the last line and that section loses its title.
 func ReadSections(patterns []string, transform func(string) string) string {
 	var b strings.Builder
 	for _, path := range ExpandFiles(patterns) {
@@ -61,20 +65,40 @@ func ReadSections(patterns []string, transform func(string) string) string {
 			text = transform(text)
 		}
 		b.WriteString(text)
+		if text != "" && !strings.HasSuffix(text, "\n") {
+			b.WriteByte('\n')
+		}
 	}
 	return b.String()
 }
 
-// TailLines keeps the last n lines of a body: the script tier's `tail -n N`.
+// TailLines keeps the last n lines of a body: the script tier's `tail -n N`,
+// byte for byte, so a body whose last line carries no newline keeps none here
+// either (ReadSections supplies the section's terminator). The window is found
+// by scanning back for n line breaks, so a log that has grown for years costs
+// the window rather than a line slice of the whole body.
 func TailLines(n int) func(string) string {
 	return func(text string) string {
-		if text == "" {
+		if text == "" || n <= 0 {
 			return ""
 		}
-		lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
-		if len(lines) > n {
-			lines = lines[len(lines)-n:]
+		// A trailing newline terminates the last line; it does not start an
+		// empty one, which is why it is not counted as a line break here.
+		end := len(text)
+		if text[end-1] == '\n' {
+			end--
 		}
-		return strings.Join(lines, "\n") + "\n"
+		start, seen := 0, 0
+		for i := end - 1; i >= 0; i-- {
+			if text[i] != '\n' {
+				continue
+			}
+			seen++
+			if seen == n {
+				start = i + 1
+				break
+			}
+		}
+		return text[start:]
 	}
 }

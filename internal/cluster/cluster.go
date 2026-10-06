@@ -280,7 +280,7 @@ func ParseEntry(line string) *Entry {
 // ordering. A row that does not carry those columns is returned whole.
 func EntryPath(e *Entry) string {
 	if fields, ok := script.SplitLsBody(e.Row); ok {
-		return fields[8]
+		return fields[script.LsBodyPath]
 	}
 	return e.Row
 }

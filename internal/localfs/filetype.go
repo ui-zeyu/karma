@@ -16,6 +16,8 @@ import (
 	"os"
 	"strings"
 	"unicode/utf8"
+
+	"karma/internal/script"
 )
 
 // fileHeadBytes is how much of a file the classifier reads.
@@ -25,7 +27,7 @@ const fileHeadBytes = 4096
 // existing file, in the listing tier's sorted order.
 func FileRows(files []string) string {
 	var b strings.Builder
-	for _, path := range sortedPaths(files) {
+	for _, path := range script.LsSorted(files) {
 		if _, err := os.Lstat(path); err != nil {
 			continue
 		}

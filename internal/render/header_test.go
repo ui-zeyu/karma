@@ -84,6 +84,14 @@ func TestRenderHeader(t *testing.T) {
 		t.Fatalf("the title band is %d columns wide, an aspect banner is %d:\n%s",
 			lipgloss.Width(lines[0]), want, body)
 	}
+	// The author rides the same band, on its right edge: the label/meta shape
+	// every panel head wears, ending where every line ends (one column of slack).
+	if byline := strings.TrimRight(lines[0], " "); !strings.HasSuffix(byline, authorLabel) {
+		t.Fatalf("the title band should carry the author on its right edge:\n%s", body)
+	}
+	if end := column(lines[0], strings.LastIndex(lines[0], authorLabel)+len(authorLabel)); end != lineWidth(100)-rightPad {
+		t.Fatalf("the author ends at column %d, the band's right edge is %d:\n%s", end, lineWidth(100)-rightPad, body)
+	}
 	if !strings.HasPrefix(lines[1], "▌ 9.9.9") {
 		t.Fatalf("the panel's second-level band carries the version:\n%s", body)
 	}

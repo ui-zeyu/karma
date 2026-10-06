@@ -100,9 +100,11 @@ var (
 	bannerTextColor  = lipgloss.Color("15")
 	subBandColor     = lipgloss.Color("238")
 	subBandTextColor = lipgloss.Color("250")
-	// subBandMetaColor is the metadata on the report's check-title band: a
-	// step dimmer than the label, still legible on the band's grey.
-	subBandMetaColor = lipgloss.Color("246")
+	// bandMetaColor is the metadata a heading band carries on its right edge: the
+	// masthead's author and the run's clock, and the notes on a check title. A
+	// step dimmer than the band's own text and legible on both band greys; a
+	// dimmer one beside the bold title read as a rendering fault.
+	bandMetaColor = lipgloss.Color("246")
 )
 
 // bandStyle is the level-one heading band: the report's masthead and its aspect
@@ -111,8 +113,8 @@ var (
 // two steps in both views. subBandFill paints a panel head's padding with the
 // band's own grey alone, so the strip reads solid from the rail to the right
 // edge; a level-one strip's padding comes from the band's own style. The
-// masthead's version and clock wear the level-two band's own colors: a dimmer
-// grey next to a label read as a rendering fault.
+// masthead's author and clock wear bandMetaColor on their band: a dimmer grey
+// next to a label read as a rendering fault.
 var (
 	bandStyle = lipgloss.NewStyle().Bold(true).
 			Background(bannerColor).Foreground(bannerTextColor)
@@ -121,36 +123,39 @@ var (
 	subBandFill = lipgloss.NewStyle().Background(subBandColor)
 )
 
-// severityTheme is the single source of the severity color language: the hit
-// span and the rail hue of each signal level, indexed by Severity
-// (Critical..Low). The quiet levels have neither.
-var severityTheme = [...]struct {
+// severityHue is one signal level's color language: the hit span and the rail
+// hue.
+type severityHue struct {
 	span   style
 	border lipgloss.Color
-}{
+}
+
+// severityTheme is the single source of the severity color language, indexed by
+// Severity (Critical..Low). The quiet levels have no entry: benign and no-hit
+// are both quiet lines.
+var severityTheme = [...]severityHue{
 	{criticalStyle, "1"},
 	{highStyle, "9"},
 	{mediumStyle, "11"},
 	{lowStyle, "14"},
 }
 
-// severityStyle is shared by hit spans and the legend; it covers the four
-// signal severities only — benign and no-hit are both quiet lines.
-func severityStyle(severity model.Severity) style {
+// severityHueOf is the one lookup every severity color goes through; a quiet
+// level has no hue, so its paint is the zero value.
+func severityHueOf(severity model.Severity) severityHue {
 	if severity < 0 || int(severity) >= len(severityTheme) {
-		return style{}
+		return severityHue{}
 	}
-	return severityTheme[severity].span
+	return severityTheme[severity]
 }
 
-// severityBorder is the border hue. A critical hit span is white on red, so the
+// severityStyle is shared by hit spans and the legend; it covers the four
+// signal severities only.
+func severityStyle(severity model.Severity) style { return severityHueOf(severity).span }
+
+// severityBorder is the rail hue. A critical hit span is white on red, so the
 // border takes the red itself.
-func severityBorder(severity model.Severity) lipgloss.Color {
-	if severity < 0 || int(severity) >= len(severityTheme) {
-		return ""
-	}
-	return severityTheme[severity].border
-}
+func severityBorder(severity model.Severity) lipgloss.Color { return severityHueOf(severity).border }
 
 // ErrorColor and HintColor are the hues the command-line skeleton (help and
 // error text) shares with the report: the signal hue of a high hit for a

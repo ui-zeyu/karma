@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"karma/internal/script"
 )
 
 // months is the C-locale month abbreviation table find's %Tb prints under
@@ -212,14 +214,6 @@ func rowBody(row string) string {
 	return row
 }
 
-// sortedPaths returns the paths in the listing tier's sorted order: the order
-// ls sorts its own arguments in, which the forensics sections print.
-func sortedPaths(files []string) []string {
-	sorted := slices.Clone(files)
-	slices.Sort(sorted)
-	return sorted
-}
-
 // LsRows renders the `== ls` forensics section for one file list: the ls -l row
 // of every path that still exists, in the listing tier's sorted order. The
 // attributes come from lstat in process, not from a hooked libc: a setuid bit
@@ -231,7 +225,7 @@ func sortedPaths(files []string) []string {
 func LsRows(files []string) string {
 	names := NewNameCache()
 	var b strings.Builder
-	for _, path := range sortedPaths(files) {
+	for _, path := range script.LsSorted(files) {
 		if info, err := os.Lstat(path); err == nil {
 			b.WriteString(LsBody(info, path, names))
 			b.WriteByte('\n')

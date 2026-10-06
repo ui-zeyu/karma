@@ -73,17 +73,30 @@ type HeaderInfo struct {
 
 // RenderHeader draws the report's masthead: the KARMA band — the same
 // full-width level-one strip an aspect banner wears, covering the rail's own
-// column — over a rail panel whose head band is the level-two step every check
-// title wears, carrying the build's version and the run's clock. Below it the
-// facts line up as a table: which host, reached how, running what, collected by
-// whom, and how much of the catalog this run covers.
+// column, with the author on its right edge — over a rail panel whose head band
+// is the level-two step every check title wears, carrying the build's version
+// and the run's clock. Below it the facts line up as a table: which host,
+// reached how, running what, collected by whom, and how much of the catalog
+// this run covers.
 func RenderHeader(w io.Writer, facts model.HostFacts, info HeaderInfo, width int) {
 	head := bandHead(subBandFill, subBandStyle.Render(info.Version), clock(info.Started),
-		style{fg: subBandMetaColor, bg: subBandColor}, railInner(width))
+		style{fg: bandMetaColor, bg: subBandColor}, railInner(width))
 	body := factGrid(mastheadFacts(facts, info), textWidth(width))
-	fmt.Fprintln(w, headingBand("KARMA", width))
+	fmt.Fprintln(w, mastheadBand(width))
 	fmt.Fprintln(w, checkBlock(model.Info, head, body, width))
 	fmt.Fprintln(w)
+}
+
+// authorLabel is the report's byline, written on the right edge of the
+// masthead's level-one band the way every panel head carries its metadata.
+const authorLabel = "yuyy"
+
+// mastheadBand is the report's level-one band: KARMA on the left and the author
+// on the right edge of the same strip.
+func mastheadBand(term int) string {
+	rows := bandHead(bandStyle, "KARMA", authorLabel,
+		style{fg: bandMetaColor, bg: bannerColor}, lineWidth(term))
+	return trimPadding(strings.Join(rows, "\n"))
 }
 
 // clock is the run's start time in the operator's own zone: a report is read
@@ -488,7 +501,7 @@ func thinRailPanel(result *model.CheckResult, note string, maxLines, width int) 
 // the right.
 func checkHead(result *model.CheckResult, width int) []string {
 	return bandHead(subBandFill, subBandStyle.Render(strings.ToUpper(result.Check.ID)), metaParts(result),
-		style{fg: subBandMetaColor, bg: subBandColor}, railInner(width))
+		style{fg: bandMetaColor, bg: subBandColor}, railInner(width))
 }
 
 // bandHead lays a panel head on a heading band: the label on the left,
@@ -652,7 +665,10 @@ func bodyRows(result *model.CheckResult, maxLines, term int) []string {
 			lineStyler = newLineStyler(syntax)
 		}
 		planned, used := plan(section.Lines, budget)
-		if planned == nil {
+		// A section the reading layer kept for its title alone — every row was
+		// filtered or below the floor — is still a finding: the title is what
+		// the rule matched. Skipping it here would print nothing for it.
+		if planned == nil && len(section.TitleMatches) == 0 {
 			continue
 		}
 		budget -= used

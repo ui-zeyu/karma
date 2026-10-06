@@ -76,18 +76,23 @@ func TestUnamePlatformRejectsUnknownNames(t *testing.T) {
 	}
 }
 
-func TestBootstrapArgsSplitsTheMode(t *testing.T) {
-	if extra, ok := bootstrapArgs([]string{"bootstrap"}); !ok || len(extra) != 0 {
+// The mode word splits each channel's positional arguments the same way: the
+// words after it belong to the mode, and a selector is not a mode word.
+func TestModeArgsSplitsTheMode(t *testing.T) {
+	if extra, ok := modeArgs([]string{"bootstrap"}, "bootstrap"); !ok || len(extra) != 0 {
 		t.Fatalf("a bare bootstrap form = %v, %v", extra, ok)
 	}
-	if extra, ok := bootstrapArgs([]string{"bootstrap", "identity"}); !ok || len(extra) != 1 {
+	if extra, ok := modeArgs([]string{"bootstrap", "identity"}, "bootstrap"); !ok || len(extra) != 1 {
 		t.Fatalf("the words after bootstrap = %v, %v", extra, ok)
 	}
-	if _, ok := bootstrapArgs([]string{"identity"}); ok {
+	if _, ok := modeArgs([]string{"identity"}, "bootstrap"); ok {
 		t.Fatal("a selector was taken for the bootstrap form")
 	}
-	if _, ok := bootstrapArgs(nil); ok {
+	if _, ok := modeArgs(nil, "bootstrap"); ok {
 		t.Fatal("no arguments were taken for the bootstrap form")
+	}
+	if dirs, ok := modeArgs([]string{"mtime", "/tmp"}, "mtime"); !ok || len(dirs) != 1 {
+		t.Fatalf("the mtime form = %v, %v", dirs, ok)
 	}
 }
 
