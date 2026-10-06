@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/samber/lo"
 
+	"karma/internal/fault"
 	"karma/internal/model"
 	"karma/internal/textutil"
 )
@@ -67,25 +68,24 @@ func checkHead(result *model.CheckResult, term int) []string {
 // renderPanel renders one check panel, falling back step by step on a
 // rendering panic: first to fallbackPanel's grey rail with the raw text, and if
 // even that cannot be drawn, failed=true with empty text so the caller prints
-// plain text.
-func renderPanel(result *model.CheckResult, maxLines, term int) (text string, failed bool) {
-	defer func() {
-		if recover() != nil {
-			text, failed = fallbackPanel(result, maxLines, term), true
-		}
-	}()
-	return panelRenderer(result, maxLines, term), false
+// plain text. Each step is a boundary of the fault package, like every other
+// one a run crosses.
+func renderPanel(result *model.CheckResult, maxLines, term int) (string, bool) {
+	text, err := fault.Result("panel "+result.Check.ID, func() string {
+		return panelRenderer(result, maxLines, term)
+	})
+	if err == nil {
+		return text, false
+	}
+	fallback, _ := fault.Result("panel fallback", func() string {
+		return fallbackPanel(result, maxLines, term)
+	})
+	return fallback, true
 }
 
 // fallbackPanel is the fallback panel: check id, failure note, and raw text
-// (plain, wrapped to the budget) on a thin grey rail. If it panics in turn it
-// returns an empty string.
-func fallbackPanel(result *model.CheckResult, maxLines, term int) (text string) {
-	defer func() {
-		if recover() != nil {
-			text = ""
-		}
-	}()
+// (plain, wrapped to the budget) on a thin grey rail.
+func fallbackPanel(result *model.CheckResult, maxLines, term int) string {
 	return thinRailPanel(result, "render failed, showing raw output", maxLines, term)
 }
 

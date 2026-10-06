@@ -272,16 +272,20 @@ func joinStep(members []answeredTier) (model.RunResult, string) {
 	if joined.Verdict == model.VerdictFailed && allUnavailable(members) {
 		joined.Verdict = model.VerdictUnavailable
 	}
+	// One pass over the members gathers the joined body, the error text, the
+	// truncation mark, the first exit code, and the label. terminated tracks
+	// whether the body written so far ends with a newline, so a body that lost
+	// its own terminator is separated from the next member's first line.
 	var out, errText strings.Builder
-	truncated := false
+	labels := make([]string, 0, len(members))
+	truncated, terminated := false, true
 	for _, member := range members {
 		if member.result.Stdout != "" {
-			// A body that lost its trailing newline would glue onto the next
-			// member's first line.
-			if out.Len() > 0 && !strings.HasSuffix(out.String(), "\n") {
+			if out.Len() > 0 && !terminated {
 				out.WriteByte('\n')
 			}
 			out.WriteString(member.result.Stdout)
+			terminated = strings.HasSuffix(member.result.Stdout, "\n")
 		}
 		errText.WriteString(member.result.Stderr)
 		if member.result.Truncated && member.probe.Cap.Cut() {
@@ -290,12 +294,9 @@ func joinStep(members []answeredTier) (model.RunResult, string) {
 		if joined.Verdict == model.VerdictFailed && joined.ExitCode < 0 && member.result.ExitCode >= 0 {
 			joined.ExitCode = member.result.ExitCode
 		}
-	}
-	joined.Stdout, joined.Stderr, joined.Truncated = out.String(), errText.String(), truncated
-	labels := make([]string, 0, len(members))
-	for _, member := range members {
 		labels = append(labels, member.probe.Label)
 	}
+	joined.Stdout, joined.Stderr, joined.Truncated = out.String(), errText.String(), truncated
 	return joined, strings.Join(labels, " + ")
 }
 

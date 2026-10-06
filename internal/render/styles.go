@@ -17,6 +17,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"karma/internal/fault"
 	"karma/internal/model"
 )
 
@@ -206,22 +207,23 @@ func newLineStyler(syntax model.Syntax) lineStyler {
 
 // safeLineStyler wraps a lexer with insurance: an instance that blew up once is
 // permanently degraded to plain text (its cross-line state may already be
-// polluted, and coloring against a wrong anchor is worse than plain text).
+// polluted, and coloring against a wrong anchor is worse than plain text). The
+// boundary is the fault package's, like every other one a run crosses.
 func safeLineStyler(styler lineStyler) lineStyler {
 	if styler == nil {
 		return nil
 	}
 	poisoned := false
-	return func(line string) (spans []paintSpan) {
+	return func(line string) []paintSpan {
 		if poisoned {
 			return nil
 		}
-		defer func() {
-			if recover() != nil {
-				poisoned, spans = true, nil
-			}
-		}()
-		return styler(line)
+		spans, err := fault.Result("line styler", func() []paintSpan { return styler(line) })
+		if err != nil {
+			poisoned = true
+			return nil
+		}
+		return spans
 	}
 }
 

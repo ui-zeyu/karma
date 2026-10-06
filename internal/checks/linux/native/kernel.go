@@ -1,15 +1,12 @@
 // native tiers of the kernel checks: boot module lists, the hidden-module
-// cross-check, kallsyms signatures, taint flags, and signature config.
+// cross-check, the module-memory diff, kallsyms signatures and taint flags.
 
 package native
 
 import (
-	"bytes"
 	"cmp"
-	"compress/gzip"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -302,7 +299,8 @@ func moduleListNames(body string) []string {
 	return names
 }
 
-// symbolModuleNames counts the module tags in a /proc/kallsyms body. A tagged// line ends with the module in brackets after a tab
+// symbolModuleNames counts the module tags in a /proc/kallsyms body. A tagged
+// line ends with the module in brackets after a tab
 // ("__kstrtab_nft_do_chain\t[nf_tables]"); an untagged line is a kernel symbol.
 // The pseudo-module tags in PseudoModuleTags are left out, so the difference
 // against /proc/modules stays a hidden-module signal.
@@ -425,38 +423,4 @@ func Tainted(ctx context.Context) (string, error) {
 		return "", model.ErrTierUnavailable
 	}
 	return string(data), nil
-}
-
-// ModuleSig mirrors moduleSigScript: the ikconfig dump first, the
-// /boot/config-<release> fallback second, both narrowed to CONFIG_MODULE_SIG;
-// an empty answer stays silent on a custom kernel.
-func ModuleSig(ctx context.Context) (string, error) {
-	if body := configSigRows("/proc/config.gz", true); body != "" {
-		return body, nil
-	}
-	if release, ok := localfs.KernelRelease(); ok {
-		return configSigRows("/boot/config-"+release, false), nil
-	}
-	return "", nil
-}
-
-func configSigRows(path string, gzipped bool) string {
-	data, err := localfs.ReadRegular(path)
-	if err != nil {
-		return ""
-	}
-	if gzipped {
-		reader, err := gzip.NewReader(bytes.NewReader(data))
-		if err != nil {
-			return ""
-		}
-		unpacked, err := io.ReadAll(reader)
-		if err != nil {
-			return ""
-		}
-		data = unpacked
-	}
-	return filteredLines(string(data), func(line string) bool {
-		return strings.HasPrefix(line, "CONFIG_MODULE_SIG")
-	})
 }

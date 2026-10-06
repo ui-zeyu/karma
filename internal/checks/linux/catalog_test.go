@@ -139,7 +139,6 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"module-memory", `UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module`, "module-memory-unowned"},
 		{"module-memory", `UNOWNED 0xffffffffc02a4000-0xffffffffc02a7000 size 12288 caller shared diamorphine 2`, "module-memory-unowned"},
 		{"module-memory", `VMAP regions 132 modules 50 explained 104 unexplained 28`, "module-memory-accounting"},
-		{"module-sig-config", `CONFIG_MODULE_SIG=n`, "module-sig-off"},
 		{"dmesg", `[    0.000000] module verification failed: taint flag set`, "dmesg-taint"},
 		// a hooked kernel prints the table it found and the syscalls it replaced; the
 		// keep filter carries the same vocabulary, so these lines reach the panel

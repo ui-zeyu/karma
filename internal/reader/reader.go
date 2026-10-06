@@ -14,6 +14,7 @@ import (
 
 	"github.com/samber/lo"
 
+	"karma/internal/fault"
 	"karma/internal/model"
 	"karma/internal/textutil"
 )
@@ -192,14 +193,13 @@ func (s rawSection) shaped(transforms []model.Normalizer) piece {
 	return p
 }
 
-// safeNormalize insures the shaper: on panic it is treated as no shaping, keeping the section's raw lines.
-func safeNormalize(normalize model.Normalizer, title, body string) (shaped *model.Shaped) {
-	defer func() {
-		if recover() != nil {
-			shaped = nil
-		}
-	}()
-	return normalize(title, body)
+// safeNormalize insures the shaper: a panic is treated as no shaping, keeping
+// the section's raw lines. The boundary is the fault package's, like every
+// other one a run crosses, and it reports no error here: odd target output
+// hitting a hard-coded row shape is what the fallback is for.
+func safeNormalize(normalize model.Normalizer, title, body string) *model.Shaped {
+	shaped, _ := fault.Result("section shaper", func() *model.Shaped { return normalize(title, body) })
+	return shaped
 }
 
 // splitSections lazily cuts on `== ` lines. Lines before the first marker are the

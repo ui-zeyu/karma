@@ -19,14 +19,6 @@ import (
 	"karma/internal/script"
 )
 
-// moduleSigScript: build-time config: /proc/config.gz (IKCONFIG kernels) first,
-// the distro /boot/config as fallback; both are narrowed to CONFIG_MODULE_SIG
-// first. A full IKCONFIG dump is thousands of lines, and pouring it all into the
-// check box would leave only the two rule-highlighted lines informative. When
-// neither exists (custom kernel), an empty answer stays silent.
-const moduleSigScript = "zcat /proc/config.gz 2>/dev/null | grep '^CONFIG_MODULE_SIG'" +
-	` || grep "^CONFIG_MODULE_SIG" "/boot/config-$(uname -r)" 2>/dev/null`
-
 // modulesLoadPaths are the boot-load surfaces the check covers: the Debian
 // /etc/modules file and the systemd modules-load.d layers, of which only the
 // writable ones are scanned (/usr and /lib belong to distro packages). The ssh
@@ -226,16 +218,6 @@ var KernelChecks = []*model.Check{
 				// visible across two runs.
 				model.NewRule("module-memory-accounting", `^VMAP regions \d+ `, model.Low,
 					"executable kernel memory accounting"),
-			},
-		}),
-	define.LinuxCheck("module-sig-config", "Kernel module signature config", model.AspectKernel,
-		[]model.Step{{{Label: "zcat", Inv: model.Dual{Run: native.ModuleSig, Script: moduleSigScript}}}},
-		define.CheckOpt{
-			Syntax: model.SyntaxEnv,
-			Rules: []model.Rule{
-				model.NewRule("module-sig-off", `^CONFIG_MODULE_SIG=(?:n|m)`, model.Medium, "module signing not enabled"),
-				model.NewRule("module-sig-not-forced", `^CONFIG_MODULE_SIG_FORCE=n`, model.Medium,
-					"unsigned modules still load"),
 			},
 		}),
 	// LKM rootkits cannot scrub their own symbols out of /proc/kallsyms: the

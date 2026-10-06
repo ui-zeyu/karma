@@ -95,14 +95,14 @@ func newLsCmd() *cobra.Command {
 }
 
 // readerFailure is one built-in reader's failure: the message stays the host
-// tool's own sentence, and the command exits 1 — the status a failed read
+// tool's own sentence, and the command exits ExitRead — the status a failed read
 // carries — so a script that reads $? sees the failure instead of success. The
 // operands that did read have already printed either way.
 func readerFailure(err error) error {
 	if err == nil {
 		return nil
 	}
-	return failf(1, "%s", err.Error())
+	return failf(ExitRead, "%s", err.Error())
 }
 
 // atLeastOneArg is cat's argument check: one or more positional words, with

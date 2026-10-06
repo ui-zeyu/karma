@@ -218,13 +218,20 @@ func ParseSeverityFloor(name string) (SeverityFloor, bool) {
 	return FloorAbove(level), true
 }
 
-// Outcome is how a check ended: output collected, environment lacked the
-// command, or execution failed.
+// Outcome is how a check's walk ended. A tier that failed mid-walk is still
+// Collected — its error text is the note the panel shows — so the other two
+// values are the ones that say the walk did not run.
 type Outcome int
 
 const (
+	// Collected: the walk ran. A tier that answered with an empty body and one
+	// whose failure left only stderr are both this; the note carries which.
 	Collected Outcome = iota
+	// Skipped: every tier was unavailable here — the target's environment lacks
+	// the command.
 	Skipped
+	// Failed: karma's own boundary broke this check, so the walk produced
+	// nothing at all.
 	Failed
 )
 
@@ -664,10 +671,10 @@ type SectionSyntax struct {
 	Syntax Syntax
 }
 
-// CheckResult is the outcome of one check. Outcome separates "not collected"
-// (missing command, environment fact) from "failed" (execution error, signal);
-// document decides visibility on its own, so the presentation layer needs
-// nothing else. Raw is the channel's stdout exactly as collected — the
+// CheckResult is the outcome of one check. Outcome and Note together say what
+// happened to the walk; document decides visibility on its own, so the
+// presentation layer reads the outcome only to tell a skipped check from a
+// collected one. Raw is the channel's stdout exactly as collected — the
 // evidence --save writes, before the reading layer caps or shapes anything.
 // Document is the reading result, computed once when the report is built, and
 // the presentation layer only reads it.

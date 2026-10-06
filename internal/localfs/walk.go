@@ -164,13 +164,18 @@ func GrepWalk(ctx context.Context, root string, opt GrepScan) []string {
 	return hits
 }
 
+// lineBreak is the terminator the scan trims: a hit's row carries its line
+// without the newline.
+var lineBreak = []byte("\n")
+
 // grepFile streams one file and hands every matching line to onHit with its
 // 1-based number; onHit returns false to stop at the cap. Lines are read one
 // at a time, the way grep reads them, so a huge file under a scanned root (a
-// packed upload in /var/www) never sits whole in memory. A NUL byte makes the
-// file binary (-I) and is reported as such, so the caller drops what the file
-// had already contributed; an unreadable file reports nothing, like grep with
-// its stderr suppressed.
+// packed upload in /var/www) never sits whole in memory. The pattern matches the
+// line's bytes, so a line that does not hit costs no string: a recursive scan
+// converts only what it reports. A NUL byte makes the file binary (-I) and is
+// reported as such, so the caller drops what the file had already contributed;
+// an unreadable file reports nothing, like grep with its stderr suppressed.
 func grepFile(path string, pattern *regexp.Regexp, onHit func(number int, line string) bool) (binary bool) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -186,8 +191,8 @@ func grepFile(path string, pattern *regexp.Regexp, onHit func(number int, line s
 				return true
 			}
 			number++
-			text := strings.TrimSuffix(string(line), "\n")
-			if pattern.MatchString(text) && !onHit(number, text) {
+			body := bytes.TrimSuffix(line, lineBreak)
+			if pattern.Match(body) && !onHit(number, string(body)) {
 				return false
 			}
 		}

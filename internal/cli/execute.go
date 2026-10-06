@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -60,14 +61,19 @@ func terminalWidth(w io.Writer) int {
 // same status a failed connection uses. Here it becomes one message, the exit
 // code that says the tool itself broke, and — with --save — a record of what
 // went wrong beside the evidence.
-func Execute(ctx context.Context, w io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) (err error) {
-	defer func() {
-		if problem := recover(); problem != nil {
-			crash := fault.New("collection", problem)
-			saveCrash(options.SaveDir, crash)
-			err = failf(ExitInternal, "%s", crash.Error())
-		}
-	}()
+func Execute(ctx context.Context, w io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
+	err := fault.Catch("collection", func() error { return execute(ctx, w, transport, options, catalog) })
+	var crash *fault.Panic
+	if !errors.As(err, &crash) {
+		return err
+	}
+	saveCrash(options.SaveDir, crash)
+	return failf(ExitInternal, "%s", crash.Error())
+}
+
+// execute is the run itself. The boundary above it owns the panic contract, so
+// nothing here guards against one escaping.
+func execute(ctx context.Context, w io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
 	started := time.Now()
 	target := catalog
 	if target == nil {
