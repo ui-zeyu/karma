@@ -36,14 +36,14 @@ type nativeResult struct {
 	err  error
 }
 
-func runNative(ctx context.Context, fn func(context.Context) (string, error), timeout time.Duration, lineLimit int) model.RunResult {
+func runNative(ctx context.Context, fn func(context.Context) (string, error), timeout time.Duration, cap model.RowCap) model.RunResult {
 	if fn == nil {
 		// A Dual with no local branch is a tier that exists on the ssh channel
 		// only (model.Dual.For): the runner never routes it here, and a caller
 		// that does gets the same answer a body that cannot run would give, so
 		// LocalSession.Run falls to the tier's script side as it does for every
 		// other unavailable body.
-		return model.RunResult{Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
+		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
 	}
 	bodyCtx := ctx
 	if timeout > 0 {
@@ -68,45 +68,45 @@ func runNative(ctx context.Context, fn func(context.Context) (string, error), ti
 	}()
 	select {
 	case result := <-done:
-		return finishNative(result, ctx, lineLimit)
+		return finishNative(result, ctx, cap)
 	case <-bodyCtx.Done():
 		select {
 		case result := <-done:
-			return finishNative(result, ctx, lineLimit)
+			return finishNative(result, ctx, cap)
 		case <-time.After(bodyGrace):
 		}
 		// The body is behind a syscall that ignores the context. Report the
 		// deadline and leave the goroutine where it is: it holds nothing the
 		// report needs, and the process exits without waiting for it.
 		if ctx.Err() != nil {
-			return model.RunResult{ExitCode: -1, Interrupted: true}
+			return model.RunResult{Verdict: model.VerdictInterrupted, ExitCode: -1}
 		}
-		return model.RunResult{ExitCode: -1, TimedOut: true}
+		return model.RunResult{Verdict: model.VerdictTimedOut, ExitCode: -1}
 	}
 }
 
 // finishNative turns one finished body into the tier's result. ctx is the
 // caller's own context, so Interrupted means the operator cancelled the run
 // rather than a body that noticed someone else's deadline.
-func finishNative(result nativeResult, ctx context.Context, lineLimit int) model.RunResult {
+func finishNative(result nativeResult, ctx context.Context, cap model.RowCap) model.RunResult {
 	switch {
 	case result.err == nil:
 	case errors.Is(result.err, model.ErrTierUnavailable):
-		return model.RunResult{Stderr: result.err.Error(), ExitCode: 127}
+		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: result.err.Error(), ExitCode: 127}
 	case errors.Is(result.err, context.DeadlineExceeded):
-		return model.RunResult{Stdout: validText(result.text), ExitCode: -1, TimedOut: true}
+		return model.RunResult{Verdict: model.VerdictTimedOut, Stdout: validText(result.text), ExitCode: -1}
 	case ctx.Err() != nil:
-		return model.RunResult{Stdout: validText(result.text), ExitCode: -1, Interrupted: true}
+		return model.RunResult{Verdict: model.VerdictInterrupted, Stdout: validText(result.text), ExitCode: -1}
 	default:
-		return model.RunResult{Stderr: result.err.Error(), ExitCode: 1}
+		return model.RunResult{Verdict: model.VerdictFailed, Stderr: result.err.Error(), ExitCode: 1}
 	}
 
-	text, truncated := capLines(result.text, lineLimit)
+	text, truncated := capLines(result.text, cap.Rows)
 	if int64(len(text)) > maxHarvestBytes {
 		text = text[:maxHarvestBytes]
 		truncated = true
 	}
-	return model.RunResult{Stdout: validText(text), ExitCode: 0, Truncated: truncated}
+	return model.RunResult{Verdict: model.VerdictAnswered, Stdout: validText(text), Truncated: truncated}
 }
 
 // capLines keeps the first limit lines of a body and reports whether more

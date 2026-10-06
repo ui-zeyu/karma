@@ -3,16 +3,20 @@
 // (Ctrl-C) takes the same path as the timeout: stop the source, keep the
 // partial output.
 //
-// The local subprocess and the SSH channel share this. The two read streams
-// (stdout, stderr) each get their own goroutine: a timeout stops the data
-// source, not the reads, so bytes already read are not lost. Reaping happens
-// after the reads drain: Wait closes the read-side pipes and races with unread
-// buffers (the os/exec StdoutPipe contract), so Wait returns immediately once
-// everything is drained. The line limit's "stop once enough is read" also
-// happens here: probe one extra line to confirm there is more content, then
-// stop the source and count the body as this tier's answer; the byte safety
-// valve (maxHarvestBytes) likewise stops the source at the limit and counts as
-// truncated.
+// The local subprocess, the SSH channel and the ttyd channel share this. The
+// two read streams (stdout, stderr) each get their own goroutine: a timeout
+// stops the data source, not the reads, so bytes already read are not lost.
+// Reaping happens after the reads drain: Wait closes the read-side pipes and
+// races with unread buffers (the os/exec StdoutPipe contract), so Wait returns
+// immediately once everything is drained. The row cap's "stop once enough is
+// read" also happens here: probe one extra line to confirm there is more
+// content, then stop the source — that stop is this tier's answer — while the
+// byte safety valve (maxHarvestBytes) stops the source at the limit and counts
+// the body as truncated.
+//
+// One finished call is read into a model.Verdict here, the single place the
+// exit codes are interpreted: every channel hands back this result and the
+// chain above it reads the verdict alone.
 
 package session
 
@@ -24,6 +28,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"karma/internal/model"
@@ -37,43 +42,46 @@ var stopGrace = 5 * time.Second
 // maxHarvestBytes is the output safety valve for a single call: past the limit,
 // stop the source and count as truncated. The reading layer caps by ScanBytes
 // anyway, so collecting more is pointless. A source can tighten it through
-// source.byteLimit (the tests do).
+// byteLimit (the tests do).
 const maxHarvestBytes = int64(64) << 20
 
-// lineReader reads line by line and cleans bad bytes: stray output from the
+// readLineFrom reads one line and cleans bad bytes: stray output from the
 // target (GBK lines, binary leaking into stdout) is replaced with U+FFFD;
 // stdout and stderr get the same treatment, so reading and rendering always see
 // valid UTF-8.
-func lineReader(reader *bufio.Reader) func() (string, bool) {
-	return func() (string, bool) {
-		line, err := reader.ReadString('\n')
-		if line == "" && err != nil {
-			return "", false
-		}
-		return validText(line), err == nil
+func readLineFrom(reader *bufio.Reader) (string, bool) {
+	line, err := reader.ReadString('\n')
+	if line == "" && err != nil {
+		return "", false
 	}
+	return validText(line), err == nil
 }
 
 // drainText reads the rest of one stream (stderr) and cleans bad bytes with the
-// same U+FFFD policy as lineReader.
+// same U+FFFD policy as readLineFrom.
 func drainText(reader *bufio.Reader) string {
 	raw, _ := io.ReadAll(io.LimitReader(reader, maxHarvestBytes))
 	return validText(string(raw))
 }
 
-// source is the data source of one call, provided by the channel implementation.
-// wait waits for the call to end; stop stops the data source (kill the process
-// tree / close the channel); readLine reads one stdout line (ok=false is EOF);
-// readAll drains stderr; exitCode returns the exit code (-1 when undetermined);
-// byteLimit overrides maxHarvestBytes when positive.
-type source struct {
-	wait      func()
-	stop      func()
-	readLine  func() (string, bool)
-	readAll   func() string
-	exitCode  func() int
-	byteLimit int64
+// source is the data source of one call, implemented per channel: wait for the
+// call to end, stop the data source (kill the process tree / close the
+// channel), read one stdout line (ok=false is EOF), drain stderr, report the
+// exit code (-1 when undetermined), and declare the byte valve.
+type source interface {
+	wait()
+	stop()
+	readLine() (string, bool)
+	readAll() string
+	exitCode() int
+	byteLimit() int64
 }
+
+// baseSource carries what every channel's source shares beyond its own
+// mechanics: the byte valve, which no production path tightens.
+type baseSource struct{ limit int64 }
+
+func (b baseSource) byteLimit() int64 { return b.limit }
 
 // harvestState buffers the two read streams. Every write takes the lock so the
 // timeout and cancel paths can snapshot mid-read: even a source that survives
@@ -128,17 +136,25 @@ func (h *harvestState) snapshot() (string, string, bool) {
 // harvest waits for the call to end, the timeout, or cancellation. On timeout
 // or cancel it stops the source first and waits for exit within the grace
 // period; both paths carry back the output read so far.
-func harvest(ctx context.Context, src source, timeout time.Duration, lineLimit int) model.RunResult {
+func harvest(ctx context.Context, src source, timeout time.Duration, cap model.RowCap) model.RunResult {
 	// Each reader owns one builder through the locked state, so a snapshot is
 	// safe at any point; the line-by-line path needs no extra ordering.
 	var state harvestState
 
-	// Once stopCh is closed, stdout reading stops: either the line limit, the
-	// timeout, or the cancel triggered the stop.
+	// Once stopCh is closed, stdout reading stops: either the row cap, the byte
+	// valve, the timeout, or the cancel triggered the stop. capped marks a stop
+	// this harvest decided on: the source was stopped on purpose, so what it
+	// produced is the tier's answer whatever the stopped process reports.
 	stopCh := make(chan struct{})
-	var once sync.Once
-	stopSource := func() {
+	var (
+		once   sync.Once
+		capped atomic.Bool
+	)
+	stopSource := func(deliberate bool) {
 		once.Do(func() {
+			if deliberate {
+				capped.Store(true)
+			}
 			close(stopCh)
 			src.stop()
 		})
@@ -146,8 +162,8 @@ func harvest(ctx context.Context, src source, timeout time.Duration, lineLimit i
 
 	var readers sync.WaitGroup
 	readers.Add(2)
-	byteLimit := cmp.Or(src.byteLimit, maxHarvestBytes)
-	go safeSource(&state, readers.Done, func() {
+	byteLimit := cmp.Or(src.byteLimit(), maxHarvestBytes)
+	go safeCall(func(problem error) { state.markPanicked(problem.Error()) }, readers.Done, func() {
 		var lines, buffered int64
 		for {
 			select {
@@ -164,31 +180,31 @@ func harvest(ctx context.Context, src source, timeout time.Duration, lineLimit i
 			if !ok {
 				return
 			}
-			if lineLimit > 0 && lines >= int64(lineLimit) {
-				// After enough lines, probe one more: stop the source if there is
+			if cap.Rows > 0 && lines >= int64(cap.Rows) {
+				// After enough rows, probe one more: stop the source if there is
 				// more content; the extra line does not enter the body. A trailing
 				// partial line has more=false but non-empty content and likewise
 				// counts as "more content".
 				if extra, _ := src.readLine(); extra != "" {
 					state.markTruncated()
 				}
-				stopSource()
+				stopSource(true)
 				return
 			}
 			// Byte safety valve: a runaway output can fill memory before the timeout, so stop at the limit
 			if buffered >= byteLimit {
 				state.markTruncated()
-				stopSource()
+				stopSource(true)
 				return
 			}
 		}
 	})
-	go safeSource(&state, readers.Done, func() {
+	go safeCall(func(problem error) { state.markPanicked(problem.Error()) }, readers.Done, func() {
 		state.addErr(src.readAll())
 	})
 
 	done := make(chan struct{})
-	go safeSource(&state, func() { close(done) }, func() {
+	go safeCall(func(problem error) { state.markPanicked(problem.Error()) }, func() { close(done) }, func() {
 		readers.Wait()
 		src.wait()
 	})
@@ -203,24 +219,47 @@ func harvest(ctx context.Context, src source, timeout time.Duration, lineLimit i
 	}
 	select {
 	case <-done:
+		exitCode := src.exitCode()
 		outText, errText, trunc := state.snapshot()
-		return model.RunResult{Stdout: outText, Stderr: errText, ExitCode: src.exitCode(), Truncated: trunc}
+		verdict := verdictFor(exitCode, outText)
+		if capped.Load() {
+			verdict = model.VerdictAnswered
+		}
+		return model.RunResult{Verdict: verdict, Stdout: outText, Stderr: errText, ExitCode: exitCode, Truncated: trunc}
 	case <-deadline:
-		return stopAndCollect(done, stopSource, src, &state, false)
+		return stopAndCollect(done, func() { stopSource(false) }, src, &state, false)
 	case <-ctx.Done():
-		return stopAndCollect(done, stopSource, src, &state, true)
+		return stopAndCollect(done, func() { stopSource(false) }, src, &state, true)
 	}
 }
 
-// safeSource runs one harvest goroutine and signals its completion. A panic in a
+// verdictFor reads one finished process the way every shell tier's chain does:
+// 127 is the missing-command answer the scripts self-guard with (`command -v X
+// || exit 127`), an exit code of 0 or any output on stdout is the tier's answer
+// (an empty answer is an answer), and anything else is a failure whose stderr a
+// panel names.
+func verdictFor(exitCode int, stdout string) model.Verdict {
+	switch {
+	case exitCode == 127 && strings.TrimSpace(stdout) == "":
+		return model.VerdictUnavailable
+	case exitCode == 0 || strings.TrimSpace(stdout) != "":
+		return model.VerdictAnswered
+	}
+	return model.VerdictFailed
+}
+
+// safeCall runs one goroutine of a call and signals its completion. A panic in a
 // goroutine has no recover above it, so it would end the process and take the
 // whole report with it, where the contract is that one broken check fails alone.
-// The signal is sent from the same deferred call as the recover, so a waiter is
-// never woken before the panic is recorded on the state.
-func safeSource(state *harvestState, finished func(), run func()) {
+// report records the panic where the call's own result paths read it, and it
+// runs in the same deferred call as finished, so a waiter is never woken before
+// the panic is recorded. A helper with no result path of its own passes a no-op
+// reporter: the recover still keeps the process alive, and the caller's own
+// timeout or grace path ends the call.
+func safeCall(report func(error), finished func(), run func()) {
 	defer func() {
 		if problem := recover(); problem != nil {
-			state.markPanicked(fmt.Sprint(problem))
+			report(fmt.Errorf("%v", problem))
 		}
 		finished()
 	}()
@@ -229,7 +268,7 @@ func safeSource(state *harvestState, finished func(), run func()) {
 
 // stopAndCollect stops the data source and keeps what was read: the reads drain
 // within the grace period, or the snapshot lands on whatever arrived by then.
-// interrupted selects between the timeout and the cancel presentation.
+// interrupted selects between the timeout and the cancel verdict.
 func stopAndCollect(done chan struct{}, stopSource func(), src source, state *harvestState, interrupted bool) model.RunResult {
 	stopSource()
 	grace := time.NewTimer(stopGrace)
@@ -238,24 +277,12 @@ func stopAndCollect(done chan struct{}, stopSource func(), src source, state *ha
 	case <-done:
 	case <-grace.C:
 	}
+	verdict := model.VerdictTimedOut
+	if interrupted {
+		verdict = model.VerdictInterrupted
+	}
 	outText, errText, trunc := state.snapshot()
 	return model.RunResult{
-		Stdout: outText, Stderr: errText, ExitCode: -1,
-		TimedOut: !interrupted, Interrupted: interrupted, Truncated: trunc,
+		Verdict: verdict, Stdout: outText, Stderr: errText, ExitCode: -1, Truncated: trunc,
 	}
-}
-
-// harvestCapped is one call with a line limit: stopping the data source after
-// limit lines counts the body as success.
-//
-// The body from stopping at enough lines is already this tier's answer (fallback
-// semantics), so the exit code is reported as 0 with the truncated flag (the
-// frame marks "truncated" from it); a timeout is still presented as a timeout.
-// limit 0 means no cap.
-func harvestCapped(ctx context.Context, src source, timeout time.Duration, limit int) model.RunResult {
-	result := harvest(ctx, src, timeout, limit)
-	if result.Truncated && !result.TimedOut && !result.Interrupted {
-		result.ExitCode = 0
-	}
-	return result
 }

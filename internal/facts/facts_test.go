@@ -29,7 +29,7 @@ func (s *scriptedSession) Describe() string { return "scripted" }
 
 func (s *scriptedSession) Close() error { return nil }
 
-func (s *scriptedSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ int) model.RunResult {
+func (s *scriptedSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ model.RowCap) model.RunResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch v := inv.(type) {
@@ -66,22 +66,22 @@ func TestCollectLinux(t *testing.T) {
 		case model.Shell:
 			switch {
 			case strings.Contains(v.Script, "for name in"):
-				return model.RunResult{Stdout: "/usr/bin/hostname\n/usr/bin/uname\n/usr/bin/id\n", ExitCode: 0}
+				return model.RunResult{Stdout: "/usr/bin/hostname\n/usr/bin/uname\n/usr/bin/id\n", Verdict: model.VerdictAnswered}
 			case strings.Contains(v.Script, "hostname"):
-				return model.RunResult{Stdout: "web-01\n", ExitCode: 0}
+				return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "web-01\n"}
 			case strings.Contains(v.Script, "os-release"):
-				return model.RunResult{Stdout: "PRETTY_NAME=\"Ubuntu 22.04.3 LTS\"\n", ExitCode: 0}
+				return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "PRETTY_NAME=\"Ubuntu 22.04.3 LTS\"\n"}
 			}
 		case model.Command:
 			switch v.Argv[0] {
 			case "uname":
-				return model.RunResult{Stdout: "5.15.0-91-generic\n", ExitCode: 0}
+				return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "5.15.0-91-generic\n"}
 			case "id":
-				return model.RunResult{Stdout: "0\n", ExitCode: 0}
+				return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "0\n"}
 			}
 		}
 		t.Errorf("unexpected call: %+v", inv)
-		return model.RunResult{ExitCode: 1}
+		return model.RunResult{Verdict: model.VerdictFailed, ExitCode: 1}
 	}}
 	got := facts.Collect(context.Background(), fake, []string{"find"})
 	if got.AvailableBins["find"] {
@@ -106,17 +106,17 @@ func TestCollectWindowsPowershellPresent(t *testing.T) {
 		script := scriptOf(inv)
 		switch {
 		case strings.Contains(script, "Get-Command"):
-			return model.RunResult{Stdout: "powershell\nreg\n", ExitCode: 0}
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "powershell\nreg\n"}
 		case strings.Contains(script, "USERDOMAIN"):
 			return model.RunResult{Stdout: strings.Join([]string{
 				"== host", "WS2019",
 				"== user", `CORP\admin`,
 				"== os", "Windows Server 2019 Datacenter 1809",
 				"== kernel", "10.0.17763.4252",
-			}, "\n") + "\n", ExitCode: 0}
+			}, "\n") + "\n"}
 		default:
 			t.Errorf("unexpected call: %+v", inv)
-			return model.RunResult{ExitCode: 1}
+			return model.RunResult{Verdict: model.VerdictFailed, ExitCode: 1}
 		}
 	}}
 	got := facts.CollectWindows(context.Background(), fake, nil)
@@ -148,12 +148,12 @@ func TestCollectWindowsPowershellDegraded(t *testing.T) {
 		script := scriptOf(inv)
 		switch {
 		case strings.Contains(script, "Get-Command"):
-			return model.RunResult{Stdout: "powershell\n", ExitCode: 0}
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "powershell\n"}
 		case strings.Contains(script, "USERDOMAIN"):
-			return model.RunResult{Stdout: "== host\nWIN-XP\n== user\nBOX\\john\n", ExitCode: 0}
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "== host\nWIN-XP\n== user\nBOX\\john\n"}
 		default:
 			t.Errorf("unexpected call: %+v", inv)
-			return model.RunResult{ExitCode: 1}
+			return model.RunResult{Verdict: model.VerdictFailed, ExitCode: 1}
 		}
 	}}
 	got := facts.CollectWindows(context.Background(), fake, nil)
@@ -179,21 +179,21 @@ func TestCollectWindowsFallsBackToRegistry(t *testing.T) {
 		cmd, ok := inv.(model.Command)
 		if !ok {
 			t.Errorf("fallback tier should be an argument vector: %+v", inv)
-			return model.RunResult{ExitCode: 1}
+			return model.RunResult{Verdict: model.VerdictFailed, ExitCode: 1}
 		}
 		joined := strings.Join(cmd.Argv, " ")
 		switch {
 		case cmd.Argv[0] == "powershell":
-			return model.RunResult{ExitCode: -1, Stderr: "channel timeout"}
+			return model.RunResult{Verdict: model.VerdictTimedOut, Stderr: "channel timeout", ExitCode: -1}
 		case strings.Contains(joined, "CurrentVersion") && !strings.Contains(joined, "/v"):
-			return model.RunResult{Stdout: currentVersion, ExitCode: 0}
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: currentVersion}
 		case strings.Contains(joined, "ComputerName"):
-			return model.RunResult{Stdout: "\n    ComputerName    REG_SZ    OLD-XP\n", ExitCode: 0}
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "\n    ComputerName    REG_SZ    OLD-XP\n"}
 		case strings.Contains(joined, "USERNAME"):
-			return model.RunResult{Stdout: "\n    USERNAME    REG_SZ    john\n", ExitCode: 0}
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "\n    USERNAME    REG_SZ    john\n"}
 		default:
 			t.Errorf("unexpected call: %s", joined)
-			return model.RunResult{ExitCode: 1}
+			return model.RunResult{Verdict: model.VerdictFailed, ExitCode: 1}
 		}
 	}}
 	got := facts.CollectWindows(context.Background(), fake, nil)

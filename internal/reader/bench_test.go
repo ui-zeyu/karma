@@ -39,7 +39,7 @@ func BenchmarkAnalyzeListing(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(len(text)))
 	for b.Loop() {
-		if len(reader.Analyze(text, rules, filters, nil, 0, model.FloorAll).Sections) == 0 {
+		if len(reader.Analyze(text, rules, filters, 0, model.FloorAll, nil).Sections) == 0 {
 			b.Fatal("no sections")
 		}
 	}

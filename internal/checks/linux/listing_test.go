@@ -35,7 +35,7 @@ func TestTempListingAlignsRowsAndNamesTheHiddenEntry(t *testing.T) {
 	check := testkit.CheckByID(t, All, "tmp-listing")
 	base := time.Now().Add(-90 * 24 * time.Hour).Unix()
 	body := listingBody(base)
-	document := reader.Analyze(body, check.Rules, check.Filters, check.Normalize, 0, model.FloorAll)
+	document := reader.Analyze(body, check.Rules, check.Filters, 0, model.FloorAll, check.Normalize)
 	if len(document.Sections) != 1 {
 		t.Fatalf("one section expected: %+v", document.Sections)
 	}
@@ -88,7 +88,7 @@ func TestEtcListingFlagsAnIsolatedEntry(t *testing.T) {
 	fmt.Fprintf(&body, "%d.000\t%d.000\t-rw-r--r-- 1 root root 100 Jan 01 00:00 /etc/.backdoor\n",
 		base+30*86400, base+30*86400)
 
-	document := reader.Analyze(body.String(), check.Rules, check.Filters, check.Normalize, 0, model.FloorAll)
+	document := reader.Analyze(body.String(), check.Rules, check.Filters, 0, model.FloorAll, check.Normalize)
 	if len(document.Sections) != 1 || len(document.Sections[0].Lines) != 41 {
 		t.Fatalf("every row should survive: %+v", document.Sections)
 	}

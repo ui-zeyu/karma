@@ -294,9 +294,9 @@ var ProcessChecks = []*model.Check{
 		[]model.Probe{
 			// these caps are the shape each probe wants: plenty to read, and
 			// small enough that a busy host's snapshot stays a panel
-			{Label: "top", Inv: model.Dual{Run: native.Top, Script: "top -b -n 1"}, Head: topHead},
-			{Label: "ps-cpu", Inv: model.Dual{Run: native.PsCPU, Script: "ps aux --sort=-%cpu"}, Head: psSortHead},
-			{Label: "ps-mem", Inv: model.Dual{Run: native.PsMem, Script: "ps aux --sort=-%mem"}, Head: psSortHead},
+			{Label: "top", Inv: model.Dual{Run: native.Top, Script: "top -b -n 1"}, Cap: model.Shape(topHead)},
+			{Label: "ps-cpu", Inv: model.Dual{Run: native.PsCPU, Script: "ps aux --sort=-%cpu"}, Cap: model.Shape(psSortHead)},
+			{Label: "ps-mem", Inv: model.Dual{Run: native.PsMem, Script: "ps aux --sort=-%mem"}, Cap: model.Shape(psSortHead)},
 		},
 		define.CheckOpt{Syntax: model.SyntaxTop, Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,
@@ -329,8 +329,8 @@ var ProcessChecks = []*model.Check{
 		// stream before the keep filter sees the deleted rows.
 		[]model.Probe{
 			{Label: "lsof", Inv: model.Dual{Run: native.DeletedExe, Script: lsofScript}},
-			{Label: "find", Inv: model.Dual{Script: findDeletedScript}, LineLimit: openScanLines},
-			{Label: "proc-links", Inv: model.Dual{Script: deletedLinksScript}, LineLimit: openScanLines},
+			{Label: "find", Inv: model.Dual{Script: findDeletedScript}, Cap: model.Scan(openScanLines)},
+			{Label: "proc-links", Inv: model.Dual{Script: deletedLinksScript}, Cap: model.Scan(openScanLines)},
 		},
 		define.CheckOpt{
 			// Keep only rows the kernel marked deleted; signal rows bypass keep
@@ -362,7 +362,7 @@ var ProcessChecks = []*model.Check{
 	define.LinuxCheck("hidden-pids", "Hidden process brute-force (kill(0) vs /proc)", model.AspectProcess,
 		// Both branches print the same text shape, so the rules are shared.
 		[]model.Probe{
-			{Label: "brute", Inv: model.Dual{Run: native.HiddenPIDs, Script: hiddenPidsScript}, LineLimit: openScanLines},
+			{Label: "brute", Inv: model.Dual{Run: native.HiddenPIDs, Script: hiddenPidsScript}, Cap: model.Scan(openScanLines)},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -381,7 +381,7 @@ var ProcessChecks = []*model.Check{
 					MaxDepth:  minerWalkDepth,
 				}),
 				Script: minerScript,
-			}, LineLimit: openScanLines},
+			}, Cap: model.Scan(openScanLines)},
 		},
 		define.CheckOpt{
 			Syntax: model.SyntaxTable,

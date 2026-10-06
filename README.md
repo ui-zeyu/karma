@@ -13,7 +13,7 @@ go build -o dist/karma ./cmd/karma     # this host
 make dist                              # dist/ binaries for linux/amd64, windows/amd64 and this host
 ```
 
-The version is `0.30.2`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
+The version is `0.31.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
 
 ## Usage
 
@@ -137,7 +137,13 @@ make fmt vet test        # the gates, or each one alone
 make race                # the concurrent packages under -race
 make staticcheck         # when installed
 make dist                # dist/ binaries, with the static-link guard
+make parity HOST=user@host   # the in-process tiers against the script tiers, on a Linux host
 ```
+
+`make parity` collects one host twice — once through the local tiers that read the kernel in process,
+once through the script side every remote channel runs (`KARMA_NO_NATIVE=1` makes the local channel
+skip the in-process bodies) — and diffs the two saved bundles check by check. A difference is the two
+spellings having drifted.
 
 The code lives in `cmd/karma` and `internal/`: `model` is the domain, `define` builds the catalogs,
 `session` runs the channels, `runner` walks the probes, `reader` reads the collected text into a

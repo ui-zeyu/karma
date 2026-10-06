@@ -293,7 +293,7 @@ var FilesystemChecks = []*model.Check{
 			{Label: "getcap", Inv: model.Dual{
 				Run:    native.FileCaps(privFsTypes),
 				Script: "getcap -r / 2>/dev/null",
-			}, LineLimit: openScanLines},
+			}, Cap: model.Scan(openScanLines)},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -334,7 +334,7 @@ var FilesystemChecks = []*model.Check{
 					Window:   webScriptWindow,
 				}),
 				Script: webScriptFind,
-			}, LineLimit: openScanLines},
+			}, Cap: model.Scan(openScanLines)},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -355,7 +355,7 @@ var FilesystemChecks = []*model.Check{
 					ExcludeDirs: webshellExcludeDirs,
 				}),
 				Script: webshellGrep,
-			}, LineLimit: openScanLines},
+			}, Cap: model.Scan(openScanLines)},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{

@@ -156,7 +156,7 @@ func TestTTYDCancelledDialDoesNotLoseTheChannel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	sess := &TTYDSession{endpoint: "ws://127.0.0.1:1/ws"}
-	if result := sess.Run(ctx, model.Shell{Script: "true"}, time.Second, 0); result.ExitCode != -1 {
+	if result := sess.Run(ctx, model.Shell{Script: "true"}, time.Second, model.RowCap{}); result.Verdict != model.VerdictFailed {
 		t.Fatalf("wanted a failed call, got %+v", result)
 	}
 	if sess.Lost() {
@@ -168,7 +168,7 @@ func TestTTYDCancelledDialDoesNotLoseTheChannel(t *testing.T) {
 // way, so the runner stops queueing checks and the command line says so once.
 func TestTTYDUnreachableEndpointIsLost(t *testing.T) {
 	sess := &TTYDSession{endpoint: "ws://127.0.0.1:1/ws"}
-	sess.Run(context.Background(), model.Shell{Script: "true"}, time.Second, 0)
+	sess.Run(context.Background(), model.Shell{Script: "true"}, time.Second, model.RowCap{})
 	if !sess.Lost() {
 		t.Fatal("a dial nothing answers must latch lost")
 	}

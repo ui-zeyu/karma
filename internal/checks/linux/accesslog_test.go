@@ -100,7 +100,7 @@ func TestAccessLogGradesRequestLines(t *testing.T) {
 		{accessLogFixture[5], "medium", "log-sensitive-file", ".env"},
 	}
 	for _, tc := range cases {
-		document := reader.Analyze(tc.line, check.Rules, check.Filters, check.Normalize, 0, model.FloorAll)
+		document := reader.Analyze(tc.line, check.Rules, check.Filters, 0, model.FloorAll, check.Normalize)
 		line := document.Sections[0].Lines[0]
 		if got := line.Severity.String(); got != tc.severity {
 			t.Errorf("%q should be graded %s, got %s", tc.line, tc.severity, got)

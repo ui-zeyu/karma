@@ -30,7 +30,7 @@ func TestHuntNormalizeMarksOutliers(t *testing.T) {
 	rows = append(rows, findRow(base+40*86400, "2023-12-24 10:20:30", 20480, "/srv/blob.bin"))
 	text := strings.Join(rows, "\n")
 
-	document := reader.Analyze(text, hunt.Rules, hunt.Filters, hunt.Normalize, 0, model.FloorAll)
+	document := reader.Analyze(text, hunt.Rules, hunt.Filters, 0, model.FloorAll, hunt.Normalize)
 	if len(document.Sections) != 1 {
 		t.Fatalf("one section: %+v", document.Sections)
 	}
@@ -68,7 +68,7 @@ func TestHuntNormalizeFlagsFutureTimestamp(t *testing.T) {
 	future := float64(time.Now().Add(4000 * time.Second).Unix())
 	text := findRow(future, "2099-01-01 00:00:00", 1, "/srv/forge.log")
 
-	document := reader.Analyze(text, hunt.Rules, hunt.Filters, hunt.Normalize, 0, model.FloorAll)
+	document := reader.Analyze(text, hunt.Rules, hunt.Filters, 0, model.FloorAll, hunt.Normalize)
 	lines := document.Sections[0].Lines
 	if !strings.HasPrefix(lines[len(lines)-1].Text, "2099-01-01") {
 		t.Fatalf("the flagged line carries no textual marker: %q", lines[len(lines)-1].Text)

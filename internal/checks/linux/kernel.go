@@ -246,7 +246,7 @@ var KernelChecks = []*model.Check{
 			{Label: "grep", Inv: model.Dual{
 				Run:    native.Kallsyms(kallsymsRe),
 				Script: kallsymsScript,
-			}, LineLimit: openScanLines},
+			}, Cap: model.Scan(openScanLines)},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{

@@ -21,10 +21,19 @@ func CheckByID(t *testing.T, catalog []*model.Check, id string) *model.Check {
 	return nil
 }
 
+// transforms is the check's own body normalization; a sample text has no tier,
+// so there is no dialect alignment to run first.
+func transforms(check *model.Check) []model.Normalizer {
+	if check.Normalize == nil {
+		return nil
+	}
+	return []model.Normalizer{check.Normalize}
+}
+
 // HitIDs reads one sample text the way the report would and returns the rule ids it lights.
 func HitIDs(t *testing.T, text string, check *model.Check) []string {
 	t.Helper()
-	document := reader.Analyze(text, check.Rules, check.Filters, check.Normalize, 0, model.FloorAll)
+	document := reader.Analyze(text, check.Rules, check.Filters, 0, model.FloorAll, transforms(check)...)
 	var ids []string
 	for _, section := range document.Sections {
 		for _, match := range section.TitleMatches {

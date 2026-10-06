@@ -61,10 +61,11 @@ func TestChecksForUnknownPlatformPanics(t *testing.T) {
 
 // Catalog invariants, locked here instead of in an init(): probe labels are
 // unique within one chain (the fallback note joins `skipped → current`, and a
-// repeated label would present two indistinguishable tiers), head and
-// line_limit are mutually exclusive (their truncation semantics differ), and
-// rule and filter ids are unique within a check (a repeated filter id would
-// fold two filters' hidden-line counts into one).
+// repeated label would present two indistinguishable tiers), and rule and filter
+// ids are unique within a check (a repeated filter id would fold two filters'
+// hidden-line counts into one). A tier's row cap is one value (model.RowCap), so
+// the "shape or scan, never both" pair that used to need a rule here cannot be
+// written down at all.
 func TestCatalogInvariants(t *testing.T) {
 	for _, catalog := range [][]*model.Check{checks.ChecksFor(model.Linux), checks.ChecksFor(model.Windows)} {
 		ids := map[string]bool{}
@@ -79,9 +80,6 @@ func TestCatalogInvariants(t *testing.T) {
 					t.Errorf("check %s has a duplicate probe label: %s", check.ID, probe.Label)
 				}
 				labels[probe.Label] = true
-				if probe.Head > 0 && probe.LineLimit > 0 {
-					t.Errorf("check %s probe %s: Head and LineLimit are mutually exclusive", check.ID, probe.Label)
-				}
 			}
 			// A check with no tier on one channel would silently drop from that
 			// channel's run.

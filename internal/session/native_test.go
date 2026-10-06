@@ -12,17 +12,17 @@ import (
 
 func TestRunNativeSuccess(t *testing.T) {
 	res := LocalSession{}.Run(context.Background(),
-		model.Dual{Run: func(context.Context) (string, error) { return "hello\n", nil }}, 0, 0)
-	if res.ExitCode != 0 || res.Stdout != "hello\n" || res.Truncated {
+		model.Dual{Run: func(context.Context) (string, error) { return "hello\n", nil }}, 0, model.RowCap{})
+	if res.Verdict != model.VerdictAnswered || res.Stdout != "hello\n" || res.Truncated {
 		t.Fatalf("wanted exit 0 with the body, got %+v", res)
 	}
 }
 
 func TestRunNativeUnavailableFallsThroughLikeAMissingBinary(t *testing.T) {
 	res := LocalSession{}.Run(context.Background(),
-		model.Dual{Run: func(context.Context) (string, error) { return "", model.ErrTierUnavailable }}, 0, 0)
-	if res.ExitCode != 127 {
-		t.Fatalf("unavailable native tier should read as 127, got %+v", res)
+		model.Dual{Run: func(context.Context) (string, error) { return "", model.ErrTierUnavailable }}, 0, model.RowCap{})
+	if res.Verdict != model.VerdictUnavailable || res.ExitCode != 127 {
+		t.Fatalf("an unavailable native tier should read as unavailable/127, got %+v", res)
 	}
 }
 
@@ -34,7 +34,7 @@ func TestRunNativeUnavailableFallsBackToTheScript(t *testing.T) {
 		model.Dual{
 			Run:    func(context.Context) (string, error) { return "", model.ErrTierUnavailable },
 			Script: "echo from-script",
-		}, 10*time.Second, 0)
+		}, 10*time.Second, model.RowCap{})
 	if res.ExitCode != 0 || res.Stdout != "from-script\n" {
 		t.Fatalf("wanted the script side's answer, got %+v", res)
 	}
@@ -46,7 +46,7 @@ func TestRunNativeAnsweredBodySkipsTheScript(t *testing.T) {
 		model.Dual{
 			Run:    func(context.Context) (string, error) { return "in-process\n", nil },
 			Script: "echo from-script",
-		}, 10*time.Second, 0)
+		}, 10*time.Second, model.RowCap{})
 	if res.Stdout != "in-process\n" {
 		t.Fatalf("wanted the in-process body, got %+v", res)
 	}
@@ -59,9 +59,9 @@ func TestRunNativeFallbackDoesNotRetryTheBody(t *testing.T) {
 		model.Dual{
 			Run:    func(context.Context) (string, error) { return "", model.ErrTierUnavailable },
 			Script: "exit 127",
-		}, 10*time.Second, 0)
-	if res.ExitCode != 127 {
-		t.Fatalf("wanted the script's own 127, got %+v", res)
+		}, 10*time.Second, model.RowCap{})
+	if res.Verdict != model.VerdictUnavailable || res.ExitCode != 127 {
+		t.Fatalf("wanted the script's own unavailable/127, got %+v", res)
 	}
 }
 
@@ -70,20 +70,20 @@ func TestRunNativeFallbackDoesNotRetryTheBody(t *testing.T) {
 // when the tier carries neither.
 func TestRunNativeWithoutALocalBranch(t *testing.T) {
 	res := LocalSession{}.Run(context.Background(),
-		model.Dual{Script: "echo from-script"}, 10*time.Second, 0)
+		model.Dual{Script: "echo from-script"}, 10*time.Second, model.RowCap{})
 	if res.ExitCode != 0 || res.Stdout != "from-script\n" {
 		t.Fatalf("wanted the script side's answer, got %+v", res)
 	}
-	bare := LocalSession{}.Run(context.Background(), model.Dual{}, 10*time.Second, 0)
-	if bare.ExitCode != 127 {
-		t.Fatalf("a tier with no branch at all should read as 127, got %+v", bare)
+	bare := LocalSession{}.Run(context.Background(), model.Dual{}, 10*time.Second, model.RowCap{})
+	if bare.Verdict != model.VerdictUnavailable || bare.ExitCode != 127 {
+		t.Fatalf("a tier with no branch at all should read as unavailable/127, got %+v", bare)
 	}
 }
 
 func TestRunNativeErrorReportsStderr(t *testing.T) {
 	res := LocalSession{}.Run(context.Background(),
-		model.Dual{Run: func(context.Context) (string, error) { return "", errors.New("boom") }}, 0, 0)
-	if res.ExitCode != 1 || res.Stderr != "boom" {
+		model.Dual{Run: func(context.Context) (string, error) { return "", errors.New("boom") }}, 0, model.RowCap{})
+	if res.Verdict != model.VerdictFailed || res.ExitCode != 1 || res.Stderr != "boom" {
 		t.Fatalf("wanted exit 1 with the error on stderr, got %+v", res)
 	}
 }
@@ -96,8 +96,8 @@ func TestRunNativeSurvivesAPanickingBody(t *testing.T) {
 		model.Dual{Run: func(context.Context) (string, error) {
 			var empty []byte
 			return string(empty[1:]), nil // the shape an unguarded slice takes
-		}}, 0, 0)
-	if res.ExitCode != 1 || !strings.Contains(res.Stderr, "in-process tier panicked") {
+		}}, 0, model.RowCap{})
+	if res.Verdict != model.VerdictFailed || !strings.Contains(res.Stderr, "in-process tier panicked") {
 		t.Fatalf("wanted a failed tier naming the panic, got %+v", res)
 	}
 }
@@ -107,8 +107,8 @@ func TestRunNativeTimeoutKeepsPartialOutput(t *testing.T) {
 		model.Dual{Run: func(ctx context.Context) (string, error) {
 			<-ctx.Done()
 			return "partial", ctx.Err()
-		}}, 10*time.Millisecond, 0)
-	if !res.TimedOut || res.ExitCode != -1 || res.Stdout != "partial" {
+		}}, 10*time.Millisecond, model.RowCap{})
+	if res.Verdict != model.VerdictTimedOut || res.ExitCode != -1 || res.Stdout != "partial" {
 		t.Fatalf("wanted a timed-out result with the partial body, got %+v", res)
 	}
 }
@@ -121,8 +121,8 @@ func TestRunNativeCancelKeepsPartialOutput(t *testing.T) {
 		model.Dual{Run: func(ctx context.Context) (string, error) {
 			<-ctx.Done()
 			return "partial", ctx.Err()
-		}}, 5*time.Second, 0)
-	if !res.Interrupted || res.Stdout != "partial" {
+		}}, 5*time.Second, model.RowCap{})
+	if res.Verdict != model.VerdictInterrupted || res.Stdout != "partial" {
 		t.Fatalf("wanted an interrupted result with the partial body, got %+v", res)
 	}
 }
@@ -138,8 +138,8 @@ func TestRunNativeAbandonsABodyThatIgnoresTheDeadline(t *testing.T) {
 		model.Dual{Run: func(context.Context) (string, error) {
 			<-release // the shape of an open(2) waiting for a writer
 			return "late", nil
-		}}, 20*time.Millisecond, 0)
-	if !res.TimedOut || res.ExitCode != -1 || res.Stdout != "" {
+		}}, 20*time.Millisecond, model.RowCap{})
+	if res.Verdict != model.VerdictTimedOut || res.ExitCode != -1 || res.Stdout != "" {
 		t.Fatalf("wanted a bare timeout, got %+v", res)
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
@@ -159,18 +159,18 @@ func TestRunNativeAbandonsABodyThatIgnoresTheCancel(t *testing.T) {
 		model.Dual{Run: func(context.Context) (string, error) {
 			<-release
 			return "late", nil
-		}}, time.Minute, 0)
-	if !res.Interrupted || res.TimedOut {
+		}}, time.Minute, model.RowCap{})
+	if res.Verdict != model.VerdictInterrupted {
 		t.Fatalf("wanted an interrupted result, got %+v", res)
 	}
 }
 
-func TestRunNativeLineLimitTruncates(t *testing.T) {
+func TestRunNativeScanCapTruncates(t *testing.T) {
 	res := LocalSession{}.Run(context.Background(),
 		model.Dual{Run: func(context.Context) (string, error) {
 			return "a\nb\nc\nd", nil
-		}}, 0, 2)
-	if res.Stdout != "a\nb\n" || !res.Truncated {
+		}}, 0, model.Scan(2))
+	if res.Verdict != model.VerdictAnswered || res.Stdout != "a\nb\n" || !res.Truncated {
 		t.Fatalf("wanted the first two lines marked truncated, got %+v", res)
 	}
 }
@@ -200,5 +200,21 @@ func TestCapLinesMatchesTheHarvestBoundary(t *testing.T) {
 			t.Errorf("capLines(%q, %d) = %q, %v; want %q, %v",
 				c.text, c.limit, got, truncated, c.want, c.truncated)
 		}
+	}
+}
+
+// A parity run (KARMA_NO_NATIVE) skips the in-process body and takes the script
+// side of every Dual tier, which is what `make parity` diffs against the
+// in-process collection.
+func TestRunNativeScriptOnlySkipsTheBody(t *testing.T) {
+	scriptOnly = true
+	t.Cleanup(func() { scriptOnly = false })
+	res := LocalSession{}.Run(context.Background(),
+		model.Dual{
+			Run:    func(context.Context) (string, error) { return "in-process\n", nil },
+			Script: "echo from-script",
+		}, 10*time.Second, model.RowCap{})
+	if res.Verdict != model.VerdictAnswered || res.Stdout != "from-script\n" {
+		t.Fatalf("a parity run should take the script side, got %+v", res)
 	}
 }

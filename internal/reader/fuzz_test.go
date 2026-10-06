@@ -52,7 +52,7 @@ func FuzzAnalyze(f *testing.F) {
 	f.Add("== a\n== b\ndeleted\n", -1)
 	f.Fuzz(func(t *testing.T, text string, scanBytes int) {
 		for _, normalize := range []model.Normalizer{nil, shout} {
-			doc := Analyze(text, rules, filters, normalize, scanBytes, model.FloorAll)
+			doc := Analyze(text, rules, filters, scanBytes, model.FloorAll, normalize)
 			for _, section := range doc.Sections {
 				// a section survives with an empty body only when its title matched a rule
 				if len(section.Lines) == 0 && len(section.TitleMatches) == 0 {

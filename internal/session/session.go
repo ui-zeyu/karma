@@ -1,12 +1,14 @@
 // Package session is the execution channel layer: it turns the catalog's
-// invocations into runs on a target. Two channels implement it — local
-// subprocesses (local.go) and one SSH connection (ssh.go) — and the rest of
-// karma depends only on the interfaces declared here.
+// invocations into runs on a target. Three channels implement it — local
+// subprocesses (local.go), one SSH connection (ssh_session.go), and a ttyd
+// websocket terminal (ttyd_session.go) — and the rest of karma depends only on
+// the interfaces declared here.
 //
 // Every run is harvested the same way (harvest.go): the reads are attached
 // first, a timeout or a cancel (Ctrl-C) stops the data source rather than the
-// reads, output already produced is kept, and a line limit stops the source
-// once enough rows exist.
+// reads, output already produced is kept, and a row cap stops the source once
+// enough rows exist. One finished call is read into a model.Verdict there, so
+// the chain above reads outcomes rather than exit codes.
 package session
 
 import (
@@ -29,11 +31,11 @@ type Session interface {
 	// Channel is which side of the wire karma runs on: the runner resolves
 	// each probe tier against it while walking the chain.
 	Channel() model.Channel
-	// Run executes one invocation, with a per-command timeout and an optional
-	// line limit, and harvests its output. A timeout of zero or less is no
-	// deadline; a cancelled context stops the data source and keeps the output
-	// already produced.
-	Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult
+	// Run executes one invocation, with a per-command timeout and a row cap,
+	// and harvests its output into a model.RunResult whose Verdict says what
+	// happened. A timeout of zero or less is no deadline; a cancelled context
+	// stops the data source and keeps the output already produced.
+	Run(ctx context.Context, inv model.Invocation, timeout time.Duration, cap model.RowCap) model.RunResult
 	// Close releases the channel's resources.
 	Close() error
 }

@@ -105,6 +105,12 @@ func (k RegKey) fragment() string {
 // extra fragments that are not plain reg queries), then one direct reg.exe probe
 // per key. The key list is written once and feeds both tiers, so a key cannot end
 // up in the PowerShell script without its fallback or the other way around.
+//
+// The reg.exe tiers answer together (model.Probe.Together): a target without
+// PowerShell gets every key, one process each, because reg.exe takes one key and
+// the local Windows channel has no shell to loop in — while declaring them as
+// alternatives to one another would let the chain stop at the first key that
+// exists and silently drop the rest of the evidence.
 func RegCheck(id, title string, aspect model.Aspect, keys []RegKey, opt define.CheckOpt, extra ...string) *model.Check {
 	fragments := make([]string, 0, len(keys)+len(extra))
 	for _, key := range keys {
@@ -112,7 +118,9 @@ func RegCheck(id, title string, aspect model.Aspect, keys []RegKey, opt define.C
 	}
 	probes := []model.Probe{PSProbe("reg", RegScript(append(fragments, extra...)...))}
 	for _, key := range keys {
-		probes = append(probes, RegDirectProbe(key.Label, key.Path, key.Recurse, key.Value))
+		probe := RegDirectProbe(key.Label, key.Path, key.Recurse, key.Value)
+		probe.Together = true
+		probes = append(probes, probe)
 	}
 	return define.WindowsCheck(id, title, aspect, probes, opt)
 }

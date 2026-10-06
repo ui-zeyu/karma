@@ -80,7 +80,7 @@ func (s *TTYDSession) Lost() bool { return s.lost.Load() }
 func (s *TTYDSession) Close() error { return nil }
 
 // Run types one collection line into a fresh terminal and harvests the answer.
-func (s *TTYDSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
+func (s *TTYDSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, cap model.RowCap) model.RunResult {
 	conn, err := s.connect(ctx)
 	if err != nil {
 		// The endpoint is gone unless the failure is our own cancellation:
@@ -89,10 +89,10 @@ func (s *TTYDSession) Run(ctx context.Context, inv model.Invocation, timeout tim
 		if ctx.Err() == nil {
 			s.lost.Store(true)
 		}
-		return model.RunResult{Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
+		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
 	call := &ttydCall{conn: conn, spawned: make(chan struct{})}
-	return call.collect(ctx, bodyText(inv), timeout, lineLimit)
+	return call.collect(ctx, mustShellText(inv), timeout, cap)
 }
 
 // connect dials the endpoint and sends the JSON handshake. ttyd spawns the
@@ -140,9 +140,10 @@ func (s *TTYDSession) probe() error {
 	replies := make(chan reply, 16)
 	titles := make(chan string, 1)
 	// The frame pump closes replies when the connection ends, which is what the
-	// select below turns into a verdict.
-	go func() {
-		defer close(replies)
+	// select below turns into a verdict. A panic in the pump is reported on the
+	// same channel close, so the select reads it as a verdict too.
+	var pumpErr error
+	go safeCall(func(problem error) { pumpErr = problem }, func() { close(replies) }, func() {
 		_ = call.frames(ctx, func(tag byte, payload []byte) bool {
 			switch tag {
 			case '1':
@@ -160,7 +161,7 @@ func (s *TTYDSession) probe() error {
 			}
 			return true
 		})
-	}()
+	})
 
 	select {
 	case <-call.spawned:
@@ -190,6 +191,9 @@ func (s *TTYDSession) probe() error {
 		select {
 		case event, ok := <-replies:
 			if !ok {
+				if pumpErr != nil {
+					return fmt.Errorf("the ttyd frame pump failed: %w", pumpErr)
+				}
 				return verdict()
 			}
 			echoed = echoed || event.echo
@@ -223,68 +227,92 @@ func (c *ttydCall) markSpawned() {
 // collect runs one script over the connection and harvests it with the shared
 // timeout machinery: stop is the connection's death, which is also what ends
 // the terminal's process on the target.
-func (c *ttydCall) collect(ctx context.Context, script string, timeout time.Duration, lineLimit int) model.RunResult {
+func (c *ttydCall) collect(ctx context.Context, script string, timeout time.Duration, cap model.RowCap) model.RunResult {
 	marker := markerSalt()
 	encoded := base64.StdEncoding.EncodeToString([]byte(ttydPayload(script, marker)))
 	line := "printf %s " + encoded + " | base64 -d | /bin/sh"
 
-	lines := make(chan string, 16)
-	stopped := make(chan struct{})
-	var stopOnce sync.Once
-	var exitCode atomic.Int32
-	exitCode.Store(-1)
-	done := make(chan struct{})
-	var errText string
-
-	go func() {
-		defer close(done)
-		defer close(lines)
-		defer c.conn.CloseNow()
-		errText = c.readStream(ctx, marker, &exitCode, lines, stopped)
-	}()
+	stream := &ttydStream{
+		conn:    c.conn,
+		lines:   make(chan string, 16),
+		stopped: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	stream.code.Store(-1)
+	stream.read(ctx, c, marker)
 
 	select {
 	case <-c.spawned:
 	case <-time.After(ttydSpawnWait):
-	case <-stopped:
+	case <-stream.stopped:
 	case <-ctx.Done():
 	}
 	time.Sleep(ttydTypeaheadDelay)
 	_ = c.typeLine(ctx, line)
-
-	stop := func() {
-		stopOnce.Do(func() {
-			close(stopped)
-			_ = c.conn.CloseNow()
-		})
-	}
-	return harvestCapped(ctx, source{
-		wait: func() { <-done },
-		stop: stop,
-		readLine: func() (string, bool) {
-			return c.nextLine(lines, stopped)
-		},
-		readAll: func() string {
-			// The stderr section precedes the rc marker in the stream, so it
-			// is known once the reader ends; harvest's stderr drain waits for
-			// exactly that.
-			<-done
-			return errText
-		},
-		exitCode: func() int { return int(exitCode.Load()) },
-	}, timeout, lineLimit)
+	return harvest(ctx, stream, timeout, cap)
 }
+
+// ttydStream is one collection over a websocket connection as harvest's data
+// source. One reader goroutine cuts the terminal's frames into body lines; stop
+// is the connection's death, which is also what ends the terminal's process on
+// the target.
+type ttydStream struct {
+	baseSource
+	conn     *websocket.Conn
+	lines    chan string
+	stopped  chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
+	code     atomic.Int32
+	// stderr is the stderr section the reader cut out of the stream; it is
+	// written by the reader goroutine and read after done.
+	stderr string
+}
+
+// read starts the reader. The panic barrier records a reader that died
+// mid-stream before done is closed, so the call's own result paths see the
+// reason: it is not known to have read everything.
+func (s *ttydStream) read(ctx context.Context, call *ttydCall, marker string) {
+	go safeCall(
+		func(problem error) { s.stderr = "ttyd reader panicked: " + problem.Error() + "\n" },
+		func() { close(s.done) },
+		func() {
+			defer close(s.lines)
+			defer s.conn.CloseNow()
+			s.stderr = s.readStream(ctx, call, marker)
+		})
+}
+
+func (s *ttydStream) wait() { <-s.done }
+
+func (s *ttydStream) stop() {
+	s.stopOnce.Do(func() {
+		close(s.stopped)
+		_ = s.conn.CloseNow()
+	})
+}
+
+func (s *ttydStream) readLine() (string, bool) { return s.nextLine() }
+
+func (s *ttydStream) readAll() string {
+	// The stderr section precedes the rc marker in the stream, so it is known
+	// once the reader ends; harvest's stderr drain waits for exactly that.
+	<-s.done
+	return s.stderr
+}
+
+func (s *ttydStream) exitCode() int { return int(s.code.Load()) }
 
 // nextLine takes one harvested body line, or reports the end of the stream.
 // The stopped branch keeps what the reader had already produced before the
 // stop.
-func (c *ttydCall) nextLine(lines <-chan string, stopped <-chan struct{}) (string, bool) {
+func (s *ttydStream) nextLine() (string, bool) {
 	select {
-	case line, ok := <-lines:
+	case line, ok := <-s.lines:
 		return line, ok
-	case <-stopped:
+	case <-s.stopped:
 		select {
-		case line, ok := <-lines:
+		case line, ok := <-s.lines:
 			return line, ok
 		default:
 			return "", false
@@ -298,7 +326,7 @@ func (c *ttydCall) nextLine(lines <-chan string, stopped <-chan struct{}) (strin
 // The returned string is the stderr text. A partial trailing line is kept
 // when the stream ends mid-body, so a connection lost at the end does not
 // drop the last row.
-func (c *ttydCall) readStream(ctx context.Context, marker string, exitCode *atomic.Int32, lines chan<- string, stopped <-chan struct{}) string {
+func (s *ttydStream) readStream(ctx context.Context, call *ttydCall, marker string) string {
 	start := "__KRM_" + marker + "_S__"
 	errBegin := "__KRM_" + marker + "_E__"
 	errEnd := "__KRM_" + marker + "_X__"
@@ -307,8 +335,8 @@ func (c *ttydCall) readStream(ctx context.Context, marker string, exitCode *atom
 	var errText strings.Builder
 	emit := func(text string) {
 		select {
-		case lines <- text + "\n":
-		case <-stopped:
+		case s.lines <- text + "\n":
+		case <-s.stopped:
 		}
 	}
 	// The rc marker ends its line too: a body without a trailing newline glues
@@ -316,13 +344,13 @@ func (c *ttydCall) readStream(ctx context.Context, marker string, exitCode *atom
 	finish := func(body string, code int) {
 		if body != "" {
 			select {
-			case lines <- body:
-			case <-stopped:
+			case s.lines <- body:
+			case <-s.stopped:
 			}
 		}
-		exitCode.Store(int32(code))
+		s.code.Store(int32(code))
 	}
-	leftover, _ := c.frameLines(ctx, func(line string) bool {
+	leftover, _ := call.frameLines(ctx, func(line string) bool {
 		switch phase {
 		case "cut":
 			// The marker ends its line; a prompt the shell left unnewline'd may
@@ -358,8 +386,8 @@ func (c *ttydCall) readStream(ctx context.Context, marker string, exitCode *atom
 	})
 	if phase == "body" && leftover != "" {
 		select {
-		case lines <- leftover:
-		case <-stopped:
+		case s.lines <- leftover:
+		case <-s.stopped:
 		}
 	}
 	return errText.String()

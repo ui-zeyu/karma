@@ -17,7 +17,7 @@ func TestGatherKeysEachResultByItsJobName(t *testing.T) {
 		name := fmt.Sprintf("job%02d", i)
 		jobs[name] = func(context.Context) model.RunResult {
 			time.Sleep(time.Millisecond)
-			return model.RunResult{Stdout: name}
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: name}
 		}
 	}
 	results := gather(context.Background(), jobs)

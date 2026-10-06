@@ -37,7 +37,7 @@ func listingPanel(tb testing.TB, rows int, hit bool) *model.CheckResult {
 	return &model.CheckResult{
 		Check: check, Outcome: model.Collected, ProbeLabel: "find",
 		Raw:      body.String(),
-		Document: reader.Analyze(body.String(), check.Rules, check.Filters, check.Normalize, 0, model.FloorAll),
+		Document: reader.Analyze(body.String(), check.Rules, check.Filters, 0, model.FloorAll, check.Normalize),
 	}
 }
 

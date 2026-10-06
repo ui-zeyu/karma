@@ -118,7 +118,7 @@ fi`
 // targetPacker reports how the target unpacks a gzip stream: its own gzip,
 // busybox's, or none at all.
 func targetPacker(ctx context.Context, sess session.Session) string {
-	result := sess.Run(ctx, model.Shell{Script: packerProbe}, bootstrapTimeout, 0)
+	result := sess.Run(ctx, model.Shell{Script: packerProbe}, bootstrapTimeout, model.RowCap{})
 	switch packer := strings.TrimSpace(result.Stdout); packer {
 	case "gzip", "busybox":
 		return packer
@@ -168,10 +168,10 @@ func unpackUpload(ctx context.Context, sess session.Session, remote, unpack stri
 	if unpack != "" {
 		command = unpack + " && " + command
 	}
-	if result := sess.Run(ctx, model.Shell{Script: command}, bootstrapTimeout, 0); result.ExitCode != 0 {
+	if result := sess.Run(ctx, model.Shell{Script: command}, bootstrapTimeout, model.RowCap{}); result.Verdict != model.VerdictAnswered {
 		return fmt.Errorf("unpacking the upload: %s", commandFailure(result))
 	}
-	result := sess.Run(ctx, model.Shell{Script: script.Join([]string{remote, "version"})}, bootstrapTimeout, 0)
+	result := sess.Run(ctx, model.Shell{Script: script.Join([]string{remote, "version"})}, bootstrapTimeout, model.RowCap{})
 	want := "karma " + buildVersion
 	if got := strings.TrimSpace(result.Stdout); got != want {
 		return fmt.Errorf("the uploaded binary answered %q, want %q: %s", got, want, commandFailure(result))
@@ -180,10 +180,19 @@ func unpackUpload(ctx context.Context, sess session.Session, remote, unpack stri
 }
 
 // commandFailure renders what a failed small command said: the target's own
-// stderr, or its exit status when the channel carried no text.
+// stderr, its exit status when the channel carried no text, or the verdict when
+// the call never ran a process at all.
 func commandFailure(result model.RunResult) string {
 	if text := strings.TrimSpace(result.Stderr); text != "" {
 		return text
+	}
+	switch result.Verdict {
+	case model.VerdictUnavailable:
+		return "the target does not have that command"
+	case model.VerdictTimedOut:
+		return "the target did not answer before the deadline"
+	case model.VerdictInterrupted:
+		return "interrupted"
 	}
 	return fmt.Sprintf("the target exited with %d", result.ExitCode)
 }
@@ -192,7 +201,7 @@ func commandFailure(result model.RunResult) string {
 // binary's build: a cross-arch run cannot happen, and the mistake belongs to
 // this command rather than to a failed exec on the target.
 func checkTargetPlatform(ctx context.Context, sess session.Session) error {
-	result := sess.Run(ctx, model.Shell{Script: "uname -s -m"}, bootstrapTimeout, 0)
+	result := sess.Run(ctx, model.Shell{Script: "uname -s -m"}, bootstrapTimeout, model.RowCap{})
 	fields := strings.Fields(result.Stdout)
 	if len(fields) < 2 {
 		return fmt.Errorf("cannot read the target's platform (uname said %q)", strings.TrimSpace(result.Stdout))

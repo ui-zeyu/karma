@@ -78,13 +78,13 @@ func Collect(ctx context.Context, sess session.Session, bins []string) model.Hos
 		"bins":     func(ctx context.Context) model.RunResult { return runShell(ctx, sess, binProbe(names), 15*time.Second) },
 		"hostname": func(ctx context.Context) model.RunResult { return runShell(ctx, sess, hostnameScript, 10*time.Second) },
 		"kernel": func(ctx context.Context) model.RunResult {
-			return sess.Run(ctx, model.NewCommand("uname", "-r"), 10*time.Second, 0)
+			return sess.Run(ctx, model.NewCommand("uname", "-r"), 10*time.Second, model.RowCap{})
 		},
 		"os": func(ctx context.Context) model.RunResult {
 			return runShell(ctx, sess, "cat /etc/os-release", 10*time.Second)
 		},
 		"uid": func(ctx context.Context) model.RunResult {
-			return sess.Run(ctx, model.NewCommand("id", "-u"), 10*time.Second, 0)
+			return sess.Run(ctx, model.NewCommand("id", "-u"), 10*time.Second, model.RowCap{})
 		},
 	})
 	return model.HostFacts{
@@ -93,7 +93,7 @@ func Collect(ctx context.Context, sess session.Session, bins []string) model.Hos
 		Kernel:        firstLine(results["kernel"].Stdout, ""),
 		OsPretty:      prettyName(results["os"].Stdout),
 		UID:           parseUID(results["uid"].Stdout),
-		ProbeCut:      results["bins"].TimedOut,
+		ProbeCut:      results["bins"].Verdict == model.VerdictTimedOut,
 	}
 }
 
@@ -120,7 +120,7 @@ func CollectWindows(ctx context.Context, sess session.Session, bins []string) mo
 			OsPretty:      cmp.Or(values["os"], "unknown version"),
 			UID:           -1,
 			User:          values["user"],
-			ProbeCut:      probe.TimedOut,
+			ProbeCut:      probe.Verdict == model.VerdictTimedOut,
 		}
 	}
 
@@ -128,17 +128,17 @@ func CollectWindows(ctx context.Context, sess session.Session, bins []string) mo
 	// ProductName/CurrentVersion/CurrentBuildNumber/UBR/DisplayVersion
 	results := gather(ctx, map[string]func(context.Context) model.RunResult{
 		"version": func(ctx context.Context) model.RunResult {
-			return sess.Run(ctx, model.NewCommand("reg", "query", currentVersionReg), 10*time.Second, 0)
+			return sess.Run(ctx, model.NewCommand("reg", "query", currentVersionReg), 10*time.Second, model.RowCap{})
 		},
 		"hostname": func(ctx context.Context) model.RunResult {
-			return sess.Run(ctx, model.NewCommand("reg", "query", computerNameReg, "/v", "ComputerName"), 10*time.Second, 0)
+			return sess.Run(ctx, model.NewCommand("reg", "query", computerNameReg, "/v", "ComputerName"), 10*time.Second, model.RowCap{})
 		},
 		"username": func(ctx context.Context) model.RunResult {
-			return sess.Run(ctx, model.NewCommand("reg", "query", volatileEnvReg, "/v", "USERNAME"), 10*time.Second, 0)
+			return sess.Run(ctx, model.NewCommand("reg", "query", volatileEnvReg, "/v", "USERNAME"), 10*time.Second, model.RowCap{})
 		},
 	})
 	version := results["version"]
-	if version.Answered() {
+	if version.Verdict == model.VerdictAnswered {
 		available = withBin(available, "reg")
 	}
 	values := regValueMap(version.Stdout)
@@ -154,16 +154,16 @@ func CollectWindows(ctx context.Context, sess session.Session, bins []string) mo
 		OsPretty:      cmp.Or(strings.TrimSpace(values["ProductName"]+" "+values["DisplayVersion"]), "unknown version"),
 		UID:           -1,
 		User:          regLastData(results["username"].Stdout, ""),
-		ProbeCut:      probe.TimedOut,
+		ProbeCut:      probe.Verdict == model.VerdictTimedOut,
 	}
 }
 
 func runShell(ctx context.Context, sess session.Session, script string, timeout time.Duration) model.RunResult {
-	return sess.Run(ctx, model.Shell{Script: script}, timeout, 0)
+	return sess.Run(ctx, model.Shell{Script: script}, timeout, model.RowCap{})
 }
 
 func runPS(ctx context.Context, sess session.Session, script string, timeout time.Duration) model.RunResult {
-	return sess.Run(ctx, powershell.PowerShell(script), timeout, 0)
+	return sess.Run(ctx, powershell.PowerShell(script), timeout, model.RowCap{})
 }
 
 // gather runs all fact collection concurrently, keyed by job name so a result can

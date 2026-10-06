@@ -281,10 +281,15 @@ func TestRegCheckComposesScripts(t *testing.T) {
 	if !strings.Contains(composed, `'== ' + 'Startup Folder'`) {
 		t.Fatalf("startup folder fragment missing: %s", composed)
 	}
-	// one direct fallback per key, in key order
+	// one direct fallback per key, in key order, and every one of them answers
+	// together: the chain would otherwise stop at the first key that exists and
+	// never query the rest (the local Windows channel has no shell to loop in).
 	var fallbacks []string
 	for _, probe := range runKeys.Probes[1:] {
 		fallbacks = append(fallbacks, probe.Inv.(model.Command).Argv[2])
+		if !probe.Together {
+			t.Errorf("key %s must answer together with the other keys", probe.Label)
+		}
 	}
 	want := []string{
 		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,

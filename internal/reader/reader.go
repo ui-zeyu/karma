@@ -29,12 +29,14 @@ const belowFloor = "below-severity"
 // Analyze reads one command output into a document.
 //
 // Order is fixed: byte-cap by the check's scan limit (0 uses MaxScanBytes), split
-// sections by `== `, normalize each body (with the section title), rule matches,
+// sections by `== `, shape each body (with the section title), rule matches,
 // then line filtering decides whether a body line stays. Titles run rules but are
-// not filtered. floor is the run's severity floor: a row below it is counted and
+// not filtered. transforms shape a section in the order given — a tier's dialect
+// alignment first, the check's own normalization after — and either may be
+// absent. floor is the run's severity floor: a row below it is counted and
 // left out before the filters are consulted, so a triage run drops it whichever
 // filter would have kept it. model.FloorAll keeps every row.
-func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normalize model.Normalizer, scanBytes int, floor model.SeverityFloor) model.Document {
+func Analyze(text string, rules []model.Rule, filters []model.LineFilter, scanBytes int, floor model.SeverityFloor, transforms ...model.Normalizer) model.Document {
 	capped, truncated := capBytes(text, scanBytes)
 	keepFilters, dropFilters := lo.FilterReject(filters, func(f model.LineFilter, _ int) bool {
 		return f.Mode == model.FilterKeep
@@ -45,7 +47,7 @@ func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normal
 		filtered counter
 		number   int
 	)
-	for piece := range pieces(capped, normalize) {
+	for piece := range pieces(capped, transforms) {
 		if piece.titleSet {
 			number++
 		}
@@ -133,14 +135,14 @@ type piece struct {
 	notes    map[int][]model.Match
 }
 
-// pieces lazily splits and shapes sections. Without normalize it keeps the raw lines;
-// with normalize it round-trips the text, leaving trailing blank lines to the shaper.
-// Ranges given by the shaper are recorded by line number and merged with regex
-// matches during the scan.
-func pieces(text string, normalize model.Normalizer) iter.Seq[piece] {
+// pieces lazily splits and shapes sections. Without transforms it keeps the raw
+// lines; with them it round-trips the text, leaving trailing blank lines to the
+// shaper. Ranges given by a shaper are recorded by line number and merged with
+// regex matches during the scan.
+func pieces(text string, transforms []model.Normalizer) iter.Seq[piece] {
 	return func(yield func(piece) bool) {
 		for section := range splitSections(text) {
-			if !yield(section.shaped(normalize)) {
+			if !yield(section.shaped(transforms)) {
 				return
 			}
 		}
@@ -153,22 +155,36 @@ type rawSection struct {
 	lines    []string
 }
 
-// shaped shapes one section body; a nil shaper keeps the raw lines. If the shaper
-// panics on odd output (a hard-coded row shape hitting the target's mixed output),
-// this section uses the original text: the fallback sits at the panic source, so
-// already-collected output does not fail wholesale because shaping panicked.
-func (s rawSection) shaped(normalize model.Normalizer) piece {
+// shaped shapes one section body, running every transform in turn on the text
+// the one before produced; a nil transform is no transform, and no transform at
+// all keeps the raw lines. A transform that returns nil leaves the text as it is
+// (a shaper that declines this body).
+//
+// If a shaper panics on odd output (a hard-coded row shape hitting the target's
+// mixed output), this section uses the text as it stood then: the fallback sits
+// at the panic source, so already-collected output does not fail wholesale
+// because shaping panicked.
+func (s rawSection) shaped(transforms []model.Normalizer) piece {
 	p := piece{title: s.title, titleSet: s.titleSet, lines: s.lines}
-	if normalize == nil {
+	if !slices.ContainsFunc(transforms, func(transform model.Normalizer) bool { return transform != nil }) {
 		return p
 	}
-	result := safeNormalize(normalize, p.title, strings.Join(s.lines, "\n"))
-	if result == nil {
-		return p
+	text := strings.Join(s.lines, "\n")
+	var notes []model.LineMatch
+	for _, transform := range transforms {
+		if transform == nil {
+			continue
+		}
+		result := safeNormalize(transform, p.title, text)
+		if result == nil {
+			continue
+		}
+		text = result.Text
+		notes = append(notes, result.Notes...)
 	}
-	p.lines = textutil.CollectLines(result.Text)
+	p.lines = textutil.CollectLines(text)
 	p.notes = lo.MapValues(
-		lo.GroupBy(result.Notes, func(note model.LineMatch) int { return note.Line }),
+		lo.GroupBy(notes, func(note model.LineMatch) int { return note.Line }),
 		func(notes []model.LineMatch, _ int) []model.Match {
 			return lo.Map(notes, func(note model.LineMatch, _ int) model.Match { return note.Match })
 		},

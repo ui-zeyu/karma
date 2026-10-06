@@ -49,7 +49,7 @@ func (s *SSHSession) Channel() model.Channel { return model.ChanSSH }
 func (s *SSHSession) Lost() bool { return s.lost.Load() }
 
 // Run sends the command string rendered through /bin/sh -c to the channel for execution.
-func (s *SSHSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
+func (s *SSHSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, cap model.RowCap) model.RunResult {
 	script := RenderShell(inv)
 	sess, err := s.client.NewSession()
 	if err != nil {
@@ -70,20 +70,35 @@ func (s *SSHSession) Run(ctx context.Context, inv model.Invocation, timeout time
 	if err := sess.Start(script); err != nil {
 		return channelError(err)
 	}
-	reader := bufio.NewReader(stdout)
-	errReader := bufio.NewReader(stderrPipe)
-	// Wait can be called only once: the wait goroutine stores the error and exitCode reads it from the cache.
-	var waitErr error
-	// The decoding strategy matches the local channel: line reads clean bad bytes, stderr switches to U+FFFD after draining.
-	// stop closes the channel directly: a hung channel that never sees EOF is finished off by harvest's grace period.
-	return harvestCapped(ctx, source{
-		wait:     func() { waitErr = sess.Wait() },
-		stop:     func() { _ = sess.Close() },
-		readLine: lineReader(reader),
-		readAll:  func() string { return drainText(errReader) },
-		exitCode: func() int { return commandExitCode(waitErr) },
-	}, timeout, lineLimit)
+	// The decoding strategy matches the local channel: line reads clean bad
+	// bytes, stderr switches to U+FFFD after draining. stop closes the channel
+	// directly: a hung channel that never sees EOF is finished off by harvest's
+	// grace period.
+	return harvest(ctx, &sshCall{
+		sess:   sess,
+		stdout: bufio.NewReader(stdout),
+		stderr: bufio.NewReader(stderrPipe),
+	}, timeout, cap)
 }
+
+// sshCall is one ssh session as harvest's data source.
+type sshCall struct {
+	baseSource
+	sess   *ssh.Session
+	stdout *bufio.Reader
+	stderr *bufio.Reader
+	// waitErr is written by wait and read by exitCode, both from the goroutine
+	// harvest joins before either is read.
+	waitErr error
+}
+
+// Wait can be called only once: the wait goroutine stores the error and
+// exitCode reads it from the cache.
+func (c *sshCall) wait()                    { c.waitErr = c.sess.Wait() }
+func (c *sshCall) stop()                    { _ = c.sess.Close() }
+func (c *sshCall) readLine() (string, bool) { return readLineFrom(c.stdout) }
+func (c *sshCall) readAll() string          { return drainText(c.stderr) }
+func (c *sshCall) exitCode() int            { return commandExitCode(c.waitErr) }
 
 // Upload writes one file to the target: the content goes over the session's
 // stdin, so the bootstrap mode ships a binary without a shell or a file
@@ -103,24 +118,30 @@ func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) er
 	cancelled := make(chan struct{})
 	var stopWatch sync.Once
 	defer stopWatch.Do(func() { close(cancelled) })
-	go func() {
+	go safeCall(func(error) {}, func() {}, func() {
 		select {
 		case <-ctx.Done():
 			_ = sess.Close()
 		case <-cancelled:
 		}
-	}()
+	})
 	var stalled atomic.Bool
 	written := make(chan error, 1)
-	go func() {
-		err := writeUpload(stdin, content, &stalled, func() { _ = sess.Close() })
-		// Closing the pipe is what tells the target's cat that the file is
-		// complete: without it the remote side waits for more bytes.
-		if closeErr := stdin.Close(); err == nil {
-			err = closeErr
-		}
-		written <- err
-	}()
+	go safeCall(
+		// The receive below is the join, so a panic before the writer's own send
+		// reports here: the channel is buffered, which keeps this send from
+		// blocking whether or not the caller has already taken a value.
+		func(problem error) { written <- fmt.Errorf("upload writer panicked: %w", problem) },
+		func() {},
+		func() {
+			err := writeUpload(stdin, content, &stalled, func() { _ = sess.Close() })
+			// Closing the pipe is what tells the target's cat that the file is
+			// complete: without it the remote side waits for more bytes.
+			if closeErr := stdin.Close(); err == nil {
+				err = closeErr
+			}
+			written <- err
+		})
 	// umask first: the target's umask may leave the file world-readable, and
 	// this one is a program the caller is about to exec — its own mode is set
 	// once the bytes are in place, so a partial upload is never executable.
@@ -181,7 +202,7 @@ func writeUpload(w io.Writer, content []byte, stalled *atomic.Bool, abort func()
 }
 
 func channelError(err error) model.RunResult {
-	return model.RunResult{Stderr: fmt.Sprintf("ssh channel error: %v", err), ExitCode: -1}
+	return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ssh channel error: %v", err), ExitCode: -1}
 }
 
 // channelLost reports whether a failed channel open means the connection itself
@@ -212,10 +233,9 @@ func commandExitCode(err error) int {
 // Close closes the connection. A hung Close does not wait past closeGrace, so the whole collection does not stall on teardown.
 func (s *SSHSession) Close() error {
 	done := make(chan struct{})
-	go func() {
+	go safeCall(func(error) {}, func() { close(done) }, func() {
 		_ = s.client.Close()
-		close(done)
-	}()
+	})
 	timer := time.NewTimer(closeGrace)
 	defer timer.Stop()
 	select {

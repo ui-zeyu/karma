@@ -31,13 +31,13 @@ func (s *probeSession) Channel() model.Channel { return model.ChanSSH }
 func (s *probeSession) Describe() string { return "ssh" }
 func (s *probeSession) Close() error     { return nil }
 
-func (s *probeSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ int) model.RunResult {
+func (s *probeSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ model.RowCap) model.RunResult {
 	command := session.RenderShell(inv)
 	s.ran = append(s.ran, command)
 	if strings.Contains(command, "command -v gzip") {
-		return model.RunResult{Stdout: s.answer + "\n", ExitCode: 0}
+		return model.RunResult{Verdict: model.VerdictAnswered, Stdout: s.answer + "\n"}
 	}
-	return model.RunResult{ExitCode: 0}
+	return model.RunResult{Verdict: model.VerdictAnswered}
 }
 
 func TestUnamePlatformMapsTheTargetsKernelAndMachine(t *testing.T) {
@@ -225,7 +225,7 @@ func (s *commandSession) Channel() model.Channel { return model.ChanSSH }
 func (s *commandSession) Describe() string { return "ssh" }
 func (s *commandSession) Close() error     { return nil }
 
-func (s *commandSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ int) model.RunResult {
+func (s *commandSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ model.RowCap) model.RunResult {
 	command := session.RenderShell(inv)
 	s.ran = append(s.ran, command)
 	for _, answer := range s.answers {
@@ -233,7 +233,7 @@ func (s *commandSession) Run(_ context.Context, inv model.Invocation, _ time.Dur
 			return answer.result
 		}
 	}
-	return model.RunResult{ExitCode: 0}
+	return model.RunResult{Verdict: model.VerdictAnswered}
 }
 
 // A target of another architecture cannot run this binary, and the mistake is
@@ -242,7 +242,7 @@ func TestCheckTargetPlatformRefusesAMismatch(t *testing.T) {
 	sess := &commandSession{answers: []struct {
 		match  string
 		result model.RunResult
-	}{{match: "uname -s -m", result: model.RunResult{Stdout: theTargetAndThisBuild() + "\n", ExitCode: 0}}}}
+	}{{match: "uname -s -m", result: model.RunResult{Verdict: model.VerdictAnswered, Stdout: theTargetAndThisBuild() + "\n"}}}}
 	err := checkTargetPlatform(context.Background(), sess)
 	if err == nil {
 		t.Fatal("a cross-arch target was accepted")
@@ -258,7 +258,7 @@ func TestCheckTargetPlatformNeedsBothFields(t *testing.T) {
 	sess := &commandSession{answers: []struct {
 		match  string
 		result model.RunResult
-	}{{match: "uname -s -m", result: model.RunResult{Stdout: "Linux\n", ExitCode: 0}}}}
+	}{{match: "uname -s -m", result: model.RunResult{Verdict: model.VerdictAnswered, Stdout: "Linux\n"}}}}
 	if err := checkTargetPlatform(context.Background(), sess); err == nil {
 		t.Fatal("a target with no machine name was accepted")
 	}
@@ -287,7 +287,7 @@ func TestUnpackUploadRefusesAnotherBuild(t *testing.T) {
 	sess := &commandSession{answers: []struct {
 		match  string
 		result model.RunResult
-	}{{match: "version", result: model.RunResult{Stdout: "karma 0.1.0\n", ExitCode: 0}}}}
+	}{{match: "version", result: model.RunResult{Verdict: model.VerdictAnswered, Stdout: "karma 0.1.0\n"}}}}
 	err := unpackUpload(context.Background(), sess, "/tmp/karma-x/karma", "")
 	if err == nil {
 		t.Fatal("a binary that answered another version was accepted")
@@ -307,5 +307,11 @@ func TestCommandFailurePrefersTheTargetsWords(t *testing.T) {
 	withoutText := commandFailure(model.RunResult{ExitCode: 7})
 	if !strings.Contains(withoutText, "7") {
 		t.Fatalf("a silent failure should report the exit status: %q", withoutText)
+	}
+	// A call that never ran a process has no status to report: the verdict is
+	// what the message can say.
+	missing := commandFailure(model.RunResult{Verdict: model.VerdictUnavailable, ExitCode: 127})
+	if !strings.Contains(missing, "does not have that command") {
+		t.Fatalf("an unavailable command should say so: %q", missing)
 	}
 }

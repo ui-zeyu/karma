@@ -225,58 +225,48 @@ func safeLineStyler(styler lineStyler) lineStyler {
 	}
 }
 
-// buildLineStyler is the syntax table. Built-in pseudo-lexers are reused
-// directly; bash goes through chroma; an unknown declaration means no
-// highlighting.
-func buildLineStyler(syntax model.Syntax) lineStyler {
-	switch syntax {
-	case model.SyntaxLsL:
-		return styleLsL
-	case model.SyntaxEnv:
-		return styleEnv
-	case model.SyntaxDmesg:
-		return styleDmesg
-	case model.SyntaxSshdConfig:
-		return styleSshdConfig
-	case model.SyntaxSSHPubkey:
-		return styleSSHPublicKey
-	case model.SyntaxColon:
-		return styleColonTable
-	case model.SyntaxLsmod:
-		return styleLsmod
-	case model.SyntaxIPAddr:
-		return styleIPAddr
-	case model.SyntaxTable:
-		return newTableStyler(nil, true).style
-	case model.SyntaxTop:
-		// Cycle off: top -b's summary lines (banner, Tasks, %Cpu, MiB Mem) are
-		// prose, not columns. The process table anchors on its all-caps header;
-		// everything before it stays plain.
-		return newTableStyler(nil, false).style
-	case model.SyntaxDf:
-		return newTableStyler([]*regexp.Regexp{dfHeader}, true).style
-	case model.SyntaxLastlog:
-		return newTableStyler([]*regexp.Regexp{lastlogHeader}, true).style
-	case model.SyntaxUnits:
-		return newUnitStyler().style
-	case model.SyntaxListen:
+// syntaxStylers is the syntax table: one constructor per declared syntax, so a
+// syntax and its coloring are one entry instead of one branch of a switch. A
+// syntax with no entry declares no coloring.
+var syntaxStylers = map[model.Syntax]func() lineStyler{
+	model.SyntaxLsL:        func() lineStyler { return styleLsL },
+	model.SyntaxEnv:        func() lineStyler { return styleEnv },
+	model.SyntaxDmesg:      func() lineStyler { return styleDmesg },
+	model.SyntaxSshdConfig: func() lineStyler { return styleSshdConfig },
+	model.SyntaxSSHPubkey:  func() lineStyler { return styleSSHPublicKey },
+	model.SyntaxColon:      func() lineStyler { return styleColonTable },
+	model.SyntaxLsmod:      func() lineStyler { return styleLsmod },
+	model.SyntaxIPAddr:     func() lineStyler { return styleIPAddr },
+	model.SyntaxTable:      func() lineStyler { return newTableStyler(nil, true).style },
+	// Cycle off: top -b's summary lines (banner, Tasks, %Cpu, MiB Mem) are
+	// prose, not columns. The process table anchors on its all-caps header;
+	// everything before it stays plain.
+	model.SyntaxTop:     func() lineStyler { return newTableStyler(nil, false).style },
+	model.SyntaxDf:      func() lineStyler { return newTableStyler([]*regexp.Regexp{dfHeader}, true).style },
+	model.SyntaxLastlog: func() lineStyler { return newTableStyler([]*regexp.Regexp{lastlogHeader}, true).style },
+	model.SyntaxUnits:   func() lineStyler { return newUnitStyler().style },
+	model.SyntaxListen: func() lineStyler {
 		return newTableStyler([]*regexp.Regexp{compile(`^Netid\s+State\s`), compile(`^Proto\s+Recv-Q\s+Send-Q\s`)}, true).style
-	case model.SyntaxNetstat:
-		return newTableStyler([]*regexp.Regexp{compile(`^\s*Proto\s+Local`)}, true).style
-	case model.SyntaxIPKeyval:
-		return newKeyvalStyler().style
-	case model.SyntaxPkgHistory:
+	},
+	model.SyntaxNetstat:  func() lineStyler { return newTableStyler([]*regexp.Regexp{compile(`^\s*Proto\s+Local`)}, true).style },
+	model.SyntaxIPKeyval: func() lineStyler { return newKeyvalStyler().style },
+	model.SyntaxPkgHistory: func() lineStyler {
 		return stylePkgHistory
-	case model.SyntaxFstab:
-		return styleFstab
-	case model.SyntaxReg:
-		return styleReg
-	case model.SyntaxPipe:
-		return stylePipeTable
-	case model.SyntaxPowerShell:
+	},
+	model.SyntaxFstab: func() lineStyler { return styleFstab },
+	model.SyntaxReg:   func() lineStyler { return styleReg },
+	model.SyntaxPipe:  func() lineStyler { return stylePipeTable },
+	model.SyntaxPowerShell: func() lineStyler {
 		return chromaLineStyler(chromaLexers["powershell"])
-	case model.SyntaxBash:
-		return chromaLineStyler(chromaLexers["bash"])
+	},
+	model.SyntaxBash: func() lineStyler { return chromaLineStyler(chromaLexers["bash"]) },
+}
+
+// buildLineStyler resolves one declared syntax through the table; an unknown
+// declaration means no highlighting.
+func buildLineStyler(syntax model.Syntax) lineStyler {
+	if build, ok := syntaxStylers[syntax]; ok {
+		return build()
 	}
 	return nil
 }

@@ -219,7 +219,7 @@ var LogsChecks = []*model.Check{
 			{Label: "log", Inv: model.Dual{
 				Run:    native.AccessLog(accessLogPaths, accessLogKeepRe),
 				Script: script.AccessLogScript(accessLogPaths, accessLogKeep),
-			}, LineLimit: accessLogLines},
+			}, Cap: model.Scan(accessLogLines)},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{

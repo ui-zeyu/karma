@@ -9,7 +9,6 @@ import (
 	"errors"
 	"regexp"
 	"slices"
-	"strings"
 	"time"
 )
 
@@ -291,22 +290,95 @@ func (d Dual) For(ch Channel) Invocation {
 // (exit 127) so the probe chain falls to the next tier.
 var ErrTierUnavailable = errors.New("native tier unavailable in this environment")
 
-// RunResult is the result of one call. ExitCode -1 means the call was killed
-// on timeout or cancelled and has no exit code.
-type RunResult struct {
-	Stdout    string
-	Stderr    string
-	ExitCode  int
-	TimedOut  bool
-	Truncated bool
-	// Interrupted marks a call cut short by cancellation (Ctrl-C): the source
-	// was stopped and the partial output kept.
-	Interrupted bool
+// Verdict is how one call ended, as the channel could tell. It is what the
+// fallback chain reads: a tier that settled the question ends the walk (an
+// answer, or a cut whose partial output is kept), and an unavailable or failed
+// tier leaves the walk going. The channel boundary states it, so no caller has
+// to know the exit codes' conventions.
+type Verdict int8
+
+const (
+	// VerdictFailed: the call produced no answer — the channel broke, or the
+	// command exited non-zero with nothing on stdout. Stderr is what a panel
+	// then names.
+	VerdictFailed Verdict = iota
+	// VerdictAnswered: stdout is this tier's answer, the exit code and all. An
+	// empty stdout is an answer too (a verifier with nothing to report).
+	VerdictAnswered
+	// VerdictUnavailable: the environment lacks this tier — a binary the shell's
+	// own guard reported missing (127), or an in-process body that cannot run
+	// here. The chain falls to the next tier.
+	VerdictUnavailable
+	// VerdictTimedOut: the deadline stopped the source. The output already
+	// produced is kept and the chain does not advance.
+	VerdictTimedOut
+	// VerdictInterrupted: cancellation (Ctrl-C) stopped the source, which keeps
+	// the output it had produced. The chain does not advance.
+	VerdictInterrupted
+)
+
+// Settled reports whether this tier ended the walk: it answered, or it was cut
+// short and its partial output is what stays. A failed or unavailable tier
+// leaves the chain walking.
+func (v Verdict) Settled() bool {
+	return v == VerdictAnswered || v == VerdictTimedOut || v == VerdictInterrupted
 }
 
-// Answered reports whether this tier answered: exit code 0, or stdout already
-// has content. Empty stdout still counts as answered.
-func (r RunResult) Answered() bool { return r.ExitCode == 0 || strings.TrimSpace(r.Stdout) != "" }
+// Cut reports whether the call was stopped mid-flight by the deadline or by
+// cancellation, with the output it had produced kept.
+func (v Verdict) Cut() bool { return v == VerdictTimedOut || v == VerdictInterrupted }
+
+// String names the verdict, for the messages that report a call that did not
+// answer.
+func (v Verdict) String() string {
+	switch v {
+	case VerdictAnswered:
+		return "answered"
+	case VerdictUnavailable:
+		return "unavailable"
+	case VerdictTimedOut:
+		return "timed out"
+	case VerdictInterrupted:
+		return "interrupted"
+	}
+	return "failed"
+}
+
+// RunResult is the result of one call.
+type RunResult struct {
+	Verdict Verdict
+	Stdout  string
+	Stderr  string
+	// ExitCode is the process's status; -1 when the call has none (a cut call,
+	// or a channel that could not say).
+	ExitCode int
+	// Truncated marks a body a cap stopped: the source did not finish on its
+	// own. Whether the panel reports that is the tier's row cap's decision.
+	Truncated bool
+}
+
+// RowCap is a tier's row cap: how many rows the tier wants, and what reaching
+// the cap means. The zero value is no cap.
+type RowCap struct {
+	// Rows is the row count the cap allows; 0 is no cap.
+	Rows int
+	// Answer marks a cap that is the tier's own answer: a sorted view's top N is
+	// complete at the cap, so the panel is not told the body was cut. A scan cap
+	// bounds an open walk and is presented as a cut.
+	Answer bool
+}
+
+// Shape is the cap of a tier whose answer is a fixed number of rows: a listing
+// head, or a sorted view's top N.
+func Shape(rows int) RowCap { return RowCap{Rows: rows, Answer: true} }
+
+// Scan is the cap that bounds an open scan, like `find ... | head`: reaching it
+// is a cut, and the panel reports the body as truncated.
+func Scan(rows int) RowCap { return RowCap{Rows: rows} }
+
+// Cut reports whether a body this cap stopped is presented as cut. The byte
+// safety valve's cut is a cut either way; this is only about the tier's own cap.
+func (c RowCap) Cut() bool { return c.Rows > 0 && !c.Answer }
 
 // HostFacts are the target's basic facts, collected in one opening round trip.
 type HostFacts struct {
@@ -514,11 +586,17 @@ func (c Channel) Remote() bool { return c != ChanLocal }
 // shape as the other tiers and runs within the section; normalization that
 // must run whichever tier wins hangs on Check.Normalize.
 type Probe struct {
-	Label     string
-	Inv       Invocation
-	Adapt     Normalizer
-	LineLimit int // line limit for open scans, 0 for none
-	Head      int // the row shape this tier wants, 0 for none
+	Label string
+	Inv   Invocation
+	Adapt Normalizer
+	Cap   RowCap
+	// Together marks a tier that answers alongside the other tiers declared
+	// after it: the set is entered when every plain tier before it failed,
+	// every member runs, and the members' bodies join the check's in declaration
+	// order. It is for a source the channel needs one process per item for — the
+	// local Windows channel has no shell to loop in, so a registry check
+	// declares one reg.exe tier per key this way.
+	Together bool
 }
 
 // InvocationFor returns the invocation one channel executes for this tier:

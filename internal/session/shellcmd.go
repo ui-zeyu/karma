@@ -10,22 +10,39 @@
 package session
 
 import (
+	"fmt"
+
 	"karma/internal/model"
 	"karma/internal/script"
 )
 
-func bodyText(inv model.Invocation) string {
+// shellText is the invocation's shell text. ok is false for an invocation that
+// carries none: a Dual whose script side does not exist — the runner never
+// routes one to a remote channel (model.Dual.For) — and any future Invocation
+// kind that has not taught this renderer about itself.
+func shellText(inv model.Invocation) (string, bool) {
 	switch v := inv.(type) {
 	case model.Command:
-		return script.Join(v.Argv)
+		return script.Join(v.Argv), true
 	case model.Shell:
-		return v.Script
+		return v.Script, true
 	case model.Dual:
-		return v.Script
+		return v.Script, v.Script != ""
 	}
-	// An invocation with no shell rendering never reaches this point: the
-	// local channel runs a Dual in process, and every other kind carries text.
-	return ""
+	return "", false
+}
+
+// mustShellText is shellText for the call sites the catalog guarantees, where a
+// tier that reaches a shell always declares the text for it. A missing one is a
+// programming error, and it stops where it happens rather than running an empty
+// script: an empty script exits 0 with no output, which reads as an answered
+// tier.
+func mustShellText(inv model.Invocation) string {
+	text, ok := shellText(inv)
+	if !ok {
+		panic(fmt.Sprintf("no shell rendering for %T", inv))
+	}
+	return text
 }
 
 // posixShell: the login shell may not be POSIX, so both remote and shell-based local calls wrap another sh layer.
@@ -33,15 +50,13 @@ func posixShell(scriptText string) []string { return []string{"/bin/sh", "-c", s
 
 // RenderShell is a command string executable remotely: always through /bin/sh -c, with all arguments escaped.
 func RenderShell(inv model.Invocation) string {
-	return script.Join(posixShell(bodyText(inv)))
+	return script.Join(posixShell(mustShellText(inv)))
 }
 
 // ArgvFor is the argv for local exec. Command goes through exec without a shell; Shell goes through /bin/sh -c.
 func ArgvFor(inv model.Invocation) []string {
-	switch v := inv.(type) {
-	case model.Command:
-		return v.Argv
-	default:
-		return posixShell(bodyText(inv))
+	if cmd, ok := inv.(model.Command); ok {
+		return cmd.Argv
 	}
+	return posixShell(mustShellText(inv))
 }

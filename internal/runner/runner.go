@@ -9,10 +9,10 @@
 //
 // Runner only depends on session.Session's Run callback: it knows neither SSH
 // nor any concrete command. The tier that wins is sent to the target as a
-// whole, with row limits declared by the probe itself (head is the wanted
-// shape, line_limit only caps open scans). Reading first aligns the winning
-// tier's dialect (adapt) and then normalizes the body for the check
-// (normalize); both run per section and carry the section title.
+// whole, with row limits declared by the probe itself (a shape cap is the row
+// set the tier asked for, a scan cap only bounds an open walk). Reading first
+// aligns the winning tier's dialect (adapt) and then normalizes the body for the
+// check (normalize); both run per section and carry the section title.
 package runner
 
 import (
@@ -121,14 +121,22 @@ type probeFailure struct {
 	skipped []string // skip chain up to this tier, excluding this tier
 }
 
+// answeredTier is one tier of an answer set (model.Probe.Together) with the tier
+// it came from, so its row cap can judge its own truncation.
+type answeredTier struct {
+	probe  model.Probe
+	result model.RunResult
+}
+
 // runCheck walks the fallback chain once.
 //
-// Exit code 0 or existing stdout stays. 127, and a non-zero exit with empty
-// stdout, moves to the next tier. A timeout or cancellation keeps the output
-// that was cut off and does not move on; a cancelled context stops walking the
-// chain. If the last tier has both streams empty it stays silent; error text
-// alone goes into the panel. A chain whose tiers were all unavailable (binary
-// absent from the capability probe, or 127 at run time) is Skipped: the
+// The verdict decides: a tier that settled the question ends the walk — an
+// answer, or a cut whose partial output is kept — while an unavailable or
+// failed tier leaves the walk going. A tier marked Probe.Together answers with
+// its neighbours rather than instead of them, so the set runs as a whole and its
+// bodies join. If the last tier has both streams empty it stays silent; error
+// text alone goes into the panel. A chain whose tiers were all unavailable
+// (binary absent from the capability probe, or 127 at run time) is Skipped: the
 // target's environment lacks the command, which is not a finding.
 func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, check *model.Check, options model.RunOptions) *model.CheckResult {
 	timeout := cmp.Or(check.Timeout, options.Timeout)
@@ -138,6 +146,7 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 		unavailable bool
 		skipped     []string
 		failure     *probeFailure
+		set         []answeredTier
 	)
 	for i := range check.Probes {
 		if ctx.Err() != nil {
@@ -153,29 +162,43 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 			skipped = append(skipped, probe.Label)
 			continue
 		}
-		// head is the shape this tier wants (stopping once it has enough rows
-		// counts as success); line_limit only caps open scans
-		result := sess.Run(ctx, inv, timeout, cmp.Or(probe.Head, probe.LineLimit))
+		result := sess.Run(ctx, inv, timeout, probe.Cap)
+		// A member of an answer set joins it whatever it reported — an answered
+		// member's text is the check's, and a failed member's stderr is not a
+		// verdict of its own while another member may still answer — unless the
+		// environment lacks it, which is an unavailable tier like any other.
+		if probe.Together && result.Verdict != model.VerdictUnavailable {
+			set = append(set, answeredTier{probe: *probe, result: result})
+			// A cut member ends the set: the source stopped answering, and the
+			// members after it would read the same dead channel.
+			if result.Verdict.Cut() {
+				break
+			}
+			continue
+		}
 		switch {
-		case result.TimedOut || result.Answered():
-			// "truncated" is marked for an explicit line_limit and the byte
-			// safety valve; head's stop-when-satisfied is the shape this
-			// command wants and is not marked (catalog invariant: Head and
-			// LineLimit are mutually exclusive)
-			truncated := result.Truncated && probe.Head == 0
+		case result.Verdict.Settled():
 			return commandResult(check, probe, result, skipped, resultOptions{
-				timeout: timeout, floor: options.MinSeverity, truncated: truncated})
-		case result.ExitCode == 127:
+				timeout:   timeout,
+				floor:     options.MinSeverity,
+				truncated: result.Truncated && probe.Cap.Cut(),
+			})
+		case result.Verdict == model.VerdictUnavailable:
 			unavailable = true
-		case strings.TrimSpace(result.Stderr) != "" && failure == nil:
-			failure = &probeFailure{probe: *probe, result: result, skipped: slices.Clone(skipped)}
+		default:
+			if strings.TrimSpace(result.Stderr) != "" && failure == nil {
+				failure = &probeFailure{probe: *probe, result: result, skipped: slices.Clone(skipped)}
+			}
 		}
 		skipped = append(skipped, probe.Label)
 	}
 
+	if len(set) > 0 {
+		return setResult(check, set, skipped, options, timeout)
+	}
 	if failure != nil {
 		return commandResult(check, &failure.probe, failure.result, failure.skipped, resultOptions{
-			timeout: timeout, floor: options.MinSeverity, failure: true})
+			timeout: timeout, floor: options.MinSeverity})
 	}
 	if unavailable {
 		return &model.CheckResult{
@@ -187,14 +210,58 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 	return &model.CheckResult{Check: check, Outcome: model.Collected, SkippedLabels: skipped}
 }
 
-// resultOptions is how the tier that won (or failed) is finished: the deadline
-// its note names, the run's severity floor, and whether the result is a
-// truncated one, a failed tier, or an ordinary answer.
+// setResult finishes an answer set: the members' bodies joined in declaration
+// order, as one tier would have printed them. The set is answered when any
+// member answered — the members are sources of one check, not alternatives to one
+// another — so a member that failed while another answered is not the check's
+// verdict. A set with no answer at all is the check's failure, carrying every
+// member's stderr and the first exit code a member reported.
+func setResult(check *model.Check, set []answeredTier, skipped []string, options model.RunOptions, timeout time.Duration) *model.CheckResult {
+	joined := model.RunResult{Verdict: model.VerdictFailed, ExitCode: -1}
+	for _, member := range set {
+		switch {
+		case member.result.Verdict == model.VerdictAnswered && joined.Verdict != model.VerdictAnswered:
+			// The first answer names the set's verdict and exit code.
+			joined.Verdict, joined.ExitCode = model.VerdictAnswered, member.result.ExitCode
+		case member.result.Verdict.Cut() && joined.Verdict == model.VerdictFailed:
+			// A cut is the set's own end, and a cut call has no exit code.
+			joined.Verdict = member.result.Verdict
+		}
+	}
+	var out, errText strings.Builder
+	truncated := false
+	for _, member := range set {
+		if member.result.Stdout != "" {
+			if out.Len() > 0 && !strings.HasSuffix(out.String(), "\n") {
+				out.WriteByte('\n')
+			}
+			out.WriteString(member.result.Stdout)
+		}
+		errText.WriteString(member.result.Stderr)
+		if member.result.Truncated && member.probe.Cap.Cut() {
+			truncated = true
+		}
+		if joined.Verdict == model.VerdictFailed && joined.ExitCode < 0 && member.result.ExitCode >= 0 {
+			joined.ExitCode = member.result.ExitCode
+		}
+	}
+	joined.Stdout, joined.Stderr = out.String(), errText.String()
+	labels := make([]string, 0, len(set))
+	for _, member := range set {
+		labels = append(labels, member.probe.Label)
+	}
+	probe := &model.Probe{Label: strings.Join(labels, " + ")}
+	return commandResult(check, probe, joined, skipped, resultOptions{
+		timeout: timeout, floor: options.MinSeverity, truncated: truncated})
+}
+
+// resultOptions is how the tier that won (or failed, or the set that answered)
+// is finished: the deadline its note names, the run's severity floor, and
+// whether the body was cut.
 type resultOptions struct {
 	timeout   time.Duration
 	floor     model.SeverityFloor
 	truncated bool
-	failure   bool
 }
 
 // commandResult finishes the tier that won (or failed): dialect alignment and
@@ -202,16 +269,16 @@ type resultOptions struct {
 func commandResult(check *model.Check, probe *model.Probe, result model.RunResult,
 	skipped []string, opt resultOptions) *model.CheckResult {
 	note := ""
-	switch {
-	case result.TimedOut:
+	switch result.Verdict {
+	case model.VerdictTimedOut:
 		note = fmt.Sprintf("timeout (%gs)", opt.timeout.Seconds()) + keptTail(result)
-	case result.Interrupted:
+	case model.VerdictInterrupted:
 		note = "interrupted" + keptTail(result)
-	case opt.failure:
+	case model.VerdictFailed:
 		note = failureNote(result)
 	}
 	reading := reader.Analyze(result.Stdout, check.Rules, check.Filters,
-		readingTransform(probe, check.Normalize), check.ScanBytes, opt.floor)
+		check.ScanBytes, opt.floor, transforms(probe, check)...)
 	reading.Truncated = reading.Truncated || opt.truncated
 	// Stderr from a zero exit is incidental noise; only a non-zero exit keeps
 	// it alongside the body
@@ -257,23 +324,17 @@ func failureNote(result model.RunResult) string {
 	return base
 }
 
-// readingTransform runs the winning probe's dialect alignment first and the
-// check's body normalization after; both within a section. Dialect alignment
-// only produces text; stating spans up front is the check-level normalizer's
-// job.
-func readingTransform(probe *model.Probe, normalize model.Normalizer) model.Normalizer {
-	adapt, then := probe.Adapt, normalize
-	switch {
-	case adapt == nil:
-		return then
-	case then == nil:
-		return adapt
+// transforms is the winning tier's dialect alignment followed by the check's
+// body normalization: both shape one section, in this order, and either may be
+// absent. Dialect alignment only produces text; stating spans up front is the
+// check-level normalizer's job.
+func transforms(probe *model.Probe, check *model.Check) []model.Normalizer {
+	var all []model.Normalizer
+	if probe.Adapt != nil {
+		all = append(all, probe.Adapt)
 	}
-	return func(title string, body string) *model.Shaped {
-		aligned := adapt(title, body)
-		if aligned != nil {
-			body = aligned.Text
-		}
-		return then(title, body)
+	if check.Normalize != nil {
+		all = append(all, check.Normalize)
 	}
+	return all
 }

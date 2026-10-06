@@ -14,7 +14,7 @@ import (
 
 // floor reads one text at a given floor.
 func floor(text string, rules []model.Rule, filters []model.LineFilter, at model.SeverityFloor) model.Document {
-	return reader.Analyze(text, rules, filters, nil, 0, at)
+	return reader.Analyze(text, rules, filters, 0, at, nil)
 }
 
 // hiddenBelow is the count the floor hides, from the document's own counter.

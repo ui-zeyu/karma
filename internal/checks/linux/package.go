@@ -200,7 +200,7 @@ var PackageChecks = []*model.Check{
 			{Label: "find", Inv: model.Dual{
 				Run:    native.UnownedFiles(unownedDirs),
 				Script: script.UnownedScript(unownedDirs),
-			}, LineLimit: openScanLines},
+			}, Cap: model.Scan(openScanLines)},
 		},
 		define.CheckOpt{Rules: []model.Rule{unownedFileRule}, Timeout: unownedTimeout}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,

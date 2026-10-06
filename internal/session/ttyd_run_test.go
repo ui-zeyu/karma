@@ -191,7 +191,7 @@ func TestTTYDSessionMeta(t *testing.T) {
 
 func TestTTYDRunCollectsBodyAndExitCode(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
-	result := sess.Run(context.Background(), model.Shell{Script: "echo hello; echo oops 1>&2; exit 3"}, 10*time.Second, 0)
+	result := sess.Run(context.Background(), model.Shell{Script: "echo hello; echo oops 1>&2; exit 3"}, 10*time.Second, model.RowCap{})
 	if result.Stdout != "hello\n" {
 		t.Fatalf("stdout: %q", result.Stdout)
 	}
@@ -201,7 +201,7 @@ func TestTTYDRunCollectsBodyAndExitCode(t *testing.T) {
 	if result.ExitCode != 3 {
 		t.Fatalf("exit code: %d", result.ExitCode)
 	}
-	if result.TimedOut || result.Truncated {
+	if result.Verdict != model.VerdictAnswered || result.Truncated {
 		t.Fatalf("flags: %+v", result)
 	}
 	if strings.Contains(result.Stdout, "__KRM") || strings.Contains(result.Stdout, "base64") {
@@ -215,34 +215,34 @@ func TestTTYDRunCollectsBodyAndExitCode(t *testing.T) {
 // stdout, the shell's complaint on stderr, exit 127.
 func TestTTYDRunSeparatesStderrFromStdout(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
-	result := sess.Run(context.Background(), model.Shell{Script: "echo first; nosuchbinary-karma; echo last"}, 10*time.Second, 0)
+	result := sess.Run(context.Background(), model.Shell{Script: "echo first; nosuchbinary-karma; echo last"}, 10*time.Second, model.RowCap{})
 	if result.Stdout != "first\nlast\n" {
 		t.Fatalf("stdout: %q", result.Stdout)
 	}
 	if !strings.Contains(result.Stderr, "nosuchbinary-karma") {
 		t.Fatalf("stderr: %q", result.Stderr)
 	}
-	missing := sess.Run(context.Background(), model.Shell{Script: "nosuchbinary-karma"}, 10*time.Second, 0)
-	if missing.Stdout != "" || !strings.Contains(missing.Stderr, "not found") || missing.ExitCode != 127 {
+	missing := sess.Run(context.Background(), model.Shell{Script: "nosuchbinary-karma"}, 10*time.Second, model.RowCap{})
+	if missing.Stdout != "" || !strings.Contains(missing.Stderr, "not found") || missing.Verdict != model.VerdictUnavailable {
 		t.Fatalf("a missing binary must answer like the ssh channel: %+v", missing)
 	}
 }
 
 func TestTTYDRunTimesOutAndKeepsPartialOutput(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
-	result := sess.Run(context.Background(), model.Shell{Script: "echo one; sleep 5; echo two"}, 1500*time.Millisecond, 0)
+	result := sess.Run(context.Background(), model.Shell{Script: "echo one; sleep 5; echo two"}, 1500*time.Millisecond, model.RowCap{})
 	if !strings.Contains(result.Stdout, "one") || strings.Contains(result.Stdout, "two") {
 		t.Fatalf("stdout: %q", result.Stdout)
 	}
-	if !result.TimedOut || result.ExitCode != -1 {
+	if result.Verdict != model.VerdictTimedOut || result.ExitCode != -1 {
 		t.Fatalf("result: %+v", result)
 	}
 }
 
 func TestTTYDRunKeepsTrailingPartialLine(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
-	result := sess.Run(context.Background(), model.Shell{Script: "printf tail"}, 10*time.Second, 0)
-	if result.Stdout != "tail" || result.ExitCode != 0 {
+	result := sess.Run(context.Background(), model.Shell{Script: "printf tail"}, 10*time.Second, model.RowCap{})
+	if result.Stdout != "tail" || result.Verdict != model.VerdictAnswered {
 		t.Fatalf("result: %+v", result)
 	}
 }
@@ -251,7 +251,7 @@ func TestTTYDRunNormalizesCarriageReturns(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	// The fake's pty already turns every \n into \r\n; the channel must put
 	// the plain line endings back so the reading layers see the ssh shape.
-	result := sess.Run(context.Background(), model.Shell{Script: "printf 'x\\ty\\nz\\n'"}, 10*time.Second, 0)
+	result := sess.Run(context.Background(), model.Shell{Script: "printf 'x\\ty\\nz\\n'"}, 10*time.Second, model.RowCap{})
 	if result.Stdout != "x\ty\nz\n" {
 		t.Fatalf("stdout: %q", result.Stdout)
 	}
@@ -260,8 +260,8 @@ func TestTTYDRunNormalizesCarriageReturns(t *testing.T) {
 func TestTTYDRunTypesLongLines(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	script := strings.Repeat("# padding to push the typed line past one chunk\n", 120) + "echo done"
-	result := sess.Run(context.Background(), model.Shell{Script: script}, 10*time.Second, 0)
-	if !strings.Contains(result.Stdout, "done") || result.ExitCode != 0 {
+	result := sess.Run(context.Background(), model.Shell{Script: script}, 10*time.Second, model.RowCap{})
+	if !strings.Contains(result.Stdout, "done") || result.Verdict != model.VerdictAnswered {
 		t.Fatalf("result: code=%d stdout=%q", result.ExitCode, result.Stdout)
 	}
 }
@@ -282,8 +282,8 @@ func TestTTYDAuthorization(t *testing.T) {
 		t.Fatal("a wrong credential must fail the connection")
 	}
 	sess := openTTYD(t, fake.url(), "u:p")
-	result := sess.Run(context.Background(), model.Shell{Script: "echo authed"}, 10*time.Second, 0)
-	if result.Stdout != "authed\n" || result.ExitCode != 0 {
+	result := sess.Run(context.Background(), model.Shell{Script: "echo authed"}, 10*time.Second, model.RowCap{})
+	if result.Stdout != "authed\n" || result.Verdict != model.VerdictAnswered {
 		t.Fatalf("result: %+v", result)
 	}
 }

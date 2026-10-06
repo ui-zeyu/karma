@@ -15,31 +15,76 @@ func hasGlobMeta(path string) bool {
 	return strings.ContainsAny(path, "*?[")
 }
 
-// shellGlob expands one pattern the way a POSIX shell does. filepath.Glob has
-// no dot-file rule: a "*" matches a leading dot, while the shell only matches
-// one the pattern spells out, so a directory holding .placeholder yields a
-// result the script tier's glob would not produce.
+// shellGlob expands one pattern the way a POSIX shell does: every word matches
+// one path segment of a name that exists, and a wildcard never matches a leading
+// dot — a dot name comes back only when the pattern itself spells the dot. The
+// results are sorted, like the shell's own expansion.
+//
+// filepath.Glob has no dot rule (its "*" matches a leading dot), and applying
+// one to its results means re-aligning them with the pattern's own words and
+// hoping the two line up. Matching word by word applies the rule where it
+// belongs, and there is nothing left to align.
 func shellGlob(pattern string) []string {
-	matches, _ := filepath.Glob(pattern)
-	if len(matches) == 0 {
+	words := strings.Split(pattern, "/")
+	dirs := []string{"."}
+	if words[0] == "" {
+		// An absolute pattern: the leading empty word is the root.
+		dirs, words = []string{"/"}, words[1:]
+	}
+	// A trailing empty word is the pattern's trailing slash: the shell then
+	// keeps directories only, which the last word's match applies.
+	dirsOnly := false
+	if last := len(words) - 1; last > 0 && words[last] == "" {
+		words, dirsOnly = words[:last], true
+	}
+	for index, word := range words {
+		last := index == len(words)-1
+		var next []string
+		for _, dir := range dirs {
+			next = append(next, matchWord(dir, word, last, dirsOnly && last)...)
+		}
+		if len(next) == 0 {
+			return nil
+		}
+		dirs = next
+	}
+	slices.Sort(dirs)
+	return dirs
+}
+
+// matchWord matches one pattern word against one directory's entries; last marks
+// the pattern's own last word, and wantDir keeps directories only (the word
+// before a trailing slash). An intermediate word has to name a directory to have
+// anything under it, and a symlink to one counts, the way the shell and
+// filepath.Glob follow it.
+func matchWord(dir, word string, last, wantDir bool) []string {
+	if word == "" {
 		return nil
 	}
-	words := strings.Split(pattern, "/")
-	return slices.DeleteFunc(matches, func(path string) bool {
-		parts := strings.Split(path, "/")
-		if len(parts) != len(words) {
-			return false
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	spellsDot := strings.HasPrefix(word, ".")
+	var out []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !spellsDot && strings.HasPrefix(name, ".") {
+			continue
 		}
-		for i, word := range words {
-			if !hasGlobMeta(word) || strings.HasPrefix(word, ".") {
+		if matched, _ := filepath.Match(word, name); !matched {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if wantDir || !last {
+			info, err := os.Stat(path)
+			if err != nil || !info.IsDir() {
 				continue
 			}
-			if strings.HasPrefix(parts[i], ".") {
-				return true
-			}
 		}
-		return false
-	})
+		out = append(out, path)
+	}
+	return out
 }
 
 // ExpandGlobs expands a path word list the way the script tier's shell does:
