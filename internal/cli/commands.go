@@ -1,7 +1,8 @@
-// Package cli is the cobra application: local, ssh, and list hang off the root
-// command, the mtime mode is written after the channel command (and after the
-// target on ssh), and the cat and ls built-in readers hang under local. Every
-// failure is written to stderr with the `karma: ` prefix by reportError.
+// Package cli is the cobra application: local, ssh, ttyd, and list hang off
+// the root command, the mtime mode is written after the channel command (and
+// after the target on ssh and ttyd), and the cat and ls built-in readers hang
+// under local. Every failure is written to stderr with the `karma: ` prefix by
+// reportError.
 package cli
 
 import (
@@ -45,7 +46,7 @@ func Main(version string) int {
 func newRootCmd(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "karma",
-		Short:         "Read-only incident-response collection: Linux over local or SSH, Windows on the local host.",
+		Short:         "Read-only incident-response collection: Linux over local, SSH, or a ttyd web terminal; Windows on the local host.",
 		Version:       version,
 		Args:          rootArgs,
 		SilenceUsage:  true,
@@ -77,6 +78,7 @@ func newRootCmd(version string) *cobra.Command {
 	root.AddCommand(
 		newLocalCmd(),
 		newSSHCmd(),
+		newTTYDCmd(),
 		newListCmd(),
 		newVersionCmd(version),
 	)
@@ -178,6 +180,47 @@ func newSSHCmd() *cobra.Command {
 	}
 	addRunFlags(cmd)
 	addSSHFlags(cmd)
+	return cmd
+}
+
+// newTTYDCmd collects through a ttyd web terminal: one websocket endpoint the
+// operator already exposes, typed into as a second client.
+func newTTYDCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "ttyd target [selector...]",
+		Short: "Collect read-only evidence from a ttyd web terminal",
+		Long: "Collect read-only evidence from a host reached through a ttyd web terminal. " +
+			"The target is the websocket endpoint: ws://host[:port] or wss://host[:port], " +
+			"with ttyd's default port 7681 for a bare host and user:pass@ as the credential " +
+			"(ttyd's -c). karma connects as a second client and types its collection line " +
+			"into the terminal ttyd spawns for it, so the server must accept client input: " +
+			"ttyd from 1.7.4 needs -W/--writable. The channel is Linux only, like ssh. " +
+			"Aspect names or check ids follow; all of them run when omitted, and a leading ! " +
+			"on a name excludes those checks. " +
+			"Change-time clustering is written karma ttyd TARGET mtime DIR...",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return usagef(cmd, "ttyd needs a target: ws://host[:port] or host[:port]")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			transport, err := buildTTYDTransport(cmd.Flags(), args[0])
+			if err != nil {
+				return err
+			}
+			if dirs, ok := mtimeArgs(args[1:]); ok {
+				return runMtimeMode(cmd, transport, dirs, "ttyd TARGET")
+			}
+			options, err := runOptions(cmd.Flags(), args[1:])
+			if err != nil {
+				return err
+			}
+			return runLocalOrSSH(cmd.Context(), transport, options)
+		},
+	}
+	addRunFlags(cmd)
+	addTTYDFlags(cmd)
 	return cmd
 }
 

@@ -77,6 +77,11 @@ func stringFlag(flags *pflag.FlagSet, name string) string {
 	return value
 }
 
+func boolFlag(flags *pflag.FlagSet, name string) bool {
+	value, _ := flags.GetBool(name)
+	return value
+}
+
 func stringSliceFlag(flags *pflag.FlagSet, name string) []string {
 	value, _ := flags.GetStringSlice(name)
 	return value
@@ -98,6 +103,30 @@ func sshFlags(flags *pflag.FlagSet) {
 	flags.String("password", "",
 		"password authentication, and the passphrase of an encrypted private key; "+
 			"without it karma uses public keys only and exits when authentication fails")
+}
+
+// addTTYDFlags registers the ttyd transport options: the credential for ttyd's
+// basic authentication and the TLS answers for wss.
+func addTTYDFlags(cmd *cobra.Command) { ttydFlags(cmd.Flags()) }
+
+func ttydFlags(flags *pflag.FlagSet) {
+	flags.String("credential", "",
+		"user:pass for ttyd's basic authentication, sent on the upgrade and in the handshake; "+
+			"the user:pass@host spelling in the target sets it too")
+	flags.Bool("insecure", false, "wss: accept any server certificate")
+	flags.String("tls-pin", "",
+		"wss: the server certificate's SHA-256 fingerprint as 64 hex characters, verified instead of the chain")
+}
+
+// buildTTYDTransport reads the ttyd flags into the transport; the endpoint
+// itself is parsed when the connection opens.
+func buildTTYDTransport(flags *pflag.FlagSet, target string) (session.Transport, error) {
+	return &session.TTYDTransport{
+		Target:     target,
+		Credential: stringFlag(flags, "credential"),
+		Insecure:   boolFlag(flags, "insecure"),
+		Pin:        stringFlag(flags, "tls-pin"),
+	}, nil
 }
 
 // buildSSHTransport does destination parsing, connection-parameter validation,

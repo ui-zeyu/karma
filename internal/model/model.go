@@ -185,14 +185,14 @@ func (Shell) isInvocation() {}
 
 // Dual is one tier with a per-channel implementation: Run is the in-process
 // body for the channel where karma itself runs on the target, Script is the
-// /bin/sh body for the ssh channel. A zero field means the tier exists on the
-// other channel only. Both branches print the same shape, so rules, filters,
-// and lexers apply unchanged, and each branch decides its own availability —
-// Run answers model.ErrTierUnavailable, the script answers 127 — so the chain
-// falls to the next tier within the channel.
+// /bin/sh body for every remote channel (ssh, ttyd). A zero field means the
+// tier exists on the other channel only. Both branches print the same shape,
+// so rules, filters, and lexers apply unchanged, and each branch decides its
+// own availability — Run answers model.ErrTierUnavailable, the script answers
+// 127 — so the chain falls to the next tier within the channel.
 type Dual struct {
 	Run    func(ctx context.Context) (string, error) // local channel, in process
-	Script string                                    // ssh channel, /bin/sh -c
+	Script string                                    // remote channels, /bin/sh -c
 }
 
 func (Dual) isInvocation() {}
@@ -200,7 +200,7 @@ func (Dual) isInvocation() {}
 // For returns the invocation one channel executes: the Dual itself on a
 // channel it exists for, nil when this tier does not exist there.
 func (d Dual) For(ch Channel) Invocation {
-	if (ch == ChanLocal && d.Run != nil) || (ch == ChanSSH && d.Script != "") {
+	if (ch == ChanLocal && d.Run != nil) || (ch.Remote() && d.Script != "") {
 		return d
 	}
 	return nil
@@ -415,8 +415,8 @@ type FilterCount struct {
 }
 
 // Channel is which side of the wire karma itself runs on. The session answers
-// with the channel it is (ChanLocal, ChanSSH); the runner resolves each probe
-// against that answer while walking the chain.
+// with the channel it is (ChanLocal, ChanSSH, ChanTTYD); the runner resolves
+// each probe against that answer while walking the chain.
 type Channel int8
 
 const (
@@ -424,7 +424,14 @@ const (
 	ChanLocal Channel = iota + 1
 	// ChanSSH: the target is reached over ssh.
 	ChanSSH
+	// ChanTTYD: the target is reached through a ttyd web terminal's websocket.
+	ChanTTYD
 )
+
+// Remote reports whether the channel reaches the target from outside: every
+// channel but local executes a Dual's script side, so a new remote channel
+// cannot silently end up with an empty chain.
+func (c Channel) Remote() bool { return c != ChanLocal }
 
 // Probe is one tier. A nil Requires derives from the invocation (Command
 // takes Argv's first word); Adapt only turns this tier's output into the same

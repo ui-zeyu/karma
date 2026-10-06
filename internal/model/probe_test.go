@@ -32,6 +32,12 @@ func TestInvocationForPicksTheChannelBranch(t *testing.T) {
 	if sshOnly.InvocationFor(ChanSSH) == nil {
 		t.Fatal("a Dual with Script runs on the ssh channel")
 	}
+	if sshOnly.InvocationFor(ChanTTYD) == nil {
+		t.Fatal("a Dual with Script runs on every remote channel, ttyd included")
+	}
+	if !ChanSSH.Remote() || !ChanTTYD.Remote() || ChanLocal.Remote() {
+		t.Fatal("every channel but local is remote")
+	}
 	plain := Probe{Label: "ss", Inv: NewCommand("ss", "-tunap")}
 	if _, ok := plain.InvocationFor(ChanLocal).(Command); !ok {
 		t.Fatal("a command tier exists on the local channel as itself")

@@ -8,6 +8,7 @@ package script
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -115,7 +116,26 @@ func AlignLsBodies(rows []string) []string {
 		}
 		aligned[index] = fmt.Sprintf(format,
 			fields[0], fields[1], fields[2], fields[3], fields[4],
-			fields[5], fields[6], fields[7], fields[8])
+			fields[5], fields[6], fields[7], linkPath(fields))
 	}
 	return aligned
+}
+
+// linkPath is the path column of one row, with a symlink's target separated
+// the way ls -l writes it. find's %l prints the target with no arrow and
+// glued to the path, so a collected row carries them as one word; the link's
+// size is the target's length, which is what cuts them apart. A path that
+// holds spaces survives, because the cut counts from the end. A row that
+// already carries the arrow — the local channel spells it, and a second pass
+// over an aligned listing — is returned as it is.
+func linkPath(fields []string) string {
+	path := fields[8]
+	if fields[0] == "" || fields[0][0] != 'l' || strings.Contains(path, " -> ") {
+		return path
+	}
+	size, err := strconv.Atoi(fields[4])
+	if err != nil || size < 1 || size >= len(path) {
+		return path
+	}
+	return path[:len(path)-size] + " -> " + path[len(path)-size:]
 }

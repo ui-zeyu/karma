@@ -1,0 +1,486 @@
+// TTYDSession: the ttyd channel's run path. One websocket connection per
+// call, one typed line per call, the body cut out between markers, the exit
+// code read from the rc marker — the pty merges the streams and drops the
+// numeric exit status, so the payload puts both back.
+
+package session
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/coder/websocket"
+
+	"karma/internal/model"
+)
+
+const (
+	// The handshake's window size, landed in the pty's winsize: wide enough
+	// that nothing the collection prints wraps at the terminal edge.
+	ttydColumns = 500
+	ttydRows    = 50
+	// ttydSpawnWait bounds the wait for the server's initial messages, which
+	// prove the terminal's process was spawned: input sent before the spawn
+	// is dropped (a pty write to a process that does not exist yet).
+	ttydSpawnWait = 2 * time.Second
+	// ttydTypeaheadDelay lets the spawned shell's line editor take the tty
+	// over before the line arrives: bytes queued while the line discipline is
+	// still canonical are capped near 4 KiB per pending line.
+	ttydTypeaheadDelay = 150 * time.Millisecond
+	// ttydWriteChunk splits the typed line with pauses, so each pending burst
+	// stays under that cap until the shell drains the previous chunk.
+	ttydWriteChunk = 1024
+	ttydChunkPause = 15 * time.Millisecond
+)
+
+// TTYDSession is the ttyd channel: the dialled endpoint and its credential
+// material. Connections are per call — each websocket connection is one
+// terminal process, so every Run gets a fresh shell the way the ssh channel
+// opens one session per call, and a hung call only ever closes its own
+// connection.
+type TTYDSession struct {
+	endpoint string
+	token    string // base64 credential, the handshake's AuthToken
+	header   http.Header
+	client   *http.Client
+}
+
+// Name is the channel display name.
+func (s *TTYDSession) Name() string { return "ttyd" }
+
+// Channel is which side of the wire karma runs on: the target is remote.
+func (s *TTYDSession) Channel() model.Channel { return model.ChanTTYD }
+
+// Close releases the channel's resources: connections live per call.
+func (s *TTYDSession) Close() error { return nil }
+
+// Run types one collection line into a fresh terminal and harvests the answer.
+func (s *TTYDSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, lineLimit int) model.RunResult {
+	conn, err := s.connect(ctx)
+	if err != nil {
+		return model.RunResult{Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
+	}
+	call := &ttydCall{conn: conn, spawned: make(chan struct{})}
+	return call.collect(ctx, bodyText(inv), timeout, lineLimit)
+}
+
+// connect dials the endpoint and sends the JSON handshake. ttyd spawns the
+// terminal's process on this message; the AuthToken satisfies the second auth
+// layer when a credential is set (the Basic header on the upgrade is the
+// first), and the window size reaches the pty's winsize.
+func (s *TTYDSession) connect(ctx context.Context) (*websocket.Conn, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, ttydDialTimeout)
+	defer cancel()
+	conn, _, err := websocket.Dial(dialCtx, s.endpoint, &websocket.DialOptions{
+		HTTPClient:   s.client,
+		HTTPHeader:   s.header,
+		Subprotocols: []string{"tty"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	handshake := fmt.Sprintf(`{"AuthToken":%q,"columns":%d,"rows":%d}`, s.token, ttydColumns, ttydRows)
+	if err := conn.Write(dialCtx, websocket.MessageBinary, []byte(handshake)); err != nil {
+		conn.CloseNow()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// probe verifies the channel end to end on one throwaway connection: type one
+// base64 round trip and watch it come back. Rejected credentials fail the
+// dial; an echo without the payload means the target's base64 is missing; and
+// silence means the server drops client input (readonly, or ttyd's command is
+// not a shell). The title frame carries ttyd's command line, so the error can
+// say what the terminal runs.
+func (s *TTYDSession) probe() error {
+	ctx, cancel := context.WithTimeout(context.Background(), ttydProbeWindow)
+	defer cancel()
+	conn, err := s.connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.CloseNow()
+	call := &ttydCall{conn: conn, spawned: make(chan struct{})}
+
+	marker := "__KRM_PROBE_" + randomToken() + "__"
+	encoded := base64.StdEncoding.EncodeToString([]byte(marker + "\n"))
+
+	type reply struct{ echo, payload bool }
+	replies := make(chan reply, 16)
+	titles := make(chan string, 1)
+	go func() {
+		defer close(replies)
+		for {
+			_, reader, err := conn.Reader(ctx)
+			if err != nil {
+				return
+			}
+			frame, err := io.ReadAll(reader)
+			if err != nil {
+				return
+			}
+			if len(frame) == 0 {
+				continue
+			}
+			switch frame[0] {
+			case '1', '2':
+				if frame[0] == '1' {
+					select {
+					case titles <- string(frame[1:]):
+					default:
+					}
+				}
+				call.markSpawned()
+			case '0':
+				out := frame[1:]
+				event := reply{payload: !bytes.Contains(out, []byte(encoded)) && bytes.Contains(out, []byte(marker))}
+				event.echo = bytes.Contains(out, []byte(encoded))
+				select {
+				case replies <- event:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-call.spawned:
+	case <-ctx.Done():
+		return fmt.Errorf("ttyd at %s started no terminal within %s", s.endpoint, ttydProbeWindow)
+	}
+	time.Sleep(ttydTypeaheadDelay)
+	if err := call.typeLine(ctx, "printf %s "+encoded+" | base64 -d"); err != nil {
+		return err
+	}
+
+	var echoed, answered bool
+	var command string
+	verdict := func() error {
+		switch {
+		case answered:
+			return nil
+		case echoed:
+			return fmt.Errorf("the terminal echoed the probe line but never returned its payload: the target's base64 is missing or broken")
+		case command != "":
+			return fmt.Errorf("client input got no response (ttyd runs %q): the server drops input — readonly, ttyd from 1.7.4 needs -W/--writable — or the command is not a shell", command)
+		default:
+			return fmt.Errorf("client input got no response: the server drops input — readonly, ttyd from 1.7.4 needs -W/--writable — or the command is not a shell")
+		}
+	}
+	for {
+		select {
+		case event, ok := <-replies:
+			if !ok {
+				return verdict()
+			}
+			echoed = echoed || event.echo
+			if event.payload {
+				answered = true
+				return nil
+			}
+		case command = <-titles:
+		case <-ctx.Done():
+			return verdict()
+		}
+	}
+}
+
+// ttydCall is one websocket connection to a terminal.
+type ttydCall struct {
+	conn    *websocket.Conn
+	spawned chan struct{}
+}
+
+// markSpawned records that an initial frame arrived: the terminal's process
+// exists and input will reach it.
+func (c *ttydCall) markSpawned() {
+	select {
+	case <-c.spawned:
+	default:
+		close(c.spawned)
+	}
+}
+
+// collect runs one script over the connection and harvests it with the shared
+// timeout machinery: stop is the connection's death, which is also what ends
+// the terminal's process on the target.
+func (c *ttydCall) collect(ctx context.Context, script string, timeout time.Duration, lineLimit int) model.RunResult {
+	marker := randomToken()
+	encoded := base64.StdEncoding.EncodeToString([]byte(ttydPayload(script, marker)))
+	line := "printf %s " + encoded + " | base64 -d | /bin/sh"
+
+	lines := make(chan string, 16)
+	stopped := make(chan struct{})
+	var stopOnce sync.Once
+	var exitCode atomic.Int32
+	exitCode.Store(-1)
+	done := make(chan struct{})
+	var errText string
+
+	go func() {
+		defer close(done)
+		defer close(lines)
+		defer c.conn.CloseNow()
+		errText = c.readStream(ctx, marker, &exitCode, lines, stopped)
+	}()
+
+	select {
+	case <-c.spawned:
+	case <-time.After(ttydSpawnWait):
+	case <-stopped:
+	case <-ctx.Done():
+	}
+	time.Sleep(ttydTypeaheadDelay)
+	_ = c.typeLine(ctx, line)
+
+	stop := func() {
+		stopOnce.Do(func() {
+			close(stopped)
+			_ = c.conn.CloseNow()
+		})
+	}
+	return harvestCapped(ctx, source{
+		wait: func() { <-done },
+		stop: stop,
+		readLine: func() (string, bool) {
+			select {
+			case line, ok := <-lines:
+				if !ok {
+					return "", false
+				}
+				return line, true
+			case <-stopped:
+				// Keep what the reader had already produced before the stop.
+				select {
+				case line, ok := <-lines:
+					if !ok {
+						return "", false
+					}
+					return line, true
+				default:
+					return "", false
+				}
+			}
+		},
+		readAll: func() string {
+			// The stderr section precedes the rc marker in the stream, so it
+			// is known once the reader ends; harvest's stderr drain waits for
+			// exactly that.
+			<-done
+			return errText
+		},
+		exitCode: func() int { return int(exitCode.Load()) },
+	}, timeout, lineLimit)
+}
+
+// readStream consumes the terminal's frames and cuts the stream into its
+// parts: the body between the start marker and the stderr or rc marker, the
+// stderr section between its markers, and the exit code from the rc marker.
+// The returned string is the stderr text. A partial trailing line is kept
+// when the stream ends mid-body, so a connection lost at the end does not
+// drop the last row.
+func (c *ttydCall) readStream(ctx context.Context, marker string, exitCode *atomic.Int32, lines chan<- string, stopped <-chan struct{}) string {
+	start := "__KRM_" + marker + "_S__"
+	errBegin := "__KRM_" + marker + "_E__"
+	errEnd := "__KRM_" + marker + "_X__"
+	rcPrefix := "__KRM_" + marker + "_R_"
+	phase := "cut" // cut → body → stderr → tail
+	var buffered []byte
+	var errText strings.Builder
+	emit := func(text string) {
+		select {
+		case lines <- text + "\n":
+		case <-stopped:
+		}
+	}
+	for {
+		_, reader, err := c.conn.Reader(ctx)
+		if err != nil {
+			break
+		}
+		frame, err := io.ReadAll(reader)
+		if err != nil {
+			break
+		}
+		if len(frame) == 0 {
+			continue
+		}
+		switch frame[0] {
+		case '1', '2':
+			c.markSpawned()
+		case '0':
+			buffered = append(buffered, frame[1:]...)
+			for {
+				end := bytes.IndexByte(buffered, '\n')
+				if end < 0 {
+					break
+				}
+				text := strings.TrimSuffix(string(buffered[:end]), "\r")
+				buffered = buffered[end+1:]
+				switch phase {
+				case "cut":
+					// The marker ends its line; a prompt the shell left
+					// unnewline'd may sit in front of it.
+					if strings.HasSuffix(text, start) {
+						phase = "body"
+					}
+				case "body":
+					if text == errBegin {
+						phase = "stderr"
+						continue
+					}
+					if body, code, done := splitTTYDRC(text, rcPrefix); done {
+						// The rc marker ends its line too: a body without a
+						// trailing newline glues in front of it, and keeps
+						// its shape — the terminator never crossed the pty.
+						if body != "" {
+							select {
+							case lines <- body:
+							case <-stopped:
+							}
+						}
+						exitCode.Store(int32(code))
+						return errText.String()
+					}
+					emit(text)
+				case "stderr":
+					if text == errEnd {
+						phase = "tail"
+						continue
+					}
+					errText.WriteString(text)
+					errText.WriteByte('\n')
+				case "tail":
+					// Only the rc marker may follow the stderr section.
+					if _, code, done := splitTTYDRC(text, rcPrefix); done {
+						exitCode.Store(int32(code))
+						return errText.String()
+					}
+				}
+			}
+		}
+	}
+	if phase == "body" && len(buffered) > 0 {
+		text := strings.TrimSuffix(string(buffered), "\r")
+		select {
+		case lines <- text:
+		case <-stopped:
+		}
+	}
+	return errText.String()
+}
+
+// splitTTYDRC recognizes the rc marker at the end of a line and returns the
+// body text glued in front of it. The marker carries a random token, so its
+// shape cannot occur in evidence by accident.
+func splitTTYDRC(line, rcPrefix string) (body string, code int, ok bool) {
+	at := strings.LastIndex(line, rcPrefix)
+	if at < 0 {
+		return "", 0, false
+	}
+	rest := strings.TrimSuffix(line[at+len(rcPrefix):], "__")
+	parsed, err := strconv.Atoi(rest)
+	if err != nil {
+		return "", 0, false
+	}
+	return line[:at], parsed, true
+}
+
+// typeLine sends the line as INPUT in chunks, each chunk its own message: the
+// pauses keep each burst the target's tty holds pending under the
+// canonical-mode line cap until the shell's line editor drains it.
+func (c *ttydCall) typeLine(ctx context.Context, line string) error {
+	data := []byte(line + "\n")
+	for len(data) > 0 {
+		chunk := data
+		if len(chunk) > ttydWriteChunk {
+			chunk = chunk[:ttydWriteChunk]
+		}
+		message := append([]byte{'0'}, chunk...)
+		if err := c.conn.Write(ctx, websocket.MessageBinary, message); err != nil {
+			return err
+		}
+		data = data[len(chunk):]
+		if len(data) == 0 {
+			break
+		}
+		select {
+		case <-time.After(ttydChunkPause):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+// ttydPayload wraps the collection script for the terminal: a dumb terminal
+// so nothing colorizes, the winsize cleared so nothing sizes its tables to
+// the terminal (ss pads its columns to the tty width otherwise — ws_col 0 is
+// the non-tty layout every tool falls back to), a start marker to cut the
+// echoed line and the shell's own chatter away, the script in a subshell so
+// its exit does not end the payload shell, stderr captured into a variable
+// and replayed as a marked section before the rc marker — the pty merges the
+// two streams, and an error line reaching stdout would make a failed tier
+// count as an answered one, stopping the fallback chain — and finally the rc
+// marker that carries the exit code the pty drops.
+func ttydPayload(script, marker string) string {
+	return strings.Join([]string{
+		"export TERM=dumb",
+		"unset COLUMNS",
+		"stty cols 0 </dev/tty 2>/dev/null || :",
+		"exec 3>&1",
+		"printf '__KRM_" + marker + "_S__\\n'",
+		"__karma_err=$( ( " + script + " ) 2>&1 1>&3 3>&- ); __karma_rc=$?",
+		"if [ -n \"$__karma_err\" ]; then printf '__KRM_" + marker + "_E__\\n'; printf '%s\\n' \"$__karma_err\"; printf '__KRM_" + marker + "_X__\\n'; fi",
+		"printf '__KRM_" + marker + "_R_%d__\\n' \"$__karma_rc\"",
+	}, "\n")
+}
+
+// randomToken is the per-call marker salt: hex, so no shell or printf
+// metacharacter can appear in it.
+func randomToken() string {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "0000000000000000"
+	}
+	return hex.EncodeToString(raw[:])
+}
+
+// insecureTLS accepts any server certificate: the ws:// form already carries
+// everything in the clear, this only says so for wss.
+func insecureTLS() *tls.Config {
+	return &tls.Config{InsecureSkipVerify: true}
+}
+
+// pinnedTLS verifies the leaf certificate's SHA-256 against the fingerprint
+// instead of the chain: the self-signed answer. InsecureSkipVerify is set
+// because the pin itself is the verification.
+func pinnedTLS(fingerprint [sha256.Size]byte) *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true,
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			for _, raw := range rawCerts {
+				if sha256.Sum256(raw) == fingerprint {
+					return nil
+				}
+			}
+			return fmt.Errorf("no certificate in the chain matches the pinned fingerprint")
+		},
+	}
+}

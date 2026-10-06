@@ -158,4 +158,17 @@ func TestAlignLsBodies(t *testing.T) {
 	if mixed[1] != "not a listing row" || mixed[0] != want[0] {
 		t.Errorf("an unusual row passes through and the rest still align: %q", mixed)
 	}
+	// A symlink's target follows the path with no arrow (find's %l), and the
+	// link's size is the target's length: alignment separates the two the way
+	// ls -l writes them. A path that holds spaces stays one column.
+	linked := AlignLsBodies([]string{
+		"lrwxrwxrwx 1 root root 7 Aug 16 02:02 /binusr/bin",
+		"-rw-r--r-- 1 root root 100 Jan 01 00:00 /tmp/my file.txt",
+	})
+	if linked[0] != "lrwxrwxrwx 1 root root   7 Aug 16 02:02 /bin -> usr/bin" {
+		t.Errorf("the symlink target was not separated: %q", linked[0])
+	}
+	if linked[1] != "-rw-r--r-- 1 root root 100 Jan 01 00:00 /tmp/my file.txt" {
+		t.Errorf("a path with spaces changed: %q", linked[1])
+	}
 }

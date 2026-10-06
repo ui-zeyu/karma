@@ -85,7 +85,7 @@ func TestCatalogInvariants(t *testing.T) {
 			}
 			// A check with no tier on one channel would silently drop from that
 			// channel's run.
-			for _, ch := range []model.Channel{model.ChanLocal, model.ChanSSH} {
+			for _, ch := range []model.Channel{model.ChanLocal, model.ChanSSH, model.ChanTTYD} {
 				if !slices.ContainsFunc(check.Probes, func(p model.Probe) bool {
 					return p.InvocationFor(ch) != nil
 				}) {

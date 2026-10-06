@@ -124,7 +124,9 @@ func (n *NameCache) Group(gid int) string {
 
 // LsBody renders one entry in script.LSBodyPrintf shape — the row the ls-l
 // pseudo-lexer speaks: permissions links owner group size month day clock
-// path, a symlink row appending " -> target" the way %l does.
+// path, a symlink row appending " -> target". find's %l prints the target
+// alone, so the reading side (script.linkPath) adds the arrow to a collected
+// row; spelling it here keeps the local rows in the same shape.
 func LsBody(info os.FileInfo, path string, names *NameCache) string {
 	st := StatOf(info)
 	body := fmt.Sprintf("%s %d %s %s %d %s %02d %02d:%02d %s",

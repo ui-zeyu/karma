@@ -17,7 +17,9 @@ import (
 
 const wordsPerLine = 4 // word-list wrap width: matches the line-continuation style of existing scripts
 
-// LSBodyPrintf is the ls -l row shape: permissions links owner group size date clock path.
+// LSBodyPrintf is the ls -l row shape: permissions links owner group size date
+// clock path. A symlink row appends its target with no arrow (find's %l prints
+// the target alone); the reading side separates path and target.
 const LSBodyPrintf = `%M %n %u %g %s %Tb %Td %TH:%TM %p%l\n`
 
 // ListingPrintf is the directory listing collection row: epoch mtime, epoch ctime
