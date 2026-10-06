@@ -35,7 +35,6 @@ type HeaderInfo struct {
 	Selected  int       // checks this run collects
 	Total     int       // checks the platform's catalog holds
 	Selectors []string  // the run's selector words, empty for the whole catalog
-	SaveDir   string    // the --save directory, empty when evidence is not written
 	Floor     model.SeverityFloor
 }
 
@@ -78,9 +77,6 @@ func mastheadFacts(facts model.HostFacts, info HeaderInfo) []fact {
 		{label: "account", value: accountCell(facts)},
 		{label: "kernel", value: cmp.Or(facts.Kernel, "unknown")},
 		{label: "checks", value: scopeLine(info)},
-	}
-	if info.SaveDir != "" {
-		rows = append(rows, fact{label: "evidence", value: info.SaveDir})
 	}
 	return append(rows, fact{label: "severity", chips: legendChips(info.Floor), full: true})
 }

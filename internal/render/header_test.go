@@ -187,17 +187,15 @@ func TestMastheadBanner(t *testing.T) {
 	}
 }
 
-// A narrowed run names its scope and, with --save, where the raw evidence is
-// being written; a whole-catalog run has no evidence row. The severity key
-// keeps its own row and states the floor in force.
-func TestRenderHeaderScopeAndEvidence(t *testing.T) {
+// A narrowed run names its scope; a whole-catalog run names the whole catalog.
+// The severity key keeps its own row and states the floor in force.
+func TestRenderHeaderScope(t *testing.T) {
 	body, _ := headerLines(t, linuxFacts(), HeaderInfo{
 		Channel: "local", Version: "9.9.9", Started: headerStart,
 		Selected: 6, Total: 77, Selectors: []string{"process", "log"},
-		SaveDir: "/root/evidence-web01", Floor: model.FloorAbove(model.Medium),
+		Floor: model.FloorAbove(model.Medium),
 	}, 100)
-	for _, want := range []string{"6 of 77 (process log)", "evidence", "/root/evidence-web01",
-		"showing ≥ medium"} {
+	for _, want := range []string{"6 of 77 (process log)", "showing ≥ medium"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("header should carry %q:\n%s", want, body)
 		}
@@ -206,8 +204,8 @@ func TestRenderHeaderScopeAndEvidence(t *testing.T) {
 	body, _ = headerLines(t, linuxFacts(), HeaderInfo{
 		Channel: "local", Version: "9.9.9", Started: headerStart, Selected: 77, Total: 77,
 	}, 100)
-	if strings.Contains(body, "evidence") {
-		t.Fatalf("a run without --save has no evidence row:\n%s", body)
+	if !strings.Contains(body, "checks    77") {
+		t.Fatalf("a whole-catalog run states its scope as one number:\n%s", body)
 	}
 }
 

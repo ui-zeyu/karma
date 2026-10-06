@@ -11,7 +11,6 @@ package session
 import (
 	"bufio"
 	"context"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -46,24 +45,6 @@ func (LocalSession) Describe() string { return "local" }
 // Channel is which side of the wire karma runs on: karma itself is the target.
 func (LocalSession) Channel() model.Channel { return model.ChanLocal }
 
-// scriptOnly makes the local channel run every Dual tier's script side and skip
-// the in-process body. It is read once, at startup, and exists for `make
-// parity`: a Linux host collects twice — once in process, once through the
-// scripts an ssh or ttyd target runs — and the two bundles are diffed check by
-// check, which is the only way to see the two spellings drift.
-var scriptOnly = envSwitch("KARMA_NO_NATIVE")
-
-// envSwitch reads a boolean environment switch: unset, "0", "false" and "no"
-// are off and any other value is on, so `KARMA_NO_NATIVE=0` leaves the
-// in-process tiers in place — the value a script that wants them writes.
-func envSwitch(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-	case "", "0", "false", "no":
-		return false
-	}
-	return true
-}
-
 // Run sends the invocation to run locally. A Dual tier runs its in-process
 // body first; everything else becomes a subprocess.
 //
@@ -75,8 +56,8 @@ func envSwitch(name string) bool {
 func (s LocalSession) Run(ctx context.Context, call model.Call) model.RunResult {
 	if d, ok := call.Inv.(model.Dual); ok {
 		// A tier with no in-process body exists on the remote channels only, and
-		// so does a body a parity run is asked to skip: both take the script side.
-		if d.Run == nil || scriptOnly {
+		// takes its script side here.
+		if d.Run == nil {
 			if d.Script == "" {
 				return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
 			}

@@ -96,18 +96,11 @@ func TestModeArgsSplitsTheMode(t *testing.T) {
 	}
 }
 
-// The mode uploads and stops; a selector or --save would suggest a run that
-// does not happen, so each is refused rather than ignored.
+// The mode uploads and stops; a selector would suggest a run that does not
+// happen, so it is refused rather than ignored.
 func TestBootstrapModeRefusesARunOfItsOwn(t *testing.T) {
 	if err := runBootstrapMode(newSSHCmd(), nil, []string{"identity"}); err == nil {
 		t.Fatal("a selector after bootstrap was accepted")
-	}
-	cmd := newSSHCmd()
-	if err := cmd.Flags().Set("save", "/tmp/karma-save"); err != nil {
-		t.Fatal(err)
-	}
-	if err := runBootstrapMode(cmd, nil, nil); err == nil {
-		t.Fatal("--save was accepted by bootstrap")
 	}
 }
 

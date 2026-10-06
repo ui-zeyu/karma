@@ -685,8 +685,8 @@ type SectionSyntax struct {
 // CheckResult is the outcome of one check. Outcome and Note together say what
 // happened to the walk; document decides visibility on its own, so the
 // presentation layer reads the outcome only to tell a skipped check from a
-// collected one. Raw is the channel's stdout exactly as collected — the
-// evidence --save writes, before the reading layer caps or shapes anything.
+// collected one. Raw is the channel's stdout exactly as collected, before the
+// reading layer caps or shapes anything.
 // Document is the reading result, computed once when the report is built, and
 // the presentation layer only reads it.
 type CheckResult struct {
@@ -715,10 +715,7 @@ type RunOptions struct {
 	MaxLines    int
 	// MinSeverity is how much of the reading each check keeps: rows below the
 	// floor are counted like filtered lines and left out of its document, so a
-	// triage run can drop everything under one level. It filters what is shown,
-	// never what is saved: SaveDir writes the channel's raw text.
+	// triage run can drop everything under one level. It filters what is shown
+	// and nothing else: the collection's raw text is what the reading reads.
 	MinSeverity SeverityFloor
-	// SaveDir is the evidence directory; an empty string saves nothing. The
-	// channel's raw output is written per file as <aspect>/<check id>.txt.
-	SaveDir string
 }

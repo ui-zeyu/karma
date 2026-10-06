@@ -1,7 +1,7 @@
 // The severity floor is the run's own filter: a row below it is counted like a
 // filtered line and left out of the document, whatever the check's own filters
-// would have done with it. What a run shows is not what --save writes (the
-// channel's raw text), so the floor never costs evidence.
+// would have done with it. It filters the reading alone — the collection's raw
+// text is what the reading read — so the floor never costs evidence.
 
 package reader_test
 

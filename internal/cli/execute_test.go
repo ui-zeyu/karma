@@ -9,8 +9,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,9 +24,8 @@ type explodingWriter struct{}
 func (explodingWriter) Write([]byte) (int, error) { panic("the report writer blew up") }
 
 func TestExecuteTurnsDamageIntoAReportedRun(t *testing.T) {
-	dir := t.TempDir()
 	err := Execute(context.Background(), explodingWriter{}, io.Discard, session.LocalTransport{},
-		model.RunOptions{Timeout: time.Second, SaveDir: dir}, nil)
+		model.RunOptions{Timeout: time.Second}, nil)
 	var coded exitError
 	if !errors.As(err, &coded) {
 		t.Fatalf("a damaged run should come back as a coded error, got %v", err)
@@ -36,13 +33,11 @@ func TestExecuteTurnsDamageIntoAReportedRun(t *testing.T) {
 	if coded.code != ExitInternal {
 		t.Fatalf("damage is karma's own exit code (%d), got %d", ExitInternal, coded.code)
 	}
-	record, readErr := os.ReadFile(filepath.Join(dir, crashName))
-	if readErr != nil {
-		t.Fatalf("the bundle should keep the account of what broke: %v", readErr)
-	}
+	// The message is the whole account of what broke: it names the boundary, and
+	// the panic's own text travels with it.
 	for _, want := range []string{"collection", "the report writer blew up"} {
-		if !strings.Contains(string(record), want) {
-			t.Fatalf("the record should name %q:\n%s", want, record)
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the message should name %q: %v", want, err)
 		}
 	}
 }

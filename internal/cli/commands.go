@@ -21,8 +21,7 @@ import (
 	"karma/internal/session"
 )
 
-// buildVersion is stamped by Main from the entry point's version; --save's
-// manifest records it.
+// buildVersion is stamped by Main from the entry point's version.
 var buildVersion = "dev"
 
 // Main wires up the command line and runs it; it returns the process exit code.
@@ -128,9 +127,6 @@ func runBootstrapMode(cmd *cobra.Command, transport session.Transport, extra []s
 	if len(extra) > 0 {
 		return usagef(cmd, "bootstrap only uploads the binary; run it on the target yourself (unexpected: %s)",
 			strings.Join(extra, " "))
-	}
-	if cmd.Flags().Changed("save") {
-		return usagef(cmd, "bootstrap only uploads the binary, so --save has nothing to write from here")
 	}
 	return runBootstrap(cmd.Context(), transport)
 }

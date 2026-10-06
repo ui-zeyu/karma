@@ -203,18 +203,13 @@ func TestCapLinesMatchesTheHarvestBoundary(t *testing.T) {
 	}
 }
 
-// A parity run (KARMA_NO_NATIVE) skips the in-process body and takes the script
-// side of every Dual tier, which is what `make parity` diffs against the
-// in-process collection.
-func TestRunNativeScriptOnlySkipsTheBody(t *testing.T) {
-	scriptOnly = true
-	t.Cleanup(func() { scriptOnly = false })
+// A Dual with no in-process body is a tier the remote channels carry: the local
+// channel takes its script side, which is what keeps every tier answering on a
+// host karma runs on itself.
+func TestADualWithoutABodyTakesItsScriptSide(t *testing.T) {
 	res := runCall(context.Background(), LocalSession{},
-		model.Dual{
-			Run:    func(context.Context) (string, error) { return "in-process\n", nil },
-			Script: "echo from-script",
-		}, 10*time.Second, model.RowCap{})
+		model.Dual{Script: "echo from-script"}, 10*time.Second, model.RowCap{})
 	if res.Verdict != model.VerdictAnswered || res.Stdout != "from-script\n" {
-		t.Fatalf("a parity run should take the script side, got %+v", res)
+		t.Fatalf("a tier with no body should take the script side, got %+v", res)
 	}
 }

@@ -37,7 +37,6 @@ func runFlags(flags *pflag.FlagSet) {
 	flags.String("min-severity", "all",
 		"show only rows at or above this severity and count the rest as filtered: "+
 			"all|"+strings.Join(model.SeverityNames(), "|"))
-	flags.String("save", "", "write each check's raw text to <dir>/<aspect>/<id>.txt")
 }
 
 // runOptions gathers the run options from the command line; selectorArgs are the
@@ -64,7 +63,6 @@ func runOptions(flags *pflag.FlagSet, selectorArgs []string) (model.RunOptions, 
 		Timeout:     time.Duration(seconds * float64(time.Second)),
 		MaxLines:    maxLines,
 		MinSeverity: floor,
-		SaveDir:     stringFlag(flags, "save"),
 	}, nil
 }
 

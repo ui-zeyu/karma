@@ -162,12 +162,11 @@ func TestRunOptions(t *testing.T) {
 
 	flags := newRunFlags()
 	flags.Set("timeout", "1.5")
-	flags.Set("save", "/tmp/karma-ev")
 	options, err = runOptions(flags, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if options.Timeout != 1500*time.Millisecond || options.SaveDir != "/tmp/karma-ev" {
+	if options.Timeout != 1500*time.Millisecond {
 		t.Fatalf("values mapped wrongly: %+v", options)
 	}
 }

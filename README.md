@@ -80,21 +80,19 @@ cannot reshape what they print.
 (default `all`) are shared by every collection. `--timeout` is the budget of one check's whole
 fallback walk — its channel's own setup (a dial, a session open, the line typed into a terminal), the
 command, and the last line read — so no check can take longer than that number, and a run's worst case
-is `ceil(checks / concurrency) × --timeout`. With `--save DIR`, each check writes the target's raw
-stdout to `<DIR>/<aspect>/<id>.txt` — the bytes exactly as the channel delivered them — plus a
-`manifest.json` with the run's provenance (version, channel, host facts, start time) and a size and
-sha256 per file.
+is `ceil(checks / concurrency) × --timeout`. The report is the output: there is no evidence bundle to
+write, and a run leaves the target as it found it.
 
 `--min-severity` is the triage knob: it names the least severe row the report keeps — `critical`,
 `high`, `medium`, `low`, `info` or `benign` — or `all`, the default, which keeps the whole report.
 Rows below the floor are left out and counted with the check's own filtered lines, and the header
 legend says which floor is in force, so a quiet host stays readable and a busy one answers one
-question. It filters what is shown, and never what `--save` writes.
+question. It filters the reading and nothing else.
 
 Exit codes: 0 a run that finished, 1 a built-in reader that could not read an operand, 2 a run that
 could not happen (a failed connection, or a channel that died mid-run), 70 karma's own damage — an
 internal error ended the run, so the report is incomplete, and the message names the boundary that
-broke (`--save` keeps the stack beside the evidence) — and 130 interrupted. Ctrl-C stops collection
+broke — and 130 interrupted. Ctrl-C stops collection
 promptly and the partial report still prints, saying how many of the selected checks were not
 collected; a second Ctrl-C exits at once, which is the way out of a channel operation the context
 cannot break. Errors go to stderr with a `karma: ` prefix and one plain sentence.
@@ -103,8 +101,8 @@ cannot break. Errors go to stderr with a `karma: ` prefix and one plain sentence
 
 Every bit of the layout is drawn by lipgloss: a masthead — the `KARMA` band with the author on its
 right edge, the build's version and the run's clock on the panel's own title band, and a table of
-labeled facts (host, channel and the target it reached, distro, kernel, the collecting account, how
-much of the catalog ran, and the `--save` directory when one is set) plus the severity key — a banner
+labeled facts (host, channel and the target it reached, distro, kernel, the collecting account, and how
+much of the catalog ran) plus the severity key — a banner
 per aspect, and a left-rail panel per check. The rail is the highest hit severity for a signal and
 grey otherwise; the first line inside it carries the check id, the fallback chain, `filtered N` and
 `truncated` where they apply. Long lines are soft-wrapped rather than cut, nothing is padded with
@@ -126,8 +124,8 @@ carrying the author on its right edge, the build's version on the rail's first l
 command's description inside the same panel, then the usage sections as rail panels.
 
 On Windows, PowerShell 5.1's `>` decodes karma's UTF-8 output with the console code page and
-re-encodes it, so the file opens as garbage. Use cmd redirection, PowerShell 7, or `--save`, which
-keeps the bytes intact.
+re-encodes it, so the file opens as garbage. Use cmd redirection or PowerShell 7 to keep the bytes
+intact.
 
 ## Catalog
 
@@ -144,13 +142,11 @@ make fmt vet test        # the gates, or each one alone
 make race                # the concurrent packages under -race
 make staticcheck         # when installed
 make dist                # dist/ binaries, with the static-link guard
-make parity HOST=user@host   # the in-process tiers against the script tiers, on a Linux host
 ```
 
-`make parity` collects one host twice — once through the local tiers that read the kernel in process,
-once through the script side every remote channel runs (`KARMA_NO_NATIVE` set to anything but `0`,
-`false` or `no` makes the local channel skip the in-process bodies) — and diffs the two saved bundles
-check by check. A difference is the two spellings having drifted.
+The packages that carry a tier's two spellings have agreement tests instead of a live diff: the
+in-process body and the shell one are run over the same fixture and their rows compared
+(`internal/script`, `internal/checks/linux`), so the two cannot drift without a test failing.
 
 The code lives in `cmd/karma` and `internal/`: `model` is the domain, `define` builds the catalogs,
 `session` runs the channels, `runner` walks the probes, `reader` reads the collected text into a
