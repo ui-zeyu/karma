@@ -13,7 +13,7 @@ go build -o dist/karma ./cmd/karma     # this host
 make dist                              # dist/ binaries for linux/amd64, windows/amd64 and this host
 ```
 
-The version is `0.28.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
+The version is `0.29.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
 
 ## Usage
 
@@ -94,9 +94,12 @@ partial report still prints. Errors go to stderr with a `karma: ` prefix and one
 
 ## Output
 
-Every bit of the layout is drawn by lipgloss: a masthead panel — the `KARMA` band with the running
-build's version, the target's identity and system line, and the severity legend — a banner per
-aspect, and a left-rail panel per check. The rail is the highest hit severity for a signal and grey
+Every bit of the layout is drawn by lipgloss: a masthead — the `KARMA` band, the build's version and
+the run's clock on the panel's own title band, and a table of labeled facts (host, channel and the
+target it reached, distro, kernel, the collecting account, how much of the catalog ran, and the
+`--save` directory when one is set) plus the severity key — a banner per aspect, and a left-rail
+panel per check. The
+rail is the highest hit severity for a signal and grey
 otherwise; the first line inside it carries the check id, the fallback chain, `filtered N` and
 `truncated` where they apply. Long lines are soft-wrapped rather than cut, nothing is padded with
 blank space, and the rows of an `ls -l` listing line up column by column.

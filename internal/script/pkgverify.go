@@ -15,7 +15,7 @@ package script
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"karma/internal/textutil"
@@ -279,7 +279,7 @@ func PkgVerifyBody(verify string, classify func(path string) VerifyFacts, forens
 			entry.missing++
 		}
 	}
-	sort.Strings(order)
+	slices.Sort(order)
 	for _, dir := range order {
 		entry := groups[dir]
 		b.WriteString(fmt.Sprintf("%s%s/  %d files%s\n", entry.prefix, dir, entry.count, groupNote(entry.count, entry.missing)))

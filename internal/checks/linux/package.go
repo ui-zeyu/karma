@@ -64,17 +64,19 @@ const unownedTimeout = 60 * time.Second
 var unownedFileRule = model.NewRule("unowned-file", `^/.*\S$`, model.High,
 	"file in a system directory that no package owns")
 
-// pkgHistoryScript: what was installed, upgraded, or removed recently. apt and dpkg
-// keep live text logs; the RedHat family answers from its transaction database, so
-// both surfaces go into one sectioned script (the empty branch on the other family
-// is an empty section the reader drops).
 // pkgHistoryPaths are the text logs the check tails; the RedHat family answers
-// from its transaction database instead.
+// from its transaction database instead, so both surfaces go into one sectioned
+// script (the empty branch on the other family is an empty section the reader
+// drops).
 var pkgHistoryPaths = []string{"/var/log/apt/history.log", "/var/log/dpkg.log"}
 
+// pkgHistoryLines is the window both channels read of either surface.
+const pkgHistoryLines = 300
+
 var pkgHistoryScript = script.Lines(
-	script.ReadFiles(pkgHistoryPaths, `tail -n 300 "$f"`, true),
-	`echo "== dnf history"; dnf history 2>/dev/null || yum history 2>/dev/null | head -n 300`,
+	script.ReadFiles(pkgHistoryPaths, fmt.Sprintf(`tail -n %d "$f"`, pkgHistoryLines), true),
+	fmt.Sprintf(`echo "== dnf history"; dnf history 2>/dev/null || yum history 2>/dev/null | head -n %d`,
+		pkgHistoryLines),
 )
 
 // pkgHistoryRules is what can be a finding in the history: the keyword rule,
@@ -203,7 +205,10 @@ var PackageChecks = []*model.Check{
 		define.CheckOpt{Rules: []model.Rule{unownedFileRule}, Timeout: unownedTimeout}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
 		[]model.Probe{
-			{Label: "log", Inv: model.Dual{Run: native.PkgHistory(pkgHistoryPaths), Script: pkgHistoryScript}},
+			{Label: "log", Inv: model.Dual{
+				Run:    native.PkgHistory(pkgHistoryPaths, pkgHistoryLines),
+				Script: pkgHistoryScript,
+			}},
 		},
 		define.CheckOpt{Rules: pkgHistoryRules, Filters: pkgHistoryKeep, Syntax: model.SyntaxPkgHistory}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,

@@ -18,9 +18,10 @@
 package script
 
 import (
+	"cmp"
 	"fmt"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -135,11 +136,8 @@ func writeTop(b *strings.Builder, counts map[string]int, limit int) {
 	for key := range counts {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		if counts[keys[i]] != counts[keys[j]] {
-			return counts[keys[i]] > counts[keys[j]]
-		}
-		return keys[i] < keys[j]
+	slices.SortFunc(keys, func(a, b string) int {
+		return cmp.Or(cmp.Compare(counts[b], counts[a]), strings.Compare(a, b))
 	})
 	if len(keys) > limit {
 		keys = keys[:limit]

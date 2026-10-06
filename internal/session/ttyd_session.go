@@ -65,6 +65,16 @@ type TTYDSession struct {
 // Name is the channel display name.
 func (s *TTYDSession) Name() string { return "ttyd" }
 
+// Describe names the channel and the endpoint it reached. The endpoint carries
+// no credential: ParseTTYDEndpoint strips the userinfo out of the URL before it
+// is stored.
+func (s *TTYDSession) Describe() string {
+	if s.endpoint == "" {
+		return "ttyd"
+	}
+	return "ttyd " + s.endpoint
+}
+
 // Channel is which side of the wire karma runs on: the target is remote.
 func (s *TTYDSession) Channel() model.Channel { return model.ChanTTYD }
 

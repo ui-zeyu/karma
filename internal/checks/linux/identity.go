@@ -12,10 +12,10 @@ import (
 	"karma/internal/model"
 )
 
-// sudoers: stop as soon as a file is readable; if none is, exit non-zero and fall
-// through to sudo -n -l, which only answers what the current user may run.
-// sudoersPaths are the surfaces the check covers; the ssh loop prints each
-// readable one and exits 0 only once something was read.
+// sudoersPaths are the surfaces the check covers. The ssh loop prints each
+// readable one and exits 0 once anything was read; when nothing is, it exits
+// non-zero and the tier falls through to sudo -n -l, which only answers what the
+// current user may run.
 var sudoersPaths = []string{"/etc/sudoers", "/etc/sudo.conf", "/etc/sudoers.d/*"}
 
 var sudoersScript = `
@@ -117,6 +117,10 @@ func malformedRecordPattern(fields int) string {
 	return `^\s*[^#/:+\s-][^:\n]*$` + fmt.Sprintf(`|^[^#/\n][^:\n]*(?::[^:\n]*){%d,}$`, fields)
 }
 
+// lastRows is how far back the login history reads: `last -n` on the target,
+// the same window of the in-process wtmp read.
+const lastRows = 200
+
 // IdentityChecks covers identity.
 var IdentityChecks = []*model.Check{
 	// Raw files only: NSS (getent) is deliberately bypassed — it is the
@@ -205,7 +209,10 @@ var IdentityChecks = []*model.Check{
 		},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("last", "Login history (last)", model.AspectIdentity,
-		[]model.Probe{{Label: "last", Inv: model.Dual{Run: native.Last, Script: "last -n 200"}}},
+		[]model.Probe{{Label: "last", Inv: model.Dual{
+			Run:    native.Last(lastRows),
+			Script: "last -n " + strconv.Itoa(lastRows),
+		}}},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("lastlog", "Last account login (lastlog)", model.AspectIdentity,
 		[]model.Probe{{Label: "lastlog", Inv: model.Dual{Run: native.Lastlog, Script: "lastlog"}}},

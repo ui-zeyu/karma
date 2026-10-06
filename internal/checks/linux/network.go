@@ -13,10 +13,10 @@ import (
 	"strings"
 )
 
-// procNetScript: each of the four files becomes a section (ReadFiles' `== path`
-// header): native.ParseProcNet uses the adapt section-title parameter to tell TCP from UDP
-// state semantics, which a plain cat merge cannot distinguish.
 // procNetPaths are the four socket tables the check renders, one section each.
+// ReadFiles' `== path` header is what tells them apart: native.ParseProcNet reads
+// the section title to tell TCP from UDP state semantics, which a plain cat merge
+// cannot distinguish.
 var procNetPaths = []string{"/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", "/proc/net/udp6"}
 
 var procNetScript = script.ReadFiles(procNetPaths, `cat "$f"`, true)
@@ -25,17 +25,17 @@ var procNetScript = script.ReadFiles(procNetPaths, `cat "$f"`, true)
 // (the local tier dumps both families in one pass).
 const routeScript = "ip route; ip -6 route 2>/dev/null"
 
-// firewallScript: `-S` alone only shows the filter table, leaving out nat/mangle/raw
-// and IPv6; one script lays out every surface and adds the nft ruleset (when the
-// iptables compat layer is present it is not skipped by the fallback either).
 // firewallFamilies and firewallTables are the surfaces the firewall check
-// covers; one loop per family, then the nft ruleset.
+// covers; `-S` alone only shows the filter table, leaving out nat/mangle/raw and
+// IPv6.
 var (
 	firewallFamilies = []string{"iptables", "ip6tables"}
 	firewallTables   = []string{"filter", "nat", "mangle", "raw"}
 )
 
-// firewallScript is that shape as the ssh script.
+// firewallScript is that shape as the ssh script: one script lays out every
+// surface and adds the nft ruleset (with the iptables compat layer present, that
+// ruleset is not skipped by the fallback either).
 var firewallScript = firewallScriptText()
 
 func firewallScriptText() string {

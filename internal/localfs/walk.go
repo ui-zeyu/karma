@@ -131,10 +131,8 @@ func GrepWalk(ctx context.Context, root string, opt GrepScan) []string {
 			return true
 		}
 		name := filepath.Base(path)
-		for _, pattern := range opt.Excludes {
-			if matched, _ := filepath.Match(pattern, name); matched {
-				return true
-			}
+		if MatchAny(opt.Excludes, name) {
+			return true
 		}
 		if len(opt.Includes) > 0 && !MatchAny(opt.Includes, name) {
 			return true

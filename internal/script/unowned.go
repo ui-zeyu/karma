@@ -15,7 +15,7 @@ package script
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -82,6 +82,6 @@ func UnownedBody(found, owned []string) string {
 	if len(unowned) == 0 {
 		return ""
 	}
-	sort.Strings(unowned)
+	slices.Sort(unowned)
 	return strings.Join(unowned, "\n") + "\n"
 }

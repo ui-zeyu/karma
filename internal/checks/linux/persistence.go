@@ -67,15 +67,11 @@ var shellRcPaths = []string{
 	"/etc/fish/config.fish",
 }
 
-// skelScript: a new user's home is copied wholesale from /etc/skel, so poisoning a
-// template once backdoors every new user afterward; the listing section runs
-// find -printf (epoch first) and clusters locally to mark modified templates as
-// outliers.
 // skelDir, skelHead and skelTemplates are the template check's shape: the
-// listing and the template files the ssh script and the local walk both cover.
-// A new user's home is copied wholesale from /etc/skel, so poisoning one
-// template backdoors every new user afterwards; the listing section clusters
-// locally so a modified template shows up as an outlier.
+// listing and the template files the ssh script and the local walk both cover. A
+// new user's home is copied wholesale from /etc/skel, so poisoning one template
+// backdoors every new user afterwards; the listing section clusters locally so a
+// modified template shows up as an outlier.
 const (
 	skelDir  = "/etc/skel"
 	skelHead = 100
@@ -109,14 +105,12 @@ var unitDirs = []string{
 	"/home/*/.config/systemd/user",
 }
 
-// udevScript: the writable layers of udev rules: /etc is admin overrides and /run
-// is runtime-generated; the /usr and /lib layer is a sea of official rules and is
-// not scanned. The listing is sorted by mtime and clustered, and grep catches only
-// the three assignment keys that reference external programs.
-// udevDirs, udevHead, udevExecMaxHits and udevExec are the udev check's shape: the
-// writable rule layers, the per-layer listing cap, the cap on the assignment-key
-// hits, and the keys that reference an external program. The ssh grep and the
-// local walk take the same four, so the two channels cover identical rules.
+// udevDirs, udevHead, udevExecMaxHits and udevExec are the udev check's shape:
+// the writable rule layers (/etc is admin overrides and /run is
+// runtime-generated; the /usr and /lib layer is a sea of official rules and is
+// not scanned), the per-layer listing cap, the cap on the assignment-key hits,
+// and the keys that reference an external program. The ssh grep and the local
+// walk take the same four, so the two channels cover identical rules.
 var udevDirs = []string{"/etc/udev/rules.d", "/run/udev/rules.d"}
 
 const (
@@ -138,9 +132,6 @@ var udevScript = script.Lines(
 // motd: motd and update-motd.d are script surfaces run as root on login
 // (mainly Ubuntu).
 
-// pthScript: a .pth in site/dist-packages is processed at Python startup, and a
-// line starting with import is code; setuptools' two legitimate precedence files
-// are excluded on the grep side, so a normal system stays silent.
 // pthDirs, pthInclude, pthImport and pthExcludes are the .pth check's shape: the
 // python package directories, the file-name glob, the line the grep keeps, and
 // setuptools' two legitimate precedence files, excluded on both sides so a normal
@@ -170,13 +161,12 @@ var pthScript = script.Lines(
 	"done",
 )
 
-// generatorsScript: generators are among the very first executables systemd runs
-// at boot, and monitoring agents like auditd/sysmon start only after they finish,
-// so the static listing is the only forensics surface; on usrmerge systems /lib and
-// /usr/lib are the same directory, so readlink dedup avoids doubling the whole thing.
 // generatorDirs and generatorHead are the generator check's shape: the directory
 // word list and the per-directory listing cap, which the ssh script and the local
-// walk both take.
+// walk both take. Generators are among the very first executables systemd runs at
+// boot, and monitoring agents like auditd/sysmon start only after they finish, so
+// the static listing is the only forensics surface; on usrmerge systems /lib and
+// /usr/lib are the same directory, so readlink dedup avoids doubling the whole thing.
 var generatorDirs = []string{
 	"/etc/systemd/system-generators",
 	"/run/systemd/system-generators",

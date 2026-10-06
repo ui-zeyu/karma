@@ -25,6 +25,8 @@ func (s *stubSession) Name() string { return "stub" }
 
 func (s *stubSession) Channel() model.Channel { return model.ChanLocal }
 
+func (s *stubSession) Describe() string { return "stub" }
+
 func (s *stubSession) Run(context.Context, model.Invocation, time.Duration, int) model.RunResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -68,6 +70,8 @@ type scriptSession struct {
 func (s *scriptSession) Name() string { return "script" }
 
 func (s *scriptSession) Channel() model.Channel { return model.ChanLocal }
+
+func (s *scriptSession) Describe() string { return "script" }
 
 func (s *scriptSession) Close() error { return nil }
 

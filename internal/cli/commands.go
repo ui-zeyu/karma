@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"karma/internal/checks"
 	"karma/internal/model"
@@ -85,8 +86,28 @@ func newRootCmd(version string) *cobra.Command {
 	return root
 }
 
-func runLocalOrSSH(ctx context.Context, transport session.Transport, options model.RunOptions) error {
-	return Execute(ctx, os.Stdout, transport, options, nil)
+// runTargetCommand is the body of a command whose first argument is a target
+// (ssh, ttyd): build the transport from that word, run the mode the rest name
+// (mtime, bootstrap), and collect otherwise. Both channels go through here, so
+// their argument handling cannot drift apart.
+func runTargetCommand(cmd *cobra.Command, args []string, form string,
+	build func(flags *pflag.FlagSet, target string) (session.Transport, error)) error {
+	transport, err := build(cmd.Flags(), args[0])
+	if err != nil {
+		return err
+	}
+	rest := args[1:]
+	if dirs, ok := mtimeArgs(rest); ok {
+		return runMtimeMode(cmd, transport, dirs, form)
+	}
+	if extra, ok := bootstrapArgs(rest); ok {
+		return runBootstrapMode(cmd, transport, extra)
+	}
+	options, err := runOptions(cmd.Flags(), rest)
+	if err != nil {
+		return err
+	}
+	return Execute(cmd.Context(), os.Stdout, transport, options, nil)
 }
 
 // mtimeArgs splits the mtime form out of a channel command's positional
@@ -166,7 +187,7 @@ func newLocalCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runLocalOrSSH(cmd.Context(), session.LocalTransport{}, options)
+			return Execute(cmd.Context(), os.Stdout, session.LocalTransport{}, options, nil)
 		},
 	}
 	addRunFlags(cmd)
@@ -184,28 +205,9 @@ func newSSHCmd() *cobra.Command {
 			"Change-time clustering is written karma ssh TARGET mtime DIR..., and " +
 			"karma ssh TARGET bootstrap uploads this binary to the target and prints its path, " +
 			"so its local mode — the checks that read the kernel in process — can be run there.",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return usagef(cmd, "ssh needs a target: [user@]host or ssh://[user@]host[:port]")
-			}
-			return nil
-		},
+		Args: atLeastOneArg("ssh needs a target: [user@]host or ssh://[user@]host[:port]"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			transport, err := buildSSHTransport(cmd.Flags(), args[0])
-			if err != nil {
-				return err
-			}
-			if dirs, ok := mtimeArgs(args[1:]); ok {
-				return runMtimeMode(cmd, transport, dirs, "ssh TARGET")
-			}
-			if extra, ok := bootstrapArgs(args[1:]); ok {
-				return runBootstrapMode(cmd, transport, extra)
-			}
-			options, err := runOptions(cmd.Flags(), args[1:])
-			if err != nil {
-				return err
-			}
-			return runLocalOrSSH(cmd.Context(), transport, options)
+			return runTargetCommand(cmd, args, "ssh TARGET", buildSSHTransport)
 		},
 	}
 	addRunFlags(cmd)
@@ -230,28 +232,9 @@ func newTTYDCmd() *cobra.Command {
 			"Change-time clustering is written karma ttyd TARGET mtime DIR..., and " +
 			"karma ttyd TARGET bootstrap types this binary into the terminal and prints its " +
 			"path, so its local mode — the checks that read the kernel in process — can be run there.",
-		Args: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return usagef(cmd, "ttyd needs a target: ws://host[:port] or host[:port]")
-			}
-			return nil
-		},
+		Args: atLeastOneArg("ttyd needs a target: ws://host[:port] or host[:port]"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			transport, err := buildTTYDTransport(cmd.Flags(), args[0])
-			if err != nil {
-				return err
-			}
-			if dirs, ok := mtimeArgs(args[1:]); ok {
-				return runMtimeMode(cmd, transport, dirs, "ttyd TARGET")
-			}
-			if extra, ok := bootstrapArgs(args[1:]); ok {
-				return runBootstrapMode(cmd, transport, extra)
-			}
-			options, err := runOptions(cmd.Flags(), args[1:])
-			if err != nil {
-				return err
-			}
-			return runLocalOrSSH(cmd.Context(), transport, options)
+			return runTargetCommand(cmd, args, "ttyd TARGET", buildTTYDTransport)
 		},
 	}
 	addRunFlags(cmd)

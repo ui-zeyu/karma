@@ -281,34 +281,37 @@ func wtmpdbLive() bool {
 	return err == nil
 }
 
-// Last mirrors `last -n 200`: sessions newest first, the wtmp trailer
-// naming where the record begins. A host whose logins live in wtmpdb hands the
-// question to its own last(1), which reads the database.
-func Last(ctx context.Context) (string, error) {
-	if wtmpdbLive() {
-		return "", model.ErrTierUnavailable
-	}
-	recs, ok := readUtmpRecords("/var/log/wtmp")
-	if !ok {
-		return "", model.ErrTierUnavailable
-	}
-	live := map[string]bool{}
-	if utmp, ok := readUtmpRecords("/var/run/utmp"); ok {
-		for _, r := range userRecords(utmp) {
-			live[r.id] = true
+// Last mirrors `last -n limit`: sessions newest first, the wtmp trailer naming
+// where the record begins. A host whose logins live in wtmpdb hands the question
+// to its own last(1), which reads the database. The check hands the same limit
+// to the script branch, so both channels show the same window.
+func Last(limit int) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		if wtmpdbLive() {
+			return "", model.ErrTierUnavailable
 		}
+		recs, ok := readUtmpRecords("/var/log/wtmp")
+		if !ok {
+			return "", model.ErrTierUnavailable
+		}
+		live := map[string]bool{}
+		if utmp, ok := readUtmpRecords("/var/run/utmp"); ok {
+			for _, r := range userRecords(utmp) {
+				live[r.id] = true
+			}
+		}
+		rows := lastSessionRows(recs, live)
+		slices.Reverse(rows)
+		if len(rows) > limit {
+			rows = rows[:limit]
+		}
+		var b strings.Builder
+		for _, row := range rows {
+			renderLastRow(&b, row)
+		}
+		b.WriteString(recordTrailer("/var/log/wtmp", "wtmp", recs))
+		return b.String(), nil
 	}
-	rows := lastSessionRows(recs, live)
-	slices.Reverse(rows)
-	if len(rows) > 200 {
-		rows = rows[:200]
-	}
-	var b strings.Builder
-	for _, row := range rows {
-		renderLastRow(&b, row)
-	}
-	b.WriteString(recordTrailer("/var/log/wtmp", "wtmp", recs))
-	return b.String(), nil
 }
 
 // firstRecordTime is the oldest surviving record's time, the wtmp trailer.
@@ -330,30 +333,33 @@ func recordTrailer(path, label string, recs []utmpRec) string {
 		firstRecordTime(recs).Format("Mon Jan _2 15:04:05 2006"))
 }
 
-// Lastb mirrors `lastb -n 400`: every failed attempt, newest first.
-func Lastb(ctx context.Context) (string, error) {
-	recs, ok := readUtmpRecords("/var/log/btmp")
-	if !ok {
-		return "", model.ErrTierUnavailable
-	}
-	rows := make([]lastRow, 0, len(recs))
-	for _, r := range recs {
-		if r.user == "" {
-			continue
+// Lastb mirrors `lastb -n limit`: every failed attempt, newest first, the same
+// limit the script branch is given.
+func Lastb(limit int) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		recs, ok := readUtmpRecords("/var/log/btmp")
+		if !ok {
+			return "", model.ErrTierUnavailable
 		}
-		rows = append(rows, lastRow{user: r.user, tty: r.line, host: r.host,
-			login: r.at.Format(lastTimeFmt)})
+		rows := make([]lastRow, 0, len(recs))
+		for _, r := range recs {
+			if r.user == "" {
+				continue
+			}
+			rows = append(rows, lastRow{user: r.user, tty: r.line, host: r.host,
+				login: r.at.Format(lastTimeFmt)})
+		}
+		slices.Reverse(rows)
+		if len(rows) > limit {
+			rows = rows[:limit]
+		}
+		var b strings.Builder
+		for _, row := range rows {
+			renderLastRow(&b, row)
+		}
+		b.WriteString(recordTrailer("/var/log/btmp", "btmp", recs))
+		return b.String(), nil
 	}
-	slices.Reverse(rows)
-	if len(rows) > 400 {
-		rows = rows[:400]
-	}
-	var b strings.Builder
-	for _, row := range rows {
-		renderLastRow(&b, row)
-	}
-	b.WriteString(recordTrailer("/var/log/btmp", "btmp", recs))
-	return b.String(), nil
 }
 
 // lastlog's fixed record: 32-bit time, 32-byte line, 256-byte host, indexed

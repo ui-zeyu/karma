@@ -169,14 +169,12 @@ func gather(ctx context.Context, jobs map[string]func(context.Context) model.Run
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for name, job := range jobs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			result := job(ctx)
 			mu.Lock()
 			defer mu.Unlock()
 			results[name] = result
-		}()
+		})
 	}
 	wg.Wait()
 	return results

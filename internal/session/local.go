@@ -39,6 +39,10 @@ func (LocalTransport) Open() (Session, error) { return LocalSession{}, nil }
 // Name is the channel display name.
 func (LocalSession) Name() string { return "local" }
 
+// Describe names the channel in the report header: karma itself is the target,
+// so the local host name is the whole description.
+func (LocalSession) Describe() string { return "local" }
+
 // Channel is which side of the wire karma runs on: karma itself is the target.
 func (LocalSession) Channel() model.Channel { return model.ChanLocal }
 

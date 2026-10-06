@@ -110,3 +110,43 @@ func TestGrepWalk(t *testing.T) {
 		}
 	}
 }
+
+// TestGrepWalkExcludes mirrors the .pth check's own scan: setuptools' two
+// precedence files are excluded by basename at every depth, the include glob
+// keeps the .pth files alone, and MaxHits caps the rows afterwards.
+func TestGrepWalkExcludes(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "deep", "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		filepath.Join(dir, "a.pth"):                        "import evil\n",
+		filepath.Join(dir, "distutils-precedence.pth"):     "import legit\n",
+		filepath.Join(nested, "_distutils_system_mod.pth"): "import legit\n",
+		filepath.Join(nested, "b.pth"):                     "import evil\n",
+		filepath.Join(dir, "notes.txt"):                    "import evil\n",
+	}
+	for path, body := range files {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opt := GrepScan{
+		Pattern:  regexp.MustCompile(`^import`),
+		Includes: []string{"*.pth"},
+		Excludes: []string{"distutils-precedence.pth", "_distutils_system_mod.pth"},
+	}
+	hits := GrepWalk(context.Background(), dir, opt)
+	want := []string{
+		filepath.Join(dir, "a.pth") + ":1:import evil",
+		filepath.Join(nested, "b.pth") + ":1:import evil",
+	}
+	if !slices.Equal(hits, want) {
+		t.Fatalf("hits = %v, want %v", hits, want)
+	}
+	opt.MaxHits = 1
+	if capped := GrepWalk(context.Background(), dir, opt); !slices.Equal(capped, want[:1]) {
+		t.Fatalf("capped hits = %v, want %v", capped, want[:1])
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"time"
 
 	"golang.org/x/term"
 
@@ -51,6 +52,7 @@ func terminalWidth(w io.Writer) int {
 // partial report is still presented. The returned error is printed by the
 // command-line layer.
 func Execute(ctx context.Context, w io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
+	started := time.Now()
 	target := catalog
 	if target == nil {
 		target = checks.ChecksFor(transport.Platform())
@@ -71,7 +73,16 @@ func Execute(ctx context.Context, w io.Writer, transport session.Transport, opti
 	bins := catalogBins(selected)
 	factsValue := facts.CollectFor(ctx, transport.Platform(), sess, bins)
 	width := terminalWidth(w)
-	render.RenderHeader(w, sess.Name(), factsValue, width, options.MinSeverity, buildVersion)
+	render.RenderHeader(w, factsValue, render.HeaderInfo{
+		Channel:   sess.Describe(),
+		Version:   buildVersion,
+		Started:   started,
+		Selected:  len(selected),
+		Total:     len(target),
+		Selectors: SelectorTokens(options.Selectors),
+		SaveDir:   options.SaveDir,
+		Floor:     options.MinSeverity,
+	}, width)
 	live := render.NewLiveObserver(w, selected, options.MaxLines, width, isTerminal(w))
 	live.Start()
 	defer live.Close()

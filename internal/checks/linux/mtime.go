@@ -37,7 +37,7 @@ const scanBytes = 64 * 1024 * 1024
 // default per-command timeout allows.
 const huntTimeout = 60 * time.Second
 
-// huntPrintf: mtime, ctime (epoch seconds), target-local date and time, bytes,
+// findPrintf: mtime, ctime (epoch seconds), target-local date and time, bytes,
 // path, tab-separated.
 const findPrintf = `%T@\t%C@\t%TY-%Tm-%Td\t%TH:%TM:%TS\t%s\t%p\n`
 

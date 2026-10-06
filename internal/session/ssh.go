@@ -109,7 +109,7 @@ func (t *SSHTransport) Open() (Session, error) {
 		if err != nil {
 			return nil, err
 		}
-		opened = &SSHSession{client: client, agent: agentConn}
+		opened = &SSHSession{client: client, agent: agentConn, target: t.Destination.Display()}
 		return opened, nil
 	}
 	// The password comes only from --password; without it, use public keys only and error directly on auth failure

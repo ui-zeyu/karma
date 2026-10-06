@@ -3,7 +3,7 @@
 # test passes.
 
 GO ?= go
-VERSION ?= 0.28.0
+VERSION ?= 0.29.0
 
 .PHONY: all fmt vet test race staticcheck build dist clean
 

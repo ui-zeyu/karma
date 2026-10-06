@@ -24,10 +24,19 @@ import (
 type SSHSession struct {
 	client *ssh.Client
 	agent  io.Closer
+	target string // the destination as the report header names it, empty in a bare test session
 }
 
 // Name is the channel display name.
 func (s *SSHSession) Name() string { return "ssh" }
+
+// Describe names the channel and the host it reached.
+func (s *SSHSession) Describe() string {
+	if s.target == "" {
+		return "ssh"
+	}
+	return "ssh " + s.target
+}
 
 // Channel is which side of the wire karma runs on: the target is remote.
 func (s *SSHSession) Channel() model.Channel { return model.ChanSSH }

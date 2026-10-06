@@ -9,6 +9,7 @@ package linux
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,13 +81,18 @@ var historyPaths = []string{
 	"/home/*/.local/share/fish/fish_history",
 }
 
-// historyOff: the settings and commands that silence command history. The file
-// keeps earlier lines, so this is a present-tense signal.
+// lastbRows is how far back the failed-login history reads: `lastb -n` on the
+// target, the same window of the in-process btmp read.
+const lastbRows = 400
+
+// The settings and commands that silence command history. The history file
+// keeps earlier lines, so a hit is a present-tense signal.
 var historyOffRule = model.NewRule("history-off",
 	`\b(?:HISTFILE=/dev/null|HISTSIZE=0|HISTFILESIZE=0)\b|(?i)\bunset\s+HISTFILE\b`,
 	model.Medium, "command history recording turned off")
 
-// historyClear: wiped only in the current shell; the file still holds what came before.
+// Clearing wipes only the current shell; the history file still holds what came
+// before.
 var historyClearRule = model.NewRule("history-clear", `\bhistory\s+-c\b`, model.Medium,
 	"history cleared (earlier lines kept)")
 
@@ -187,7 +193,10 @@ var LogsChecks = []*model.Check{
 			Rules: []model.Rule{define.KeywordRule},
 		}),
 	define.LinuxCheck("lastb", "Failed login records", model.AspectLog,
-		[]model.Probe{{Label: "lastb", Inv: model.Dual{Run: native.Lastb, Script: "lastb -n 400"}}},
+		[]model.Probe{{Label: "lastb", Inv: model.Dual{
+			Run:    native.Lastb(lastbRows),
+			Script: "lastb -n " + strconv.Itoa(lastbRows),
+		}}},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 	listingCheck("log-dirs", "Log directory listing (by mtime)", model.AspectLog,
 		[]string{"/var/log", "/var/log/journal"}, 100,

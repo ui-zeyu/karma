@@ -27,7 +27,9 @@ type probeSession struct {
 
 func (s *probeSession) Name() string           { return "probe" }
 func (s *probeSession) Channel() model.Channel { return model.ChanSSH }
-func (s *probeSession) Close() error           { return nil }
+
+func (s *probeSession) Describe() string { return "ssh" }
+func (s *probeSession) Close() error     { return nil }
 
 func (s *probeSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ int) model.RunResult {
 	command := session.RenderShell(inv)
@@ -214,7 +216,9 @@ type commandSession struct {
 
 func (s *commandSession) Name() string           { return "command" }
 func (s *commandSession) Channel() model.Channel { return model.ChanSSH }
-func (s *commandSession) Close() error           { return nil }
+
+func (s *commandSession) Describe() string { return "ssh" }
+func (s *commandSession) Close() error     { return nil }
 
 func (s *commandSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ int) model.RunResult {
 	command := session.RenderShell(inv)

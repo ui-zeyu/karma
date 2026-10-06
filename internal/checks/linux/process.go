@@ -189,7 +189,9 @@ find %s -maxdepth %d -type f \( %s \) -exec ls -l {} + 2>/dev/null
 // hiddenPidsScript is the script branch of the same hunt — the branch the ssh
 // channel runs. kill -0 is a shell builtin on every practical /bin/sh, so the
 // brute-force loop forks nothing; the readdir views come from glob expansion,
-// which is the getdents path a rootkit hooks.
+// which is the getdents path a rootkit hooks. normtable fills $norm with both
+// views (pids and their threads); the two passes of the difference read the
+// same table, so only a process one view genuinely drops can be a candidate.
 const hiddenPidsScript = `
 [ -d /proc/1 ] || exit 1
 pidmax=$(cat /proc/sys/kernel/pid_max 2>/dev/null) || exit 1
@@ -198,17 +200,20 @@ cap=$pidmax
 [ "$cap" -gt 131072 ] && cap=131072
 echo "scan: pid_max=$pidmax scanned=1-$cap oracle=kill(pid,0) vs /proc readdir (threads included)"
 [ "$(id -u)" = 0 ] || echo "note: not running as root: readdir may hide other users' processes"
-norm=' '
-for p in /proc/[0-9]*; do
-  case $p in
-    */[0-9]*) norm="$norm ${p##*/} ";;
-  esac
-done
-for t in /proc/[0-9]*/task/[0-9]*; do
-  case $t in
-    */task/[0-9]*) norm="$norm ${t##*/} ";;
-  esac
-done
+normtable() {
+  norm=' '
+  for p in /proc/[0-9]*; do
+    case $p in
+      */[0-9]*) norm="$norm ${p##*/} ";;
+    esac
+  done
+  for t in /proc/[0-9]*/task/[0-9]*; do
+    case $t in
+      */task/[0-9]*) norm="$norm ${t##*/} ";;
+    esac
+  done
+}
+normtable
 cand=' '
 i=1
 while [ "$i" -le "$cap" ]; do
@@ -221,17 +226,7 @@ while [ "$i" -le "$cap" ]; do
   i=$((i + 1))
 done
 [ "$cand" = ' ' ] && exit 0
-norm=' '
-for p in /proc/[0-9]*; do
-  case $p in
-    */[0-9]*) norm="$norm ${p##*/} ";;
-  esac
-done
-for t in /proc/[0-9]*/task/[0-9]*; do
-  case $t in
-    */task/[0-9]*) norm="$norm ${t##*/} ";;
-  esac
-done
+normtable
 out=
 for i in $cand; do
   case "$norm" in

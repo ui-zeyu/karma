@@ -78,15 +78,16 @@ func PkgVerify(argv []string) func(context.Context) (string, error) {
 
 // PkgHistory mirrors the check's pkgHistoryScript: the apt/dpkg log tails it
 // hands in, then the dnf/yum transaction history — dnf's output uncapped and
-// yum's head-capped, the pipe binding the script itself spells.
-func PkgHistory(paths []string) func(context.Context) (string, error) {
+// yum's head-capped at the same window, the pipe binding the script itself
+// spells.
+func PkgHistory(paths []string, lines int) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		return pkgHistoryBody(ctx, paths), nil
+		return pkgHistoryBody(ctx, paths, lines), nil
 	}
 }
 
-func pkgHistoryBody(ctx context.Context, paths []string) string {
-	body := localfs.ReadSections(paths, localfs.TailLines(300))
+func pkgHistoryBody(ctx context.Context, paths []string, lines int) string {
+	body := localfs.ReadSections(paths, localfs.TailLines(lines))
 	body += "== dnf history\n"
 	// The script's `dnf history || yum history | head` keeps dnf's own output
 	// either way and only runs yum when dnf failed.
@@ -94,7 +95,7 @@ func pkgHistoryBody(ctx context.Context, paths []string) string {
 	body += dnf.out
 	if !dnf.ok {
 		if yum := runHost(ctx, []string{"yum", "history"}, false); yum.out != "" {
-			body += headLines(yum.out, 300)
+			body += headLines(yum.out, lines)
 		}
 	}
 	return body
