@@ -7,7 +7,6 @@
 package native
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -19,6 +18,7 @@ import (
 
 	"karma/internal/localfs"
 	"karma/internal/model"
+	"karma/internal/textutil"
 )
 
 // The glibc utmp record: a fixed 384-byte little-endian layout every Linux
@@ -60,20 +60,13 @@ type utmpRec struct {
 
 // decodeUtmp decodes one 384-byte record.
 func decodeUtmp(rec []byte) utmpRec {
-	cstr := func(off, length int) string {
-		b := rec[off : off+length]
-		if i := bytes.IndexByte(b, 0); i >= 0 {
-			b = b[:i]
-		}
-		return string(b)
-	}
 	sec := int32(binary.LittleEndian.Uint32(rec[utmpTimeOff:]))
 	return utmpRec{
 		typ:  int32(binary.LittleEndian.Uint16(rec[:2])),
-		line: cstr(utmpLineOff, utmpLineLen),
-		id:   cstr(utmpIDOff, utmpIDLen),
-		user: cstr(utmpUserOff, utmpUserLen),
-		host: cstr(utmpHostOff, utmpHostLen),
+		line: textutil.CStr(rec[utmpLineOff : utmpLineOff+utmpLineLen]),
+		id:   textutil.CStr(rec[utmpIDOff : utmpIDOff+utmpIDLen]),
+		user: textutil.CStr(rec[utmpUserOff : utmpUserOff+utmpUserLen]),
+		host: textutil.CStr(rec[utmpHostOff : utmpHostOff+utmpHostLen]),
 		at:   time.Unix(int64(sec), 0),
 	}
 }
@@ -407,8 +400,8 @@ func Lastlog(ctx context.Context) (string, error) {
 		if off+lastlogSize <= len(data) {
 			rec := data[off : off+lastlogSize]
 			when := int32(binary.LittleEndian.Uint32(rec[:4]))
-			line = cstrFixed(rec[lastlogLineOff : lastlogLineOff+utmpLineLen])
-			host = cstrFixed(rec[lastlogHostOff : lastlogHostOff+utmpHostLen])
+			line = textutil.CStr(rec[lastlogLineOff : lastlogLineOff+utmpLineLen])
+			host = textutil.CStr(rec[lastlogHostOff : lastlogHostOff+utmpHostLen])
 			if when > 0 {
 				latest = time.Unix(int64(when), 0).Format(lastlogTimeFormat)
 			}
@@ -440,14 +433,6 @@ func lastlogHeaderLine() string {
 
 func lastlogRow(name, line, host, latest string) string {
 	return fmt.Sprintf("%-16s %-8.8s %-*s%s", name, line, lastlogHostWidth, host, latest)
-}
-
-// cstrFixed trims a fixed-size NUL-terminated field.
-func cstrFixed(b []byte) string {
-	if i := bytes.IndexByte(b, 0); i >= 0 {
-		b = b[:i]
-	}
-	return string(b)
 }
 
 // passwdUser is one /etc/passwd account slot lastlog needs.

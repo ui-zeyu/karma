@@ -1,10 +1,11 @@
 // Package textutil handles target-machine text: the line splitting and iteration,
-// and the C strings the kernel's own structs carry. Compatible with \r\n and \r (the
+// and the C strings the kernel's own structs and record files carry. Compatible with \r\n and \r (the
 // target's mixed output may be CRLF); empty text has no lines. Shared by reading,
 // clustering and fact parsing.
 package textutil
 
 import (
+	"bytes"
 	"iter"
 	"slices"
 	"strings"
@@ -61,4 +62,15 @@ func CString[T ~int8 | ~byte](field []T) string {
 		b.WriteByte(byte(c))
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// CStr reads the string a NUL-terminated byte field holds, keeping every byte
+// before the terminator as written. Record fields (utmp, shell items) are
+// NUL-padded evidence, so nothing is trimmed; CString is the utsname spelling,
+// which also trims the blank padding some kernels write.
+func CStr(data []byte) string {
+	if end := bytes.IndexByte(data, 0); end >= 0 {
+		return string(data[:end])
+	}
+	return string(data)
 }

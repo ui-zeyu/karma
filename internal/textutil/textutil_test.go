@@ -7,6 +7,33 @@ import (
 	"karma/internal/textutil"
 )
 
+func TestCStringReadsTheFieldAndTrimsBlanks(t *testing.T) {
+	if got := textutil.CString([]byte("5.15.0-\x00xxxxxxx")); got != "5.15.0-" {
+		t.Errorf("terminated field = %q", got)
+	}
+	if got := textutil.CString([]int8{'x', 0, 'y'}); got != "x" {
+		t.Errorf("int8 field = %q", got)
+	}
+	if got := textutil.CString([]byte("no pad")); got != "no pad" {
+		t.Errorf("unterminated field = %q", got)
+	}
+	if got := textutil.CString([]byte("padded ")); got != "padded" {
+		t.Errorf("blank-padded field = %q", got)
+	}
+}
+
+func TestCStrKeepsEveryByteBeforeTheTerminator(t *testing.T) {
+	if got := textutil.CStr([]byte("root\x00rest")); got != "root" {
+		t.Errorf("terminated = %q", got)
+	}
+	if got := textutil.CStr([]byte("root ")); got != "root " {
+		t.Errorf("blank-padded record = %q", got)
+	}
+	if got := textutil.CStr([]byte("root")); got != "root" {
+		t.Errorf("unterminated = %q", got)
+	}
+}
+
 func TestLinesMatchesSplitlines(t *testing.T) {
 	cases := []struct {
 		in   string

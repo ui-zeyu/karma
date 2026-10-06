@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+
+	"karma/internal/textutil"
 )
 
 // shellItem is one parsed shell item; a zero time means the entry has no such time.
@@ -136,10 +138,7 @@ func ansiString(data []byte, off int) string {
 	if off < 0 || off >= len(data) {
 		return ""
 	}
-	if end := bytes.IndexByte(data[off:], 0); end >= 0 {
-		return string(data[off : off+end])
-	}
-	return string(data[off:])
+	return textutil.CStr(data[off:])
 }
 
 // utf16Z is a null-terminated UTF-16LE string.

@@ -9,7 +9,7 @@ import (
 )
 
 // version is the release version, overridable by the build.
-var version = "0.30.1"
+var version = "0.30.2"
 
 func main() {
 	os.Exit(cli.Main(version))
