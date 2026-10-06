@@ -1,15 +1,15 @@
-// The hidden-module and module-memory diffs ship one shell collector each, and
-// the text it prints is the top half of a contract: the collector emits a marked
-// record stream, the check's Assemble renders the rows, and these tests run the
-// collector through the target's own /bin/sh against a fixture registry — so a
-// broken collector fails here instead of silently reporting nothing on a target.
+// The hidden-module and module-memory diffs emit one marked record stream each,
+// and the text they print is the top half of a contract: the tier emits the
+// stream, the check's Assemble renders the rows. These tests drive the check's
+// own views over a fixture registry, so a view the catalog forgets to hand in,
+// an attribute that reads back wrong, or a row the join loses fails here.
 
 package linux
 
 import (
 	"context"
+	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,30 +20,10 @@ import (
 	"karma/internal/testkit"
 )
 
-// requireSh skips a pipeline test on a host without the tools the pipeline is
-// written in.
-func requireSh(t *testing.T, tools ...string) {
-	t.Helper()
-	for _, tool := range tools {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("no %s on this host", tool)
-		}
-	}
-}
-
-func runPipeline(t *testing.T, script string) string {
-	t.Helper()
-	out, err := exec.Command("/bin/sh", "-c", script).Output()
-	if err != nil {
-		t.Fatalf("the pipeline failed: %v (output %q)", err, out)
-	}
-	return string(out)
-}
-
 // assembleOf is the whole-body join the catalog hangs on a check's one tier: the
-// target emits its marked stream and this renders the rows, which is the ssh and
-// ttyd channels' whole path. Reading it from the catalog is what keeps these
-// tests honest about the wiring rather than about a function called directly.
+// tier emits its marked stream and this renders the rows, which is the whole path
+// on every channel — the local one included, since a remote channel collects
+// through a karma binary placed on the target, which runs this same body.
 func assembleOf(t *testing.T, id string) model.Transformer {
 	t.Helper()
 	check := testkit.CheckByID(t, All, id)
@@ -123,9 +103,12 @@ func fixtureViews(sysfs, modules, symbols string) script.ModuleDiffViews {
 // while sysfs has no kobject for it (GAP). A module all three views agree on, a
 // built-in without a sections/ directory, and the pseudo-module tags stay quiet.
 func TestHiddenModulePipelineReportsEveryDisagreement(t *testing.T) {
-	requireSh(t, "sh", "awk")
 	sysfs, modules, symbols := hiddenModuleFixture(t)
-	got := assembleOf(t, "modules-hidden")(runPipeline(t, script.HiddenModuleScript(fixtureViews(sysfs, modules, symbols))))
+	stream, err := native.ModulesHidden(fixtureViews(sysfs, modules, symbols))(context.Background())
+	if err != nil {
+		t.Fatalf("the emitter failed: %v", err)
+	}
+	got := assembleOf(t, "modules-hidden")(stream)
 	want := "GAP ghost sysfs=no proc=yes kallsyms=yes symbols 1\n" +
 		"HIDDEN rootkit sysfs=yes proc=no kallsyms=yes size 16384 init 8192 refs 0 state live taint O symbols 2\n"
 	if got != want {
@@ -138,7 +121,6 @@ func TestHiddenModulePipelineReportsEveryDisagreement(t *testing.T) {
 // bury the rows that matter. nf_tables is the case here — sysfs and the module
 // list both carry it, the table tags none of its symbols.
 func TestHiddenModulePipelineIsQuietAboutAMissingSymbolTag(t *testing.T) {
-	requireSh(t, "sh", "awk")
 	sysfs, modules, symbols := hiddenModuleFixture(t)
 	if err := os.WriteFile(modules, []byte("nf_tables 409600 0 - Live 0xffffffffc0567000\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -149,7 +131,11 @@ func TestHiddenModulePipelineIsQuietAboutAMissingSymbolTag(t *testing.T) {
 	if err := os.WriteFile(symbols, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := assembleOf(t, "modules-hidden")(runPipeline(t, script.HiddenModuleScript(fixtureViews(sysfs, modules, symbols))))
+	stream, err := native.ModulesHidden(fixtureViews(sysfs, modules, symbols))(context.Background())
+	if err != nil {
+		t.Fatalf("the emitter failed: %v", err)
+	}
+	got := assembleOf(t, "modules-hidden")(stream)
 	want := "HIDDEN rootkit sysfs=yes proc=no kallsyms=yes size 16384 init 8192 refs 0 state live taint O symbols 2\n"
 	if got != want {
 		t.Errorf("the diff printed %q, want %q", got, want)
@@ -158,16 +144,13 @@ func TestHiddenModulePipelineIsQuietAboutAMissingSymbolTag(t *testing.T) {
 
 // An unreadable module list is an unavailable tier, not a registry with nothing
 // in it: every sysfs module and every symbol tag would read as hidden otherwise.
+// The walk reads that as "no answer here" and falls to the next tier.
 func TestHiddenModulePipelineRefusesWithoutTheModuleList(t *testing.T) {
-	requireSh(t, "sh", "awk")
 	sysfs, _, symbols := hiddenModuleFixture(t)
 	views := fixtureViews(sysfs, filepath.Join(t.TempDir(), "absent"), symbols)
-	out, err := exec.Command("/bin/sh", "-c", script.HiddenModuleScript(views)).Output()
-	if err == nil {
-		t.Fatalf("the diff answered %q without a module list", out)
-	}
-	if len(out) != 0 {
-		t.Errorf("the diff printed %q without a module list", out)
+	stream, err := native.ModulesHidden(views)(context.Background())
+	if !errors.Is(err, model.ErrTierUnavailable) {
+		t.Fatalf("a missing module list should be unavailable, got %q / %v", stream, err)
 	}
 }
 
@@ -175,24 +158,25 @@ func TestHiddenModulePipelineRefusesWithoutTheModuleList(t *testing.T) {
 // a verdict: a container without /sys mounted must not turn every module into a
 // GAP row.
 func TestHiddenModulePipelineMarksAnAbsentViewUnknown(t *testing.T) {
-	requireSh(t, "sh", "awk")
 	_, modules, symbols := hiddenModuleFixture(t)
 	views := fixtureViews(filepath.Join(t.TempDir(), "absent"), modules, symbols)
-	got := assembleOf(t, "modules-hidden")(runPipeline(t, script.HiddenModuleScript(views)))
+	stream, err := native.ModulesHidden(views)(context.Background())
+	if err != nil {
+		t.Fatalf("the emitter failed: %v", err)
+	}
+	got := assembleOf(t, "modules-hidden")(stream)
 	want := "HIDDEN rootkit sysfs=? proc=no kallsyms=yes symbols 2\n"
 	if got != want {
 		t.Errorf("the diff printed %q, want %q", got, want)
 	}
 }
 
-// Both channels emit one marked stream for the module-memory diff, and the two
-// emitters have to agree on it: the target's folds compare the allocation ranges
-// as fixed-width hex strings and count the symbols inside them, the in-process
-// emitter does the same arithmetic on numbers, and the join above them runs once.
-// The fixture has the two shapes a hidden module leaves — memory no symbol
-// reaches, and memory whose only symbol names a module the list does not carry.
-func TestModuleMemoryPipelineEmitsTheLocalTiersStream(t *testing.T) {
-	requireSh(t, "sh", "awk")
+// The module-memory tier reads the allocation list, the module list and the
+// symbol table in process and emits one marked stream, and the check's Assemble
+// renders the rows the panel shows — which is what the check's rules grade. The
+// fixture has the two shapes a hidden module leaves: memory no symbol reaches,
+// and memory whose only symbol names a module the list does not carry.
+func TestModuleMemoryPipelineRendersItsRows(t *testing.T) {
 	root := t.TempDir()
 	views := native.ModuleMemoryViews()
 	allocations := filepath.Join(root, "vmallocinfo")
@@ -219,21 +203,14 @@ func TestModuleMemoryPipelineEmitsTheLocalTiersStream(t *testing.T) {
 	}
 	views.VMallocPath, views.ModulesPath, views.SymbolsPath = allocations, modules, symbols
 	// The dig behind the local body reads the core file: point it at nothing, so
-	// this test compares the two joins and never this host's own kernel memory.
+	// this test never reads this host's own kernel memory.
 	views.CorePath = filepath.Join(root, "no-core")
 
-	got := runPipeline(t, script.ModuleMemoryScript(views))
-	want, err := native.ModuleMemory(views, moduleImagesRe)(context.Background())
+	stream, err := native.ModuleMemory(views, moduleImagesRe)(context.Background())
 	if err != nil {
-		t.Fatalf("the local emitter failed: %v", err)
+		t.Fatalf("the emitter failed: %v", err)
 	}
-	if got != want {
-		t.Errorf("the target's stream is\n%q\nthe local emitter's is\n%q", got, want)
-	}
-
-	// And the tier's Assemble renders that one stream into the rows the panel
-	// shows, which is what the check's rules grade.
-	rows := assembleOf(t, "module-memory")(got)
+	rows := assembleOf(t, "module-memory")(stream)
 	if !strings.Contains(rows, "UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module\n") {
 		t.Errorf("the anonymous module allocation is missing from\n%q", rows)
 	}
@@ -249,7 +226,6 @@ func TestModuleMemoryPipelineEmitsTheLocalTiersStream(t *testing.T) {
 // kernel's own JIT or trampoline memory: counted as unexplained, never a
 // finding, which is what keeps the check quiet on a stock 6.10+ kernel.
 func TestModuleMemoryPipelineIsQuietAboutKernelJitMemory(t *testing.T) {
-	requireSh(t, "sh", "awk")
 	root := t.TempDir()
 	views := native.ModuleMemoryViews()
 	allocations := filepath.Join(root, "vmallocinfo")
@@ -268,7 +244,11 @@ func TestModuleMemoryPipelineIsQuietAboutKernelJitMemory(t *testing.T) {
 	}
 	views.VMallocPath, views.ModulesPath, views.SymbolsPath = allocations, modules, symbols
 	views.CorePath = filepath.Join(root, "no-core")
-	got := assembleOf(t, "module-memory")(runPipeline(t, script.ModuleMemoryScript(views)))
+	stream, err := native.ModuleMemory(views, moduleImagesRe)(context.Background())
+	if err != nil {
+		t.Fatalf("the emitter failed: %v", err)
+	}
+	got := assembleOf(t, "module-memory")(stream)
 	if want := "VMAP regions 1 modules 1 explained 1 unexplained 0\n"; got != want {
 		t.Errorf("the tier rendered %q, want %q", got, want)
 	}

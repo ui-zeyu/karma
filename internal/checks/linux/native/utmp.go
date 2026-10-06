@@ -9,7 +9,9 @@ package native
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"slices"
 	"strconv"
@@ -71,19 +73,26 @@ func decodeUtmp(rec []byte) utmpRec {
 	}
 }
 
-// readUtmpRecords reads an accounting file; ok is false when the file is
-// absent, the "binary missing" case of the script tier. A truncated tail
-// (a crash mid-write) is dropped, whole records survive.
-func readUtmpRecords(path string) ([]utmpRec, bool) {
+// readUtmpRecords reads an accounting file. ok is false when there is nothing
+// to read: the file is absent, or the records moved to another store. A read
+// that fails for any other reason is an error the tier reports, which is how a
+// non-root run says the evidence is there and was refused rather than saying
+// nothing at all — /var/log/btmp is root-only on every distro.
+//
+// A truncated tail (a crash mid-write) is dropped, whole records survive.
+func readUtmpRecords(path string) ([]utmpRec, bool, error) {
 	data, err := localfs.ReadRegular(path)
 	if err != nil {
-		return nil, false
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("%s: %w", path, errors.Unwrap(err))
 	}
 	var recs []utmpRec
 	for off := 0; off+utmpSize <= len(data); off += utmpSize {
 		recs = append(recs, decodeUtmp(data[off:off+utmpSize]))
 	}
-	return recs, true
+	return recs, true, nil
 }
 
 // userRecords selects the interactive sessions from utmp.
@@ -99,7 +108,10 @@ func userRecords(recs []utmpRec) []utmpRec {
 
 // Who mirrors `who`: one row per live session.
 func Who(ctx context.Context) (string, error) {
-	recs, ok := readUtmpRecords("/var/run/utmp")
+	recs, ok, err := readUtmpRecords("/var/run/utmp")
+	if err != nil {
+		return "", err
+	}
 	if !ok {
 		return "", model.ErrTierUnavailable
 	}
@@ -133,7 +145,10 @@ func idleFormat(d time.Duration) string {
 // W mirrors `w`: the uptime banner, then one row per live session with
 // the terminal's idle time and the CPU spent by the processes on it.
 func W(ctx context.Context) (string, error) {
-	recs, ok := readUtmpRecords("/var/run/utmp")
+	recs, ok, err := readUtmpRecords("/var/run/utmp")
+	if err != nil {
+		return "", err
+	}
 	if !ok {
 		return "", model.ErrTierUnavailable
 	}
@@ -286,19 +301,24 @@ func wtmpdbLive() bool {
 
 // Last mirrors `last -n limit`: sessions newest first, the wtmp trailer naming
 // where the record begins. A host whose logins live in wtmpdb hands the question
-// to its own last(1), which reads the database. The check hands the same limit
-// to the script branch, so both channels show the same window.
+// to its own last(1), which reads the database. The limit the check hands in is
+// the window the table is capped at.
 func Last(limit int) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		if wtmpdbLive() {
 			return "", model.ErrTierUnavailable
 		}
-		recs, ok := readUtmpRecords(wtmpFile)
+		recs, ok, err := readUtmpRecords(wtmpFile)
+		if err != nil {
+			return "", err
+		}
 		if !ok {
 			return "", model.ErrTierUnavailable
 		}
 		live := map[string]bool{}
-		if utmp, ok := readUtmpRecords(utmpFile); ok {
+		// The live-session set is best effort: an unreadable utmp leaves every row
+		// without its "still logged in" mark, which is not worth failing the tier for.
+		if utmp, ok, _ := readUtmpRecords(utmpFile); ok {
 			for _, r := range userRecords(utmp) {
 				live[r.id] = true
 			}
@@ -308,7 +328,7 @@ func Last(limit int) func(context.Context) (string, error) {
 }
 
 // lastPanel renders a last(1)-shaped table: the rows newest first, capped at
-// the limit the script branch is given, closed by the trailer naming where the
+// the limit, closed by the trailer naming where the
 // file's records begin. rows is reversed in place, so the caller hands in a
 // slice of its own.
 func lastPanel(rows []lastRow, limit int, path, label string, recs []utmpRec) string {
@@ -343,11 +363,14 @@ func recordTrailer(path, label string, recs []utmpRec) string {
 		firstRecordTime(recs).Format("Mon Jan _2 15:04:05 2006"))
 }
 
-// Lastb mirrors `lastb -n limit`: every failed attempt, newest first, the same
-// limit the script branch is given.
+// Lastb mirrors `lastb -n limit`: every failed attempt, newest first, capped at
+// the limit the check hands in.
 func Lastb(limit int) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		recs, ok := readUtmpRecords(btmpFile)
+		recs, ok, err := readUtmpRecords(btmpFile)
+		if err != nil {
+			return "", err
+		}
 		if !ok {
 			return "", model.ErrTierUnavailable
 		}
@@ -375,6 +398,9 @@ const (
 // Ubuntu and its neighbours (wtmpdb's companion lastlog2).
 const lastlog2DB = "/var/lib/lastlog/lastlog2.db"
 
+// lastlogFile is the classic sparse record file, indexed by uid.
+const lastlogFile = "/var/log/lastlog"
+
 // Lastlog mirrors `lastlog`: the newest login per account, read from the
 // sparse file indexed by uid. Where the records moved to lastlog2's database
 // the classic file is only written by legacy paths and falls behind the live
@@ -385,9 +411,12 @@ func Lastlog(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", model.ErrTierUnavailable
 	}
-	data, err := localfs.ReadRegular("/var/log/lastlog")
+	data, err := localfs.ReadRegular(lastlogFile)
 	if err != nil {
-		return "", model.ErrTierUnavailable
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", model.ErrTierUnavailable
+		}
+		return "", fmt.Errorf("%s: %w", lastlogFile, errors.Unwrap(err))
 	}
 	var b strings.Builder
 	if _, err := os.Stat(lastlog2DB); err == nil {

@@ -1,13 +1,10 @@
 package checks_test
 
 import (
-	"os/exec"
 	"slices"
-	"strings"
 	"testing"
 
 	"karma/internal/checks"
-	"karma/internal/checks/linux"
 	"karma/internal/model"
 	"karma/internal/testkit"
 )
@@ -77,20 +74,19 @@ func TestCatalogInvariants(t *testing.T) {
 			ids[check.ID] = true
 			labels := map[string]bool{}
 			for _, step := range check.Steps {
+				// A step with no probe has nothing to run and no label to name; a
+				// probe with no invocation is a walk that would stop in silence.
+				if len(step) == 0 {
+					t.Errorf("check %s has an empty step", check.ID)
+				}
 				for _, probe := range step {
+					if probe.Inv == nil {
+						t.Errorf("check %s probe %s carries no invocation", check.ID, probe.Label)
+					}
 					if labels[probe.Label] {
 						t.Errorf("check %s has a duplicate probe label: %s", check.ID, probe.Label)
 					}
 					labels[probe.Label] = true
-				}
-			}
-			// A check with no tier on one channel would silently drop from that
-			// channel's run.
-			for _, ch := range []model.Channel{model.ChanLocal, model.ChanSSH, model.ChanTTYD} {
-				if !slices.ContainsFunc(slices.Concat(check.Steps...), func(p model.Probe) bool {
-					return p.InvocationFor(ch) != nil
-				}) {
-					t.Errorf("check %s has no tier for channel %d", check.ID, ch)
 				}
 			}
 			rules := map[string]bool{}
@@ -162,44 +158,6 @@ func TestKnownWalksKeepTheirSteps(t *testing.T) {
 		}
 		if !slices.Equal(got, c.steps) {
 			t.Errorf("%s: walk is %v probes per step, want %v", c.id, got, c.steps)
-		}
-	}
-}
-
-// Every /bin/sh script in the catalog passes sh -n: the syntax check for
-// generated scripts is a test instead of a manual step. mtime is a dynamically
-// built check, so a sample directory stands in for one.
-func TestShellScriptsParse(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh, skipping the script syntax check")
-	}
-	var scripts []string
-	for _, check := range checks.ChecksFor(model.Linux) {
-		for _, step := range check.Steps {
-			for _, probe := range step {
-				if dual, ok := probe.Inv.(model.Dual); ok && dual.Script != "" {
-					scripts = append(scripts, check.ID+": "+dual.Script)
-				}
-			}
-		}
-	}
-	hunt := linux.HuntCheck([]string{"/tmp/demo", "/var/www"})
-	for _, step := range hunt.Steps {
-		for _, probe := range step {
-			if dual, ok := probe.Inv.(model.Dual); ok && dual.Script != "" {
-				scripts = append(scripts, hunt.ID+": "+dual.Script)
-			}
-		}
-	}
-	if len(scripts) == 0 {
-		t.Fatal("the catalog should yield shell scripts")
-	}
-	for _, item := range scripts {
-		id, body, _ := strings.Cut(item, ": ")
-		cmd := exec.Command("sh", "-n")
-		cmd.Stdin = strings.NewReader(body)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Errorf("%s script fails the syntax check: %v\n%s", id, err, out)
 		}
 	}
 }

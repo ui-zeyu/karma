@@ -94,6 +94,10 @@ func (s *TTYDSession) Close() error { return nil }
 
 // Run types one collection line into a fresh terminal and harvests the answer.
 func (s *TTYDSession) Run(ctx context.Context, call model.Call) model.RunResult {
+	text, ok := commandText(s.collector, call)
+	if !ok {
+		return noShellFor(call.Inv)
+	}
 	conn, err := s.connect(ctx)
 	if err != nil {
 		// The endpoint is gone unless the failure is our own cancellation:
@@ -105,7 +109,7 @@ func (s *TTYDSession) Run(ctx context.Context, call model.Call) model.RunResult 
 		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
 	terminal := &ttydCall{conn: conn, spawned: make(chan struct{})}
-	return terminal.collect(ctx, commandText(s.collector, call), call.Cap)
+	return terminal.collect(ctx, text, call.Cap)
 }
 
 // connect dials the endpoint and sends the JSON handshake. ttyd spawns the

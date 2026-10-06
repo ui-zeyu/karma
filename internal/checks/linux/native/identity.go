@@ -14,10 +14,9 @@ import (
 	"karma/internal/section"
 )
 
-// Sudoers mirrors the check's sudoersScript: every readable surface it hands
-// in, one section each; none readable means this tier cannot answer and the
-// sudo -n -l tier is next. A successful read is the script's [ -r ] guard: an
-// unreadable file fails the read and is skipped.
+// Sudoers reads every readable surface it hands in, one section each; none readable
+// means this tier cannot answer and the sudo -n -l tier is next. An unreadable
+// file fails its read and is skipped, which is what a [ -r ] guard would do.
 func Sudoers(paths []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
@@ -34,9 +33,8 @@ func Sudoers(paths []string) func(context.Context) (string, error) {
 	}
 }
 
-// expandHomes turns the check's home globs into the directories they name, the
-// way the script's `for d in ...; do [ -d "$d" ] || continue` loop does, so an
-// entry that names nothing contributes nothing either way.
+// expandHomes turns the check's home globs into the directories they name, so an
+// entry that names nothing contributes nothing.
 func expandHomes(homeGlobs []string) []string {
 	return localfs.ExpandGlobs(homeGlobs, func(info os.FileInfo) bool { return info.IsDir() })
 }
@@ -51,11 +49,10 @@ func printBody(b *strings.Builder, path string) {
 	}
 }
 
-// AuthorizedKeys mirrors authorizedKeysScript: keys found by name under the home
-// globs the check hands in, then the paths sshd_config's AuthorizedKeysFile
-// directives name — %u the user, %h the home directory, a relative path inside
-// it — skipping the default names the find already covered. depth is the same
-// -maxdepth the script's find passes.
+// AuthorizedKeys finds keys by name under the home globs the check hands in,
+// then the paths sshd_config's AuthorizedKeysFile directives name — %u the user,
+// %h the home directory, a relative path inside it — skipping the default names
+// the walk already covered. depth bounds the walk under each home.
 func AuthorizedKeys(homeGlobs []string, depth int, sshdConfigPaths []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		homes := expandHomes(homeGlobs)

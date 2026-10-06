@@ -20,8 +20,8 @@ import (
 	"karma/internal/script"
 )
 
-// ModulesLoad mirrors the check's modulesLoadScript: the /etc/modules file and
-// the load layers it hands in, one section each.
+// ModulesLoad reads the /etc/modules file and the load layers it hands in, one
+// section each.
 func ModulesLoad(paths []string) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) { return localfs.ReadSections(paths, nil), nil }
 }
@@ -51,11 +51,10 @@ const (
 	procKcoreFile    = "/proc/kcore"
 )
 
-// ModuleDiffViews is the one value both channels of the hidden-module diff
-// read: the surfaces, the attributes a module's evidence line carries, and the
-// symbol tags that are not modules. The check hands it to the in-process body
-// and to the pipeline, so the two cannot read different paths or attribute
-// lists.
+// ModuleDiffViews is the hidden-module diff's one set of surfaces: the paths it
+// reads, the attributes a module's evidence line carries, and the symbol tags
+// that are not modules. The check builds it once, so the body, its tests and a
+// fixture cannot read different paths or attribute lists.
 func ModuleDiffViews(attrs []ModuleAttr) script.ModuleDiffViews {
 	pairs := make([]string, 0, len(attrs))
 	for _, attr := range attrs {
@@ -70,13 +69,11 @@ func ModuleDiffViews(attrs []ModuleAttr) script.ModuleDiffViews {
 	}
 }
 
-// ModulesHidden is the local channel's half of the diff, mirroring
-// script.HiddenModuleScript: the marked stream is built in process, and the
-// check's Assemble renders it — script.HiddenModuleBody, one join for this
-// channel and the pipeline alike. Either view can be unavailable on its own (no
-// /sys mounted, no symbol table in a container); the module list is the
-// baseline, so without it the tier reports itself unavailable and the channel
-// falls through.
+// ModulesHidden is the diff's body: it emits the marked stream and the check's
+// Assemble renders it (script.HiddenModuleBody). Either view can be unavailable
+// on its own (no /sys mounted, no symbol table in a container); the module list
+// is the baseline, so without it the tier reports itself unavailable and the
+// chain falls to the next tier.
 func ModulesHidden(views script.ModuleDiffViews) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
 		modules, err := os.ReadFile(views.ModulesPath)
@@ -87,10 +84,10 @@ func ModulesHidden(views script.ModuleDiffViews) func(context.Context) (string, 
 	}
 }
 
-// hiddenModuleViewsText is the in-process emitter of the marked stream
-// HiddenModuleScript's shell block produces: the availability flags, one S line
-// per loadable module with the attributes that read back, one P line per
-// /proc/modules name, one K line per module tag in the symbol table.
+// hiddenModuleViewsText emits the marked stream the check's Assemble reads: the
+// availability flags, one S line per loadable module with the attributes that
+// read back, one P line per /proc/modules name, one K line per module tag in the
+// symbol table.
 func hiddenModuleViewsText(views script.ModuleDiffViews, modules string) string {
 	var b strings.Builder
 	sysfs, sysfsErr := os.ReadDir(views.SysfsRoot)
@@ -140,7 +137,8 @@ const (
 	viewKallsymsName = "kallsyms"
 )
 
-// boolBit renders an availability flag the way the shell block does.
+// boolBit renders an availability flag: yes, no, or unknown when the view
+// could not be read at all.
 func boolBit(ok bool) int {
 	if ok {
 		return 1
@@ -159,8 +157,8 @@ var (
 	sharedAllocators = []string{"execmem_alloc"}
 )
 
-// ModuleMemoryViews is the one value both channels of the module-memory diff
-// read.
+// ModuleMemoryViews is the module-memory diff's one set of surfaces, which the
+// check builds once and a test substitutes the paths of.
 func ModuleMemoryViews() script.ModuleMemoryViews {
 	return script.ModuleMemoryViews{
 		VMallocPath:      "/proc/vmallocinfo",
@@ -173,22 +171,19 @@ func ModuleMemoryViews() script.ModuleMemoryViews {
 	}
 }
 
-// ModuleMemory is the local tier of the module-memory diff, mirroring
-// script.ModuleMemoryScript: the three surfaces are read in process, the marked
-// stream is built the way the shell block builds it, and the check's Assemble
-// (script.ModuleMemoryBody) renders the rows for either channel. The symbol
-// table is required — without it every region would look unexplained — and so
-// are the allocation list and the module list, which the shell block's `exit 1`
-// mirrors.
+// ModuleMemory is the module-memory diff's body: the three surfaces are read in
+// process, the marked stream is emitted, and the check's Assemble
+// (script.ModuleMemoryBody) renders the rows. The symbol table is required —
+// without it every region would look unexplained — and so are the allocation
+// list and the module list.
 //
 // The rows that join could not explain are then read out of the running kernel's
-// core file (ModuleImages), which is this channel's own step: a remote shell has
-// no way to read the core, so the pipeline's rows stand alone there. The dig's
-// rows join the stream as I records — the join places them after the regions
-// nothing explains and before the accounting line that closes the report, so the
-// local channel is the pipeline's rows plus those records and never a different
-// join. The read is bounded and silent when it cannot happen or finds nothing,
-// so a host without a readable core answers exactly the rows the pipeline prints.
+// core file (ModuleImages): the dig's rows join the stream as I records — the
+// join places them after the regions nothing explains and before the accounting
+// line that closes the report, so a body with a readable core is the stream's rows
+// plus those records and never a different join. The read is bounded and silent
+// when it cannot happen or finds nothing, so a host without a readable core
+// answers exactly the rows the stream carries.
 func ModuleMemory(views script.ModuleMemoryViews, kitNames *regexp.Regexp) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
 		allocations, err := os.ReadFile(views.VMallocPath)
@@ -268,7 +263,7 @@ func moduleMemoryText(views script.ModuleMemoryViews, allocations, modules, symb
 	sorted := slices.Clone(regions)
 	slices.SortFunc(sorted, func(a, b moduleMemoryRegion) int { return cmp.Compare(a.start, b.start) })
 	// The tags of one region with their counts, in the order the symbol table
-	// named them: the Y records the shell block's fold emits.
+	// named them: the Y records its own fold emits.
 	type tagTotal struct {
 		tag   string
 		count int
@@ -388,8 +383,8 @@ func readTrimmedFile(path string) (string, bool) {
 	return value, value != ""
 }
 
-// Kallsyms mirrors the check's kallsymsScript: the symbol table narrowed to
-// the families the check hands in, in process; no hit stays empty and quiet.
+// Kallsyms narrows the symbol table to the families the check hands in, in
+// process; no hit stays empty and quiet.
 func Kallsyms(pattern *regexp.Regexp) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		data, err := os.ReadFile("/proc/kallsyms")
@@ -429,7 +424,7 @@ func stripSyslogPriority(body string) string {
 }
 
 // Lsmod formats /proc/modules as the lsmod table — header included, so
-// the lsmod lexer reads both channels' output the same way.
+// the lsmod lexer reads the same way.
 func Lsmod(ctx context.Context) (string, error) {
 	data, err := os.ReadFile("/proc/modules")
 	if err != nil {

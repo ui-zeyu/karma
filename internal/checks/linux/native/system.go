@@ -16,8 +16,8 @@ import (
 	"karma/internal/model"
 )
 
-// OsRelease mirrors osReleaseScript: the distro file (lsb_release when
-// missing), a blank line, then uname -a from the uname syscall (native_uname).
+// OsRelease reads the distro file (lsb_release when missing), a blank line, then
+// uname -a from the uname syscall (native_uname).
 // A platform without that spelling reports the tier unavailable and the shell
 // ladder answers, so the check reads either way.
 func OsRelease(ctx context.Context) (string, error) {
@@ -70,7 +70,7 @@ func userCount() int {
 	if count, ok := logindUserCount(); ok {
 		return count
 	}
-	if recs, ok := readUtmpRecords("/var/run/utmp"); ok {
+	if recs, ok, _ := readUtmpRecords("/var/run/utmp"); ok {
 		return len(userRecords(recs))
 	}
 	return 0

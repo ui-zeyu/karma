@@ -9,7 +9,6 @@ package linux
 import (
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +17,6 @@ import (
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
-	"karma/internal/script"
 	"karma/internal/textutil"
 )
 
@@ -193,10 +191,7 @@ var LogsChecks = []*model.Check{
 			Rules: []model.Rule{define.KeywordRule},
 		}),
 	define.LinuxCheck("lastb", "Failed login records", model.AspectLog,
-		[]model.Step{{{Label: "lastb", Inv: model.Dual{
-			Run:    native.Lastb(lastbRows),
-			Script: "lastb -n " + strconv.Itoa(lastbRows),
-		}}}},
+		[]model.Step{{{Label: "lastb", Inv: model.Native{Body: native.Lastb(lastbRows)}}}},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 	listingCheck("log-dirs", "Log directory listing (by mtime)", model.AspectLog,
 		[]string{"/var/log", "/var/log/journal"}, 100,
@@ -215,10 +210,7 @@ var LogsChecks = []*model.Check{
 	// request lines it carries are the findings, so the keep pattern and the
 	// rules are one vocabulary.
 	define.LinuxCheck("access-log", "Web access log summary (clients, minutes, probes)", model.AspectLog,
-		[]model.Step{{{Label: "log", Inv: model.Dual{
-			Run:    native.AccessLog(accessLogPaths, accessLogKeepRe),
-			Script: script.AccessLogScript(accessLogPaths, accessLogKeep),
-		}, Cap: model.Scan(accessLogLines)}}},
+		[]model.Step{{{Label: "log", Inv: model.Native{Body: native.AccessLog(accessLogPaths, accessLogKeepRe)}, Cap: model.Scan(accessLogLines)}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				logScanToolRule, logTraversalRule, logExecParamRule, logSensitiveFileRule,

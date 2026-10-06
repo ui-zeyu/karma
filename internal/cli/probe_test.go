@@ -12,20 +12,18 @@ import (
 )
 
 // probeCatalog is a stand-in catalog: one check per shape a caller has to read
-// back. A Command runs wherever the test does; a Dual with only a script side is
-// a tier the local channel does not carry; a body that refuses is the tier's own
-// report that it cannot run here.
+// back. A Command runs wherever the test does; a body that refuses is the tier's
+// own report that it cannot run here.
 func probeCatalog() []*model.Check {
 	return []*model.Check{
 		define.LinuxCheck("demo", "Demo", model.AspectSystem, []model.Step{
 			{{Label: "echo", Inv: model.NewCommand("echo", "hello")}},
 			{{Label: "noisy", Inv: model.NewCommand("sh", "-c", "echo out; echo err >&2; exit 3")}},
 			{{Label: "silent", Inv: model.NewCommand("sh", "-c", "echo why >&2; exit 9")}},
-			{{Label: "script-only", Inv: model.Dual{Script: "echo from-the-script-side"}}},
-			{{Label: "unavailable", Inv: model.Dual{Run: func(context.Context) (string, error) {
+			{{Label: "unavailable", Inv: model.Native{Body: func(context.Context) (string, error) {
 				return "", model.ErrTierUnavailable
 			}}}},
-			{{Label: "broken", Inv: model.Dual{Run: func(context.Context) (string, error) {
+			{{Label: "broken", Inv: model.Native{Body: func(context.Context) (string, error) {
 				return "", errors.New("the body gave up")
 			}}}},
 		}, define.CheckOpt{}),
@@ -67,15 +65,6 @@ func TestProbeSaysAnsweredAndFailedAsTheChainReadsThem(t *testing.T) {
 	out, warn, code = answerProbe(t, "demo", "silent")
 	if out != "" || warn != "why\n" || code != 9 {
 		t.Fatalf("a non-zero exit with nothing on stdout is a failure: %q / %q / %d", out, warn, code)
-	}
-}
-
-// A tier the local channel does not carry answers the 127 a missing binary gives,
-// with an empty body: that is what the caller's walk reads to try the next tier.
-func TestProbeAnswersUnavailableForATierThisChannelLacks(t *testing.T) {
-	out, _, code := answerProbe(t, "demo", "script-only")
-	if out != "" || code != 127 {
-		t.Fatalf("a missing tier reads as an empty body and 127: %q / %d", out, code)
 	}
 }
 

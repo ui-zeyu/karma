@@ -89,9 +89,9 @@ var routeColumns = map[string]int{
 // routeTailWords are the two fields iproute2 adds to an IPv6 row and the
 // in-process netlink reader cannot decode (its own comment says so): the
 // default preference and a route lifetime. They carry no verdict and reach the
-// panel from one channel only, so the shaper reads them out of the row rather
-// than into a column of its own — which is what lets a route read the same on
-// both channels. Both are in the raw text --save writes.
+// panel from one reader only, so the shaper reads them out of the row rather
+// than into a column of its own — which is what lets a route read the same
+// whichever reader collected it. Both words stay in the collection's raw text.
 var routeTailWords = map[string]bool{"pref": true, "expires": true}
 
 // RouteTable turns `ip route` rows into a column table: destination, gateway,

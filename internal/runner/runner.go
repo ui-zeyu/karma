@@ -3,10 +3,11 @@
 // on completion; the presentation layer places the panels in catalog order
 // itself.
 //
-// A step whose Dual has no branch for the session's channel is skipped silently
-// — it is not part of that channel's chain. Fallback covers availability
-// discovered at run time only — a missing binary, a 127 — never which side of
-// the wire karma runs on.
+// Fallback covers availability discovered at run time only — a missing binary,
+// a 127, a Native body that cannot run on this host — never which side of the
+// wire karma runs on: every tier exists on every channel, and a remote Linux
+// channel collects through the karma binary it placed on the target, which runs
+// the same bodies the local channel runs.
 //
 // The budget belongs to the walk, not to one tier's call: one deadline covers
 // every step of a check, and the channel's own setup inside it, so the number a
@@ -184,14 +185,7 @@ func runCheck(ctx context.Context, sess session.Session, check *model.Check, opt
 		if ctx.Err() != nil {
 			break
 		}
-		members, missing := stepMembers(ctx, sess, check, step)
-		skipped = append(skipped, missing...)
-		if len(members) == 0 {
-			// Nothing in this step could run: the tier exists on the other
-			// channel only, or the target lacks its binary.
-			unavailable = unavailable || len(missing) > 0
-			continue
-		}
+		members := stepMembers(ctx, sess, check, step)
 		joined, label := joinStep(members)
 		switch {
 		case joined.Verdict.Settled():
@@ -219,29 +213,19 @@ func runCheck(ctx context.Context, sess session.Session, check *model.Check, opt
 	return &model.CheckResult{Check: check, Outcome: model.Collected, SkippedLabels: skipped}
 }
 
-// stepMembers runs every probe of one step that this channel can run. A tier
-// whose Dual has no branch here is not part of this channel's walk, so it is
-// skipped silently and never named in the panel's chain; whether the target has
-// the tier's tool is the tier's own answer when it runs (a guard in the script,
-// ErrTierUnavailable in the body, a 127 from a missing binary), which is what the
-// chain above reads.
-func stepMembers(ctx context.Context, sess session.Session, check *model.Check, step model.Step) ([]answeredTier, []string) {
-	var (
-		members []answeredTier
-		missing []string
-	)
+// stepMembers runs every probe of one step. Whether the target has the tier's
+// tool is the tier's own answer when it runs — ErrTierUnavailable in a body, a
+// 127 from a missing binary — which is what the chain above reads.
+func stepMembers(ctx context.Context, sess session.Session, check *model.Check, step model.Step) []answeredTier {
+	members := make([]answeredTier, 0, len(step))
 	for _, probe := range step {
-		inv := probe.InvocationFor(session.TierChannel(sess))
-		if inv == nil {
-			continue
-		}
 		members = append(members, answeredTier{
 			probe: probe,
 			// The check and the probe name the tier for a channel that collects
 			// through a placed collector; a channel that runs the tier itself
 			// reads Inv.
 			result: sess.Run(ctx, model.Call{
-				Check: check.ID, Probe: probe.Label, Inv: inv, Cap: probe.Cap,
+				Check: check.ID, Probe: probe.Label, Inv: probe.Inv, Cap: probe.Cap,
 			}),
 		})
 		if members[len(members)-1].result.Verdict.Cut() {
@@ -250,7 +234,7 @@ func stepMembers(ctx context.Context, sess session.Session, check *model.Check, 
 			break
 		}
 	}
-	return members, missing
+	return members
 }
 
 // joinStep merges one step's members into the step's own result: the bodies in

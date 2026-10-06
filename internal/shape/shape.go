@@ -5,10 +5,10 @@
 //
 // Every shaper is a model.Normalizer the reading pipeline runs per section,
 // before rules and filters — so the tokens the rules look for survive the
-// reshape, and both channels (whose raw output is the same tool wording) get
-// the same table. A shaper declines the body it does not recognize by
-// returning nil, which keeps the text exactly as the tool wrote it; the raw
-// text --save writes is never touched by any of this.
+// reshape, and a body reads as the same table however it was collected. A shaper
+// declines the body it does not recognize by returning nil, which keeps the text
+// exactly as the tool wrote it; the collection's raw text is never touched by any
+// of this.
 //
 // Two types carry the mechanics so no shaper hand-rolls alignment: Table pads
 // columns, Tree draws branch glyphs. Determinism is the contract — same input,

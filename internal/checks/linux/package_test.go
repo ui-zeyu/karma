@@ -1,56 +1,48 @@
-// The package-verify tier on the ssh and ttyd channels is one shell pipeline
-// over the target's own file(1) and ls -l: the tags, sed, the awk pass and the
-// file/ls calls are a contract with the shell rather than with Go. These tests
-// run that pipeline against a fixture the way the remote channel runs it, so a
-// broken tag or a mistyped field fails here instead of reporting a wall of
-// rows on a target.
+// The package-verify tier reads the verifier's own output in process and builds
+// the body from the filesystem: the tags, the classification and the grouping are
+// Go, so these tests run the tier over a fixture with the verifier stubbed on
+// PATH, and a mistyped field or a lost row fails here instead of reporting a wall
+// of rows on a target.
 
 package linux
 
 import (
+	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"karma/internal/checks/linux/native"
+	"karma/internal/model"
 )
 
-// fakeVerifier writes the `dpkg` the pipeline calls, printing body on stdout,
-// and returns a PATH with it in front.
-func fakeVerifier(t *testing.T, body string) []string {
+// fakeVerifier writes the `dpkg` the tier calls, printing body on stdout, and
+// puts it in front of PATH for the rest of the test.
+func fakeVerifier(t *testing.T, body string) {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "dpkg"), []byte("#!/bin/sh\ncat <<'KARMA'\n"+body+"KARMA\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	var env []string
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "PATH=") {
-			env = append(env, kv)
-		}
-	}
-	return append(env, "PATH="+dir+":"+os.Getenv("PATH"))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// runVerifyScript runs the tier's script under /bin/sh with the fake verifier
-// in front of PATH.
-func runVerifyScript(t *testing.T, script string, env []string) string {
+// verify runs the tier with dpkg first on PATH, the way a target with dpkg has it.
+func verify(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command("/bin/sh", "-c", script)
-	cmd.Env = env
-	out, err := cmd.Output()
+	out, err := native.PkgVerify([]string{"dpkg", "-V"})(context.Background())
 	if err != nil {
-		t.Fatalf("the tier script failed: %v (output %q)", err, out)
+		t.Fatalf("the tier failed: %v", err)
 	}
-	return string(out)
+	return out
 }
 
 // A divergence that is mostly text is counted per directory, while the file
 // that could be a finding — an executable here — is named with its type and
 // attributes, and a small directory keeps its names.
-func TestVerifyScriptNamesProgramsAndCountsTheRest(t *testing.T) {
-	requireSh(t, "sh", "awk", "sed", "file", "ls", "sort", "uniq")
+func TestVerifyNamesProgramsAndCountsTheRest(t *testing.T) {
 	root := t.TempDir()
 	prog := filepath.Join(root, "prog")
 	mass := filepath.Join(root, "mass")
@@ -78,8 +70,9 @@ func TestVerifyScriptNamesProgramsAndCountsTheRest(t *testing.T) {
 	for _, row := range rows {
 		body.WriteString("??5??????   " + row + "\n")
 	}
-	out := runVerifyScript(t, verifyScript("dpkg -V"), fakeVerifier(t, body.String()))
+	fakeVerifier(t, body.String())
 
+	out := verify(t)
 	for _, want := range []string{
 		"== executables, libraries and conffiles\n??5??????   " + tool + "\n",
 		"== file\n" + tool + ": ",
@@ -98,23 +91,19 @@ func TestVerifyScriptNamesProgramsAndCountsTheRest(t *testing.T) {
 
 // A clean verification is an empty answer: the check must not fall through to
 // the other package manager's tier, and it must not print a header either.
-func TestVerifyScriptStaysSilentWhenNothingDiffers(t *testing.T) {
-	requireSh(t, "sh", "awk", "sed", "file", "ls")
-	if out := runVerifyScript(t, verifyScript("dpkg -V"), fakeVerifier(t, "")); out != "" {
+func TestVerifyStaysSilentWhenNothingDiffers(t *testing.T) {
+	fakeVerifier(t, "")
+	if out := verify(t); out != "" {
 		t.Errorf("a clean verification printed %q, want nothing", out)
 	}
 }
 
-// A target without the package manager answers 127 from the tier itself: the
-// chain reads that as "no answer here" and falls to the next package manager.
-func TestVerifyScriptWithoutTheVerifierExits127(t *testing.T) {
-	requireSh(t, "sh")
-	env := []string{"PATH=" + t.TempDir()}
-	cmd := exec.Command("/bin/sh", "-c", verifyScript("dpkg -V"))
-	cmd.Env = env
-	err := cmd.Run()
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != 127 {
-		t.Fatalf("a host without dpkg exited with %v, want 127", err)
+// A target without the package manager answers unavailable, which the chain
+// reads as "no answer here" and falls to the next package manager.
+func TestVerifyWithoutTheVerifierIsUnavailable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	out, err := native.PkgVerify([]string{"dpkg", "-V"})(context.Background())
+	if !errors.Is(err, model.ErrTierUnavailable) {
+		t.Fatalf("a host without dpkg should be unavailable, got %q / %v", out, err)
 	}
 }

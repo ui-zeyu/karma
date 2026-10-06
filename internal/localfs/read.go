@@ -86,7 +86,7 @@ func Tail(path string, n int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(file, n))
 }
 
-// ReadSections mirrors script.ReadFiles: one "== path" section per existing
+// ReadSections is the read-a-file-list tier: one "== path" section per existing
 // regular file, in word-list order with glob results sorted; transform shapes
 // the body (nil keeps the file as read). An unreadable file still prints its
 // section with an empty body, like `cat "$f" 2>/dev/null`.

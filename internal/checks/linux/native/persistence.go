@@ -13,8 +13,8 @@ import (
 	"karma/internal/section"
 )
 
-// Cron mirrors the check's cronScript: the crontab files and spool layers it
-// hands in, then the invoking user's own crontab.
+// Cron reads the crontab files and spool layers it hands in, then the invoking
+// user's own crontab.
 func Cron(paths []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		body := localfs.ReadSections(paths, nil)
@@ -33,8 +33,8 @@ func LdPreload(ctx context.Context) (string, error) {
 	return string(body), nil
 }
 
-// Skel mirrors the check's skelScript: the clustered listing of the template
-// directory, then the template startup files themselves.
+// Skel prints the clustered listing of the template directory, then the template
+// startup files themselves.
 func Skel(dir string, head int, templates []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
@@ -44,8 +44,8 @@ func Skel(dir string, head int, templates []string) func(context.Context) (strin
 	}
 }
 
-// Generators mirrors generatorsScript: one clustered listing section per
-// unique generator directory, each capped at head like the script's find.
+// Generators prints one clustered listing section per unique generator directory,
+// each capped at head.
 func Generators(dirs []string, head int) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
@@ -66,9 +66,8 @@ func Generators(dirs []string, head int) func(context.Context) (string, error) {
 	}
 }
 
-// Udev mirrors the check's udevScript: per writable layer it hands in, a
-// clustered listing capped at head and then the assignment keys that reference
-// external programs, capped at maxHits like the script's head.
+// Udev reads, per writable layer it hands in, a clustered listing capped at head and
+// then the assignment keys that reference external programs, capped at maxHits.
 func Udev(dirs []string, head, maxHits int, pattern *regexp.Regexp) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder

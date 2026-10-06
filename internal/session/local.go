@@ -1,10 +1,10 @@
-// Local channel: turns an Invocation into a subprocess, or runs a Dual tier's
-// in-process body itself. This is the channel's spawn point; the in-process
-// tiers ask a host binary through their own runner (native.runHost), and
-// Windows stops a process tree with taskkill. Command goes through exec
-// without a shell; Shell goes through /bin/sh -c (rendering shared with SSH via
-// shellcmd, POSIX only). The call's deadline kills the whole process tree;
-// output already produced is kept.
+// Local channel: turns an Invocation into a subprocess, or runs a Native tier's
+// body itself. This is the channel's spawn point; the in-process tiers ask a
+// host binary through their own runner (native.runHost), and Windows stops a
+// process tree with taskkill. Command goes through exec without a shell; Shell
+// goes through /bin/sh -c (rendering shared with SSH via shellcmd, POSIX only).
+// The call's deadline kills the whole process tree; output already produced is
+// kept.
 
 package session
 
@@ -45,34 +45,16 @@ func (LocalSession) Describe() string { return "local" }
 // Channel is which side of the wire karma runs on: karma itself is the target.
 func (LocalSession) Channel() model.Channel { return model.ChanLocal }
 
-// Run sends the invocation to run locally. A Dual tier runs its in-process
-// body first; everything else becomes a subprocess.
+// Run sends the invocation to run locally. A Native tier runs its in-process
+// body; everything else becomes a subprocess.
 //
 // A body that cannot answer on this host — it reads a kernel interface the
 // host lacks, /proc on a non-Linux developer host — comes back unavailable, and
-// the tier then runs its script side through the local shell. So the local
-// channel answers wherever the ssh channel would, and the in-process body is
-// what a Linux target uses.
+// the chain in the runner falls to the next tier, which is what happens on every
+// other channel too.
 func (s LocalSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	if d, ok := call.Inv.(model.Dual); ok {
-		// A tier with no in-process body exists on the remote channels only, and
-		// takes its script side here.
-		if d.Run == nil {
-			if d.Script == "" {
-				return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
-			}
-			return runLocal(ctx, posixShell(d.Script), call.Cap)
-		}
-		result := runNative(ctx, d.Run, call.Cap)
-		// An unavailable body is the tier's own report that it cannot run here,
-		// and it is the only verdict that sends the tier to its script side —
-		// the same fall-through a missing binary takes on every other tier. A
-		// Dual with no script side keeps the unavailable result, which is what
-		// the runner's chain reads.
-		if result.Verdict != model.VerdictUnavailable || d.Script == "" {
-			return result
-		}
-		return runLocal(ctx, posixShell(d.Script), call.Cap)
+	if native, ok := call.Inv.(model.Native); ok {
+		return runNative(ctx, native.Body, call.Cap)
 	}
 	return runLocal(ctx, ArgvFor(call.Inv), call.Cap)
 }

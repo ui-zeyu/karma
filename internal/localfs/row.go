@@ -175,7 +175,7 @@ func listingOrder(a, b listedRow) int {
 	)
 }
 
-// listingRows mirrors script.ListingFind: one directory's entries as
+// listingRows is one directory's listing: its entries as
 // "%T@\t%C@\t" + ls-l rows, sorted by listingOrder and capped at head. A head
 // of zero or less lists every entry. The epoch prefix is the cluster's input;
 // RowBody is the half the panels show.

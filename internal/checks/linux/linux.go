@@ -6,16 +6,12 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
-
-	"github.com/samber/lo"
 
 	"karma/internal/cluster"
 	"karma/internal/define"
 	"karma/internal/localfs"
 	"karma/internal/model"
-	"karma/internal/script"
 )
 
 // openScanLines is the row cap an open scan carries: a listing, a walk or a
@@ -30,24 +26,12 @@ const openScanLines = 200
 // missing files skipped, each body shaped by the shell command's native
 // counterpart (cat reads the file whole, tail keeps the last n lines).
 func filesTier(label string, shellCmd string, transform func(string) string, paths []string) model.Probe {
-	return model.Probe{Label: label, Inv: model.Dual{
-		Run:    func(context.Context) (string, error) { return localfs.ReadSections(paths, transform), nil },
-		Script: script.ReadFiles(paths, shellCmd, true),
-	}}
+	return model.Probe{Label: label, Inv: model.Native{Body: func(context.Context) (string, error) { return localfs.ReadSections(paths, transform), nil }}}
 }
 
 // readFilesCheck is the cat-a-file-list tier pair.
 func readFilesCheck(paths ...string) []model.Step {
 	return []model.Step{{filesTier("cat", `cat "$f"`, nil, paths)}}
-}
-
-// findNameArgs renders a find name test alternation: one -name/-iname word per
-// pattern, joined by -o. The web-script and miner walks each spell their own
-// option and pattern list, and the same helper builds both.
-func findNameArgs(option string, patterns []string) string {
-	return strings.Join(lo.Map(patterns, func(pattern string, _ int) string {
-		return option + " '" + pattern + "'"
-	}), " -o ")
 }
 
 // tailFilesCheck reads the tail of every file in the list.
@@ -80,9 +64,6 @@ var listingNormalize = cluster.ListingNormalize(time.Now)
 // tier, so the check is declared once for both channels.
 func listingCheck(id, title string, aspect model.Aspect, dirs []string, head int, rules []model.Rule) *model.Check {
 	return define.LinuxCheck(id, title, aspect,
-		[]model.Step{{{Label: "find", Inv: model.Dual{
-			Run:    localfs.Listing(dirs, head),
-			Script: script.ListingSections(dirs, head),
-		}}}},
+		[]model.Step{{{Label: "find", Inv: model.Native{Body: localfs.Listing(dirs, head)}}}},
 		define.CheckOpt{Rules: rules, Syntax: model.SyntaxLsL, Normalize: listingNormalize})
 }

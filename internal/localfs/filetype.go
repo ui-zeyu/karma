@@ -1,7 +1,7 @@
 // The file(1) classification, in process: the auth-binaries type check reads a
 // file's head itself instead of running a dynamically linked file(1) whose libc
 // an LD_PRELOAD hook can reshape. The ELF header is parsed by the standard
-// library's debug/elf; the script and text fallbacks look at the first bytes the
+// library's debug/elf; the text fallbacks look at the first bytes the
 // way file(1) does. Only the vocabulary the bin-not-elf rule grades has to match
 // ("script", "ASCII text", "Unicode text"), so the words are file(1)'s and the
 // extra detail file prints is left out.

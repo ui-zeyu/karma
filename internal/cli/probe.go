@@ -72,19 +72,12 @@ func runProbe(ctx context.Context, w, warn io.Writer, catalog []*model.Check, ch
 }
 
 // runTier runs one probe of this host through the local channel, the way a local
-// run would. A tier this channel does not carry answers unavailable with an
-// empty body and a 127 — the status a missing binary gives — which is what the
-// walk that asked for it reads to fall to the next tier.
+// run would. It is the tier's own invocation — a Native body runs here, in
+// process — and an unavailable body answers with an empty body and a 127, the
+// status a missing binary gives, which is what the walk that asked for it reads
+// to fall to the next tier.
 func runTier(ctx context.Context, probe model.Probe) model.RunResult {
-	inv := probe.InvocationFor(model.ChanLocal)
-	if inv == nil {
-		return model.RunResult{
-			Verdict:  model.VerdictUnavailable,
-			Stderr:   model.ErrTierUnavailable.Error(),
-			ExitCode: 127,
-		}
-	}
-	return session.LocalSession{}.Run(ctx, model.Call{Inv: inv})
+	return session.LocalSession{}.Run(ctx, model.Call{Inv: probe.Inv})
 }
 
 // exitForProbe says the tier's verdict as the process status a channel reads

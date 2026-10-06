@@ -1,4 +1,4 @@
-// In-process tier glue: the local channel runs a Dual tier's Run body inside
+// In-process tier glue: the local channel runs a Native tier's body inside
 // karma itself. Result semantics mirror a subprocess tier: the call's deadline
 // and cancellation keep the partial text, ErrTierUnavailable maps to the
 // missing-binary 127 so the probe chain falls through, and the line and byte
@@ -38,11 +38,9 @@ type nativeResult struct {
 
 func runNative(ctx context.Context, fn func(context.Context) (string, error), cap model.RowCap) model.RunResult {
 	if fn == nil {
-		// A Dual with no local branch is a tier that exists on the ssh channel
-		// only (model.Dual.For): the runner never routes it here, and a caller
-		// that does gets the same answer a body that cannot run would give, so
-		// LocalSession.Run falls to the tier's script side as it does for every
-		// other unavailable body.
+		// A Native with no body is a catalog mistake rather than a target's
+		// answer; it reads as a tier that cannot run here, which the chain in
+		// the runner falls through.
 		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
 	}
 	// Buffered: an abandoned body must never block on its own send.

@@ -364,26 +364,6 @@ func TestRunCatalogStopsOnCancelledContext(t *testing.T) {
 	}
 }
 
-// A tier with no branch for the session's channel is not part of that channel's
-// chain: it neither runs nor appears among the skipped labels.
-func TestRunCheckSkipsStepAbsentOnThisChannel(t *testing.T) {
-	check := &model.Check{ID: "asym", Aspect: model.AspectProcess, Steps: []model.Step{
-		{{Label: "walk", Inv: model.Dual{Script: "walk-script"}}}, // exists on ssh only
-		{{Label: "next", Inv: model.NewCommand("tool-next")}},
-	}}
-	sess := &scriptSession{reply: []model.RunResult{{Verdict: model.VerdictAnswered, Stdout: "rows\n"}}}
-	result := runCheck(context.Background(), sess, check, model.RunOptions{Timeout: time.Second})
-	if result.ProbeLabel != "next" || result.Outcome != model.Collected {
-		t.Fatalf("the channel-absent tier should be invisible: %+v", result)
-	}
-	if len(result.SkippedLabels) != 0 {
-		t.Fatalf("a tier absent on this channel is not a skip: %v", result.SkippedLabels)
-	}
-	if sess.ranCount() != 1 {
-		t.Fatalf("only the channel's tier should run: ran %d", sess.ranCount())
-	}
-}
-
 // A step of several probes is one source's set of processes (one registry key
 // each, where the channel has no shell to loop in): every member runs and the
 // bodies join, instead of the walk stopping at the first member that happens to
@@ -614,48 +594,22 @@ func (s *delegatingSession) asked() []string {
 	return slices.Clone(s.calls)
 }
 
-// A channel collecting through a placed collector walks the local tiers, and
-// every call names the check and the probe: that pair is what the binary on the
-// target is asked for. A tier with no in-process body is not part of that walk,
-// the way it is not part of the local channel's.
-func TestDelegatedChannelAsksForTheLocalTiersByName(t *testing.T) {
+// A channel collecting through a placed collector names the check and the probe
+// on every call: that pair is what the binary on the target is asked for, and it
+// is asked whatever the tier's own invocation is — the collector runs the tier
+// there, in process, and answers with its streams.
+func TestDelegatedChannelAsksForTheTiersByName(t *testing.T) {
 	sess := &delegatingSession{stubSession: &stubSession{}}
 	sess.UseCollector("/root/.karma/karma")
 	check := &model.Check{ID: "listen", Aspect: model.AspectNetwork, Steps: []model.Step{
-		{{Label: "ss", Inv: model.Dual{
-			Run:    func(context.Context) (string, error) { return "ss\n", nil },
-			Script: "ss -tunap",
-		}}},
-		{{Label: "netstat", Inv: model.Dual{Script: "netstat -tunap"}}},
+		{{Label: "ss", Inv: model.Native{Body: func(context.Context) (string, error) { return "ss\n", nil }}}},
+		{{Label: "netstat", Inv: model.NewCommand("netstat", "-tunap")}},
 	}}
 	summary := RunCatalog(context.Background(), sess, []*model.Check{check}, model.RunOptions{Concurrency: 1}, &deadObserver{})
 	if summary.Results != 1 {
 		t.Fatalf("the check should have finished: %+v", summary)
 	}
 	if got := sess.asked(); !slices.Equal(got, []string{"listen/ss"}) {
-		t.Fatalf("a delegated walk asks for the in-process tiers by name, got %v", got)
-	}
-}
-
-// remoteScriptSession is the canned replay on a channel that has not been given
-// a collector: it runs its own tiers, which for a remote channel means the script
-// sides.
-type remoteScriptSession struct{ *scriptSession }
-
-func (s *remoteScriptSession) Channel() model.Channel { return model.ChanSSH }
-
-// A channel without a collector still runs the script side of a tier: nothing
-// about a remote channel that has not been given a binary changes.
-func TestUndelegatedChannelStillRunsTheScriptSide(t *testing.T) {
-	sess := &remoteScriptSession{&scriptSession{reply: []model.RunResult{{Verdict: model.VerdictAnswered, Stdout: "from-script\n"}}}}
-	check := &model.Check{ID: "listen", Aspect: model.AspectNetwork, Steps: []model.Step{
-		{{Label: "netstat", Inv: model.Dual{Script: "netstat -tunap"}}},
-	}}
-	summary := RunCatalog(context.Background(), sess, []*model.Check{check}, model.RunOptions{Concurrency: 1}, &deadObserver{})
-	if summary.Results != 1 {
-		t.Fatalf("the check should have finished: %+v", summary)
-	}
-	if sess.seen != 1 {
-		t.Fatalf("the script side should have run once, ran %d", sess.seen)
+		t.Fatalf("a delegated walk asks for the tiers by name, got %v", got)
 	}
 }

@@ -65,7 +65,11 @@ func (s *SSHSession) Lost() bool { return s.lost.Load() }
 // the session and handing it the command — go through setup, which is what puts
 // them inside the call's deadline.
 func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	command := RenderShell(model.Shell{Script: commandText(s.collector, call)})
+	text, ok := commandText(s.collector, call)
+	if !ok {
+		return noShellFor(call.Inv)
+	}
+	command := renderText(text)
 	sess, err := setup(ctx, "ssh channel open", sshTimeout, s.client.NewSession)
 	if err != nil {
 		return s.setupResult(ctx, err)

@@ -12,7 +12,7 @@ import (
 	"karma/internal/script"
 )
 
-// AccessLog mirrors AccessLogScript: one summary per existing log file, built
+// AccessLog builds one summary per existing log file, from
 // from the file's own tail. Nothing here runs the host's awk — the summary is
 // counted in process, so a preload hook on the target's awk cannot reshape what
 // its own logs say.

@@ -39,54 +39,41 @@ func TestRenderShell(t *testing.T) {
 
 // A call on a channel that collected through a placed collector is one probe of
 // that binary: the tier runs on the target, in process, and answers with its own
-// streams and status.
+// streams and status — whatever the tier's invocation is, a body karma carries
+// included.
 func TestCommandTextAsksTheCollectorForOneProbe(t *testing.T) {
 	call := model.Call{
 		Check: "listen",
 		Probe: "ss",
-		Inv:   model.Dual{Run: func(context.Context) (string, error) { return "x", nil }, Script: "ss -tunap"},
+		Inv:   model.Native{Body: func(context.Context) (string, error) { return "x", nil }},
 	}
-	got := commandText("/root/.karma/karma", call)
+	got, ok := commandText("/root/.karma/karma", call)
+	if !ok {
+		t.Fatal("a delegated tier has a command")
+	}
 	if want := "/root/.karma/karma local probe listen ss"; got != want {
 		t.Fatalf("commandText = %q, want %q", got, want)
 	}
 	// Without a collector the invocation is what runs, the way it always has.
-	if got := commandText("", call); got != "ss -tunap" {
-		t.Fatalf("commandText without a collector = %q", got)
+	if got, ok := commandText("", model.Call{Inv: model.NewCommand("ss", "-tunap")}); !ok || got != "ss -tunap" {
+		t.Fatalf("commandText without a collector = %q, %v", got, ok)
 	}
 }
 
-// delegateSession is a remote channel carrying a placed collector.
-type delegateSession struct {
-	collector string
-}
-
-func (s *delegateSession) Name() string           { return "ssh" }
-func (s *delegateSession) Channel() model.Channel { return model.ChanSSH }
-func (s *delegateSession) Describe() string       { return "ssh" }
-func (s *delegateSession) Close() error           { return nil }
-
-func (s *delegateSession) Run(context.Context, model.Call) model.RunResult {
-	return model.RunResult{Verdict: model.VerdictAnswered}
-}
-
-func (s *delegateSession) UseCollector(path string) { s.collector = path }
-func (s *delegateSession) Collector() string        { return s.collector }
-
-// The tiers a delegated channel runs are the local ones: that binary stands on
-// the target, so a tier without an in-process body does not exist there either.
-// What the transport is — Channel — does not change.
-func TestTierChannelFollowsTheCollector(t *testing.T) {
-	sess := &delegateSession{}
-	if got := TierChannel(sess); got != model.ChanSSH {
-		t.Fatalf("a channel with no collector runs its own tiers: %v", got)
+// A Native body has no shell text: with no collector on the target there is
+// nothing for a remote channel to run, which is a call the channel answers
+// unavailable rather than a command string.
+func TestCommandTextHasNoTextForANativeWithoutACollector(t *testing.T) {
+	call := model.Call{
+		Check: "lsmod", Probe: "lsmod",
+		Inv: model.Native{Body: func(context.Context) (string, error) { return "x", nil }},
 	}
-	if got := sess.Channel(); got != model.ChanSSH {
-		t.Fatalf("the transport stays the transport: %v", got)
+	if got, ok := commandText("", call); ok {
+		t.Fatalf("a Native body has no shell rendering, got %q", got)
 	}
-	sess.UseCollector("/root/.karma/karma")
-	if got := TierChannel(sess); got != model.ChanLocal {
-		t.Fatalf("a placed collector runs the local tiers: %v", got)
+	res := noShellFor(call.Inv)
+	if res.Verdict != model.VerdictUnavailable || res.ExitCode != 127 {
+		t.Fatalf("an unrenderable call reads as unavailable/127, got %+v", res)
 	}
 }
 
@@ -94,11 +81,11 @@ func TestTierChannelFollowsTheCollector(t *testing.T) {
 // the placement's own small commands run their invocation, collector or not.
 func TestCommandTextLeavesUnnamedCallsAlone(t *testing.T) {
 	call := model.Call{Inv: model.Shell{Script: "uname -r"}}
-	if got := commandText("/root/.karma/karma", call); got != "uname -r" {
+	if got, ok := commandText("/root/.karma/karma", call); !ok || got != "uname -r" {
 		t.Fatalf("commandText delegated a call with no tier: %q", got)
 	}
 	half := model.Call{Check: "listen", Inv: model.Shell{Script: "uname -r"}}
-	if got := commandText("/root/.karma/karma", half); got != "uname -r" {
+	if got, ok := commandText("/root/.karma/karma", half); !ok || got != "uname -r" {
 		t.Fatalf("commandText delegated a call with no probe: %q", got)
 	}
 }

@@ -183,12 +183,11 @@ func FileCaps(fsTypes []string) func(context.Context) (string, error) {
 	}
 }
 
-// HomeTree is the home-tree ladder's local branch: tree's own output when
-// installed, otherwise the find -printf rows — ls -l shape, one entry per row,
-// bounded by depth. tree crosses mount points unless -x is given and the check
-// does not pass it, so the fallback crosses too. The root, the flags and the
-// depth come from the check, which spells the same three in its tree command for
-// the ssh channel.
+// HomeTree is the home-tree tier: tree's own output when installed, otherwise
+// the walk's rows — ls -l shape, one entry per row, bounded by depth. tree
+// crosses mount points unless -x is given and the check does not pass it, so the
+// walk crosses too. The root, the flags and the depth come from the check, which
+// is also what draws the walk's rows as the tree tree(1) would have drawn.
 func HomeTree(root string, flags []string, depth int) func(context.Context) (string, error) {
 	argv := slices.Concat([]string{"tree"}, flags, []string{"-L", strconv.Itoa(depth), root})
 	return func(ctx context.Context) (string, error) {
@@ -212,10 +211,10 @@ func HomeTree(root string, flags []string, depth int) func(context.Context) (str
 }
 
 // RecentScan is one recency walk: the roots, the name suffixes that count, how
-// deep to go, and the mtime window. The check hands these in, so its find -name
-// list, its rule, and this walk all cover the same files. The walk crosses
-// devices on purpose, the way its find does: a bind-mounted web root is where
-// the scripts live, and depth plus the mtime window bound the work.
+// deep to go, and the mtime window. The check hands these in, so its rules and
+// this walk cover the same files. The walk crosses devices on purpose: a
+// bind-mounted web root is where the scripts live, and depth plus the mtime
+// window bound the work.
 type RecentScan struct {
 	Roots    []string
 	Suffixes []string

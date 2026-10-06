@@ -23,7 +23,6 @@ package script
 
 import (
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -88,46 +87,13 @@ const (
 // and the symbol pass walks the megabytes of /proc/kallsyms to count the tags
 // inside those regions. The join above them — which region is explained, which
 // row it prints, in what order — runs once, in Go, for both channels.
-func ModuleMemoryScript(views ModuleMemoryViews) string {
-	var b strings.Builder
-	b.WriteString("vmi=" + views.VMallocPath + "\n")
-	b.WriteString("mods=" + views.ModulesPath + "\n")
-	b.WriteString("[ -r \"$vmi\" ] && [ -r \"$mods\" ] || exit 1\n")
-	b.WriteString("{\n")
-	b.WriteString("  " + moduleRegionAwk(views) + "\n")
-	b.WriteString("  awk '{print \"P \" $1}' \"$mods\" 2>/dev/null\n")
-	b.WriteString("  " + moduleSymbolAwk(views) + "\n")
-	b.WriteString("}\n")
-	return b.String()
-}
 
 // moduleAllocatorClass maps a caller function name to its class, as the region
 // pass's table: "move_module:module,module_alloc:module,execmem_alloc:shared".
-func moduleAllocatorClass(views ModuleMemoryViews) string {
-	pairs := make([]string, 0, len(views.ModuleAllocators)+len(views.SharedAllocators))
-	for _, name := range views.ModuleAllocators {
-		pairs = append(pairs, name+":"+allocModule)
-	}
-	for _, name := range views.SharedAllocators {
-		pairs = append(pairs, name+":"+allocShared)
-	}
-	return strings.Join(pairs, ",")
-}
 
 // moduleRegionAwk emits the R lines: one per live allocation whose caller is one
 // of the allocator functions, in the order /proc/vmallocinfo lists them, with
 // the index the symbol pass uses for the same region.
-func moduleRegionAwk(views ModuleMemoryViews) string {
-	return fmt.Sprintf(`awk -v alloc="%s" '
-  BEGIN { n = split(alloc, a, ","); for (i = 1; i <= n; i++) { split(a[i], kv, ":"); klass[kv[1]] = kv[2] } }
-  {
-    caller = $3
-    sub(/\+.*$/, "", caller)
-    if (!(caller in klass)) next
-    split($1, range, "-")
-    print "R " ++idx " " range[1] " " range[2] " " $2 " " klass[caller]
-  }' %s`, moduleAllocatorClass(views), views.VMallocPath)
-}
 
 // moduleSymbolAwk emits the Y lines: one per tag the symbols inside a region
 // carry, with how many of them do, in the order the tags were first seen. The
@@ -139,37 +105,6 @@ func moduleRegionAwk(views ModuleMemoryViews) string {
 // passes reading /proc/vmallocinfo in file order. An untagged symbol is emitted
 // as "-": it is a published kernel address, which is what explains a region
 // whose symbols name no module.
-func moduleSymbolAwk(views ModuleMemoryViews) string {
-	allocators := slices.Concat(views.ModuleAllocators, views.SharedAllocators)
-	return fmt.Sprintf(`awk '
-  function norm(h,   s) { sub(/^0x/, "", h); s = tolower(h); while (length(s) < 16) s = "0" s; return s }
-  FILENAME == ARGV[1] {
-    caller = $3
-    sub(/\+.*$/, "", caller)
-    if (caller !~ /^(%s)$/) next
-    split($1, range, "-")
-    lo[++nr] = norm(range[1]); hi[nr] = norm(range[2])
-    next
-  }
-  {
-    a = norm($1)
-    for (i = 1; i <= nr; i++) {
-      if (a >= lo[i] && a < hi[i]) {
-        tag = "-"
-        if ($NF ~ /^\[/) { tag = $NF; gsub(/[][]/, "", tag) }
-        if (!((i, tag) in seen)) { seen[i, tag] = 1; order[i] = order[i] " " tag }
-        count[i, tag]++
-        break
-      }
-    }
-  }
-  END {
-    for (i = 1; i <= nr; i++) {
-      n = split(order[i], tags, " ")
-      for (j = 1; j <= n; j++) print "Y " i " " tags[j] " " count[i, tags[j]]
-    }
-  }' %s %s 2>/dev/null`, strings.Join(allocators, "|"), views.VMallocPath, views.SymbolsPath)
-}
 
 // ModuleMemoryRows is the join over the marked stream both emitters produce
 // (ModuleMemoryScript on the target, native.moduleMemoryText in process): one

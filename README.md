@@ -158,9 +158,9 @@ make staticcheck         # when installed
 make dist                # dist/ binaries, with the static-link guard
 ```
 
-The packages that carry a tier's two spellings have agreement tests instead of a live diff: the
-in-process body and the shell one are run over the same fixture and their rows compared
-(`internal/script`, `internal/checks/linux`), so the two cannot drift without a test failing.
+A tier has one body, and the tests run it over a fixture with the host tools stubbed where it needs
+them (`internal/checks/linux`, `internal/checks/linux/native`), so a row, a threshold or a section
+title that regresses fails there rather than on a target.
 
 The code lives in `cmd/karma` and `internal/`: `model` is the domain, `define` builds the catalogs,
 `session` runs the channels, `runner` walks the probes, `reader` reads the collected text into a
@@ -172,9 +172,9 @@ Collection is read-only: it reads files, processes, sockets and the registry; it
 target, kills a process or changes a firewall. What you see is what the current login user can see.
 
 Two properties hold the design together. Release binaries are statically linked
-(`CGO_ENABLED=0`), and the local tiers read the kernel's own interfaces in process — `/proc`,
+(`CGO_ENABLED=0`), and the tiers read the kernel's own interfaces in process — `/proc`,
 `syslog(2)`, `sock_diag`/`rtnetlink`, utmp/wtmp records, `lstat` and `debug/elf` — so neither
-`LD_PRELOAD` nor a replaced host tool can change what karma reads. And each check declares one text
-shape that both sides of a channel print (`model.Dual`): the in-process body used where karma itself
-stands on the host, and the POSIX script every remote channel runs, so the same rules, filters and
-lexers read either channel's output.
+`LD_PRELOAD` nor a replaced host tool can change what karma reads. And a tier is one body
+(`model.Native`) run wherever karma itself stands on the host: locally, or on the target through the
+collector the remote channels place there. One text shape, so the same rules, filters and lexers read
+it on every channel.

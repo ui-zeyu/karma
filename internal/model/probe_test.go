@@ -5,32 +5,22 @@ import (
 	"testing"
 )
 
-func TestInvocationForPicksTheChannelBranch(t *testing.T) {
-	both := Probe{Label: "scan", Inv: Dual{
-		Run:    func(context.Context) (string, error) { return "", nil },
-		Script: ":",
-	}}
-	if both.InvocationFor(ChanLocal) == nil || both.InvocationFor(ChanSSH) == nil {
-		t.Fatal("a tier with both branches exists on both channels")
+// A tier's invocation is either something the target runs or a body karma runs
+// itself; the two sides of the wire are a separate question, and the local
+// channel is the one where karma stands on the collected host.
+func TestInvocationKindsAndTheTwoSidesOfTheWire(t *testing.T) {
+	native := Probe{Label: "lsmod", Inv: Native{Body: func(context.Context) (string, error) { return "", nil }}}
+	if _, ok := native.Inv.(Native); !ok {
+		t.Fatal("a tier whose work karma does itself carries a Native body")
 	}
-	sshOnly := Probe{Label: "walk", Inv: Dual{Script: ":"}}
-	if sshOnly.InvocationFor(ChanLocal) != nil {
-		t.Fatal("a Dual without Run must not run on the local channel")
+	command := Probe{Label: "ss", Inv: NewCommand("ss", "-tunap")}
+	if _, ok := command.Inv.(Command); !ok {
+		t.Fatal("a tier that calls a host tool carries that command")
 	}
-	if sshOnly.InvocationFor(ChanSSH) == nil {
-		t.Fatal("a Dual with Script runs on the ssh channel")
+	if !ChanSSH.Remote() || !ChanTTYD.Remote() {
+		t.Fatal("a channel that reaches the target from outside is remote")
 	}
-	if sshOnly.InvocationFor(ChanTTYD) == nil {
-		t.Fatal("a Dual with Script runs on every remote channel, ttyd included")
-	}
-	if !ChanSSH.Remote() || !ChanTTYD.Remote() || ChanLocal.Remote() {
-		t.Fatal("every channel but local is remote")
-	}
-	plain := Probe{Label: "ss", Inv: NewCommand("ss", "-tunap")}
-	if _, ok := plain.InvocationFor(ChanLocal).(Command); !ok {
-		t.Fatal("a command tier exists on the local channel as itself")
-	}
-	if _, ok := plain.InvocationFor(ChanSSH).(Command); !ok {
-		t.Fatal("a command tier exists on the ssh channel as itself")
+	if ChanLocal.Remote() {
+		t.Fatal("the local channel runs where karma stands")
 	}
 }

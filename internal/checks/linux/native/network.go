@@ -39,15 +39,15 @@ func HostnameIps(ctx context.Context) (string, error) {
 	return strings.Join(ips, " ") + "\n", nil
 }
 
-// ProcNet mirrors the check's procNetScript: each /proc/net socket table it
-// hands in becomes one section; ParseProcNet (the probe's Adapt) restores the
+// ProcNet turns each /proc/net socket table it hands in into one section;
+// ParseProcNet (the probe's Adapt) restores the
 // hex endpoints.
 func ProcNet(paths []string) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) { return localfs.ReadSections(paths, nil), nil }
 }
 
-// Firewall mirrors the check's firewallScript: every family and table it hands
-// in, then the nft ruleset — one section per surface, so rules cite what they
+// Firewall reads every family and table it hands in, then the nft ruleset — one
+// section per surface, so rules cite what they
 // fired on.
 func Firewall(families, tables []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {

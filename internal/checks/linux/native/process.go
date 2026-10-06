@@ -21,8 +21,8 @@ import (
 	"karma/internal/section"
 )
 
-// ProcCaps mirrors sessionCapsScript: the host's own container markers
-// decide the context line; a container session prints its whole capability set
+// ProcCaps reads the session's capability set; the host's own container markers
+// decide the context line. A container session prints its whole set
 // (the standing escape surface), a host session stops at the context line.
 // cgroupMarkers is the check's container-scope pattern, the same string its
 // script greps for.
@@ -46,8 +46,8 @@ func ProcCaps(cgroupMarkers *regexp.Regexp) func(context.Context) (string, error
 
 // inContainer reads the host's own container markers: /.dockerenv (Docker),
 // /run/.containerenv (Podman), the PID 1 cgroup path, and systemd-detect-virt.
-// The cgroup pattern comes from the check, which greps the same string in its
-// script branch.
+// The cgroup pattern comes from the check, which is also what grades the
+// markers this reports.
 func inContainer(ctx context.Context, cgroupMarkers *regexp.Regexp) bool {
 	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
 		if _, err := os.Stat(marker); err == nil {
@@ -70,19 +70,17 @@ func capStatusLines() string {
 	return filteredLines(string(body), func(line string) bool { return strings.HasPrefix(line, "Cap") })
 }
 
-// DeletedExe collapses the three script tiers into one ladder: lsof's
-// +L1 listing when installed, otherwise the /proc link walk collecting the
-// kernel's " (deleted)" target suffix — the shell walk's own rows.
+// DeletedExe is one ladder: lsof's +L1 listing when installed, otherwise the
+// /proc link walk collecting the kernel's " (deleted)" target suffix.
 func DeletedExe(ctx context.Context) (string, error) {
 	if haveBinary("lsof") {
-		// A failing lsof with no output falls through to the /proc walk, the
-		// way the script chain falls from the lsof tier to the walk tier.
+		// A failing lsof with no output falls through to the /proc walk.
 		if res := runHost(ctx, []string{"lsof", "-wn", "+L1"}, false); res.ok || strings.TrimSpace(res.out) != "" {
 			return res.out, nil
 		}
 	}
-	// One /proc snapshot serves the three link passes, like the script's
-	// single /proc/[0-9]* glob expansion covering them in order.
+	// One /proc snapshot serves the three link passes: exe, cwd, then the fd
+	// directories, in that order.
 	pids := procPIDs()
 	var b strings.Builder
 	for _, kind := range []string{"exe", "cwd"} {
@@ -119,8 +117,8 @@ func printDeletedLink(b *strings.Builder, link string) {
 	b.WriteByte('\n')
 }
 
-// CwdTmp mirrors cwdTmpScript: every process whose working directory sits inside
-// one of the temp directories the check hands in.
+// CwdTmp lists every process whose working directory sits inside one of the temp
+// directories the check hands in.
 func CwdTmp(tmpDirs []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
@@ -143,8 +141,8 @@ func CwdTmp(tmpDirs []string) func(context.Context) (string, error) {
 	}
 }
 
-// HiddenProcs mirrors hiddenProcsScript: the symmetric difference of the
-// /proc listing and ps's own listing, numerically ordered, each survivor
+// HiddenProcs reports the symmetric difference of the /proc listing and ps's own
+// listing, numerically ordered, each survivor
 // re-confirmed against /proc so a process that just exited drops out.
 func HiddenProcs(ctx context.Context) (string, error) {
 	if !haveBinary("ps") {
@@ -183,12 +181,11 @@ func HiddenProcs(ctx context.Context) (string, error) {
 	return b.String(), nil
 }
 
-// MinerScan is the cryptominer hunt's local branch: the process-line pattern,
-// the fixed drop paths whose attributes it prints, the temp-directory name
-// globs, the directories the name walk covers, and the walk's depth cap. The
-// check hands all five in — its own script greps the same alternation, lists the
-// same paths, and passes the same -maxdepth to find — so the two channels cannot
-// end up hunting for different things.
+// MinerScan is the cryptominer hunt's shape: the process-line pattern, the fixed
+// drop paths whose attributes it prints, the temp-directory name globs, the
+// directories the name walk covers, and the walk's depth cap. The check hands all
+// five in, so the hunt and the rules that grade its rows cannot cover different
+// names.
 type MinerScan struct {
 	Pattern   *regexp.Regexp
 	DropPaths []string
@@ -198,8 +195,8 @@ type MinerScan struct {
 }
 
 // minerPsLines filters the aux rows through the hunt's pattern, dropping the
-// script tier's "grep" noise. The rows are the forest ones, so this section
-// reads the same on either channel, ladder included.
+// lines that are the search's own "grep" noise. The rows are the forest ones, so
+// this section reads the same however the table was read.
 func minerPsLines(snap processSnapshot, now time.Time, pattern *regexp.Regexp) []string {
 	var out []string
 	for _, line := range psAuxForest(snap, now) {
@@ -210,12 +207,12 @@ func minerPsLines(snap processSnapshot, now time.Time, pattern *regexp.Regexp) [
 	return out
 }
 
-// Miner mirrors the check's minerScript: matched process lines, the fixed
-// drop-path attributes, and the temp-name walk's ls -l batch. The ps scan reads
+// Miner hunts in place: matched process lines, the fixed drop-path attributes,
+// and the temp-name walk's ls -l batch. The ps scan reads
 // the /proc snapshot (an interposed ps cannot hide a miner), and the ls -l rows
-// come from lsBody in-process. The ps section drops lines carrying "grep"
-// exactly like the script's second grep, and the name walk crosses devices the
-// way its find does — a service's PrivateTmp mounts a tmpfs inside /tmp.
+// come from lsBody in-process. The ps section drops the lines that carry "grep"
+// (the search's own noise), and the name walk crosses devices on purpose — a
+// service's PrivateTmp mounts a tmpfs inside /tmp.
 func Miner(scan MinerScan) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		snap := procSnapshot(ctx)
@@ -231,8 +228,8 @@ func Miner(scan MinerScan) func(context.Context) (string, error) {
 			b.WriteByte('\n')
 		}
 		b.WriteString(section.Line("drop paths"))
-		// The script tier hands the same list to `LC_ALL=C ls -l`, which sorts
-		// its arguments; the in-process rows are sorted the same way.
+		// The rows are sorted the way `LC_ALL=C ls -l` sorts its arguments, so a
+		// batch reads in a stable order.
 		var present []string
 		for _, path := range scan.DropPaths {
 			if _, err := os.Stat(path); err == nil {

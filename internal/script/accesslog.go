@@ -43,49 +43,11 @@ const (
 // accessLogAwk is the one pass both tables and the request lines are collected
 // in; the keep pattern and the three sizes are spliced in, so the program text
 // carries none of the vocabulary.
-const accessLogAwk = `function top(a, limit,   i, k, best, bestc) {
-  for (i = 1; i <= limit; i++) {
-    best = ""; bestc = -1
-    for (k in a) if (a[k] > bestc || (a[k] == bestc && k < best)) { bestc = a[k]; best = k }
-    if (best == "") return
-    printf "%%6d %%s\n", bestc, best
-    delete a[best]
-  }
-}
-NF == 0 { next }
-{
-  c[$1]++
-  k = $4; sub(/^\[/, "", k); k = substr(k, 1, 17)
-  if (k != "") m[k]++
-  if (nh < hits && tolower($0) ~ /%s/) hit[++nh] = $0
-}
-END {
-  printf "== %%s\n", path
-  print "clients"
-  top(c, clients)
-  print "minutes"
-  top(m, minutes)
-  if (nh > 0) {
-    print "requests"
-    for (i = 1; i <= nh; i++) print hit[i]
-  }
-}`
 
 // AccessLogScript is the ssh and ttyd channels' tier: one summary per existing
 // log file, built from the file's tail by the target's own awk. keep is the Go
 // side's pattern; its slashes are escaped for the awk regex literal it becomes,
 // and awk reads the line lowercased, the mirror of AccessLogBody's (?i).
-func AccessLogScript(paths []string, keep string) string {
-	program := fmt.Sprintf(accessLogAwk, strings.ReplaceAll(keep, "/", `\/`))
-	var b strings.Builder
-	b.WriteString("for f in " + Join(paths) + "; do\n")
-	b.WriteString("  [ -f \"$f\" ] || continue\n")
-	fmt.Fprintf(&b, "  LC_ALL=C tail -c %d \"$f\" 2>/dev/null | LC_ALL=C awk -v path=\"$f\"", AccessLogWindow)
-	fmt.Fprintf(&b, " -v hits=%d -v clients=%d -v minutes=%d '%s'\n",
-		accessLogHits, accessLogTopClients, accessLogTopMinutes, program)
-	b.WriteString("done")
-	return b.String()
-}
 
 // AccessLogBody renders one log file's summary from its tail, the Go side of
 // accessLogAwk. A file with no lines (or only blank ones) renders nothing, so

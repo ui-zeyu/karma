@@ -1,7 +1,5 @@
-// The access-log summary ships one awk pass and one in-process counter, and the
-// two have to print the same text: this test runs the pipeline the ssh channel
-// runs over a fixture log and requires it to agree with the local tier's own
-// answer, row for row.
+// The access-log summary is one in-process pass over each log file's tail; these
+// tests pin the tables it prints and the rows it keeps.
 
 package linux
 
@@ -16,7 +14,6 @@ import (
 	"karma/internal/checks/linux/native"
 	"karma/internal/model"
 	"karma/internal/reader"
-	"karma/internal/script"
 	"karma/internal/testkit"
 )
 
@@ -32,8 +29,7 @@ var accessLogFixture = []string{
 	`10.0.0.9 - - [18/Apr/2024:02:37:00 +0800] "GET /assets/team-4.jpg HTTP/1.1" 200 4096 "-" "Mozilla/5.0"`,
 }
 
-func TestAccessLogScriptAndNativeAgree(t *testing.T) {
-	requireSh(t, "sh", "awk", "tail")
+func TestAccessLogSummaryTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "access.log")
 	if err := os.WriteFile(path, []byte(strings.Join(accessLogFixture, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -54,15 +50,12 @@ func TestAccessLogScriptAndNativeAgree(t *testing.T) {
 		accessLogFixture[1] + "\n" + accessLogFixture[3] + "\n" +
 		accessLogFixture[4] + "\n" + accessLogFixture[5] + "\n"
 
-	if got := runVerifyScript(t, script.AccessLogScript([]string{path}, accessLogKeep), os.Environ()); got != want {
-		t.Errorf("the pipeline reported\n%q\nwant\n%q", got, want)
-	}
 	body, err := native.AccessLog([]string{path}, accessLogKeepRe)(context.Background())
 	if err != nil {
-		t.Fatalf("the local tier failed: %v", err)
+		t.Fatalf("the tier failed: %v", err)
 	}
 	if body != want {
-		t.Errorf("the local tier reported\n%q\nwant\n%q", body, want)
+		t.Errorf("the tier reported\n%q\nwant\n%q", body, want)
 	}
 }
 

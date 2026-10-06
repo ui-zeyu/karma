@@ -4,46 +4,12 @@
 package linux
 
 import (
-	"fmt"
-	"strings"
 	"time"
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
-	"karma/internal/script"
 	"karma/internal/shape"
-)
-
-const dockerScript = "docker ps -a 2>/dev/null; echo; docker images 2>/dev/null"
-
-// forensicsBlock gathers in-place forensics for one file list: file (type) and
-// ls -l (attributes and mtime) for the files the shell variable names.
-func forensicsBlock(variable string) string {
-	return fmt.Sprintf(`
-if [ -n "$%[1]s" ]; then
-  if command -v file >/dev/null 2>&1; then
-    echo "== file"
-    file $%[1]s 2>/dev/null
-  fi
-  echo "== ls"
-  LC_ALL=C ls -l $%[1]s 2>/dev/null
-fi
-`, variable)
-}
-
-// verifyScript is the ssh and ttyd tier for one verifier: the body both
-// channels render (script.PkgVerifyScript), which names the files that can be a
-// finding and counts the rest per directory. The verifier has already run: no
-// differences is an empty answer with exit code 0, not a fall-through to
-// another package manager. The leading command -v gate keeps that exit 0 from
-// answering for a missing package manager: the tier answers 127 instead and the
-// chain falls to the other package manager's tier.
-func verifyScript(command string) string { return script.PkgVerifyScript(command) }
-
-const (
-	pkgVerifyDpkg = "dpkg -V" // wrapped by verifyScript, this is the dpkg probe
-	pkgVerifyRpm  = "rpm -Va"
 )
 
 const pkgVerifyTimeout = 180 * time.Second // a full package verify takes a minute or two on a small VPS, so the timeout is raised here
@@ -74,12 +40,6 @@ var pkgHistoryPaths = []string{"/var/log/apt/history.log", "/var/log/dpkg.log"}
 // pkgHistoryLines is the window both channels read of either surface.
 const pkgHistoryLines = 300
 
-var pkgHistoryScript = script.Lines(
-	script.ReadFiles(pkgHistoryPaths, fmt.Sprintf(`tail -n %d "$f"`, pkgHistoryLines), true),
-	fmt.Sprintf(`echo "== dnf history"; dnf history 2>/dev/null || yum history 2>/dev/null | head -n %d`,
-		pkgHistoryLines),
-)
-
 // pkgHistoryRules is what can be a finding in the history: the keyword rule,
 // which catches a secret written into a package manager's command line. The
 // records themselves — apt's history entries, dpkg's log lines, dnf's table —
@@ -99,7 +59,7 @@ var pkgHistoryRules = []model.Rule{
 // kilobytes, and dpkg's log names every package and version that changed), and
 // what dpkg logs is narrowed to the transactions themselves rather than the
 // unpack/configure/status churn around them. Everything else is counted as
-// filtered; the raw text --save writes still carries it all. The apt rows the
+// filtered; the collection's raw text still carries it all. The apt rows the
 // check's shaper builds — the start date, then the command line — match the
 // first filter's second branch.
 var pkgHistoryKeep = []model.LineFilter{
@@ -122,13 +82,6 @@ var authBinPaths = []string{
 	"/usr/bin/passwd", "/usr/sbin/unix_chkpwd", "/sbin/unix_chkpwd",
 	"/usr/lib*/security/pam_unix.so", "/lib*/security/pam_unix.so",
 }
-
-var authBinScript = `
-list=
-for f in ` + strings.Join(authBinPaths, " ") + `; do
-  [ -f "$f" ] && list="$list $f"
-done
-` + forensicsBlock("list")
 
 var binNotElfRule = model.NewRule("bin-not-elf",
 	`(?i)^.*(?:\bscript\b|\b(?:ASCII|Unicode) text\b)`, model.High,
@@ -176,12 +129,12 @@ var (
 // PackageChecks covers packages.
 var PackageChecks = []*model.Check{
 	define.LinuxCheck("containers", "Containers (Docker)", model.AspectPackage,
-		[]model.Step{{{Label: "docker", Inv: model.Dual{Run: native.Docker, Script: dockerScript}}}},
+		[]model.Step{{{Label: "docker", Inv: model.Native{Body: native.Docker}}}},
 		define.CheckOpt{Syntax: model.SyntaxTable, Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("pkg-verify", "Package integrity verification", model.AspectPackage,
 		[]model.Step{
-			{{Label: "dpkg", Inv: model.Dual{Run: native.PkgVerify([]string{"dpkg", "-V"}), Script: verifyScript(pkgVerifyDpkg)}}},
-			{{Label: "rpm", Inv: model.Dual{Run: native.PkgVerify([]string{"rpm", "-Va"}), Script: verifyScript(pkgVerifyRpm)}}},
+			{{Label: "dpkg", Inv: model.Native{Body: native.PkgVerify([]string{"dpkg", "-V"})}}},
+			{{Label: "rpm", Inv: model.Native{Body: native.PkgVerify([]string{"rpm", "-Va"})}}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -198,16 +151,10 @@ var PackageChecks = []*model.Check{
 			Timeout: pkgVerifyTimeout,
 		}),
 	define.LinuxCheck("unowned-files", "Files no package owns (system directories)", model.AspectPackage,
-		[]model.Step{{{Label: "find", Inv: model.Dual{
-			Run:    native.UnownedFiles(unownedDirs),
-			Script: script.UnownedScript(unownedDirs),
-		}, Cap: model.Scan(openScanLines)}}},
+		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.UnownedFiles(unownedDirs)}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{Rules: []model.Rule{unownedFileRule}, Timeout: unownedTimeout}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
-		[]model.Step{{{Label: "log", Inv: model.Dual{
-			Run:    native.PkgHistory(pkgHistoryPaths, pkgHistoryLines),
-			Script: pkgHistoryScript,
-		}}}},
+		[]model.Step{{{Label: "log", Inv: model.Native{Body: native.PkgHistory(pkgHistoryPaths, pkgHistoryLines)}}}},
 		define.CheckOpt{
 			Rules:     pkgHistoryRules,
 			Filters:   pkgHistoryKeep,
@@ -215,7 +162,7 @@ var PackageChecks = []*model.Check{
 			Normalize: shape.AptHistory,
 		}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
-		[]model.Step{{{Label: "file", Inv: model.Dual{Run: native.AuthBinaries(authBinPaths), Script: authBinScript}}}},
+		[]model.Step{{{Label: "file", Inv: model.Native{Body: native.AuthBinaries(authBinPaths)}}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxLsL,
 			Rules:  []model.Rule{binNotElfRule, define.KeywordRule},

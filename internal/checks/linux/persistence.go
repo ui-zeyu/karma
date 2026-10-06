@@ -4,13 +4,10 @@ package linux
 
 import (
 	"regexp"
-	"strconv"
-	"strings"
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
-	"karma/internal/script"
 )
 
 // cronPaths: the two system crontabs, then the spool and cron.d layers; the
@@ -27,12 +24,6 @@ var cronPaths = []string{
 	"/var/spool/cron/atspool/*",
 	"/var/spool/cron/atjobs/*",
 }
-
-var cronScript = script.Lines(
-	script.ReadFiles(cronPaths, `cat "$f"`, true),
-	`echo "== crontab -l"`,
-	"crontab -l 2>/dev/null",
-)
 
 // bootScriptPaths are the boot-time scripts the rc-local check reads: the classic
 // SysV hook at both of its locations (Debian and RedHat families) and the
@@ -93,12 +84,6 @@ var skelTemplates = []string{
 	skelDir + "/.zshrc",
 }
 
-var skelScript = script.Lines(
-	`echo "== `+skelDir+`"`,
-	script.ListingFind(skelDir+"/", skelHead),
-	script.ReadFiles(skelTemplates, `cat "$f"`, true),
-)
-
 // unitDirs: a freshly dropped malicious unit floats to the top; /run is tmpfs and
 // is cleared on reboot, so malware likes it for volatile persistence. A glob with
 // no match stays literal, and a directory find cannot reach is an empty section
@@ -128,14 +113,6 @@ const (
 
 var udevExecRe = regexp.MustCompile(udevExec)
 
-var udevScript = script.Lines(
-	"for d in "+strings.Join(udevDirs, " ")+"; do",
-	`  echo "== $d"`,
-	"  "+script.ListingFind("$d", udevHead),
-	"  grep -rnIE '"+udevExec+`' "$d" 2>/dev/null | head -n `+strconv.Itoa(udevExecMaxHits),
-	"done",
-)
-
 // motd: motd and update-motd.d are script surfaces run as root on login
 // (mainly Ubuntu).
 
@@ -161,18 +138,6 @@ var generatorDirs = []string{
 
 const generatorHead = 100
 
-var generatorsScript = script.Lines(
-	"seen=",
-	"for d in "+strings.Join(generatorDirs, " ")+"; do",
-	`  [ -d "$d" ] || continue`,
-	`  r=$(readlink -f "$d")`,
-	`  case " $seen " in *" $r "*) continue;; esac`,
-	`  seen="$seen $r"`,
-	`  echo "== $d"`,
-	"  "+script.ListingFind("$d", generatorHead),
-	"done",
-)
-
 // aliasShadowRule marks an alias that redefines a tool the analyst reads the
 // host with. `alias netstat=…` makes the connection table whatever the line
 // says, and BlackCat pointed `cat` at a file named -t so a UID 0 account stayed
@@ -188,7 +153,7 @@ var aliasShadowRule = model.NewRule("alias-command-shadow",
 // PersistenceChecks covers persistence.
 var PersistenceChecks = []*model.Check{
 	define.LinuxCheck("cron", "Scheduled tasks", model.AspectPersistence,
-		[]model.Step{{{Label: "cat", Inv: model.Dual{Run: native.Cron(cronPaths), Script: cronScript}}}},
+		[]model.Step{{{Label: "cat", Inv: model.Native{Body: native.Cron(cronPaths)}}}},
 		define.CheckOpt{
 			// pygments has no crontab lexer; the bash lexer approximates the command part well
 			// enough
@@ -220,7 +185,7 @@ var PersistenceChecks = []*model.Check{
 	listingCheck("unit-dirs", "systemd unit directories (by mtime)", model.AspectPersistence,
 		unitDirs, 100, nil),
 	define.LinuxCheck("systemd-generators", "systemd generator directories", model.AspectPersistence,
-		[]model.Step{{{Label: "find", Inv: model.Dual{Run: native.Generators(generatorDirs, generatorHead), Script: generatorsScript}}}},
+		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.Generators(generatorDirs, generatorHead)}}}},
 		define.CheckOpt{
 			Syntax:    model.SyntaxLsL,
 			Normalize: listingNormalize,
@@ -248,10 +213,7 @@ var PersistenceChecks = []*model.Check{
 	listingCheck("xinetd", "xinetd service directory", model.AspectPersistence,
 		[]string{"/etc/xinetd.d"}, 100, []model.Rule{define.KeywordRule}),
 	define.LinuxCheck("udev-rules", "udev rules (writable layers)", model.AspectPersistence,
-		[]model.Step{{{Label: "find", Inv: model.Dual{
-			Run:    native.Udev(udevDirs, udevHead, udevExecMaxHits, udevExecRe),
-			Script: udevScript,
-		}}}},
+		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.Udev(udevDirs, udevHead, udevExecMaxHits, udevExecRe)}}}},
 		define.CheckOpt{
 			Syntax:    model.SyntaxLsL,
 			Normalize: listingNormalize,
@@ -265,7 +227,7 @@ var PersistenceChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("ld-preload", "Dynamic library preload (ld.so.preload)", model.AspectPersistence,
-		[]model.Step{{{Label: "cat", Inv: model.Dual{Run: native.LdPreload, Script: "cat /etc/ld.so.preload 2>/dev/null"}}}},
+		[]model.Step{{{Label: "cat", Inv: model.Native{Body: native.LdPreload}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("preload-entry", `^[^#\n]\S+`, model.Critical, "preloaded shared library configured"),
@@ -288,7 +250,7 @@ var PersistenceChecks = []*model.Check{
 			Syntax: model.SyntaxBash,
 		}),
 	define.LinuxCheck("skel", "Home directory templates (/etc/skel)", model.AspectPersistence,
-		[]model.Step{{{Label: "cat", Inv: model.Dual{Run: native.Skel(skelDir, skelHead, skelTemplates), Script: skelScript}}}},
+		[]model.Step{{{Label: "cat", Inv: model.Native{Body: native.Skel(skelDir, skelHead, skelTemplates)}}}},
 		define.CheckOpt{
 			Syntax:    model.SyntaxBash,
 			Normalize: listingNormalize,

@@ -17,17 +17,15 @@ import (
 )
 
 // shellText is the invocation's shell text. ok is false for an invocation that
-// carries none: a Dual whose script side does not exist — the runner never
-// routes one to a remote channel (model.Dual.For) — and any future Invocation
-// kind that has not taught this renderer about itself.
+// has none: a Native body runs inside karma's process, so a remote channel has
+// nothing to render for it unless a collector on the target runs it — see
+// commandText.
 func shellText(inv model.Invocation) (string, bool) {
 	switch v := inv.(type) {
 	case model.Command:
 		return script.Join(v.Argv), true
 	case model.Shell:
 		return v.Script, true
-	case model.Dual:
-		return v.Script, v.Script != ""
 	}
 	return "", false
 }
@@ -56,17 +54,33 @@ func posixShell(scriptText string) []string { return []string{"/bin/sh", "-c", s
 // Only a call that names a catalog tier can be delegated: the fact layer's own
 // probes and the placement's small commands carry no check and no probe, and for
 // them the invocation is the whole command.
-func commandText(collector string, call model.Call) string {
-	if collector == "" || call.Check == "" || call.Probe == "" {
-		return mustShellText(call.Inv)
+func commandText(collector string, call model.Call) (string, bool) {
+	if collector != "" && call.Check != "" && call.Probe != "" {
+		return script.Join([]string{collector, "local", "probe", call.Check, call.Probe}), true
 	}
-	return script.Join([]string{collector, "local", "probe", call.Check, call.Probe})
+	return shellText(call.Inv)
+}
+
+// noShellFor is the result a remote channel gives a call it cannot render: a
+// Native body performs its tier inside karma's process, so a channel with no
+// collector on the target has nothing to run for it. Unavailable — the 127 a
+// missing binary gives — so the chain falls to the next tier, which may be a
+// command the target can run itself.
+func noShellFor(inv model.Invocation) model.RunResult {
+	return model.RunResult{
+		Verdict:  model.VerdictUnavailable,
+		Stderr:   fmt.Sprintf("no collector on the target runs a %T tier", inv),
+		ExitCode: 127,
+	}
 }
 
 // RenderShell is a command string executable remotely: always through /bin/sh -c, with all arguments escaped.
 func RenderShell(inv model.Invocation) string {
-	return script.Join(posixShell(mustShellText(inv)))
+	return renderText(mustShellText(inv))
 }
+
+// renderText is RenderShell for a command string that is already built.
+func renderText(scriptText string) string { return script.Join(posixShell(scriptText)) }
 
 // ArgvFor is the argv for local exec. Command goes through exec without a shell; Shell goes through /bin/sh -c.
 func ArgvFor(inv model.Invocation) []string {

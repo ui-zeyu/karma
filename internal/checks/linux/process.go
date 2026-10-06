@@ -4,73 +4,13 @@
 package linux
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
-
-	"github.com/samber/lo"
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
-	"karma/internal/script"
 )
-
-// tmpGlobs is tmpDirs as the shell case pattern the cwd walk matches: every temp
-// directory and everything below it.
-var tmpGlobs = strings.Join(lo.Map(tmpDirs, func(dir string, _ int) string { return dir + "/*" }), "|")
-
-// cwdTmpScript prints every process whose working directory sits inside a temp
-// directory.
-var cwdTmpScript = `
-for c in /proc/[0-9]*/cwd; do
-  t=$(readlink "$c" 2>/dev/null) || continue
-  case "$t" in ` + tmpGlobs + `) printf '%s -> %s\n' "${c%/cwd}" "$t";; esac
-done
-`
-
-// deletedLinksScript walks every /proc link the kernel resolves for a process:
-// exe, cwd, and all open file descriptors. When the backing file is unlinked
-// the kernel appends " (deleted)" to the link target — the same mark lsof
-// reports — so held-open deleted files and directories stay visible on hosts
-// without lsof.
-const deletedLinksScript = `
-for l in /proc/[0-9]*/exe /proc/[0-9]*/cwd /proc/[0-9]*/fd/*; do
-  t=$(readlink "$l" 2>/dev/null) || continue
-  case "$t" in *\(deleted\)) printf '%s -> %s\n' "${l#` + script.ProcPrefix + `}" "$t";; esac
-done
-`
-
-// lsofScript is the raw +L1 listing: every open file whose link count dropped
-// to zero, plus lsof's stat-failure false positives on plain memory-mapped
-// libraries (reported as 0). Filtering happens in the reader via the check's
-// keep filter, so the chain sees lsof's own exit code; the kernel's
-// "(deleted)" name suffix is the mark the filter keeps. -n skips name lookups
-// that could stall the probe.
-const lsofScript = `lsof -wn +L1 2>/dev/null`
-
-// findDeletedScript runs one find process over the same /proc link tree the
-// shell walk below covers, doing every lstat in-process instead of one readlink
-// fork per link. -lname matches the kernel's "(deleted)" link-target suffix.
-// -lname/-printf are GNU extensions: a find without them fails the probe and
-// the chain falls through to the walk. The operands are the walk's own order
-// (exe, cwd, fd) and ProcPathStrip cuts the /proc prefix, so the rows match the
-// other two tiers; within one @pid/fd directory find prints readdir order,
-// where the walk sorts by name.
-const findDeletedScript = `find /proc/[0-9]*/exe /proc/[0-9]*/cwd /proc/[0-9]*/fd` +
-	` -maxdepth 1 -lname '*(deleted)' -printf '%p -> %l\n' 2>/dev/null | ` + script.ProcPathStrip
-
-// hiddenProcsScript lists pids from /proc and from ps, and the set difference is
-// the processes "present in proc but not reported by ps". Plain POSIX composition
-// (the target's /bin/sh is dash, no <()); a final /proc recheck verifies: a process
-// that happened to exit between the two listings (including karma's own concurrent
-// probes) is gone by then, while a process hidden from ps remains in /proc, so only
-// the latter stays in the difference. The leading command -v gate is correctness,
-// not economy: the pipeline would swallow a missing ps and report every /proc pid
-// as hidden.
-const hiddenProcsScript = `command -v ps >/dev/null 2>&1 || exit 127
-` + `{ ls /proc | grep -E '^[0-9]+$'; ps -eo pid= | tr -d ' '; } | sort -n | uniq -u` +
-	` | while read -r p; do [ -d "/proc/$p" ] && echo "$p"; done`
 
 // containerMarkers is the ERE that recognizes a container's cgroup scope, whose
 // runtimes each spell their own scope name. One string feeds both readings: the
@@ -80,33 +20,6 @@ const containerMarkers = `(docker|containerd|kubepods|libpod|lxc|kata)[/.-]`
 
 // containerCgroupRe is containerMarkers as the local read's pattern.
 var containerCgroupRe = regexp.MustCompile(`(?i)` + containerMarkers)
-
-// sessionCapsScript collects the session's own capability set. Inside a
-// container that set is the standing escape surface, so it prints in full;
-// on the host it is fixed by the login uid (root shows the full set by
-// definition), so the context line is the whole answer. Container detection
-// reads the host's own markers: /.dockerenv (Docker), /run/.containerenv
-// (Podman), the PID 1 cgroup path (the runtimes containerMarkers names), and
-// systemd-detect-virt. capsh (libcap2-bin, near-universal) decodes the names;
-// the fallback tier reads the /proc/self/status masks and native.DecodeCapMasks
-// decodes them locally.
-const sessionCapsScript = `
-if [ -f /.dockerenv ] || [ -f /run/.containerenv ]` +
-	` || grep -qaE "` + containerMarkers + `" /proc/1/cgroup 2>/dev/null` +
-	` || systemd-detect-virt --container >/dev/null 2>&1; then
-  echo "context: container"
-else
-  echo "context: host"
-  exit 0
-fi
-if command -v capsh >/dev/null 2>&1; then
-  echo "== capsh --print"
-  capsh --print 2>/dev/null
-else
-  echo "== /proc/self/status"
-  grep "^Cap" /proc/self/status 2>/dev/null
-fi
-`
 
 // minerFamilies: cryptominer family names, from the LinuxCheck list plus the
 // 2020+ kdevtmpfsi/kinsing wave and the kthreadd impostors. One list feeds both
@@ -149,34 +62,6 @@ var minerNameGlobs = []string{
 // passes to find, so both channels stop at the same level.
 const minerWalkDepth = 4
 
-// minerScript hunts cryptominers in place: process lines matched out of a ps
-// snapshot (grep -v drops this pipeline's own lines, which carry the pattern),
-// attributes of the classic fixed drop paths, and a bounded name walk of the
-// temp directories. That walk crosses devices — a service's PrivateTmp mounts a
-// tmpfs inside /tmp — and is bounded by depth instead. Every arm is quiet when
-// nothing matches; the deep time-clustered hunt stays with the mtime subcommand.
-//
-// The pattern and the three lists are the same ones the local tier walks, so
-// the two channels hunt for identical things instead of two spellings of the
-// same list drifting apart.
-//
-// Checks run concurrently, so on a clean host the ps check's snapshot still
-// holds this script's own sh line, and the global known-malware-name /
-// hidden-tmp-path rules light on it. Accepted: spelling the names plainly is
-// worth one recognizable karma-owned line, and the split-quote trick to dodge
-// it was reverted as unreadable. \b bounds every name so substrings stay out
-// (macOS runs a legit daemon named networkserviceproxy).
-var minerScript = fmt.Sprintf(`
-pat='%s'
-echo "== ps"
-ps auxwwf | grep -aE "$pat" | grep -av grep
-echo "== drop paths"
-LC_ALL=C ls -l %s 2>/dev/null
-echo "== temp names"
-find %s -maxdepth %d -type f \( %s \) -exec ls -l {} + 2>/dev/null
-`, minerPsSource, strings.Join(minerDropPaths, " "), strings.Join(tmpDirs, " "),
-	minerWalkDepth, findNameArgs("-iname", minerNameGlobs))
-
 // hidden-pids (atrk-style brute force): a rootkit that filters the /proc
 // filters the /proc readdir path still cannot hide from the kernel's own
 // kill(pid, 0) existence check, so the two views are crossed. Both tiers
@@ -185,67 +70,6 @@ find %s -maxdepth %d -type f \( %s \) -exec ls -l {} + 2>/dev/null
 // tier sweeps the whole pid space (pid_max is the kernel's own bound); the
 // shell tier caps at 131072 because its interpreted loop probes at ~10µs per
 // pid, so a full sweep would outlast the tier's deadline.
-
-// hiddenPidsScript is the script branch of the same hunt — the branch the ssh
-// channel runs. kill -0 is a shell builtin on every practical /bin/sh, so the
-// brute-force loop forks nothing; the readdir views come from glob expansion,
-// which is the getdents path a rootkit hooks. normtable fills $norm with both
-// views (pids and their threads); the two passes of the difference read the
-// same table, so only a process one view genuinely drops can be a candidate.
-const hiddenPidsScript = `
-[ -d /proc/1 ] || exit 1
-pidmax=$(cat /proc/sys/kernel/pid_max 2>/dev/null) || exit 1
-case $pidmax in ''|*[!0-9]*) exit 1;; esac
-cap=$pidmax
-[ "$cap" -gt 131072 ] && cap=131072
-echo "scan: pid_max=$pidmax scanned=1-$cap oracle=kill(pid,0) vs /proc readdir (threads included)"
-[ "$(id -u)" = 0 ] || echo "note: not running as root: readdir may hide other users' processes"
-normtable() {
-  norm=' '
-  for p in /proc/[0-9]*; do
-    case $p in
-      */[0-9]*) norm="$norm ${p##*/} ";;
-    esac
-  done
-  for t in /proc/[0-9]*/task/[0-9]*; do
-    case $t in
-      */task/[0-9]*) norm="$norm ${t##*/} ";;
-    esac
-  done
-}
-normtable
-cand=' '
-i=1
-while [ "$i" -le "$cap" ]; do
-  kill -0 "$i" 2>/dev/null && {
-    case "$norm" in
-      *" $i "*) ;;
-      *) cand="$cand $i ";;
-    esac
-  }
-  i=$((i + 1))
-done
-[ "$cand" = ' ' ] && exit 0
-normtable
-out=
-for i in $cand; do
-  case "$norm" in
-    *" $i "*) continue;;
-  esac
-  kill -0 "$i" 2>/dev/null || continue
-  fd=no
-  [ -e /proc/$i/fd ] && fd=yes
-  comm=$(cat /proc/$i/comm 2>/dev/null)
-  cmd=$(tr "\000" " " </proc/$i/cmdline 2>/dev/null)
-  out="$out
-PID $i  fd=$fd  comm=$comm  cmd='$cmd'"
-done
-[ -n "$out" ] && {
-  echo "== hidden"
-  echo "$out"
-}
-exit 0
-`
 
 // topHead and psSortHead are the row shapes the resource snapshot asks for:
 // top's own table, and the two ps listings sorted by CPU and by memory.
@@ -261,9 +85,9 @@ var ProcessChecks = []*model.Check{
 	// host binaries.
 	define.LinuxCheck("ps", "Process tree", model.AspectProcess,
 		[]model.Step{
-			{{Label: "ps", Inv: model.Dual{Run: native.PsAux, Script: "ps auxwwf"}}},
-			{{Label: "pstree", Inv: model.Dual{Run: native.Pstree, Script: "pstree -ap"}}},
-			{{Label: "ps-ef", Inv: model.Dual{Run: native.PsEf, Script: "ps -ef"}}},
+			{{Label: "ps", Inv: model.Native{Body: native.PsAux}}},
+			{{Label: "pstree", Inv: model.Native{Body: native.Pstree}}},
+			{{Label: "ps-ef", Inv: model.Native{Body: native.PsEf}}},
 		},
 		define.CheckOpt{
 			Syntax: model.SyntaxTable,
@@ -294,13 +118,13 @@ var ProcessChecks = []*model.Check{
 		[]model.Step{
 			{ // these caps are the shape each probe wants: plenty to read, and
 				// small enough that a busy host's snapshot stays a panel
-				{Label: "top", Inv: model.Dual{Run: native.Top, Script: "top -b -n 1"}, Cap: model.Shape(topHead)}},
-			{{Label: "ps-cpu", Inv: model.Dual{Run: native.PsCPU, Script: "ps aux --sort=-%cpu"}, Cap: model.Shape(psSortHead)}},
-			{{Label: "ps-mem", Inv: model.Dual{Run: native.PsMem, Script: "ps aux --sort=-%mem"}, Cap: model.Shape(psSortHead)}},
+				{Label: "top", Inv: model.Native{Body: native.Top}, Cap: model.Shape(topHead)}},
+			{{Label: "ps-cpu", Inv: model.Native{Body: native.PsCPU}, Cap: model.Shape(psSortHead)}},
+			{{Label: "ps-mem", Inv: model.Native{Body: native.PsMem}, Cap: model.Shape(psSortHead)}},
 		},
 		define.CheckOpt{Syntax: model.SyntaxTop, Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,
-		[]model.Step{{{Label: "caps", Inv: model.Dual{Run: native.ProcCaps(containerCgroupRe), Script: sessionCapsScript}, Adapt: native.DecodeCapMasks}}},
+		[]model.Step{{{Label: "caps", Inv: model.Native{Body: native.ProcCaps(containerCgroupRe)}, Adapt: native.DecodeCapMasks}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("cap-container-context", `^context: container`, model.Medium,
@@ -318,17 +142,13 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("deleted-exe", "Deleted files still in use", model.AspectProcess,
-		// The lsof tier is dual: locally native.DeletedExe ladders from lsof to
-		// the /proc walk in one pass, so the two script-only tiers below exist
-		// on the ssh channel alone — find covers the fd/cwd/exe links in one
-		// process, the shell walk is the portable last resort for hosts whose
-		// find has neither -lname nor -printf. lsof runs raw and is capped by
-		// the reader's scan budget: a source-side line cap would cut the
-		// stream before the keep filter sees the deleted rows.
+		// One tier: native.DeletedExe runs the host's lsof when it exists and
+		// otherwise walks the /proc exe, cwd and fd links itself, which needs
+		// neither -lname nor -printf. lsof runs raw and is capped by the
+		// reader's scan budget: a source-side line cap would cut the stream
+		// before the keep filter sees the deleted rows.
 		[]model.Step{
-			{{Label: "lsof", Inv: model.Dual{Run: native.DeletedExe, Script: lsofScript}}},
-			{{Label: "find", Inv: model.Dual{Script: findDeletedScript}, Cap: model.Scan(openScanLines)}},
-			{{Label: "proc-links", Inv: model.Dual{Script: deletedLinksScript}, Cap: model.Scan(openScanLines)}},
+			{{Label: "lsof", Inv: model.Native{Body: native.DeletedExe}}},
 		},
 		define.CheckOpt{
 			// Keep only rows the kernel marked deleted; signal rows bypass keep
@@ -338,7 +158,7 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("cwd-tmp", "Processes with cwd in a temp directory", model.AspectProcess,
-		[]model.Step{{{Label: "proc-cwd", Inv: model.Dual{Run: native.CwdTmp(tmpDirs), Script: cwdTmpScript}}}},
+		[]model.Step{{{Label: "proc-cwd", Inv: model.Native{Body: native.CwdTmp(tmpDirs)}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("proc-cwd-tmp", `^/proc/\d+ -> /(?:tmp|var/tmp|dev/shm)/\S*`, model.High,
@@ -346,7 +166,7 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("hidden-procs", "proc vs ps process comparison", model.AspectProcess,
-		[]model.Step{{{Label: "ps", Inv: model.Dual{Run: native.HiddenProcs, Script: hiddenProcsScript}}}},
+		[]model.Step{{{Label: "ps", Inv: model.Native{Body: native.HiddenProcs}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("proc-not-in-ps", `^[0-9]+$`, model.High,
@@ -355,7 +175,7 @@ var ProcessChecks = []*model.Check{
 		}),
 	define.LinuxCheck("hidden-pids", "Hidden process brute-force (kill(0) vs /proc)", model.AspectProcess,
 		// Both branches print the same text shape, so the rules are shared.
-		[]model.Step{{{Label: "brute", Inv: model.Dual{Run: native.HiddenPIDs, Script: hiddenPidsScript}, Cap: model.Scan(openScanLines)}}},
+		[]model.Step{{{Label: "brute", Inv: model.Native{Body: native.HiddenPIDs}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("hidden-pid", `^PID \d+ `, model.Critical,
@@ -363,16 +183,13 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("miner", "Cryptominer hunt (processes and drop paths)", model.AspectProcess,
-		[]model.Step{{{Label: "scan", Inv: model.Dual{
-			Run: native.Miner(native.MinerScan{
-				Pattern:   minerPsPattern,
-				DropPaths: minerDropPaths,
-				NameGlobs: minerNameGlobs,
-				TempDirs:  tmpDirs,
-				MaxDepth:  minerWalkDepth,
-			}),
-			Script: minerScript,
-		}, Cap: model.Scan(openScanLines)}}},
+		[]model.Step{{{Label: "scan", Inv: model.Native{Body: native.Miner(native.MinerScan{
+			Pattern:   minerPsPattern,
+			DropPaths: minerDropPaths,
+			NameGlobs: minerNameGlobs,
+			TempDirs:  tmpDirs,
+			MaxDepth:  minerWalkDepth,
+		})}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxTable,
 			// The drop-path and temp-name sections are ls -l shape, the ps section a

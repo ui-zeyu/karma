@@ -12,7 +12,7 @@ import (
 
 func TestRunNativeSuccess(t *testing.T) {
 	res := runCall(context.Background(), LocalSession{},
-		model.Dual{Run: func(context.Context) (string, error) { return "hello\n", nil }}, 0, model.RowCap{})
+		model.Native{Body: func(context.Context) (string, error) { return "hello\n", nil }}, 0, model.RowCap{})
 	if res.Verdict != model.VerdictAnswered || res.Stdout != "hello\n" || res.Truncated {
 		t.Fatalf("wanted exit 0 with the body, got %+v", res)
 	}
@@ -20,69 +20,15 @@ func TestRunNativeSuccess(t *testing.T) {
 
 func TestRunNativeUnavailableFallsThroughLikeAMissingBinary(t *testing.T) {
 	res := runCall(context.Background(), LocalSession{},
-		model.Dual{Run: func(context.Context) (string, error) { return "", model.ErrTierUnavailable }}, 0, model.RowCap{})
+		model.Native{Body: func(context.Context) (string, error) { return "", model.ErrTierUnavailable }}, 0, model.RowCap{})
 	if res.Verdict != model.VerdictUnavailable || res.ExitCode != 127 {
 		t.Fatalf("an unavailable native tier should read as unavailable/127, got %+v", res)
 	}
 }
 
-// A body that cannot answer on this host yields to the tier's script side: the
-// local channel then answers the way the ssh channel would (a non-Linux host
-// runs the host's ps, df, last).
-func TestRunNativeUnavailableFallsBackToTheScript(t *testing.T) {
-	res := runCall(context.Background(), LocalSession{},
-		model.Dual{
-			Run:    func(context.Context) (string, error) { return "", model.ErrTierUnavailable },
-			Script: "echo from-script",
-		}, 10*time.Second, model.RowCap{})
-	if res.ExitCode != 0 || res.Stdout != "from-script\n" {
-		t.Fatalf("wanted the script side's answer, got %+v", res)
-	}
-}
-
-// An answered body is the answer: the script side does not run.
-func TestRunNativeAnsweredBodySkipsTheScript(t *testing.T) {
-	res := runCall(context.Background(), LocalSession{},
-		model.Dual{
-			Run:    func(context.Context) (string, error) { return "in-process\n", nil },
-			Script: "echo from-script",
-		}, 10*time.Second, model.RowCap{})
-	if res.Stdout != "in-process\n" {
-		t.Fatalf("wanted the in-process body, got %+v", res)
-	}
-}
-
-// The fallback runs the script once: a script that is itself missing stays the
-// 127 the runner reads as an unavailable tier.
-func TestRunNativeFallbackDoesNotRetryTheBody(t *testing.T) {
-	res := runCall(context.Background(), LocalSession{},
-		model.Dual{
-			Run:    func(context.Context) (string, error) { return "", model.ErrTierUnavailable },
-			Script: "exit 127",
-		}, 10*time.Second, model.RowCap{})
-	if res.Verdict != model.VerdictUnavailable || res.ExitCode != 127 {
-		t.Fatalf("wanted the script's own unavailable/127, got %+v", res)
-	}
-}
-
-// A tier with no in-process body is the same thing as a body that cannot run
-// here: the local channel answers with the tier's script side, and stays at 127
-// when the tier carries neither.
-func TestRunNativeWithoutALocalBranch(t *testing.T) {
-	res := runCall(context.Background(), LocalSession{},
-		model.Dual{Script: "echo from-script"}, 10*time.Second, model.RowCap{})
-	if res.ExitCode != 0 || res.Stdout != "from-script\n" {
-		t.Fatalf("wanted the script side's answer, got %+v", res)
-	}
-	bare := runCall(context.Background(), LocalSession{}, model.Dual{}, 10*time.Second, model.RowCap{})
-	if bare.Verdict != model.VerdictUnavailable || bare.ExitCode != 127 {
-		t.Fatalf("a tier with no branch at all should read as unavailable/127, got %+v", bare)
-	}
-}
-
 func TestRunNativeErrorReportsStderr(t *testing.T) {
 	res := runCall(context.Background(), LocalSession{},
-		model.Dual{Run: func(context.Context) (string, error) { return "", errors.New("boom") }}, 0, model.RowCap{})
+		model.Native{Body: func(context.Context) (string, error) { return "", errors.New("boom") }}, 0, model.RowCap{})
 	if res.Verdict != model.VerdictFailed || res.ExitCode != 1 || res.Stderr != "boom" {
 		t.Fatalf("wanted exit 1 with the error on stderr, got %+v", res)
 	}
@@ -93,7 +39,7 @@ func TestRunNativeErrorReportsStderr(t *testing.T) {
 // process and lose the whole report. It fails as one tier instead.
 func TestRunNativeSurvivesAPanickingBody(t *testing.T) {
 	res := runCall(context.Background(), LocalSession{},
-		model.Dual{Run: func(context.Context) (string, error) {
+		model.Native{Body: func(context.Context) (string, error) {
 			var empty []byte
 			return string(empty[1:]), nil // the shape an unguarded slice takes
 		}}, 0, model.RowCap{})
@@ -104,7 +50,7 @@ func TestRunNativeSurvivesAPanickingBody(t *testing.T) {
 
 func TestRunNativeTimeoutKeepsPartialOutput(t *testing.T) {
 	res := runCall(context.Background(), LocalSession{},
-		model.Dual{Run: func(ctx context.Context) (string, error) {
+		model.Native{Body: func(ctx context.Context) (string, error) {
 			<-ctx.Done()
 			return "partial", ctx.Err()
 		}}, 10*time.Millisecond, model.RowCap{})
@@ -118,7 +64,7 @@ func TestRunNativeCancelKeepsPartialOutput(t *testing.T) {
 	defer cancel()
 	time.AfterFunc(10*time.Millisecond, cancel)
 	res := runCall(ctx, LocalSession{},
-		model.Dual{Run: func(ctx context.Context) (string, error) {
+		model.Native{Body: func(ctx context.Context) (string, error) {
 			<-ctx.Done()
 			return "partial", ctx.Err()
 		}}, 5*time.Second, model.RowCap{})
@@ -135,7 +81,7 @@ func TestRunNativeAbandonsABodyThatIgnoresTheDeadline(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 	started := time.Now()
 	res := runCall(context.Background(), LocalSession{},
-		model.Dual{Run: func(context.Context) (string, error) {
+		model.Native{Body: func(context.Context) (string, error) {
 			<-release // the shape of an open(2) waiting for a writer
 			return "late", nil
 		}}, 20*time.Millisecond, model.RowCap{})
@@ -156,7 +102,7 @@ func TestRunNativeAbandonsABodyThatIgnoresTheCancel(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 	time.AfterFunc(20*time.Millisecond, cancel)
 	res := runCall(ctx, LocalSession{},
-		model.Dual{Run: func(context.Context) (string, error) {
+		model.Native{Body: func(context.Context) (string, error) {
 			<-release
 			return "late", nil
 		}}, time.Minute, model.RowCap{})
@@ -167,7 +113,7 @@ func TestRunNativeAbandonsABodyThatIgnoresTheCancel(t *testing.T) {
 
 func TestRunNativeScanCapTruncates(t *testing.T) {
 	res := runCall(context.Background(), LocalSession{},
-		model.Dual{Run: func(context.Context) (string, error) {
+		model.Native{Body: func(context.Context) (string, error) {
 			return "a\nb\nc\nd", nil
 		}}, 0, model.Scan(2))
 	if res.Verdict != model.VerdictAnswered || res.Stdout != "a\nb\n" || !res.Truncated {
@@ -200,16 +146,5 @@ func TestCapLinesMatchesTheHarvestBoundary(t *testing.T) {
 			t.Errorf("capLines(%q, %d) = %q, %v; want %q, %v",
 				c.text, c.limit, got, truncated, c.want, c.truncated)
 		}
-	}
-}
-
-// A Dual with no in-process body is a tier the remote channels carry: the local
-// channel takes its script side, which is what keeps every tier answering on a
-// host karma runs on itself.
-func TestADualWithoutABodyTakesItsScriptSide(t *testing.T) {
-	res := runCall(context.Background(), LocalSession{},
-		model.Dual{Script: "echo from-script"}, 10*time.Second, model.RowCap{})
-	if res.Verdict != model.VerdictAnswered || res.Stdout != "from-script\n" {
-		t.Fatalf("a tier with no body should take the script side, got %+v", res)
 	}
 }

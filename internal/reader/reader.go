@@ -3,8 +3,8 @@
 // producing the Document the presentation layer renders. Pure functions, with no
 // dependency on the executor or terminal. Checks compose rules
 // and filters at construction time; this consumes only the already-assembled slices.
-// Filtered lines are not shown but are counted per filter. Evidence is kept elsewhere:
-// the text written by --save is the channel's raw output, so nothing here touches it.
+// Filtered lines are not shown but are counted per filter. The evidence stays
+// elsewhere: CheckResult.Raw is the channel's raw output, which nothing here touches.
 package reader
 
 import (

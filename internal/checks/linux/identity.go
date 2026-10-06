@@ -4,8 +4,6 @@ package linux
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
@@ -18,87 +16,24 @@ import (
 // current user may run.
 var sudoersPaths = []string{"/etc/sudoers", "/etc/sudo.conf", "/etc/sudoers.d/*"}
 
-var sudoersScript = `
-ok=1
-for f in ` + strings.Join(sudoersPaths, " ") + `; do
-  [ -f "$f" ] && [ -r "$f" ] || continue
-  echo "== $f"
-  cat "$f"
-  ok=0
-done
-exit "$ok"
-`
-
-// homeGlobs: where user homes live, in the order both channels visit them. A
-// trailing "/*" marks a container whose immediate children are homes; a bare path
-// is one home itself. The ssh script expands the list with the shell's pathname
-// expansion, the local tier with native.expandHomes, so both channels visit the
-// same directories rather than two spellings of the list drifting apart.
+// homeGlobs: where user homes live, in the order the walk visits them. A
+// trailing "/*" marks a container whose immediate children are homes; a bare
+// path is one home itself. native.expandHomes expands it, so this one list is
+// the whole vocabulary.
 var homeGlobs = []string{"/root", "/home/*"}
 
 // sshdConfigPaths: the sshd config stack. The sshd-config check reads it as
-// evidence, the authorized-keys check takes its AuthorizedKeysFile directives
-// from the same files, and authorizedKeysScript greps them for those directives,
-// so one list covers all three.
+// evidence and the authorized-keys check takes its AuthorizedKeysFile directives
+// from the same files, so one list covers both.
 var sshdConfigPaths = []string{"/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/*.conf"}
 
-// authorizedKeysDepth bounds the key search under each home directory: the
-// -maxdepth of the ssh find and the depth cap of the local walk, one number for
-// both channels.
+// authorizedKeysDepth bounds the key search under each home directory, the same
+// depth the walk of that search passes to find.
 const authorizedKeysDepth = 3
-
-// authorizedKeysScript finds each user's authorized_keys; paths named by the
-// AuthorizedKeysFile directive are read too: %u expands to the user name, %h to
-// the home directory, and a relative path lands in that user's home. Default names
-// find already reports are skipped to avoid duplicate sections.
-//
-// Every path it opens is a regular file, tested before the open: the in-process
-// tier of this check reads the same stack through localfs (which reads a planted
-// FIFO as empty), and a shell arm that opened one would park in open(2) — the
-// walk's deadline would cut the check and spend its budget on a private door.
-var authorizedKeysScript = authorizedKeysScriptAt(sshdConfigPaths, homeGlobs)
 
 // authorizedKeysScriptAt is the same script over given surfaces, which is how a
 // test drives the whole pipeline — the find under the homes, the config stack,
 // the directive expansion — over a fixture.
-func authorizedKeysScriptAt(configPaths, homes []string) string {
-	homeWords := strings.Join(homes, " ")
-	return `
-seen=
-pseen=
-for d in ` + homeWords + `; do
-  [ -d "$d" ] || continue
-  find "$d" -maxdepth ` + strconv.Itoa(authorizedKeysDepth) + ` -name 'authorized_keys*' -type f 2>/dev/null | while read -r f; do
-    echo "== $f"
-    cat "$f" 2>/dev/null
-  done
-done
-for f in ` + strings.Join(configPaths, " ") + `; do
-  [ -f "$f" ] || continue
-  awk '$1 == "AuthorizedKeysFile" { for (i = 2; i <= NF; i++) print $i }' "$f" 2>/dev/null
-done |
-while read -r spec; do
-  case " $seen " in *" $spec "*) continue;; esac
-  seen="$seen $spec"
-  case "$spec" in
-    none|authorized_keys|authorized_keys2|.ssh/authorized_keys|.ssh/authorized_keys2) continue;;
-  esac
-  for d in ` + homeWords + `; do
-    [ -d "$d" ] || continue
-    p=$(printf '%s\n' "$spec" | sed "s/%u/$(basename "$d")/g")
-    p=$(printf '%s\n' "$p" | sed "s|%h|$d|g")
-    p=$(printf '%s\n' "$p" | sed "s/%%/%/g")
-    case "$p" in /*) ;; *) p="$d/$p";; esac
-    case "$p" in */.ssh/authorized_keys|*/.ssh/authorized_keys2) continue;; esac
-    case " $pseen " in *" $p "*) continue;; esac
-    pseen="$pseen $p"
-    [ -f "$p" ] || continue
-    echo "== $p"
-    cat "$p" 2>/dev/null
-  done
-done
-`
-}
 
 var sshClientConfigPaths = []string{
 	"/etc/ssh/ssh_config",
@@ -216,18 +151,15 @@ var IdentityChecks = []*model.Check{
 	// the same labels run the util-linux binaries.
 	define.LinuxCheck("logins", "Current logins", model.AspectIdentity,
 		[]model.Step{
-			{{Label: "w", Inv: model.Dual{Run: native.W, Script: "w"}}},
-			{{Label: "who", Inv: model.Dual{Run: native.Who, Script: "who"}}},
+			{{Label: "w", Inv: model.Native{Body: native.W}}},
+			{{Label: "who", Inv: model.Native{Body: native.Who}}},
 		},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("last", "Login history (last)", model.AspectIdentity,
-		[]model.Step{{{Label: "last", Inv: model.Dual{
-			Run:    native.Last(lastRows),
-			Script: "last -n " + strconv.Itoa(lastRows),
-		}}}},
+		[]model.Step{{{Label: "last", Inv: model.Native{Body: native.Last(lastRows)}}}},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("lastlog", "Last account login (lastlog)", model.AspectIdentity,
-		[]model.Step{{{Label: "lastlog", Inv: model.Dual{Run: native.Lastlog, Script: "lastlog"}}}},
+		[]model.Step{{{Label: "lastlog", Inv: model.Native{Body: native.Lastlog}}}},
 		define.CheckOpt{
 			// The header is mixed case, so the columns are anchored by their own
 			// syntax; the note line ahead of the header stays plain.
@@ -238,7 +170,7 @@ var IdentityChecks = []*model.Check{
 		}),
 	define.LinuxCheck("sudoers", "Sudo grants", model.AspectIdentity,
 		[]model.Step{
-			{{Label: "cat", Inv: model.Dual{Run: native.Sudoers(sudoersPaths), Script: sudoersScript}}},
+			{{Label: "cat", Inv: model.Native{Body: native.Sudoers(sudoersPaths)}}},
 			{{Label: "sudo", Inv: model.NewCommand("sudo", "-n", "-l")}},
 		},
 		define.CheckOpt{
@@ -252,10 +184,7 @@ var IdentityChecks = []*model.Check{
 	listingCheck("pam", "PAM config and module directories", model.AspectIdentity, pamDirs, 100,
 		[]model.Rule{define.KeywordRule}),
 	define.LinuxCheck("authorized-keys", "SSH authorized keys", model.AspectIdentity,
-		[]model.Step{{{Label: "find", Inv: model.Dual{
-			Run:    native.AuthorizedKeys(homeGlobs, authorizedKeysDepth, sshdConfigPaths),
-			Script: authorizedKeysScript,
-		}}}},
+		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.AuthorizedKeys(homeGlobs, authorizedKeysDepth, sshdConfigPaths)}}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxSSHPubkey,
 			Rules: []model.Rule{

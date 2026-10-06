@@ -18,8 +18,8 @@ func TestReadUtmpRecordsOnAFifoReturnsPromptly(t *testing.T) {
 	if err := unix.Mkfifo(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	recs, ok := readUtmpRecords(path)
-	if !ok || len(recs) != 0 {
-		t.Fatalf("readUtmpRecords on a FIFO = %d records, %v; want 0, true", len(recs), ok)
+	recs, ok, err := readUtmpRecords(path)
+	if err != nil || !ok || len(recs) != 0 {
+		t.Fatalf("readUtmpRecords on a FIFO = %d records, %v, %v; want 0, true, nil", len(recs), ok, err)
 	}
 }

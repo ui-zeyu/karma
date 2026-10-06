@@ -4,7 +4,6 @@
 package localfs
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"karma/internal/script"
+	"karma/internal/section"
 )
 
 func TestReadSectionsSkipsMissingAndTails(t *testing.T) {
@@ -74,82 +73,76 @@ func TestCatReadsTheFileAsItIs(t *testing.T) {
 	}
 }
 
-// The section loop runs twice — this package's in-process read and the
-// collection script's `for f in ...; do [ -f "$f" ] && { echo "== $f"; cat; }`
-// — and the two are the same tier of dozens of checks. One directory of
-// fixtures, read both ways, must produce the same bytes.
-func TestReadSectionsMatchesTheShellLoop(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh, skipping the script comparison")
-	}
+// ReadSections prints one section per existing regular file, in word order with
+// the globs' results sorted: a path that is gone and a path that is a directory
+// print nothing, a glob expands the way the shell expands it, and a body whose
+// last line carries no newline is closed with one — without the terminator the
+// next "== path" header would glue onto that line.
+func TestReadSectionsPrintsOneSectionPerFile(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) string {
+		t.Helper()
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return path
 	}
-	write("a.txt", "alpha\n")
-	write("b.txt", "")
-	write("c.txt", "x\ny\n")
-	// A file whose last line carries no newline: both sides must still close
-	// the section, or the next `== path` header glues onto it.
-	write("e.txt", "unterminated")
+	a := write("a.txt", "alpha\n")
+	b := write("b.txt", "")
+	c := write("c.txt", "x\ny\n")
+	e := write("e.txt", "unterminated") // no terminator of its own
 	nested := filepath.Join(dir, "sub")
 	if err := os.MkdirAll(nested, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	write("sub/d.txt", "deep\n")
 
-	// A literal path that is gone, a literal that is a directory (the [ -f ]
-	// guard drops both), a repeated path, and a glob behind it.
-	patterns := []string{
-		filepath.Join(dir, "a.txt"),
-		filepath.Join(dir, "gone.txt"),
-		nested,
-		dir + "/*.txt",
-	}
-	command := exec.Command("sh", "-c", script.ReadFiles(patterns, `cat "$f"`, true))
-	out, err := command.Output()
-	if err != nil {
-		t.Fatalf("the collection loop failed: %v\n%s", err, out)
-	}
-	got, want := ReadSections(patterns, nil), string(out)
-	if got != want {
-		t.Fatalf("the two section loops disagree:\nin-process %q\nshell      %q", got, want)
+	// A literal path that is gone, a literal that is a directory (dropped), the
+	// same file again through the glob — a word list repeats what it repeats —
+	// and the glob itself.
+	patterns := []string{a, filepath.Join(dir, "gone.txt"), nested, dir + "/*.txt"}
+	want := section.Line(a) + "alpha\n" +
+		section.Line(a) + "alpha\n" +
+		section.Line(b) +
+		section.Line(c) + "x\ny\n" +
+		section.Line(e) + "unterminated\n"
+	if got := ReadSections(patterns, nil); got != want {
+		t.Fatalf("ReadSections body mismatch:\ngot  %q\nwant %q", got, want)
 	}
 }
 
-// The tail tier's two branches must print one body too: the in-process window
-// and the shell loop's `tail -n N | awk`, for a file whose last line carries no
-// newline as much as for a terminated one.
-func TestTailSectionsMatchTheShellLoop(t *testing.T) {
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("no sh, skipping the script comparison")
-	}
-	if _, err := exec.LookPath("awk"); err != nil {
-		t.Skip("no awk, skipping the script comparison")
-	}
+// The tail tier keeps the last n lines of each file and closes the section the
+// same way: a file whose last line carries no newline keeps none here either,
+// and the section's terminator is what the reader supplies.
+func TestTailSectionsKeepTheLastLines(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) string {
+		t.Helper()
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return path
 	}
+	a := write("a.txt", "alpha\n")
 	unterminated := write("unterminated.txt", "one\ntwo\nthree")
-	paths := []string{write("a.txt", "alpha\n"), unterminated, write("empty.txt", "")}
-	for _, n := range []int{1, 2, 3, 400} {
-		command := script.ReadFiles(paths, fmt.Sprintf(`tail -n %d "$f"`, n), true)
-		out, err := exec.Command("sh", "-c", command).Output()
-		if err != nil {
-			t.Fatalf("the collection loop failed: %v\n%s", err, out)
-		}
-		got, want := ReadSections(paths, TailLines(n)), string(out)
-		if got != want {
-			t.Fatalf("the two tail loops disagree at n=%d:\nin-process %q\nshell      %q", n, got, want)
+	empty := write("empty.txt", "")
+	paths := []string{a, unterminated, empty}
+
+	cases := []struct {
+		n    int
+		want [3]string
+	}{
+		{1, [3]string{"alpha\n", "three\n", ""}},
+		{2, [3]string{"alpha\n", "two\nthree\n", ""}},
+		{3, [3]string{"alpha\n", "one\ntwo\nthree\n", ""}},
+		{400, [3]string{"alpha\n", "one\ntwo\nthree\n", ""}},
+	}
+	for _, c := range cases {
+		want := section.Line(a) + c.want[0] + section.Line(unterminated) + c.want[1] + section.Line(empty) + c.want[2]
+		if got := ReadSections(paths, TailLines(c.n)); got != want {
+			t.Errorf("at n=%d:\ngot  %q\nwant %q", c.n, got, want)
 		}
 	}
 }

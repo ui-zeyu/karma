@@ -19,8 +19,7 @@ import (
 	"karma/internal/textutil"
 )
 
-// Docker mirrors dockerScript: containers then images, one blank line
-// between.
+// Docker prints containers then images, one blank line between.
 func Docker(ctx context.Context) (string, error) {
 	if !haveBinary("docker") {
 		return "", model.ErrTierUnavailable
@@ -31,7 +30,7 @@ func Docker(ctx context.Context) (string, error) {
 }
 
 // forensics appends the in-place forensics sections for one file list —
-// forensicsBlock's mirror: the type rows, then the ls -l rows; an empty list
+// forensics the type rows, then the ls -l rows; an empty list
 // appends nothing. Both sections are built in process, so no hooked libc or
 // PATH shadow stands between the evidence and this process.
 func forensics(b *strings.Builder, files []string) {
@@ -63,7 +62,7 @@ func verifyDetail(paths []string) (string, string) {
 	return localfs.FileRows(paths), localfs.LsRows(paths)
 }
 
-// PkgVerify mirrors PkgVerifyScript: the files that can be a finding are named
+// PkgVerify names the files that can be a finding
 // with their type and attributes, the rest are counted per directory. No
 // differences is an empty answer, not a fall-through to the other package
 // manager.
@@ -78,10 +77,8 @@ func PkgVerify(argv []string) func(context.Context) (string, error) {
 	}
 }
 
-// PkgHistory mirrors the check's pkgHistoryScript: the apt/dpkg log tails it
-// hands in, then the dnf/yum transaction history — dnf's output uncapped and
-// yum's head-capped at the same window, the pipe binding the script itself
-// spells.
+// PkgHistory reads the apt/dpkg log tails it hands in, then the dnf/yum transaction
+// history — dnf's output uncapped and yum's head-capped at the same window.
 func PkgHistory(paths []string, lines int) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		return pkgHistoryBody(ctx, paths, lines), nil
@@ -113,8 +110,8 @@ func headLines(text string, n int) string {
 	return head
 }
 
-// AuthBinaries mirrors the check's authBinScript: the existing programs among
-// the paths it hands in, then the shared forensics block.
+// AuthBinaries names the existing programs among the paths it hands in, then the
+// shared forensics block.
 func AuthBinaries(paths []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
@@ -123,7 +120,7 @@ func AuthBinaries(paths []string) func(context.Context) (string, error) {
 	}
 }
 
-// UnownedFiles mirrors UnownedScript: the entries one level inside each system
+// UnownedFiles lists the entries one level inside each system
 // directory that the package database does not list. A host with neither
 // package manager has no database to compare against, which is the tier's
 // "no answer here" rather than an empty answer.
@@ -173,8 +170,8 @@ func unownedSpellings(dirs []string) ([]string, []unownedSpelling) {
 	return roots, spellings
 }
 
-// unownedEntries lists one directory level, leaving out the
-// update-alternatives links the script's find -lname filter leaves out.
+// unownedEntries lists one directory level, leaving out the update-alternatives
+// links update-alternatives manages its targets, so no package owns them.
 func unownedEntries(roots []string) []string {
 	var found []string
 	for _, root := range roots {
@@ -194,8 +191,8 @@ func unownedEntries(roots []string) []string {
 	return found
 }
 
-// unownedOwned reads the paths the package database knows, through the same
-// two commands the script tier runs: dpkg searched with one wildcard pattern
+// unownedOwned reads the paths the package database knows, through the two
+// commands a package manager answers with: dpkg searched with one wildcard pattern
 // per directory spelling, or rpm listing every file it ships. A pattern that
 // matches nothing makes dpkg complain on stderr and a directory whose every
 // file is unowned is exactly the case this check exists for, so the complaint
@@ -231,8 +228,8 @@ func canonicalRows(out string, spellings []unownedSpelling) []string {
 	return rows
 }
 
-// ownedRows splits a package manager's file listing the way the script tier's
-// `sed 's/^.*: //'` does: a dpkg row is `package: path`, a multiarch row
+// ownedRows splits a package manager's file listing: a dpkg row is
+// `package: path`, a multiarch row
 // `package:arch: path`, so the path is what follows the last separator, and a
 // row without one is already a path.
 func ownedRows(out string) []string {

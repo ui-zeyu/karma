@@ -39,9 +39,9 @@ type procEntry struct {
 }
 
 // procFS opens the one /proc reader: the process table, boot time, CPU and
-// memory totals all come through it. Every accessor reports its own error, so
-// a host without /proc (the macOS shell ladder) falls through to the script
-// tier without a separate probe.
+// memory totals all come through it. Every accessor reports its own error, so a
+// host without /proc falls through to the next tier of its check without a
+// separate probe.
 func procFS() procfs.FS {
 	fs, _ := procfs.NewDefaultFS()
 	return fs
@@ -55,7 +55,7 @@ type processSnapshot struct {
 	boot     time.Time
 	uptime   float64
 	memTotal int64
-	// ok is false when /proc is absent, the script tier's "no ps" case.
+	// ok is false when /proc is absent: the table could not be read at all.
 	ok bool
 	// complete is false when the walk ended on cancellation instead of on the
 	// end of /proc.

@@ -20,26 +20,26 @@ import (
 	"strings"
 )
 
-// hostResult is one host command's stdout plus whether it exited zero: the
-// script tier's `cmd || next` ladders decide on the exit code while its
-// `2>/dev/null` pipes keep stdout only, and output already written survives a
-// timeout (harvest semantics).
+// hostResult is one host command's stdout plus whether it exited zero: a
+// ladder decides on the exit code, a caller that asked for a quiet run keeps
+// stdout only, and output already written survives a timeout (harvest
+// semantics).
 type hostResult struct {
 	out string
 	ok  bool
 }
 
 // runHost execs one host command without a shell; the variable is swapped in
-// tests. cLocale pins ls -l month names to the C spelling, the locale the
-// script tier sets with LC_ALL=C.
+// tests. cLocale pins ls -l month names to the C spelling, so a row's date does
+// not follow the host's locale.
 var runHost = defaultRunHost
 
 func defaultRunHost(ctx context.Context, argv []string, cLocale bool) hostResult {
 	return execHost(ctx, argv, cLocale, false)
 }
 
-// runHostQuiet is runHost with the command's standard error dropped, the way a
-// script tier's 2>/dev/null does: dpkg -S writes a complaint for every pattern
+// runHostQuiet is runHost with the command's standard error dropped: dpkg -S
+// writes a complaint for every pattern
 // that matches no file, and those complaints belong in neither the panel nor
 // karma's own error stream.
 func runHostQuiet(ctx context.Context, argv []string, cLocale bool) hostResult {
@@ -66,9 +66,10 @@ func execHost(ctx context.Context, argv []string, cLocale, quiet bool) hostResul
 	return hostResult{out: out.String(), ok: err == nil}
 }
 
-// haveBinary mirrors the scripts' `command -v` guards: the ladder decides
-// availability itself instead of declaring Requires, so the runner keeps
-// falling through within the one native tier.
+// haveBinary is a tier's own availability test — the `command -v` guard a
+// shell tier writes: a body that needs a host tool asks for it when it runs
+// rather than declaring it up front, and reports ErrTierUnavailable when the
+// host has none.
 func haveBinary(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
@@ -106,9 +107,8 @@ func procPIDs() []string {
 	return pids
 }
 
-// filteredLines is the in-process counterpart of the scripts' grep over a file
-// it has already read: the lines keep accepts, in order, one newline each. No
-// hit is an empty string rather than one empty line.
+// filteredLines keeps the lines of a body it has already read, in order, one
+// newline each. No hit is an empty string rather than one empty line.
 func filteredLines(data string, keep func(line string) bool) string {
 	var b strings.Builder
 	for line := range strings.SplitSeq(data, "\n") {

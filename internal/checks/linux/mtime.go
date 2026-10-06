@@ -21,7 +21,6 @@ import (
 	"karma/internal/cluster"
 	"karma/internal/define"
 	"karma/internal/model"
-	"karma/internal/script"
 	"karma/internal/textutil"
 )
 
@@ -37,28 +36,11 @@ const scanBytes = 64 * 1024 * 1024
 // default per-command timeout allows.
 const huntTimeout = 60 * time.Second
 
-// findPrintf: mtime, ctime (epoch seconds), target-local date and time, bytes,
-// path, tab-separated.
-const findPrintf = `%T@\t%C@\t%TY-%Tm-%Td\t%TH:%TM:%TS\t%s\t%p\n`
-
 // huntPruneDirs: the virtual filesystems a sweep from / must not descend into.
 // They hold no file metadata worth clustering, and walking them floods the
 // stream. The find tier prunes them by path, the local walk decides per
 // directory, so both cover the same set.
 var huntPruneDirs = []string{"/proc", "/sys", "/dev"}
-
-// huntPrune is that list as the find expression -prune takes.
-var huntPrune = strings.Join(lo.Map(huntPruneDirs, func(dir string, _ int) string { return "-path " + dir }), " -o ")
-
-// huntScript: one section per directory; an absent or unreadable directory yields
-// an empty body, and the normalizer adds an explanatory line. -xdev keeps the walk
-// on the given directory's own filesystem, and the virtual filesystems are pruned
-// by name so a sweep from / stays on the disk.
-func huntScript(dirs []string) string {
-	words := strings.Join(lo.Map(dirs, func(dir string, _ int) string { return script.Quote(dir) }), " ")
-	return fmt.Sprintf("for d in %s; do\n  echo \"== $d\"\n  find \"$d\" -xdev \\( %s \\) -prune -o -type f -printf '%s' 2>/dev/null\ndone",
-		words, huntPrune, findPrintf)
-}
 
 // huntNormalize turns one section body (a directory's find output) into a timeline
 // plus outlier/marked lines.
@@ -197,7 +179,7 @@ func timeline(groups [][]*cluster.FindRow) []string {
 // at the end of the catalog for this run.
 func HuntCheck(dirs []string) *model.Check {
 	return define.LinuxCheck(huntID, "Mtime clustering (user-specified directories)", model.AspectFilesystem,
-		[]model.Step{{{Label: "find", Inv: model.Dual{Run: native.Hunt(dirs, huntPruneDirs), Script: huntScript(dirs)}}}},
+		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.Hunt(dirs, huntPruneDirs)}}}},
 		define.CheckOpt{
 			Normalize: huntNormalize(time.Now),
 			ScanBytes: scanBytes,

@@ -246,10 +246,10 @@ const (
 	FilterKeep
 )
 
-// Invocation is one call that can run on the target. Command goes through exec
-// without a shell; Shell is a script that must go through /bin/sh -c (globs,
-// redirections, loops); Dual pairs a per-channel implementation of one tier.
-// The unexported method seals the implementation set.
+// Invocation is one way a tier gets its text: Command goes through exec
+// without a shell, Shell is a script that must go through /bin/sh -c (globs,
+// redirections, loops), Native is a body run inside karma's own process. The
+// unexported method seals the implementation set.
 type Invocation interface{ isInvocation() }
 
 // Command is an argv call; the required binary is Argv's first word.
@@ -271,30 +271,22 @@ type Shell struct{ Script string }
 
 func (Shell) isInvocation() {}
 
-// Dual is one tier with a per-channel implementation: Run is the in-process
-// body for the channel where karma itself runs on the target, Script is the
-// /bin/sh body for every remote channel (ssh, ttyd). A zero field means the
-// tier exists on the other channel only. Both branches print the same shape,
-// so rules, filters, and lexers apply unchanged, and each branch decides its
-// own availability — Run answers model.ErrTierUnavailable, the script answers
-// 127 — so the chain falls to the next tier within the channel.
-type Dual struct {
-	Run    func(ctx context.Context) (string, error) // local channel, in process
-	Script string                                    // remote channels, /bin/sh -c
+// Native is a tier whose body is karma's own code: the local channel runs it
+// inside the process, which is how a tier reads the kernel's interfaces without
+// a host tool or a shell. Every remote Linux channel collects through a karma
+// binary placed on the target, and that binary — the local channel there —
+// answers with this body too; the collector is asked for the tier by name, so a
+// Native's own invocation is what a channel without a collector runs.
+//
+// Whether the body can run here is its own answer at run time
+// (ErrTierUnavailable), never a declaration read before the walk.
+type Native struct {
+	Body func(ctx context.Context) (string, error)
 }
 
-func (Dual) isInvocation() {}
+func (Native) isInvocation() {}
 
-// For returns the invocation one channel executes: the Dual itself on a
-// channel it exists for, nil when this tier does not exist there.
-func (d Dual) For(ch Channel) Invocation {
-	if (ch == ChanLocal && d.Run != nil) || (ch.Remote() && d.Script != "") {
-		return d
-	}
-	return nil
-}
-
-// ErrTierUnavailable marks a Dual.Run call that cannot run in this environment
+// ErrTierUnavailable marks a Native body that cannot run in this environment
 // (wrong platform, no /proc): the session reports it like a missing binary
 // (exit 127) so the probe chain falls to the next tier.
 var ErrTierUnavailable = errors.New("native tier unavailable in this environment")
@@ -592,9 +584,8 @@ const (
 	ChanTTYD
 )
 
-// Remote reports whether the channel reaches the target from outside: every
-// channel but local executes a Dual's script side, so a new remote channel
-// cannot silently end up with an empty chain.
+// Remote reports whether the channel reaches the target from outside: the
+// local channel is the one where karma itself stands on the collected host.
 func (c Channel) Remote() bool { return c != ChanLocal }
 
 // Call is one call to run on the target: what to run, and how much of the
@@ -622,18 +613,16 @@ type Call struct {
 // within the section; normalization that must run whichever tier wins hangs on
 // Check.Normalize.
 //
-// Whether the tier can run at all is its own answer at run time — the script
-// guards with `command -v`, the in-process body reports ErrTierUnavailable, a
-// missing binary exits 127 — never a declaration read before the walk: one
-// mechanism, so a tier cannot be declared present on a host that lacks it, or
-// declared missing by a probe that misread.
+// Whether the tier can run at all is its own answer at run time — a Native body
+// reports ErrTierUnavailable, a missing binary exits 127 — never a declaration
+// read before the walk: one mechanism, so a tier cannot be declared present on a
+// host that lacks it, or declared missing by a probe that misread.
 type Probe struct {
 	Label string
 	Inv   Invocation
-	// Assemble is the tier's own join. A channel whose side of the wire cannot
-	// shape the body the way the local channel does emits the same marked record
-	// stream instead, and this one function renders both — so the join cannot
-	// drift between the two channels, only the stream's emitter can.
+	// Assemble is the tier's own join: the body emits a marked record stream
+	// (records the join can also explain, not only render), and this one
+	// function reduces it to rows.
 	Assemble Transformer
 	Adapt    Normalizer
 	Cap      RowCap
@@ -647,17 +636,6 @@ type Probe struct {
 // alternatives to one another would let the walk stop at the first key that
 // exists and silently drop the rest of the evidence.
 type Step []Probe
-
-// InvocationFor returns the invocation one channel executes for this tier:
-// nil when the tier does not exist on that channel (a Dual with only the
-// other side set). The runner skips such a tier silently — it is not part of
-// that channel's chain.
-func (p Probe) InvocationFor(ch Channel) Invocation {
-	if d, ok := p.Inv.(Dual); ok {
-		return d.For(ch)
-	}
-	return p.Inv
-}
 
 // Check is one check: its fallback walk, its already-composed filters and
 // rules, and an optional body normalizer.

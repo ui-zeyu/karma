@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -113,43 +112,6 @@ func moduleMemoryBody(t *testing.T, views script.ModuleMemoryViews) string {
 		t.Fatalf("the local tier failed: %v", err)
 	}
 	return script.ModuleMemoryBody(views, stream)
-}
-
-// runShellBlock runs one collection block the way a remote channel does, through
-// the target's own /bin/sh.
-func runShellBlock(t *testing.T, block string) string {
-	t.Helper()
-	for _, tool := range []string{"sh", "awk"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("no %s on this host", tool)
-		}
-	}
-	out, err := exec.Command("/bin/sh", "-c", block).Output()
-	if err != nil {
-		t.Fatalf("the shell block failed: %v (output %q)", err, out)
-	}
-	return string(out)
-}
-
-// The two emitters of the marked stream have to agree, byte for byte: the target
-// runs the shell block, the local channel builds the stream in process, and the
-// one join renders whichever the channel ran — so a count, an attribute that
-// reads back, an availability flag or the record order drifting between them
-// would show up as two different reports of one host. This is the drift the
-// single join does not remove, and the reason the streams are compared here
-// rather than only the rows they render.
-func TestHiddenModuleEmittersAgree(t *testing.T) {
-	sysfs, modules, symbols := hiddenModuleFixture(t)
-	views := fixtureViews(sysfs, modules, symbols)
-	list, err := os.ReadFile(modules)
-	if err != nil {
-		t.Fatal(err)
-	}
-	local := hiddenModuleViewsText(views, string(list))
-	remote := runShellBlock(t, script.HiddenModuleScript(views))
-	if local != remote {
-		t.Errorf("the in-process emitter produced\n%q\nthe target's shell block produced\n%q", local, remote)
-	}
 }
 
 // The local channel's body is one tier: the three views are read in one call and

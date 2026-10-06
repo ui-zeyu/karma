@@ -15,7 +15,7 @@ import (
 	"karma/internal/section"
 )
 
-// Hunt renders one directory's rows in findPrintf shape: epoch mtime,
+// Hunt renders one directory's rows in the sweep's own record shape: epoch mtime,
 // epoch ctime, date, clock with fraction, bytes, path — the exact fields
 // cluster.ParseFindRow reads. pruneDirs are the virtual filesystems to stay out
 // of, the same list the find tier prunes by path.

@@ -41,12 +41,28 @@ func TestReadUtmpRecordsDropsTruncatedTail(t *testing.T) {
 	if err := writeFile(t, path, data); err != nil {
 		t.Fatal(err)
 	}
-	recs, ok := readUtmpRecords(path)
-	if !ok || len(recs) != 1 || recs[0].user != "root" {
-		t.Fatalf("truncated tail should leave one whole record: ok=%v recs=%+v", ok, recs)
+	recs, ok, err := readUtmpRecords(path)
+	if err != nil || !ok || len(recs) != 1 || recs[0].user != "root" {
+		t.Fatalf("truncated tail should leave one whole record: ok=%v err=%v recs=%+v", ok, err, recs)
 	}
-	if _, ok := readUtmpRecords(t.TempDir() + "/missing"); ok {
-		t.Fatal("missing file should report unavailable")
+	// An absent file is nothing to report, a file that is there and unreadable is
+	// the tier's failure: /var/log/btmp is root-only, and a non-root run must say
+	// so rather than fall silent.
+	if _, ok, err := readUtmpRecords(t.TempDir() + "/missing"); ok || err != nil {
+		t.Fatalf("missing file = ok %v, err %v; want unavailable and no error", ok, err)
+	}
+	refused := t.TempDir() + "/unreadable"
+	if err := writeFile(t, refused, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(refused, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(refused); err == nil {
+		t.Skip("this account reads a mode-000 file (root?), so the refusal cannot be provoked")
+	}
+	if _, ok, err := readUtmpRecords(refused); ok || err == nil {
+		t.Fatalf("a file this account cannot open = ok %v, err %v; want the read failure", ok, err)
 	}
 }
 
