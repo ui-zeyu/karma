@@ -1,11 +1,15 @@
-// The probe reader: run one probe and print its raw result. It is the
-// collector's own entry point — a placed collector answers its operator one
-// probe at a time, and these are the bytes that operator's pipeline then
-// assembles, adapts, normalizes, grades and renders, exactly as it would for a
-// local run — and it is also how a person reads the wire by hand on a target.
+// The probe reader: run one probe of this host and hand back exactly what the
+// tier produced. A placed collector answers its operator through this — one
+// probe per call, the tier's text on stdout, the tier's standard error on
+// stderr, the verdict as the process status — so the operator's channel reads
+// back what a local run on the same host would have collected, and everything
+// above the channel (assemble, adapt, normalize, rules, filters, render) stays
+// one implementation.
 //
-// The mode exists on the local channel alone: it names the side of the wire the
-// collection happens on.
+// The mode adds nothing of its own to either stream, which is why it prints no
+// summary: a line karma wrote there would be read as the tier's own. It also
+// applies no row cap — the caller bounds the stream, so the truncation mark
+// comes from the reader that stated the cap.
 
 package cli
 
@@ -20,17 +24,17 @@ import (
 	"karma/internal/checks"
 	"karma/internal/model"
 	"karma/internal/session"
-	"karma/internal/wire"
 )
 
 func newProbeCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "probe CHECK PROBE",
-		Short: "Run one probe and print its raw result",
-		Long: "Run one probe of the local catalog and print the result as it stands. " +
-			"This is the collector's own entry point: the remote channels collect through it, one probe at a " +
-			"time, so the operator reads the bytes a local run on the same host would have produced. " +
-			"--json prints one line of the collector's wire format instead of the raw body.",
+		Short: "Run one probe and hand back what the tier produced",
+		Long: "Run one probe of the local catalog and hand back exactly what the tier produced: its text on stdout, " +
+			"its standard error on stderr, and its verdict as the process status — 127 for a tier this host does not " +
+			"carry, which is what a collection's fallback chain reads to try the next tier. " +
+			"This is the collector's own entry point: the remote channels collect through it, one probe at a time, " +
+			"so the report is the one a local run on the same host would have drawn.",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 2 {
 				return usagef(cmd, "probe needs a check and a probe: karma local probe CHECK PROBE")
@@ -38,26 +42,17 @@ func newProbeCmd() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			asJSON, err := cmd.Flags().GetBool("json")
-			if err != nil {
-				return err
-			}
 			catalog := checks.ChecksFor(session.LocalTransport{}.Platform())
-			return runProbe(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), catalog, args[0], args[1], asJSON)
+			return runProbe(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), catalog, args[0], args[1])
 		},
 	}
-	cmd.Flags().Bool("json", false, "print the result as one line of the collector's wire format")
-	return cmd
 }
 
 // runProbe answers one probe: the check named by checkID, the tier named by
 // label. A name the catalog does not carry is a mistake the message explains,
-// with the close names as its hint.
-//
-// The answer is a value, never a failure of this command: a tier that could not
-// run is the verdict and the exit code the operator's walk reads, so the process
-// that answered an envelope exits 0 while saying the tier was unavailable.
-func runProbe(ctx context.Context, w, warn io.Writer, catalog []*model.Check, checkID, label string, asJSON bool) error {
+// with the close names as its hint; anything else is the tier's own output and
+// status.
+func runProbe(ctx context.Context, w, warn io.Writer, catalog []*model.Check, checkID, label string) error {
 	check, err := probeCheck(catalog, checkID)
 	if err != nil {
 		return err
@@ -67,17 +62,13 @@ func runProbe(ctx context.Context, w, warn io.Writer, catalog []*model.Check, ch
 		return err
 	}
 	result := runTier(ctx, probe)
-	if asJSON {
-		line, err := wire.New(check.ID, probe.Label, result).Line()
-		if err != nil {
-			return failf(ExitInternal, "%v", err)
-		}
-		_, err = w.Write(line)
-		return err
+	if _, err := io.WriteString(w, result.Stdout); err != nil {
+		return failf(ExitRead, "%v", err)
 	}
-	fmt.Fprintf(warn, "probe %s %s: %s (exit %d)\n", check.ID, probe.Label, result.Verdict, result.ExitCode)
-	_, err = io.WriteString(w, result.Stdout)
-	return err
+	if _, err := io.WriteString(warn, result.Stderr); err != nil {
+		return failf(ExitRead, "%v", err)
+	}
+	return silentError{code: ExitCode(exitForProbe(result.Verdict, result.ExitCode))}
 }
 
 // runTier runs one probe of this host through the local channel, the way a local
@@ -93,7 +84,23 @@ func runTier(ctx context.Context, probe model.Probe) model.RunResult {
 			ExitCode: 127,
 		}
 	}
-	return session.LocalSession{}.Run(ctx, model.Call{Inv: inv, Cap: probe.Cap})
+	return session.LocalSession{}.Run(ctx, model.Call{Inv: inv})
+}
+
+// exitForProbe says the tier's verdict as the process status a channel reads
+// back — session.verdictFor's rules in reverse. 127 with an empty stdout is the
+// missing-command answer a script's own guard exits with, an answered tier keeps
+// the status it earned (an empty answer is an answer, and the status travels
+// with it), and every other ending is a non-zero status with nothing on stdout,
+// so the panel names the stderr beside it.
+func exitForProbe(verdict model.Verdict, exitCode int) int {
+	switch verdict {
+	case model.VerdictAnswered:
+		return max(exitCode, 0)
+	case model.VerdictUnavailable:
+		return 127
+	}
+	return max(exitCode, 1)
 }
 
 // probeCheck resolves a check id, suggesting the close ones.
@@ -108,8 +115,7 @@ func probeCheck(catalog []*model.Check, id string) (*model.Check, error) {
 }
 
 // probeTier resolves a probe label within one check, suggesting the check's own
-// labels: the label is only unique inside its check, which is why the operator
-// names both.
+// labels: a label is unique inside its check, which is why the caller names both.
 func probeTier(check *model.Check, label string) (model.Probe, error) {
 	var labels []string
 	for _, step := range check.Steps {

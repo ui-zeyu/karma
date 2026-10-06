@@ -9,13 +9,12 @@ import (
 
 	"karma/internal/define"
 	"karma/internal/model"
-	"karma/internal/wire"
 )
 
-// probeCatalog is a stand-in catalog: one check per shape the wire has to
-// carry. A Command runs wherever the test does; a Dual with only a script side
-// is a tier the local channel does not carry; a body that refuses is the tier's
-// own report that it cannot run here.
+// probeCatalog is a stand-in catalog: one check per shape a caller has to read
+// back. A Command runs wherever the test does; a Dual with only a script side is
+// a tier the local channel does not carry; a body that refuses is the tier's own
+// report that it cannot run here.
 func probeCatalog() []*model.Check {
 	return []*model.Check{
 		define.LinuxCheck("demo", "Demo", model.AspectSystem, []model.Step{
@@ -33,148 +32,110 @@ func probeCatalog() []*model.Check {
 	}
 }
 
-// answerProbe runs one probe through the mode and returns what the operator
-// would see: the body on stdout, the human summary on stderr.
-func answerProbe(t *testing.T, check, label string, asJSON bool) (string, string, error) {
+// answerProbe runs one probe and returns what a caller reads back: the two
+// streams and the process status that carries the verdict.
+func answerProbe(t *testing.T, check, label string) (string, string, int) {
 	t.Helper()
-	var out, warn bytes.Buffer
-	err := runProbe(context.Background(), &out, &warn, probeCatalog(), check, label, asJSON)
-	return out.String(), warn.String(), err
+	var stdout, stderr bytes.Buffer
+	err := runProbe(context.Background(), &stdout, &stderr, probeCatalog(), check, label)
+	if err == nil {
+		t.Fatal("the mode ends every answer with a status")
+	}
+	var silent silentError
+	if !errors.As(err, &silent) {
+		t.Fatalf("an answered probe reports only its status, got %v", err)
+	}
+	return stdout.String(), stderr.String(), int(silent.code)
 }
 
-func TestProbePrintsTheBodyAndTheVerdict(t *testing.T) {
-	out, warn, err := answerProbe(t, "demo", "echo", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out != "hello\n" {
-		t.Fatalf("the body is printed as it stands, got %q", out)
-	}
-	if want := "probe demo echo: answered (exit 0)\n"; warn != want {
-		t.Fatalf("the summary goes to stderr as %q, got %q", want, warn)
-	}
-}
-
-// A tier that failed with nothing on stdout is a failure; one that printed while
-// exiting non-zero is an answer, exit code and all. The distinction is the whole
-// fallback chain's contract, so the wire must carry both.
-func TestProbeCarriesTheSilentAndTheNoisyFailure(t *testing.T) {
-	out, warn, err := answerProbe(t, "demo", "noisy", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out != "out\n" || !strings.Contains(warn, "answered (exit 3)") {
-		t.Fatalf("a non-zero exit with stdout is an answer: %q / %q", out, warn)
-	}
-
-	out, warn, err = answerProbe(t, "demo", "silent", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out != "" || !strings.Contains(warn, "failed (exit 9)") {
-		t.Fatalf("a non-zero exit with nothing on stdout is not an answer: %q / %q", out, warn)
+func TestProbeHandsBackTheTierStreamsAndStatus(t *testing.T) {
+	out, warn, code := answerProbe(t, "demo", "echo")
+	if out != "hello\n" || warn != "" || code != 0 {
+		t.Fatalf("an answered tier: stdout %q, stderr %q, status %d", out, warn, code)
 	}
 }
 
-// A tier the local channel does not carry answers the 127 a missing binary
-// gives, with an empty body: that is what the operator's walk reads to fall to
-// the next tier.
+// A tier that printed while exiting non-zero is an answer, exit code and all; one
+// that exited non-zero with nothing on stdout is a failure. The distinction is
+// the whole fallback chain's contract, so the status has to carry it.
+func TestProbeSaysAnsweredAndFailedAsTheChainReadsThem(t *testing.T) {
+	out, warn, code := answerProbe(t, "demo", "noisy")
+	if out != "out\n" || warn != "err\n" || code != 3 {
+		t.Fatalf("a non-zero exit with stdout is an answer that keeps its status: %q / %q / %d", out, warn, code)
+	}
+
+	out, warn, code = answerProbe(t, "demo", "silent")
+	if out != "" || warn != "why\n" || code != 9 {
+		t.Fatalf("a non-zero exit with nothing on stdout is a failure: %q / %q / %d", out, warn, code)
+	}
+}
+
+// A tier the local channel does not carry answers the 127 a missing binary gives,
+// with an empty body: that is what the caller's walk reads to try the next tier.
 func TestProbeAnswersUnavailableForATierThisChannelLacks(t *testing.T) {
-	out, warn, err := answerProbe(t, "demo", "script-only", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	envelope, err := wire.Decode([]byte(out))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := envelope.Result()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Verdict != model.VerdictUnavailable || result.ExitCode != 127 || result.Stdout != "" {
-		t.Fatalf("a missing tier must read as unavailable/127: %+v", result)
-	}
-	if warn != "" {
-		t.Fatalf("the wire form says everything on stdout: %q", warn)
+	out, _, code := answerProbe(t, "demo", "script-only")
+	if out != "" || code != 127 {
+		t.Fatalf("a missing tier reads as an empty body and 127: %q / %d", out, code)
 	}
 }
 
 func TestProbeAnswersUnavailableForABodyThatCannotRunHere(t *testing.T) {
-	out, _, err := answerProbe(t, "demo", "unavailable", true)
-	if err != nil {
-		t.Fatal(err)
+	out, warn, code := answerProbe(t, "demo", "unavailable")
+	if out != "" || code != 127 {
+		t.Fatalf("a body that cannot run here is unavailable too: %q / %d", out, code)
 	}
-	envelope, err := wire.Decode([]byte(out))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := envelope.Result()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Verdict != model.VerdictUnavailable || result.ExitCode != 127 {
-		t.Fatalf("a body that cannot run here is unavailable too: %+v", result)
+	if !strings.Contains(warn, "unavailable") {
+		t.Fatalf("the tier's own reason travels on stderr: %q", warn)
 	}
 }
 
 func TestProbeAnswersFailedForABodyThatBroke(t *testing.T) {
-	out, _, err := answerProbe(t, "demo", "broken", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	envelope, err := wire.Decode([]byte(out))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := envelope.Result()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Verdict != model.VerdictFailed || !strings.Contains(result.Stderr, "gave up") {
-		t.Fatalf("a body that gave up is a failed tier that names why: %+v", result)
+	out, warn, code := answerProbe(t, "demo", "broken")
+	if out != "" || code != 1 || !strings.Contains(warn, "gave up") {
+		t.Fatalf("a body that gave up is a failed tier that names why: %q / %q / %d", out, warn, code)
 	}
 }
 
-func TestProbeJSONIsOneLineOfTheWireFormat(t *testing.T) {
-	out, warn, err := answerProbe(t, "demo", "noisy", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if warn != "" {
-		t.Fatalf("the wire form writes nothing to stderr: %q", warn)
-	}
-	if strings.Count(out, "\n") != 1 || !strings.HasSuffix(out, "\n") {
-		t.Fatalf("one answer is one line: %q", out)
-	}
-	envelope, err := wire.Decode([]byte(out))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if envelope.Check != "demo" || envelope.Probe != "noisy" {
-		t.Fatalf("the frame carries the addressing the operator asked with: %+v", envelope)
-	}
-	result, err := envelope.Result()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The stderr a pty would otherwise merge into the body arrives as its own
-	// field, and the exit code with it.
-	if result.Stdout != "out\n" || result.Stderr != "err\n" || result.ExitCode != 3 {
-		t.Fatalf("the three streams must stay apart: %+v", result)
+// The status is the verdict's, and it is what a channel's verdictFor reads back:
+// these two lines are that function's arms, spelled as the results it must get.
+func TestExitForProbeSpeaksVerdictFor(t *testing.T) {
+	for _, tc := range []struct {
+		verdict  model.Verdict
+		exitCode int
+		want     int
+	}{
+		{model.VerdictAnswered, 0, 0},
+		{model.VerdictAnswered, 3, 3},
+		{model.VerdictAnswered, -1, 0},
+		{model.VerdictUnavailable, 127, 127},
+		{model.VerdictUnavailable, -1, 127},
+		{model.VerdictFailed, 9, 9},
+		{model.VerdictFailed, 0, 1},
+		{model.VerdictFailed, -1, 1},
+		{model.VerdictTimedOut, -1, 1},
+		{model.VerdictInterrupted, -1, 1},
+	} {
+		if got := exitForProbe(tc.verdict, tc.exitCode); got != tc.want {
+			t.Fatalf("%v (%d) said as a status: %d, want %d", tc.verdict, tc.exitCode, got, tc.want)
+		}
 	}
 }
 
 func TestProbeRejectsAnUnknownName(t *testing.T) {
-	_, _, err := answerProbe(t, "demo", "echoo", false)
+	var stdout, stderr bytes.Buffer
+	err := runProbe(context.Background(), &stdout, &stderr, probeCatalog(), "demo", "echoo")
 	if err == nil || !strings.Contains(err.Error(), `check "demo" has no probe "echoo"`) {
 		t.Fatalf("a mistyped probe names the check it looked in: %v", err)
 	}
 	if !strings.Contains(err.Error(), "echo") {
 		t.Fatalf("a mistyped probe suggests the close one: %v", err)
 	}
+	var silent silentError
+	if errors.As(err, &silent) {
+		t.Fatal("a mistake is a message, not a status the caller reads as a verdict")
+	}
 
-	_, _, err = answerProbe(t, "dmeo", "echo", false)
+	err = runProbe(context.Background(), &stdout, &stderr, probeCatalog(), "dmeo", "echo")
 	if err == nil || !strings.Contains(err.Error(), `unknown check "dmeo"`) {
 		t.Fatalf("a mistyped check is named: %v", err)
 	}
