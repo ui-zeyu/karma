@@ -2,6 +2,7 @@ package render
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -1026,8 +1027,53 @@ func TestLastlogStylerAnchorsOnItsHeader(t *testing.T) {
 	}
 }
 
-// fstab rows are colored by column: device blue, mount point green, filesystem
-// type magenta, options default, dump and pass dimmed; comments stay with the
+// A numeric column is right-aligned, so its value drifts left as the number
+// grows wider. The pid column of top and ps aux changed color when a process
+// count crossed ten: a one-digit pid starts two characters right of the header's
+// anchor, and the tolerance-based lookup read it as the column after it. The
+// row's field order settles the column, so every pid keeps the column it belongs
+// to whatever its width. The rows are the tools' own layout (top right-aligns the
+// pid in seven columns, ps aux in the twelve that end at the third character of
+// "PID").
+func TestTableStylerKeepsThePIDColumnAtEveryWidth(t *testing.T) {
+	cases := []struct {
+		syntax model.Syntax
+		column int
+		header string
+		row    func(pid string) string
+	}{
+		{model.SyntaxTop, 0,
+			"    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND",
+			func(pid string) string {
+				return fmt.Sprintf("%7s %s", pid, "root      20   0  102528   7880   4156 S   0.0   0.4   0:01.18 systemd")
+			}},
+		{model.SyntaxTable, 1,
+			"USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND",
+			func(pid string) string {
+				return fmt.Sprintf("%s%12s  0.0  0.0  102528  7880 ?        S    13:41   0:01.18 systemd", "root", pid)
+			}},
+	}
+	for _, tc := range cases {
+		styler := newLineStyler(tc.syntax)
+		if spans := styler(tc.header); spans != nil {
+			t.Fatalf("%s: the header should only record anchors: %v", tc.syntax, spans)
+		}
+		for _, pid := range []string{"1", "9", "10", "99", "123", "1234", "12345", "123456", "1234567"} {
+			row := tc.row(pid)
+			painted := paintLine(row, styler(row))
+			if !strings.Contains(painted, tableColumnStyles[tc.column].seq().Render(pid)) {
+				t.Errorf("%s: the pid %q should carry column %d's color: %q",
+					tc.syntax, pid, tc.column, plain(painted))
+			}
+			next := tableColumnStyles[(tc.column+1)%len(tableColumnStyles)].seq().Render(pid)
+			if strings.Contains(painted, next) {
+				t.Errorf("%s: the pid %q took the next column's color: %q", tc.syntax, pid, plain(painted))
+			}
+		}
+	}
+}
+
+// fstab rows are colored by column: device blue, mount point green, filesystem// type magenta, options default, dump and pass dimmed; comments stay with the
 // reader's comment muting.
 func TestFstabColumns(t *testing.T) {
 	styler := newLineStyler("fstab")

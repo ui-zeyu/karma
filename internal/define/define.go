@@ -34,6 +34,38 @@ var PrivateKeyRule = model.NewRule(
 	"private key block in collected text",
 )
 
+// RootkitNames is the program-name list of the public Linux rootkit catalog
+// (milabs/awesome-linux-rootkits: the user-mode LD_PRELOAD kits, the LKMs, the
+// eBPF and module-less implants, and the related tools it collects) plus the
+// tutorial families (h4x, syy) the kallsyms check already carried. It is the
+// name half of a signature: a loaded module, a kernel symbol or a .ko/.so file
+// that carries one of these names. The alternation is POSIX ERE with plain
+// parentheses and no shorthand classes, because the kallsyms check hands the
+// same text to the target's own grep.
+//
+// The bare names are too generic for free text (singularity, umbra, adore and
+// rooty are ordinary words), so nothing matches them alone: the file rule needs
+// the module/library extension and the module rule needs the name to lead a
+// listing row of the module registry.
+const RootkitNames = `diamorphine|reptile|rkduck|singularity|caraxes|rooty|krf|suterusu|` +
+	`adore|enyelkm|toorkit|randkit|puszek|wukong|liinux|brootus|keysniffer|sutekh|` +
+	`lilyofthevalley|subversive|osom|umbra|boopkit|kopycat|triplecross|kovid|` +
+	`reveng[_-]rtkit|kprochide|kunkillable|drawbridge|processhider|libzeroevil|` +
+	`vlany|beurk|azazel|jynx|umbreon|the[_-]colonel|kernel[_-]?rootkit|lkm[_-]?rootkit|` +
+	`arp[_-]?rootkit|heroin`
+
+// KnownRootkitFileRule names the sample's file: an LKM ships as <name>.ko (often
+// with a suffix of its own — diamorphine_secret.ko) and a preload kit as
+// lib<name>.so. The extension is what keeps the rule spare: a package that
+// happens to use one of these words (the Singularity container runtime, say)
+// owns no file of that shape. The word boundary is what keeps the span tight —
+// a pattern that led with the separator painted the space or slash before the
+// name — and it still refuses a name buried inside another word
+// (someadore.so is not adore).
+var KnownRootkitFileRule = model.NewRule("known-rootkit-file",
+	`\b(?:lib)?(?:`+RootkitNames+`)[A-Za-z0-9_.-]*\.(?:ko|so)\b`,
+	model.Critical, "module or library file named after a known Linux rootkit")
+
 // KeywordRule is a content-keyword rule; only checks whose surface carries
 // human-written content attach it explicitly, and it does not join a global
 // pack.
@@ -82,6 +114,7 @@ var GlobalRules = []model.Rule{
 	model.NewRule("known-malware-name",
 		`\b(?:xmrig|kdevtmpfsi|kinsing|ddgs|pnscan|masscan|zgrab|spread_qianniu)\b`,
 		model.Critical, "known miner/worm sample name"),
+	KnownRootkitFileRule,
 	model.NewRule("uid0-useradd", `\buseradd\s+[^|\n]*-u\s*0\b`, model.Critical,
 		"creating a UID 0 user (backdoor account)"),
 	model.NewRule("authorized-keys-write", `>>{1,2}\s*\S*authorized_keys`, model.Critical,

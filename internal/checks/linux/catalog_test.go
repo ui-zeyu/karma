@@ -107,14 +107,38 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"modules-hidden", `HIDDEN rootkit`, "module-hidden"},
 		// the two evidence shapes a hidden module leaves: the sysfs one carries
 		// what identifies it, the kallsyms one the symbol count
-		{"modules-hidden", `HIDDEN rootkit size 16384 init 16384 refs 0 state live taint O text 0xffffffffc05a4000`, "module-hidden"},
-		{"modules-hidden", `HIDDEN rootkit symbols 41`, "module-hidden"},
+		{"modules-hidden", `HIDDEN rootkit sysfs=yes proc=no kallsyms=yes size 16384 init 16384 refs 0 state live taint O`, "module-hidden"},
+		{"modules-hidden", `GAP ghost sysfs=no proc=yes kallsyms=yes symbols 1`, "module-view-gap"},
 		// the taint marker at the end of a /proc/modules line: (POE) is
 		// proprietary, out-of-tree and unsigned together, (E) unsigned alone
 		{"lsmod", `nvidia 1234 5 - Live 0x0000000000000000 (POE)`, "module-out-of-tree"},
 		{"lsmod", `vboxdrv 1234 5 - Live 0x0000000000000000 (E)`, "module-unsigned"},
 		{"module-files", `-rw-r--r-- 1 root root 184320 Jun  1 10:00 rc_kernel.ko`, "module-files-out-of-tree"},
+		// the catalog's names on the three surfaces that carry a name as an
+		// identity: the module registry's first column, the .ko/.so file the
+		// sample ships as (an LKM, and a preload kit's library), and the
+		// symbol table, where a kit names its functions after itself
+		{"lsmod", `diamorphine 20480 0 - Live 0xffffffffc05a4000 (OE)`, "known-rootkit-module"},
+		{"lsmod", `rkduck 16384 0 - Live 0xffffffffc05a4000 (O)`, "known-rootkit-module"},
+		{"lsmod", `kovid 81920 0 - Live 0xffffffffc05a4000 (O)`, "known-rootkit-module"},
+		{"module-files", `-rw-r--r-- 1 root root 184320 Jun  1 10:00 diamorphine_secret.ko`, "known-rootkit-file"},
+		{"unowned-files", `/lib/modules/5.15.0-198-generic/kernel/drivers/reptile.ko`, "known-rootkit-file"},
+		{"unowned-files", `/usr/lib/libvlany.so`, "known-rootkit-file"},
+		{"unowned-files", `/usr/lib/x86_64-linux-gnu/libjynx.so`, "known-rootkit-file"},
+		{"key-dirs", `-rw-r--r-- 1 root root 0 Jun  1 10:00 /usr/lib/azazel.so`, "known-rootkit-file"},
+		{"kallsyms", `ffff80000121a000 T diamorphine_init	[diamorphine]`, "kallsyms-rootkit"},
+		{"kallsyms", `ffffffffc05a4000 t singularity_hook	[singularity]`, "kallsyms-rootkit"},
+		{"kallsyms", `ffffffffc05a4000 t rkduck_init	[rkduck]`, "kallsyms-rootkit"},
 		{"tainted", `64`, "kernel-tainted"},
+		// the mask is painted whole: the number is the evidence (12288 =
+		// out-of-tree + unsigned), so a leading-digit span hides what matters
+		{"tainted", `12288`, "kernel-tainted"},
+		// the module-memory check's two rows: an allocation no listed module
+		// accounts for, and the accounting line that is always shown so a rise
+		// in the unexplained count is visible across two runs
+		{"module-memory", `UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module`, "module-memory-unowned"},
+		{"module-memory", `UNOWNED 0xffffffffc02a4000-0xffffffffc02a7000 size 12288 caller shared diamorphine 2`, "module-memory-unowned"},
+		{"module-memory", `VMAP regions 132 modules 50 explained 104 unexplained 28`, "module-memory-accounting"},
 		{"module-sig-config", `CONFIG_MODULE_SIG=n`, "module-sig-off"},
 		{"dmesg", `[    0.000000] module verification failed: taint flag set`, "dmesg-taint"},
 		// a hooked kernel prints the table it found and the syscalls it replaced; the
@@ -230,6 +254,24 @@ func TestLinuxRuleExclusions(t *testing.T) {
 		// a URL in a request line is a path somewhere else
 		{"access-log", `10.0.0.9 - - [18/Apr/2024:02:36:00 +0800] "GET /../../etc/passwd HTTP/1.1" 404 0`,
 			"hidden-root-path"},
+		// the name list carries ordinary words (singularity, umbra, adore,
+		// rooty), so none of them may fire alone: the file rule needs the
+		// module/library extension, the module rule needs the name to be the
+		// whole first column, and a name buried inside another identifier is
+		// not the name
+		{"unowned-files", `/usr/bin/singularity`, "known-rootkit-file"},
+		{"unowned-files", `/usr/share/doc/reptile/README`, "known-rootkit-file"},
+		{"key-dirs", `-rw-r--r-- 1 root root 0 Jun  1 10:00 /etc/adore.conf`, "known-rootkit-file"},
+		{"key-dirs", `-rw-r--r-- 1 root root 0 Jun  1 10:00 /usr/lib/libapptainer.so`, "known-rootkit-file"},
+		{"unowned-files", `/usr/lib/somedore.so`, "known-rootkit-file"},
+		{"unowned-files", `/usr/lib/masscan-ish-reptiles.txt`, "known-rootkit-file"},
+		{"lsmod", `singularity_hpc 1234 5 - Live 0x0000000000000000`, "known-rootkit-module"},
+		{"lsmod", `reptilian 1234 5 - Live 0x0000000000000000`, "known-rootkit-module"},
+		{"kallsyms", `ffffffff81234567 t bpf_prog_adore_x	[bpf]`, "kallsyms-rootkit"},
+		{"kallsyms", `ffffffff81234567 t umbra_dev_register`, "kallsyms-rootkit"},
+		// the accounting line is not a finding: the unexplained count it carries
+		// is evidence, not a verdict
+		{"module-memory", `VMAP regions 1 modules 1 explained 0 unexplained 1`, "module-memory-unowned"},
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.check)
@@ -309,6 +351,22 @@ func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
 		{"unowned-files", `/bin/-t`, "unowned-file", `/bin/-t`},
 		// a bare-path row carries the root-level name alone
 		{"suid", `/.root`, "hidden-root-path", `/.root`},
+		// the name rules paint the name: the file's own name with its
+		// extension, the registry row's first column, and the module tag
+		// kallsyms prints after the symbol (the name list cannot match inside
+		// diamorphine_init, where an underscore follows the name)
+		{"module-files", `-rw-r--r-- 1 root root 184320 Jun  1 10:00 diamorphine_secret.ko`,
+			"known-rootkit-file", `diamorphine_secret.ko`},
+		{"unowned-files", `/usr/lib/libvlany.so`, "known-rootkit-file", `libvlany.so`},
+		{"lsmod", `diamorphine 20480 0 - Live 0xffffffffc05a4000 (OE)`, "known-rootkit-module",
+			`diamorphine`},
+		{"kallsyms", `ffff80000121a000 T diamorphine_init	[diamorphine]`, "kallsyms-rootkit",
+			`diamorphine`},
+		{"tainted", `12288`, "kernel-tainted", `12288`},
+		// the memory rule paints the marker and the range, which is what the
+		// analyst looks up in /proc/kcore or a dump
+		{"module-memory", `UNOWNED 0xffff8000017c5000-0xffff8000017cb000 size 24576 caller module`,
+			"module-memory-unowned", `UNOWNED 0xffff8000017c5000-0xffff8000017cb000`},
 		{"home-tree", `-rw-r--r-- 1 root root 13 Oct 06 02:45 /home/.hacker`, "hidden-nonhome-path",
 			`/home/.hacker`},
 	}

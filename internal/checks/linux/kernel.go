@@ -11,9 +11,7 @@
 package linux
 
 import (
-	"fmt"
 	"regexp"
-	"strings"
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
@@ -42,11 +40,14 @@ var modulesLoadPaths = []string{
 
 var modulesLoadScript = script.ReadFiles(modulesLoadPaths, `cat "$f"`, true)
 
-// rootkitSyms: symbol-name families leaked into /proc/kallsyms by known LKM
-// rootkits (Diamorphine, Reptile, Heroinn, and the syy/h4x syscall-table
-// override tutorials). A plain alternation so the same string serves the shell
+// rootkitSyms: the symbol families /proc/kallsyms leaks. Two halves: the
+// program names of the public catalog (define.RootkitNames — a kit usually names
+// its functions after itself, so `rkduck_init` and `singularity_hook` carry the
+// sample's name) and the generic hook vocabulary the syscall-table and
+// getdents-override families share (Diamorphine, Reptile, Heroinn, and the
+// syy/h4x tutorials). A plain alternation so the same string serves the shell
 // probe's ERE and the rule's RE2.
-const rootkitSyms = `diamorphine|reptile|heroin|hide_module|module_hidden|hidden_files|` +
+const rootkitSyms = define.RootkitNames + `|hide_module|module_hidden|hidden_files|` +
 	`hide_tcp4_port|hide_tcp6_port|hacked_getdents|hacked_kill|kernel_unlink|` +
 	`find_sys_call_tbl|h4x_delete_module|h4x_getdents64|h4x_kill|h4x_tcp4_seq_show|` +
 	`new_getdents|old_getdents|should_hide_file_name|should_hide_task_name|is_invisible|` +
@@ -77,80 +78,43 @@ var moduleDirs = []string{
 }
 
 // hiddenModuleAttrs are the sysfs attributes a hidden module's evidence line
-// carries: the size the module occupies, the address of its code, its refcount,
-// its state and its taint letters. One list feeds both channels' output, so the
-// ssh script cannot drift from the in-process read.
+// carries: the size the module occupies, its refcount, its state and its taint
+// letters. One list feeds both channels' output, so the ssh script cannot drift
+// from the in-process read.
+//
+// The section addresses are deliberately out of this list. A module that has
+// been hiding itself can leave its kernfs attributes in a stale state, and a
+// read of `/sys/module/<name>/sections/<section>` then faults the reader
+// instead of answering: measured on the lab VM with Diamorphine loaded, the
+// section attributes answered EIO, and a lookup of the missing `.text` under
+// that directory killed the reading process with SIGSEGV and left a kernel
+// trace in the ring buffer. The five attributes below answered cleanly on the
+// same module (`size 20480 refs 0 state live taint OE`), and a module's load
+// address is what the module-memory check derives from /proc/vmallocinfo, a
+// surface the rootkit cannot damage.
 var hiddenModuleAttrs = []native.ModuleAttr{
 	{Label: "size", File: "coresize"},
 	{Label: "init", File: "initsize"},
 	{Label: "refs", File: "refcnt"},
 	{Label: "state", File: "initstate"},
 	{Label: "taint", File: "taint"},
-	{Label: "text", File: "sections/.text"},
 }
 
-// hiddenModuleScript is the whole cross-check as one tier, the way
-// native.ModulesHidden is one body: the sysfs diff over the target's own
-// registry, then the kallsyms diff. Both footprints travel in one script — a
-// tier that stopped after the first would answer for the whole tier (an exit 0
-// with no rows is still an answer) and the chain would never reach the second.
-var hiddenModuleScript = hiddenModuleDiffText(hiddenModuleAttrs, "/sys/module", "/proc/modules", "/proc/kallsyms")
+// hiddenModuleViews is the diff's one set of surfaces: the check hands the same
+// value to the in-process body and to the pipeline, so the two channels read the
+// same paths, attributes and pseudo-module tags.
+var hiddenModuleViews = native.ModuleDiffViews(hiddenModuleAttrs)
 
-// hiddenModuleDiffText is that tier over given surfaces, the four the tests
-// substitute a fixture for.
-func hiddenModuleDiffText(attrs []native.ModuleAttr, sysfsRoot, modulesPath, symbolsPath string) string {
-	return hiddenSysfsDiffText(attrs, sysfsRoot, modulesPath) + hiddenSymbolDiffText(modulesPath, symbolsPath)
-}
+// hiddenModuleScript is the whole diff as one tier, the way native.ModulesHidden
+// is one body: the three views travel in one script — a tier that stopped after
+// the first would answer for the whole tier (an exit 0 with no rows is still an
+// answer) and the chain would never reach the others.
+var hiddenModuleScript = script.HiddenModuleScript(hiddenModuleViews)
 
-// hiddenSysfsDiffText is the sysfs half: a module directory with a sections/
-// subdirectory that /proc/modules does not list is hidden, and the loop gathers
-// whichever attributes read back non-empty.
-func hiddenSysfsDiffText(attrs []native.ModuleAttr, sysfsRoot, modulesPath string) string {
-	pairs := make([]string, 0, len(attrs))
-	for _, attr := range attrs {
-		pairs = append(pairs, attr.Label+":"+attr.File)
-	}
-	return `for d in ` + sysfsRoot + `/*; do
-  [ -d "$d/sections" ] || continue
-  n=${d##*/}
-  grep -q "^$n " ` + modulesPath + ` 2>/dev/null && continue
-  line="HIDDEN $n"
-  for pair in ` + strings.Join(pairs, " ") + `; do
-    v=$(cat "$d/${pair#*:}" 2>/dev/null)
-    [ -n "$v" ] && line="$line ${pair%%:*} $v"
-  done
-  echo "$line"
-done
-`
-}
-
-// hiddenSymbolDiffText is the kallsyms half over a given module list and symbol
-// table: the module tags in the symbol table are a second registry, and one that
-// /proc/modules does not name is a hidden module. The pseudo-module tags
-// (native.PseudoModuleTags: JITed BPF programs, and the pages the kernel
-// allocates for ftrace and kprobes trampolines) are dropped, because they are
-// not modules and would otherwise be reported as hidden on every host that has
-// them. One awk pass reads the module list first and the symbol table second —
-// no temporary file on the target — and the count is how many of the module's
-// symbols are still there.
-// The first operand is picked by name (ARGV[1]): the NR==FNR idiom reads the
-// second file as the first when the module list is empty or unreadable. The two
-// file operands are substituted, so the tests run this same pipeline over
-// fixtures.
-func hiddenSymbolDiffText(modulesPath, symbolsPath string) string {
-	// The drop list is the same one the in-process half uses, so the two
-	// channels cannot disagree about what a module is.
-	drops := make([]string, 0, len(native.PseudoModuleTags))
-	for _, tag := range native.PseudoModuleTags {
-		drops = append(drops, `n != "`+tag+`"`)
-	}
-	return fmt.Sprintf(`awk 'FILENAME == ARGV[1] {mods[$1]=1; next}
-     {n=$NF; if (n ~ /^\[/) {gsub(/[][]/,"",n); if (%s && !(n in mods)) print n}}' \
-  %s %s 2>/dev/null | sort | uniq -c | sort -k2 |
-while read -r count name; do echo "HIDDEN $name symbols $count"; done
-exit 0
-`, strings.Join(drops, " && "), modulesPath, symbolsPath)
-}
+// moduleMemoryViews is the module-memory diff's surfaces and allocator lists:
+// one value for both channels, so the pipeline and the in-process body cannot
+// read different paths or classify an allocator differently.
+var moduleMemoryViews = native.ModuleMemoryViews()
 
 // KernelChecks covers the kernel.
 var KernelChecks = []*model.Check{
@@ -189,6 +153,16 @@ var KernelChecks = []*model.Check{
 					"out-of-tree module (not from the distribution)"),
 				model.NewRule("module-unsigned", `\([A-Z+-]*E[A-Z+-]*\)$`, model.Medium,
 					"unsigned module (signature not verified)"),
+				// The catalog's names on the module registry's own surface, where a name
+				// is a module's identity: both tiers of this check print the module name
+				// first, and the row's remaining columns are its facts. The word boundary
+				// keeps the span on the name (a trailing \s would paint the column
+				// separator) and still refuses a longer name that merely starts with one
+				// (reptilian is not reptile). The rule is check-local because `Word ...`
+				// is a shape any listing row can carry, while here the column is the
+				// registry's.
+				model.NewRule("known-rootkit-module", `^(?:`+define.RootkitNames+`)\b`,
+					model.Critical, "module named after a known Linux rootkit"),
 			},
 		}),
 	listingCheck("module-files", "Out-of-tree kernel modules (updates/dkms, extra, etc.)", model.AspectKernel,
@@ -200,24 +174,58 @@ var KernelChecks = []*model.Check{
 			model.NewRule("module-files-out-of-tree", `\.ko(?:\.[a-z0-9]+)?(?:\s|$)`, model.Medium,
 				"out-of-tree module file"),
 		}),
-	// A hidden module leaves two independent footprints, and the check diffs both
-	// against /proc/modules. The loader created a kobject for every module, so
-	// /sys/module keeps a directory with a sections/ subdirectory after the module
-	// unlinked itself from the list; and kallsyms prints the module each of its
-	// symbols came from in brackets, which a module cannot scrub without
-	// unloading. A rootkit that only edits the list is therefore caught twice,
-	// and one that also removes its kobject is still caught in the symbol table.
-	// Both footprints run in one tier: two probes in a chain would let the first
-	// one's empty exit-0 diff answer for the whole check, and the symbol table
-	// would never be read.
-	define.LinuxCheck("modules-hidden", "Hidden module cross-check (/sys/module and kallsyms vs /proc/modules)", model.AspectKernel,
-		[]model.Step{{{Label: "diff", Inv: model.Dual{Run: native.ModulesHidden(hiddenModuleAttrs), Script: hiddenModuleScript}}}},
+	// Three independent views of one fact — which modules the kernel carries —
+	// and the check prints one row per name they disagree about. The loader
+	// created a kobject for every module, so /sys/module keeps a directory with a
+	// sections/ subdirectory after the module unlinked itself from the list;
+	// kallsyms prints the module each of its symbols came from in brackets, which
+	// a module cannot scrub without unloading. A rootkit that only edits the list
+	// is caught by both other views, one that also removes its kobject is still
+	// caught in the symbol table, and a module the list carries while the sysfs
+	// registry has forgotten it is a GAP row of its own. Every view travels in
+	// one tier: probes in a chain would let the first one's empty exit-0 diff
+	// answer for the whole check.
+	define.LinuxCheck("modules-hidden", "Hidden module cross-check (sysfs, kallsyms vs /proc/modules)", model.AspectKernel,
+		[]model.Step{{{Label: "diff", Inv: model.Dual{Run: native.ModulesHidden(hiddenModuleViews), Script: hiddenModuleScript}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				// The span carries the name: the reason is about that module, and the
 				// evidence tail after it is the module's own description.
 				model.NewRule("module-hidden", `^HIDDEN \S+`, model.Critical,
 					"module hidden from /proc/modules"),
+				// The other way the views can disagree: the module list still names
+				// the module while the registry the loader populated has no kobject
+				// for it. Stock hosts answer the two views alike (measured on a 5.15
+				// and a 7.0 kernel: one direction is empty both ways), so this is a
+				// lead rather than a verdict.
+				model.NewRule("module-view-gap", `^GAP \S+`, model.Medium,
+					"module in /proc/modules with no sysfs registry entry"),
+			},
+		}),
+	// A third registry, and one no userspace rootkit can edit: a module's code
+	// and data live in the vmalloc area, and /proc/vmallocinfo names the caller
+	// of every live allocation. A module that removed its kobject and its list
+	// entry leaves that allocation behind, so the check attributes each one
+	// through the symbols inside it and reports the memory nothing accounts
+	// for. The module lists and the symbol table are the other two views; this
+	// one survives the case both of them lose.
+	define.LinuxCheck("module-memory", "Module memory (vmalloc regions vs the module list)", model.AspectKernel,
+		[]model.Step{{{Label: "vmap", Inv: model.Dual{
+			Run:    native.ModuleMemory(moduleMemoryViews),
+			Script: script.ModuleMemoryScript(moduleMemoryViews),
+		}}}},
+		define.CheckOpt{
+			Rules: []model.Rule{
+				// The row carries the range, the caller and the symbols inside, so
+				// the analyst can read the same memory in /proc/kcore or in a dump.
+				model.NewRule("module-memory-unowned", `^UNOWNED \S+`, model.Critical,
+					"executable kernel memory belonging to no listed module"),
+				// The accounting line is always shown: the number of allocations
+				// the kernel's own allocators made against the number the module
+				// list explains is what makes a rise in the unexplained count
+				// visible across two runs.
+				model.NewRule("module-memory-accounting", `^VMAP regions \d+ `, model.Low,
+					"executable kernel memory accounting"),
 			},
 		}),
 	define.LinuxCheck("module-sig-config", "Kernel module signature config", model.AspectKernel,
@@ -231,10 +239,13 @@ var KernelChecks = []*model.Check{
 			},
 		}),
 	// LKM rootkits cannot scrub their own symbols out of /proc/kallsyms: the
-	// families below (Diamorphine, Reptile, and the classic syscall-table
-	// override tutorials) leave their names in the table and often a module tag
-	// in brackets. grep is both collector and filter — no hit is a clean exit 1,
-	// which stays silent, exactly like webshell-grep.
+	// catalog's program names and the classic syscall-table override families
+	// (Diamorphine, Reptile, the h4x/syy tutorials) leave their names in the
+	// table and often a module tag in brackets. grep is both collector and
+	// filter — no hit is a clean exit 1, which stays silent, exactly like
+	// webshell-grep. The name list's false-positive rate is measured: over the
+	// full symbol tables of a 7.0 desktop kernel and a 5.15 server kernel it
+	// matched the loaded rootkit's tag and nothing else.
 	define.LinuxCheck("kallsyms", "Kernel symbol table rootkit signatures (/proc/kallsyms)", model.AspectKernel,
 		[]model.Step{{{Label: "grep", Inv: model.Dual{
 			Run:    native.Kallsyms(kallsymsRe),
@@ -250,7 +261,11 @@ var KernelChecks = []*model.Check{
 		[]model.Step{{{Label: "tainted", Inv: model.Dual{Run: native.Tainted, Script: "cat /proc/sys/kernel/tainted 2>/dev/null"}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
-				model.NewRule("kernel-tainted", `^[1-9]`, model.Medium,
+				// The whole mask is the finding, not its first digit: the span is
+				// what the panel paints, and what a reader needs is the number the
+				// bits add up to (12288 is out-of-tree + unsigned), not the
+				// leading 1.
+				model.NewRule("kernel-tainted", `^[1-9][0-9]*`, model.Medium,
 					"kernel tainted (non-zero)"),
 			},
 		}),

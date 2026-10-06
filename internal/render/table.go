@@ -106,11 +106,19 @@ func (t *tableStyler) style(line string) []paintSpan {
 		return nil
 	}
 	var spans []paintSpan
-	for _, column := range columns {
-		if pos := columnIndex(t.starts, column.start); pos < len(t.starts)-1 {
+	for ordinal, column := range columns {
+		// The column a word belongs to is its position in the row: a numeric
+		// field is right-aligned, so its value drifts left of the header's anchor
+		// as the number grows wider — a one-digit pid starts two characters right
+		// of "PID" and a six-digit one three characters left of it — and the
+		// tolerance-based lookup reads the two as different columns, which is why
+		// the pid column changed color when the count crossed ten. The anchor
+		// lookup still decides which columns are painted at all (the last one
+		// stays plain, and so do the words of a command line past it).
+		if columnIndex(t.starts, column.start) < len(t.starts)-1 {
 			spans = append(spans, paintSpan{
 				Start: column.start, End: column.end,
-				Style: tableColumnStyles[pos%len(tableColumnStyles)],
+				Style: tableColumnStyles[ordinal%len(tableColumnStyles)],
 			})
 		}
 	}

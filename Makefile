@@ -3,7 +3,7 @@
 # test passes.
 
 GO ?= go
-VERSION ?= 0.32.0
+VERSION ?= 0.33.0
 # The practice target of `make parity`: a Linux host and, when sshd does not
 # listen on 22, its port.
 HOST ?=
@@ -16,7 +16,7 @@ PARCH ?= amd64
 # explicitly (SELECTORS="df lsmod mounts") to eyeball those rows.
 SELECTORS ?= fstab accounts groups shadow
 
-.PHONY: all fmt vet test race staticcheck build dist parity clean
+.PHONY: all fmt vet test race staticcheck build linux-arm64 dist parity clean
 
 all: fmt vet test
 
@@ -47,12 +47,21 @@ staticcheck:
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/karma ./cmd/karma
 
-# dist builds the release binaries for the two supported platforms.
-dist: build
+# linux-arm64 cross-compiles the ARM64 Linux binary on its own. That is the PD
+# lab's platform, and every ARM server (Graviton, Ampere, Kunpeng) — the one
+# target whose host cannot build for itself here.
+linux-arm64:
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/karma-linux-arm64 ./cmd/karma
+
+# dist builds the release binaries for the two supported platforms, ARM64 Linux
+# included.
+dist: build linux-arm64
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/karma-linux-amd64 ./cmd/karma
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/karma-windows-amd64.exe ./cmd/karma
 	@file dist/karma-linux-amd64 | grep -q "statically linked" || { \
 		echo "dist/karma-linux-amd64 is not statically linked"; exit 1; }
+	@file dist/karma-linux-arm64 | grep -q "statically linked" || { \
+		echo "dist/karma-linux-arm64 is not statically linked"; exit 1; }
 
 # Parity: one Linux host collected twice, once through the in-process tiers and
 # once through the script tiers every remote channel runs (KARMA_NO_NATIVE makes

@@ -5,6 +5,7 @@ package native
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 
 	"karma/internal/localfs"
 	"karma/internal/model"
+	"karma/internal/script"
 )
 
 // ModulesLoad mirrors the check's modulesLoadScript: the /etc/modules file and
@@ -42,113 +44,265 @@ type ModuleAttr struct {
 // exist — as a Critical finding — on every host with such trampolines.
 var PseudoModuleTags = []string{"bpf", "__builtin__ftrace", "__builtin__kprobes"}
 
-// The three kernel surfaces the hidden-module cross-check diffs.
+// The three kernel surfaces the hidden-module diff reads.
 const (
 	sysModuleRoot    = "/sys/module"
 	procModulesFile  = "/proc/modules"
 	procKallsymsFile = "/proc/kallsyms"
 )
 
-// ModulesHidden is the merged cross-check body, mirroring hiddenModuleScript:
-// the sysfs diff and the kallsyms diff in one tier, so both footprints land in
-// the same panel. Either half can be unavailable on its own (no /sys mounted, no
-// symbol table in a container); the tier reports unavailable only when both are,
-// so one half's absence does not drop the other's evidence.
-func ModulesHidden(attrs []ModuleAttr) func(context.Context) (string, error) {
-	return hiddenModulesBody(attrs, sysModuleRoot, procModulesFile, procKallsymsFile)
-}
-
-// hiddenModulesBody is that tier over given surfaces, the ones the tests
-// substitute a fixture for.
-func hiddenModulesBody(attrs []ModuleAttr, sysfsRoot, modulesPath, symbolsPath string) func(context.Context) (string, error) {
-	return func(ctx context.Context) (string, error) {
-		var b strings.Builder
-		available := false
-		for _, half := range []func(context.Context) (string, error){
-			hiddenModulesFromSysfs(attrs, sysfsRoot, modulesPath),
-			hiddenModulesFromSymbols(modulesPath, symbolsPath),
-		} {
-			text, err := half(ctx)
-			if err != nil {
-				continue
-			}
-			available = true
-			b.WriteString(text)
-		}
-		if !available {
-			return "", model.ErrTierUnavailable
-		}
-		return b.String(), nil
+// ModuleDiffViews is the one value both channels of the hidden-module diff
+// read: the surfaces, the attributes a module's evidence line carries, and the
+// symbol tags that are not modules. The check hands it to the in-process body
+// and to the pipeline, so the two cannot read different paths or attribute
+// lists.
+func ModuleDiffViews(attrs []ModuleAttr) script.ModuleDiffViews {
+	pairs := make([]string, 0, len(attrs))
+	for _, attr := range attrs {
+		pairs = append(pairs, attr.Label+":"+attr.File)
+	}
+	return script.ModuleDiffViews{
+		SysfsRoot:   sysModuleRoot,
+		ModulesPath: procModulesFile,
+		SymbolsPath: procKallsymsFile,
+		Attrs:       pairs,
+		PseudoTags:  PseudoModuleTags,
 	}
 }
 
-// hiddenModulesFromSysfs is the sysfs half: every loadable module has a
-// sections/ directory under /sys/module; one that /proc/modules does not list is
-// hidden from the module registry. The evidence line carries the attributes the
-// check hands in, so the module the loader created stays identifiable by size,
-// code address, refcount, state and taint letters even though the list has
-// forgotten it.
-func hiddenModulesFromSysfs(attrs []ModuleAttr, sysfsRoot, modulesPath string) func(context.Context) (string, error) {
+// ModulesHidden is the merged diff body, mirroring script.HiddenModuleScript:
+// the marked stream is built in process and joined by the same Go join the
+// pipeline's awk mirrors. Either view can be unavailable on its own (no /sys
+// mounted, no symbol table in a container); the module list is the baseline, so
+// without it the tier reports itself unavailable and the channel falls through.
+func ModulesHidden(views script.ModuleDiffViews) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
-		entries, err := os.ReadDir(sysfsRoot)
+		modules, err := os.ReadFile(views.ModulesPath)
 		if err != nil {
 			return "", model.ErrTierUnavailable
 		}
-		body, err := os.ReadFile(modulesPath)
-		if err != nil {
-			return "", model.ErrTierUnavailable
-		}
-		loaded := loadedModuleNames(string(body))
-		var b strings.Builder
-		for _, entry := range entries {
+		return script.HiddenModuleBody(hiddenModuleViewsText(views, string(modules))), nil
+	}
+}
+
+// hiddenModuleViewsText is the in-process emitter of the marked stream
+// HiddenModuleScript's shell block produces: the availability flags, one S line
+// per loadable module with the attributes that read back, one P line per
+// /proc/modules name, one K line per module tag in the symbol table.
+func hiddenModuleViewsText(views script.ModuleDiffViews, modules string) string {
+	var b strings.Builder
+	sysfs, sysfsErr := os.ReadDir(views.SysfsRoot)
+	fmt.Fprintf(&b, "A %s %d\n", viewSysfsName, boolBit(sysfsErr == nil))
+	symbols, symbolsErr := os.ReadFile(views.SymbolsPath)
+	fmt.Fprintf(&b, "A %s %d\n", viewKallsymsName, boolBit(symbolsErr == nil))
+
+	if sysfsErr == nil {
+		for _, entry := range sysfs {
 			name := entry.Name()
-			if loaded[name] {
+			if info, err := os.Stat(filepath.Join(views.SysfsRoot, name, "sections")); err != nil || !info.IsDir() {
 				continue
 			}
-			if info, err := os.Stat(filepath.Join(sysfsRoot, name, "sections")); err != nil || !info.IsDir() {
-				continue
+			line := "S " + name
+			dir := filepath.Join(views.SysfsRoot, name)
+			for _, pair := range views.Attrs {
+				label, file, _ := strings.Cut(pair, ":")
+				if value, ok := readTrimmedFile(filepath.Join(dir, file)); ok {
+					line += " " + label + " " + value
+				}
 			}
-			dir := filepath.Join(sysfsRoot, name)
-			fmt.Fprintf(&b, "%s\n", hiddenModuleLine(name, attrs, func(file string) (string, bool) {
-				return readTrimmedFile(filepath.Join(dir, file))
-			}))
+			b.WriteString(line + "\n")
 		}
-		return b.String(), nil
+	}
+	// The shell block prints /proc/modules' first column, so this emitter does
+	// the same: a module list line carries the name, the size, the refcount and
+	// the address, and only the name is a view of the registry.
+	for _, name := range moduleListNames(modules) {
+		b.WriteString("P " + name + "\n")
+	}
+	if symbolsErr == nil {
+		for name, count := range symbolModuleNames(string(symbols)) {
+			fmt.Fprintf(&b, "K %s %d\n", name, count)
+		}
+	}
+	return b.String()
+}
+
+// viewSysfsName and viewKallsymsName are the view names script's body and awk
+// program use in the availability flags and the row verdicts.
+const (
+	viewSysfsName    = "sysfs"
+	viewKallsymsName = "kallsyms"
+)
+
+// boolBit renders an availability flag the way the shell block does.
+func boolBit(ok bool) int {
+	if ok {
+		return 1
+	}
+	return 0
+}
+
+// moduleAllocators and sharedAllocators are the caller functions of the
+// executable kernel memory /proc/vmallocinfo shows. move_module (the loader's
+// own allocator, module_alloc on older kernels) is used by modules alone, while
+// execmem_alloc (6.10 and later, which replaced both) is shared with JITed BPF
+// programs and the kprobe and ftrace trampolines — measured on a stock 7.0
+// desktop, 132 execmem_alloc regions against 50 modules.
+var (
+	moduleAllocators = []string{"move_module", "module_alloc"}
+	sharedAllocators = []string{"execmem_alloc"}
+)
+
+// ModuleMemoryViews is the one value both channels of the module-memory diff
+// read.
+func ModuleMemoryViews() script.ModuleMemoryViews {
+	return script.ModuleMemoryViews{
+		VMallocPath:      "/proc/vmallocinfo",
+		ModulesPath:      procModulesFile,
+		SymbolsPath:      procKallsymsFile,
+		ModuleAllocators: moduleAllocators,
+		SharedAllocators: sharedAllocators,
+		PseudoTags:       PseudoModuleTags,
 	}
 }
 
-// hiddenModulesFromSymbols is the kallsyms half of the same cross-check: the
-// table prints the module a symbol came from in brackets after it, and that
-// tag survives a module which scrubbed itself out of /proc/modules — a second,
-// independent registry to diff the list against.
-func hiddenModulesFromSymbols(modulesPath, symbolsPath string) func(context.Context) (string, error) {
+// ModuleMemory is the local tier of the module-memory diff, mirroring
+// script.ModuleMemoryScript: the three surfaces are read in process, the marked
+// stream is built the way the shell block builds it, and the same Go join
+// renders the rows the pipeline's awk mirrors. The symbol table is required —
+// without it every region would look unexplained — and so are the allocation
+// list and the module list, which the shell block's `exit 1` mirrors.
+func ModuleMemory(views script.ModuleMemoryViews) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
-		modules, err := os.ReadFile(modulesPath)
+		allocations, err := os.ReadFile(views.VMallocPath)
 		if err != nil {
 			return "", model.ErrTierUnavailable
 		}
-		symbols, err := os.ReadFile(symbolsPath)
+		modules, err := os.ReadFile(views.ModulesPath)
 		if err != nil {
 			return "", model.ErrTierUnavailable
 		}
-		return hiddenModuleSymbolLines(symbolModuleNames(string(symbols)), loadedModuleNames(string(modules))), nil
+		symbols, err := os.ReadFile(views.SymbolsPath)
+		if err != nil {
+			return "", model.ErrTierUnavailable
+		}
+		stream := moduleMemoryText(views, string(allocations), string(modules), string(symbols))
+		return script.ModuleMemoryBody(views, stream), nil
 	}
 }
 
-// loadedModuleNames is /proc/modules' first column as a set.
-func loadedModuleNames(body string) map[string]bool {
-	loaded := map[string]bool{}
+// moduleMemoryRegion is one allocation the kernel's own allocators made.
+type moduleMemoryRegion struct {
+	index int
+	start uint64
+	end   uint64
+	size  string
+	class string
+}
+
+// moduleMemoryText is the in-process emitter of the marked stream
+// ModuleMemoryScript's shell block produces: one R line per allocation, one P
+// line per module-list name, one Y line per symbol inside an allocation.
+func moduleMemoryText(views script.ModuleMemoryViews, allocations, modules, symbols string) string {
+	classes := map[string]string{}
+	for _, name := range views.ModuleAllocators {
+		classes[name] = "module"
+	}
+	for _, name := range views.SharedAllocators {
+		classes[name] = "shared"
+	}
+	var (
+		regions []moduleMemoryRegion
+		b       strings.Builder
+	)
+	for line := range strings.SplitSeq(allocations, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		start, end, ok := splitAddressRange(fields[0])
+		if !ok {
+			continue
+		}
+		caller, _, _ := strings.Cut(fields[2], "+")
+		class, known := classes[caller]
+		if !known {
+			continue
+		}
+		index := len(regions) + 1
+		regions = append(regions, moduleMemoryRegion{index: index, start: start, end: end, size: fields[1], class: class})
+		startText, endText, _ := strings.Cut(fields[0], "-")
+		fmt.Fprintf(&b, "R %d %s %s %s %s\n", index, startText, endText, fields[1], class)
+	}
+	for _, name := range moduleListNames(modules) {
+		b.WriteString("P " + name + "\n")
+	}
+	sorted := slices.Clone(regions)
+	slices.SortFunc(sorted, func(a, b moduleMemoryRegion) int { return cmp.Compare(a.start, b.start) })
+	for line := range strings.SplitSeq(symbols, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		address, err := strconv.ParseUint(fields[0], 16, 64)
+		if err != nil {
+			continue
+		}
+		index, found := slices.BinarySearchFunc(sorted, address, func(r moduleMemoryRegion, a uint64) int {
+			switch {
+			case a < r.start:
+				return 1
+			case a >= r.end:
+				return -1
+			default:
+				return 0
+			}
+		})
+		if !found {
+			continue
+		}
+		tag := "-"
+		if strings.HasSuffix(line, "]") {
+			if open := strings.LastIndexByte(line, '['); open >= 0 {
+				tag = line[open+1 : len(line)-1]
+			}
+		}
+		fmt.Fprintf(&b, "Y %d %s\n", sorted[index].index, tag)
+	}
+	return b.String()
+}
+
+// splitAddressRange splits vmallocinfo's "0xstart-0xend" first field.
+func splitAddressRange(field string) (uint64, uint64, bool) {
+	start, end, ok := strings.Cut(field, "-")
+	if !ok {
+		return 0, 0, false
+	}
+	lo, err := strconv.ParseUint(strings.TrimPrefix(start, "0x"), 16, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	hi, err := strconv.ParseUint(strings.TrimPrefix(end, "0x"), 16, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return lo, hi, true
+}
+
+// moduleListNames is /proc/modules' first column, in the order the file lists
+// the modules: a line carries the name, the size, the refcount, the dependent
+// list, the state and the address, and only the name is a view of the registry.
+func moduleListNames(body string) []string {
+	var names []string
 	for line := range strings.SplitSeq(body, "\n") {
-		name, _, _ := strings.Cut(line, " ")
-		if name != "" {
-			loaded[name] = true
+		if name, _, _ := strings.Cut(line, " "); name != "" {
+			names = append(names, name)
 		}
 	}
-	return loaded
+	return names
 }
 
-// symbolModuleNames counts the module tags in a /proc/kallsyms body. A tagged
-// line ends with the module in brackets after a tab
+// symbolModuleNames counts the module tags in a /proc/kallsyms body. A tagged// line ends with the module in brackets after a tab
 // ("__kstrtab_nft_do_chain\t[nf_tables]"); an untagged line is a kernel symbol.
 // The pseudo-module tags in PseudoModuleTags are left out, so the difference
 // against /proc/modules stays a hidden-module signal.
@@ -169,40 +323,6 @@ func symbolModuleNames(body string) map[string]int {
 		counts[name]++
 	}
 	return counts
-}
-
-// hiddenModuleSymbolLines renders one line per tagged module the loaded list does
-// not carry, in name order: the HIDDEN marker the rule grades, the module name
-// and how many of its symbols are still in the table.
-func hiddenModuleSymbolLines(counts map[string]int, loaded map[string]bool) string {
-	names := make([]string, 0, len(counts))
-	for name := range counts {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	var b strings.Builder
-	for _, name := range names {
-		if loaded[name] {
-			continue
-		}
-		fmt.Fprintf(&b, "HIDDEN %s symbols %d\n", name, counts[name])
-	}
-	return b.String()
-}
-
-// hiddenModuleLine is one sysfs evidence line: the HIDDEN marker the rule grades,
-// the module's name, then every attribute that reads back non-empty. A missing
-// or empty attribute (a module without taint letters, an unreadable .text) is
-// left out rather than printed blank.
-func hiddenModuleLine(name string, attrs []ModuleAttr, read func(file string) (string, bool)) string {
-	var b strings.Builder
-	b.WriteString("HIDDEN " + name)
-	for _, attr := range attrs {
-		if value, ok := read(attr.File); ok {
-			b.WriteString(" " + attr.Label + " " + value)
-		}
-	}
-	return b.String()
 }
 
 // readTrimmedFile reads one sysfs attribute, trimmed; an unreadable or empty
