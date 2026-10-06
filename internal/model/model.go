@@ -80,6 +80,8 @@ const (
 	SyntaxDf         Syntax = "df"
 	SyntaxLastlog    Syntax = "lastlog"
 	SyntaxUnits      Syntax = "units"
+	SyntaxUnitFiles  Syntax = "unit-files"
+	SyntaxTimers     Syntax = "timers"
 	SyntaxListen     Syntax = "listen"
 	SyntaxNetstat    Syntax = "netstat"
 	SyntaxIPKeyval   Syntax = "ip-keyval"

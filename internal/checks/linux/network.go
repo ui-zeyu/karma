@@ -10,6 +10,7 @@ import (
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/script"
+	"karma/internal/shape"
 	"strings"
 )
 
@@ -93,7 +94,10 @@ var NetworkChecks = []*model.Check{
 			{{Label: "ip", Inv: model.Dual{Run: native.IPNeigh, Script: "ip neigh"}}},
 			{{Label: "arp", Inv: model.NewCommand("arp", "-n")}},
 		},
-		define.CheckOpt{Syntax: model.SyntaxIPKeyval}),
+		// ip neigh writes key-value rows; the reading layer aligns them into
+		// the table the panel shows (shape.NeighTable), and the arp -n fallback
+		// prints its own aligned table, which the shaper declines.
+		define.CheckOpt{Syntax: model.SyntaxTable, Normalize: shape.NeighTable}),
 	// Both address families: ip route dumps IPv4 alone, and the local tier's
 	// netlink dump covers both, so an IPv6 route — a C2's default route, a
 	// tunnel's — would otherwise show on one channel only. The IPv6 dump runs
@@ -105,7 +109,9 @@ var NetworkChecks = []*model.Check{
 			{{Label: "route", Inv: model.NewCommand("route", "-n")}},
 			{{Label: "netstat", Inv: model.NewCommand("netstat", "-rn")}},
 		},
-		define.CheckOpt{Syntax: model.SyntaxIPKeyval}),
+		// As arp: the shaper aligns ip's own rows and declines the route(8)
+		// and netstat tables, which come pre-aligned.
+		define.CheckOpt{Syntax: model.SyntaxTable, Normalize: shape.RouteTable}),
 	define.LinuxCheck("firewall", "Firewall rules", model.AspectNetwork,
 		[]model.Step{
 			{{Label: "iptables", Inv: model.Dual{

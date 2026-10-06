@@ -1,11 +1,15 @@
 // units pseudo-lexer: systemd unit tables (systemctl list-units) with the
-// ACTIVE and SUB cells colored by meaning, plus the SysV fallback rows
-// (`service --status-all`) the services check also collects.
+// ACTIVE and SUB cells colored by meaning, the unit-file listing
+// (list-unit-files) with its state words colored by value, plus the SysV
+// fallback rows (`service --status-all`) the services check also collects.
 
 package render
 
+import "slices"
+
 // unitStateStyles gives the state cells of a systemd unit table their meaning:
-// alive (active/running) dark green, finished (exited/inactive) faint. failed
+// alive (active/running) dark green, finished (exited/inactive) faint, dead
+// dark yellow — a unit the manager gave up on reads apart from both. failed
 // keeps the cycling column color — it is a word, not a verdict; the rules
 // decide what a row means.
 var unitStateStyles = map[string]style{
@@ -13,6 +17,7 @@ var unitStateStyles = map[string]style{
 	"running":  {fg: "2"},
 	"exited":   dimStyle,
 	"inactive": dimStyle,
+	"dead":     {fg: "3"},
 }
 
 // sysvServiceLine matches one `service --status-all` row: the bracketed state
@@ -83,6 +88,40 @@ func (u *unitStyler) style(line string) []paintSpan {
 				Start: column.start, End: column.end,
 				Style: unitStateStyles[column.text],
 			})
+		}
+	}
+	return spans
+}
+
+// unitFileStateStyles paints the words a `systemctl list-unit-files` row
+// carries after the name — the unit's own state and the vendor preset — by
+// their value: enabled dark green, everything the preset would not turn on
+// faint. A row then reads at a glance which units boot and which were talked
+// out of it.
+var unitFileStateStyles = map[string]style{
+	"enabled":   {fg: "2"},
+	"disabled":  dimStyle,
+	"masked":    dimStyle,
+	"static":    dimStyle,
+	"indirect":  dimStyle,
+	"generated": dimStyle,
+	"transient": dimStyle,
+}
+
+// styleUnitFiles colors one list-unit-files row: the unit name in the first
+// table-column color, every state word by its value.
+func styleUnitFiles(line string) []paintSpan {
+	tokens := slices.Collect(matches(historyWord, line))
+	if len(tokens) < 2 {
+		return nil
+	}
+	spans := []paintSpan{{
+		Start: tokens[0].start, End: tokens[0].end,
+		Style: tableColumnStyles[0],
+	}}
+	for _, token := range tokens[1:] {
+		if state, ok := unitFileStateStyles[token.text]; ok {
+			spans = append(spans, paintSpan{Start: token.start, End: token.end, Style: state})
 		}
 	}
 	return spans

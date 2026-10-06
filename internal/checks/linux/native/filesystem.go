@@ -199,11 +199,12 @@ func HomeTree(root string, flags []string, depth int) func(context.Context) (str
 		}
 		var b strings.Builder
 		names := localfs.NewNameCache()
+		// The root is listed like any other entry, the way the find fallback
+		// prints it: the reading layer draws the tree from these rows, and the
+		// root's own row is what fixes the drawing's root and its level.
 		err := localfs.WalkTree(ctx, root, depth, false, nil, func(path string, info os.FileInfo) bool {
-			if path != root {
-				b.WriteString(localfs.LsBody(info, path, names))
-				b.WriteByte('\n')
-			}
+			b.WriteString(localfs.LsBody(info, path, names))
+			b.WriteByte('\n')
 			return true
 		})
 		return b.String(), err

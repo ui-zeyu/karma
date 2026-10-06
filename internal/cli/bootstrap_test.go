@@ -111,14 +111,11 @@ func TestBootstrapModeRefusesARunOfItsOwn(t *testing.T) {
 	}
 }
 
-// The archive is what travels when the target can unpack it: it must be a gzip
-// stream that unpacks to this very binary, so the target's decompressor can
+// The archive is what travels when the target can unpack it: a gzip stream
+// whose unpacked bytes are the program again, so the target's decompressor can
 // verify the transfer by its checksum.
-func TestGzipBytesUnpacksToThisBinary(t *testing.T) {
-	program, err := selfBytes()
-	if err != nil {
-		t.Fatalf("selfBytes: %v", err)
-	}
+func TestGzipBytesUnpacksToTheProgram(t *testing.T) {
+	program := bytes.Repeat([]byte("karma archive "), 4096)
 	archive, err := gzipBytes(program)
 	if err != nil {
 		t.Fatalf("gzipBytes: %v", err)
@@ -127,7 +124,7 @@ func TestGzipBytesUnpacksToThisBinary(t *testing.T) {
 		t.Fatal("the archive is empty")
 	}
 	if len(archive) >= len(program) {
-		t.Fatalf("the archive holds %d bytes for a %d-byte binary", len(archive), len(program))
+		t.Fatalf("the archive holds %d bytes for a %d-byte program", len(archive), len(program))
 	}
 	reader, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
@@ -138,7 +135,7 @@ func TestGzipBytesUnpacksToThisBinary(t *testing.T) {
 		t.Fatalf("reading the archive: %v", err)
 	}
 	if !bytes.Equal(got, program) {
-		t.Fatalf("the archive unpacks to %d bytes, want this binary's %d", len(got), len(program))
+		t.Fatalf("the archive unpacks to %d bytes, want the program's %d", len(got), len(program))
 	}
 }
 
@@ -158,9 +155,12 @@ func TestPackerProbeNamesADecompressorOrNone(t *testing.T) {
 
 // planTransfer is the mode's whole dependency story: gzip when the target's own
 // gzip can unpack it, busybox's when that is what the target has, and the plain
-// binary — with an uncompressed transfer — when it has neither.
+// program — with an uncompressed transfer — when it has neither. The payload is
+// the test's own, so the choice and the body are driven without compressing this
+// test binary.
 func TestPlanTransferFollowsTheTargetsDecompressor(t *testing.T) {
 	remote := "/tmp/karma-x/karma"
+	program := bytes.Repeat([]byte("karma archive "), 4096)
 	cases := []struct {
 		answer string
 		path   string
@@ -173,16 +173,12 @@ func TestPlanTransferFollowsTheTargetsDecompressor(t *testing.T) {
 	}
 	for _, c := range cases {
 		sess := &probeSession{answer: c.answer}
-		got, err := planTransfer(context.Background(), sess, remote)
+		got, err := planTransfer(context.Background(), sess, remote, program)
 		if err != nil {
 			t.Fatalf("%s: planTransfer: %v", c.answer, err)
 		}
 		if got.path != c.path || got.unpack != c.unpack {
 			t.Errorf("%s: path/unpack = %q/%q, want %q/%q", c.answer, got.path, got.unpack, c.path, c.unpack)
-		}
-		program, err := selfBytes()
-		if err != nil {
-			t.Fatal(err)
 		}
 		switch c.plural {
 		case "gzipped":
@@ -190,8 +186,8 @@ func TestPlanTransferFollowsTheTargetsDecompressor(t *testing.T) {
 				t.Errorf("%s: the body is %d bytes, not compressed", c.answer, len(got.body))
 			}
 		case "plain":
-			if len(got.body) != len(program) {
-				t.Errorf("%s: the body is %d bytes, want the binary's %d", c.answer, len(got.body), len(program))
+			if !bytes.Equal(got.body, program) {
+				t.Errorf("%s: the body is %d bytes, want the program's %d", c.answer, len(got.body), len(program))
 			}
 		}
 		if len(sess.ran) != 1 || !strings.Contains(sess.ran[0], "command -v gzip") {

@@ -139,35 +139,6 @@ var udevScript = script.Lines(
 // motd: motd and update-motd.d are script surfaces run as root on login
 // (mainly Ubuntu).
 
-// pthDirs, pthInclude, pthImport and pthExcludes are the .pth check's shape: the
-// python package directories, the file-name glob, the line the grep keeps, and
-// setuptools' two legitimate precedence files, excluded on both sides so a normal
-// system stays silent. A .pth in site/dist-packages is processed at Python
-// startup, and a line starting with import is code.
-var (
-	pthDirs = []string{
-		"/usr/lib/python3*/dist-packages",
-		"/usr/lib/python3*/site-packages",
-		"/usr/local/lib/python3*/dist-packages",
-		"/usr/local/lib/python3*/site-packages",
-	}
-	pthExcludes = []string{"distutils-precedence.pth", "_distutils_system_mod.pth"}
-)
-
-const (
-	pthInclude = "*.pth"
-	pthImport  = `^import`
-)
-
-var pthImportRe = regexp.MustCompile(pthImport)
-
-var pthScript = script.Lines(
-	"for d in "+strings.Join(pthDirs, " ")+"; do",
-	`  [ -d "$d" ] || continue`,
-	"  grep -rnI --include='"+pthInclude+"' --exclude='"+strings.Join(pthExcludes, "' --exclude='")+"' '"+pthImport+`' "$d" 2>/dev/null`,
-	"done",
-)
-
 // generatorDirs and generatorHead are the generator check's shape: the directory
 // word list and the per-directory listing cap, which the ssh script and the local
 // walk both take. Generators are among the very first executables systemd runs at
@@ -240,7 +211,11 @@ var PersistenceChecks = []*model.Check{
 				model.NewFilter("unit-files-header", `^UNIT FILE\b`, model.FilterDrop),
 				model.NewFilter("unit-files-listed", `^\d+ unit files listed`, model.FilterDrop),
 			},
-			Syntax: model.SyntaxTable,
+			// The row carries two state words — the unit's own and the vendor
+			// preset — and the unit-files lexer paints each by its value
+			// (enabled apart from disabled), where the generic table styler
+			// would only cycle columns.
+			Syntax: model.SyntaxUnitFiles,
 		}),
 	listingCheck("unit-dirs", "systemd unit directories (by mtime)", model.AspectPersistence,
 		unitDirs, 100, nil),
@@ -304,19 +279,6 @@ var PersistenceChecks = []*model.Check{
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("ld-conf-entry", `^[^#\n]\S+`, model.Low, "library search path entry"),
-			},
-		}),
-	// setuptools' two legitimate precedence files are already excluded by the
-	// collection script, so the rule stays minimal
-	define.LinuxCheck("python-pth", "Python .pth injection", model.AspectPersistence,
-		[]model.Step{{{Label: "grep", Inv: model.Dual{
-			Run:    native.Pth(pthDirs, pthInclude, pthImportRe, pthExcludes),
-			Script: pthScript,
-		}}}},
-		define.CheckOpt{
-			Rules: []model.Rule{
-				model.NewRule("pth-import", `\.pth:[0-9]+:import`, model.High,
-					".pth import (runs at python startup)"),
 			},
 		}),
 	define.LinuxCheck("shell-rc", "Shell startup files", model.AspectPersistence,

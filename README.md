@@ -132,7 +132,7 @@ keeps the bytes intact.
 ## Catalog
 
 Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log`
-`kernel` `package` (77 checks). Windows aspects: `system` `identity` `process` `network`
+`kernel` `package` (76 checks). Windows aspects: `system` `identity` `process` `network`
 `persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (43 checks).
 `karma list` prints them as a heading tree, every row carrying the check id, its title and its probe
 chain; column widths are measured over the whole selection, so the groups line up.

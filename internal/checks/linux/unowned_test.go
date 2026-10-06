@@ -151,6 +151,45 @@ func TestUnownedBodyEmptyWhenEverythingIsOwned(t *testing.T) {
 	}
 }
 
+// The usrmerge case the lab showed: dpkg's database records the pre-merge
+// spelling (/bin/bash) while the directory the walk reads is the canonical
+// one (/usr/bin), so a query that only knows the canonical spelling calls
+// half of /usr/bin unowned. The fake dpkg answers only the legacy spelling —
+// the shape dpkg 1.21's database has — and both tiers must still agree that
+// the listed file is owned and only the stranger is not.
+func TestUnownedScriptAndNativeAgreeThroughAUsrmergeAlias(t *testing.T) {
+	base := t.TempDir()
+	merged := filepath.Join(base, "usr", "bin")
+	if err := os.MkdirAll(merged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"kept", "evil.so"} {
+		if err := os.WriteFile(filepath.Join(merged, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	legacy := filepath.Join(base, "bin")
+	if err := os.Symlink("usr/bin", legacy); err != nil {
+		t.Fatal(err)
+	}
+	// dpkg answers only the /bin spelling, the way its pre-merge database does.
+	dpkg := "#!/bin/sh\nfor p in \"$@\"; do\n  case \"$p\" in \"" + legacy + "/*\") echo \"pkg: $p\" | sed 's|\\*|kept|';; esac\ndone\n"
+	path := managerFixture(t, "dpkg", dpkg)
+	t.Setenv("PATH", path)
+
+	resolved, err := filepath.EvalSymlinks(merged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := resolved + "/evil.so\n"
+	if got := runVerifyScript(t, script.UnownedScript([]string{legacy, merged}), []string{"PATH=" + path}); got != want {
+		t.Errorf("the pipeline reported\n%q\nwant\n%q", got, want)
+	}
+	if got := unownedNative(t, merged, legacy); got != want {
+		t.Errorf("the local tier reported\n%q\nwant\n%q", got, want)
+	}
+}
+
 // The two row classes the panel grades: a file outside the database is the
 // finding, and the hidden and dash-led names among them are painted by the
 // rules that name those shapes.
@@ -179,9 +218,9 @@ func TestUnownedFileGrades(t *testing.T) {
 
 // unownedNative runs the local tier over one directory with the PATH the test
 // set, so the fake package manager answers it too.
-func unownedNative(t *testing.T, dir string) string {
+func unownedNative(t *testing.T, dirs ...string) string {
 	t.Helper()
-	body, err := native.UnownedFiles([]string{dir})(context.Background())
+	body, err := native.UnownedFiles(dirs)(context.Background())
 	if err != nil {
 		t.Fatalf("the local tier failed: %v", err)
 	}

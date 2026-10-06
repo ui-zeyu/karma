@@ -27,20 +27,24 @@ const unownedAlternatives = "/etc/alternatives/*"
 
 // UnownedScript is the ssh and ttyd channels' tier. Each directory is
 // canonicalized first, so usrmerge's /bin and /usr/bin are one directory read
-// once and the local tier's filepath.EvalSymlinks sees the same set. The two
-// producers are tagged and read by one awk pass, which needs no temporary file:
-// the found paths and the package database's paths are the same strings, so a
-// path in both maps is owned and everything else is the body.
+// once; the original spellings are kept beside the canonical roots, because
+// dpkg's database still records the pre-merge paths — both spellings are
+// queried and the owned rows are rewritten into the canonical one, exactly
+// what the local tier's canonicalRows does. The two producers are tagged and
+// read by one awk pass, which needs no temporary file: the found paths and
+// the package database's paths are the same strings, so a path in both maps
+// is owned and everything else is the body.
 //
 // A missing package manager exits 127 and the chain reports no answer rather
 // than an empty one; a database that lists every file found is an empty answer.
 func UnownedScript(dirs []string) string {
 	return fmt.Sprintf(`command -v dpkg >/dev/null 2>&1 || command -v rpm >/dev/null 2>&1 || exit 127
-roots=
+roots= pairs= seen=
 for d in %[1]s; do
   r=$(readlink -f "$d" 2>/dev/null) || continue
-  case " $roots " in *" $r "*) continue;; esac
-  roots="$roots $r"
+  pairs="$pairs $d=$r"
+  case " $seen " in *" $r "*) continue;; esac
+  seen="$seen $r"; roots="$roots $r"
 done
 [ -n "$roots" ] || exit 0
 {
@@ -48,9 +52,14 @@ done
     LC_ALL=C find "$r" -maxdepth 1 -mindepth 1 ! -lname '%[2]s' 2>/dev/null | sed 's/^/F/'
   done
   if command -v dpkg >/dev/null 2>&1; then
+    sedargs="-e s/x/x/"
     set --
-    for r in $roots; do set -- "$@" "$r/*"; done
-    LC_ALL=C dpkg -S "$@" 2>/dev/null | sed 's/^.*: //' | sed 's/^/O/'
+    for p in $pairs; do
+      o=${p%%=*}; r=${p#*=}
+      set -- "$@" "$o/*"
+      [ "$o" = "$r" ] || sedargs="$sedargs -e s#^$o/#$r/#"
+    done
+    LC_ALL=C dpkg -S "$@" 2>/dev/null | sed 's/^.*: //' | sed $sedargs | sed 's/^/O/'
   else
     LC_ALL=C rpm -qa --qf '[%%{FILENAMES}\n]' 2>/dev/null | sed 's/^/O/'
   fi

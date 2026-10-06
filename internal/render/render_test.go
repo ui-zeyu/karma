@@ -831,6 +831,87 @@ func TestUnitStateCellsPaintedByMeaning(t *testing.T) {
 	if covered(spans, at, at+len("running")) {
 		t.Fatalf("a state word inside DESCRIPTION should stay default: %+v", spans)
 	}
+	// dead is the state systemd leaves a unit it gave up on in: it has to read
+	// apart from both the alive states and the finished ones.
+	dead := pad("grub.service", 16) + pad("loaded", 7) + pad("inactive", 9) + pad("dead", 11) +
+		"GRUB failed boot detection"
+	spans = styler(dead)
+	if !hasSpan(spans, dead, "dead", unitStateStyles["dead"]) {
+		t.Fatalf("dead should be painted by its own state: %+v", spans)
+	}
+	if unitStateStyles["dead"] == dimStyle || unitStateStyles["dead"] == unitStateStyles["running"] {
+		t.Fatalf("dead wears %+v, one of the colors it has to read apart from", unitStateStyles["dead"])
+	}
+	// failed keeps the cycling column color: the rules decide what a row means,
+	// and the word itself is what a rule reads.
+	failed := pad("grub.service", 16) + pad("loaded", 7) + pad("failed", 9) + pad("failed", 11) +
+		"GRUB failed boot detection"
+	spans = styler(failed)
+	if !hasSpan(spans, failed, "failed", tableColumnStyles[2]) {
+		t.Fatalf("failed should keep its column color: %+v", spans)
+	}
+}
+
+// The list-unit-files rows the persistence check collects carry two state words
+// — the unit's own and the vendor preset — each painted by its value, so a unit
+// that boots reads apart from one that was talked out of it.
+func TestUnitFileStateWordsPaintedByValue(t *testing.T) {
+	pad := func(text string, width int) string { return text + strings.Repeat(" ", width-len(text)) }
+	styler := newLineStyler("unit-files")
+	hasSpan := func(spans []paintSpan, line, word string, want style) bool {
+		start := strings.Index(line, word)
+		for _, span := range spans {
+			if span.Start == start && span.End == start+len(word) && span.Style == want {
+				return true
+			}
+		}
+		return false
+	}
+	enabled := pad("ssh.service", 32) + pad("enabled", 16) + "enabled"
+	if !hasSpan(styler(enabled), enabled, "enabled", style{fg: "2"}) {
+		t.Fatalf("enabled should be painted green: %+v", styler(enabled))
+	}
+	disabled := pad("ufw.service", 32) + pad("disabled", 16) + "enabled"
+	if !hasSpan(styler(disabled), disabled, "disabled", dimStyle) {
+		t.Fatalf("disabled should be faint: %+v", styler(disabled))
+	}
+	if unitFileStateStyles["enabled"] == unitFileStateStyles["disabled"] {
+		t.Fatal("enabled and disabled wear one color")
+	}
+	// A row with no state word — the header, the closing count — takes the name
+	// column alone rather than the word-by-word cycle a generic table gets.
+	header := "UNIT FILE            STATE           PRESET"
+	spans := styler(header)
+	if len(spans) != 1 || spans[0].Style != tableColumnStyles[0] {
+		t.Fatalf("the header should take the name column alone: %+v", spans)
+	}
+}
+
+// list-timers' NEXT/LAST dates span several words ("Thu 2026-07-30 00:00:00
+// UTC"); the lexer reads the row as the six cells it is and paints each whole,
+// where the generic table styler colored one date in four colors.
+func TestTimersPaintWholeDateCells(t *testing.T) {
+	line := "Thu 2026-07-30 00:00:00 UTC  2h 30min left  Wed 2026-07-29 21:30:00 UTC  1h 30min ago  " +
+		"logrotate.timer  logrotate.service"
+	want := "Thu 2026-07-30 00:00:00 UTC=244 Wed 2026-07-29 21:30:00 UTC=244 2h 30min left=2 " +
+		"1h 30min ago= logrotate.timer=4 logrotate.service=6"
+	if got := spansOf(line, timersRow(line)); got != want {
+		t.Fatalf("spans = %q, want %q", got, want)
+	}
+	// A timer that never ran carries n/a in both date cells, which are single
+	// words rather than four.
+	never := "n/a                          n/a                             n/a                       " +
+		"n/a                        apt-daily.timer  apt-daily.service"
+	want = "n/a=244 n/a=244 n/a=2 n/a= apt-daily.timer=4 apt-daily.service=6"
+	if got := spansOf(never, timersRow(never)); got != want {
+		t.Fatalf("spans = %q, want %q", got, want)
+	}
+	// The header and the closing count are not rows of the table.
+	for _, plain := range []string{"NEXT  LEFT  LAST  PASSED  UNIT  ACTIVATES", "4 timers listed."} {
+		if spans := timersRow(plain); spans != nil {
+			t.Errorf("%q should carry no color: %+v", plain, spans)
+		}
+	}
 }
 
 // A section override styles that section with its own rule; the rest keep the

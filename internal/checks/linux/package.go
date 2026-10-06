@@ -12,6 +12,7 @@ import (
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/script"
+	"karma/internal/shape"
 )
 
 const dockerScript = "docker ps -a 2>/dev/null; echo; docker images 2>/dev/null"
@@ -98,9 +99,12 @@ var pkgHistoryRules = []model.Rule{
 // kilobytes, and dpkg's log names every package and version that changed), and
 // what dpkg logs is narrowed to the transactions themselves rather than the
 // unpack/configure/status churn around them. Everything else is counted as
-// filtered; the raw text --save writes still carries it all.
+// filtered; the raw text --save writes still carries it all. The apt rows the
+// check's shaper builds — the start date, then the command line — match the
+// first filter's second branch.
 var pkgHistoryKeep = []model.LineFilter{
-	model.NewFilter("pkg-apt-record", `^(?:Start-Date|Commandline):`, model.FilterKeep),
+	model.NewFilter("pkg-apt-record",
+		`^(?:Start-Date|Commandline):|^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s{2,}\S`, model.FilterKeep),
 	// dpkg writes four lines per transaction (install, then configure, then the
 	// status churn); the install line's timestamp is the one that matters, so
 	// only the verbs that changed which package is on disk are kept.
@@ -204,7 +208,12 @@ var PackageChecks = []*model.Check{
 			Run:    native.PkgHistory(pkgHistoryPaths, pkgHistoryLines),
 			Script: pkgHistoryScript,
 		}}}},
-		define.CheckOpt{Rules: pkgHistoryRules, Filters: pkgHistoryKeep, Syntax: model.SyntaxPkgHistory}),
+		define.CheckOpt{
+			Rules:     pkgHistoryRules,
+			Filters:   pkgHistoryKeep,
+			Syntax:    model.SyntaxPkgHistory,
+			Normalize: shape.AptHistory,
+		}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
 		[]model.Step{{{Label: "file", Inv: model.Dual{Run: native.AuthBinaries(authBinPaths), Script: authBinScript}}}},
 		define.CheckOpt{

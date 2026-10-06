@@ -243,10 +243,12 @@ var syntaxStylers = map[model.Syntax]func() lineStyler{
 	// Cycle off: top -b's summary lines (banner, Tasks, %Cpu, MiB Mem) are
 	// prose, not columns. The process table anchors on its all-caps header;
 	// everything before it stays plain.
-	model.SyntaxTop:     func() lineStyler { return newTableStyler(nil, false).style },
-	model.SyntaxDf:      func() lineStyler { return newTableStyler([]*regexp.Regexp{dfHeader}, true).style },
-	model.SyntaxLastlog: func() lineStyler { return newTableStyler([]*regexp.Regexp{lastlogHeader}, true).style },
-	model.SyntaxUnits:   func() lineStyler { return newUnitStyler().style },
+	model.SyntaxTop:       func() lineStyler { return newTableStyler(nil, false).style },
+	model.SyntaxDf:        func() lineStyler { return newTableStyler([]*regexp.Regexp{dfHeader}, true).style },
+	model.SyntaxLastlog:   func() lineStyler { return newTableStyler([]*regexp.Regexp{lastlogHeader}, true).style },
+	model.SyntaxUnits:     func() lineStyler { return newUnitStyler().style },
+	model.SyntaxUnitFiles: func() lineStyler { return styleUnitFiles },
+	model.SyntaxTimers:    func() lineStyler { return timersRow },
 	model.SyntaxListen: func() lineStyler {
 		return newTableStyler([]*regexp.Regexp{compile(`^Netid\s+State\s`), compile(`^Proto\s+Recv-Q\s+Send-Q\s`)}, true).style
 	},

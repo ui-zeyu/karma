@@ -1,5 +1,5 @@
 // native tiers of the persistence checks: cron surfaces, boot scripts,
-// startup files, skel listings, generators, udev rules, motd, and .pth.
+// startup files, skel listings, generators, udev rules, and motd.
 
 package native
 
@@ -76,26 +76,6 @@ func Udev(dirs []string, head, maxHits int, pattern *regexp.Regexp) func(context
 		for _, dir := range dirs {
 			b.WriteString(localfs.ListingSection(dir, head, names))
 			for _, hit := range localfs.GrepWalk(ctx, dir, localfs.GrepScan{Pattern: pattern, MaxHits: maxHits}) {
-				b.WriteString(hit)
-				b.WriteByte('\n')
-			}
-		}
-		return b.String(), nil
-	}
-}
-
-// Pth mirrors the check's pthScript: import lines in the .pth files across every
-// python package directory it hands in, setuptools' two legitimate precedence
-// files excluded.
-func Pth(dirs []string, include string, pattern *regexp.Regexp, excludes []string) func(context.Context) (string, error) {
-	return func(ctx context.Context) (string, error) {
-		var b strings.Builder
-		for _, dir := range localfs.ExpandDirs(dirs) {
-			for _, hit := range localfs.GrepWalk(ctx, dir, localfs.GrepScan{
-				Pattern:  pattern,
-				Includes: []string{include},
-				Excludes: excludes,
-			}) {
 				b.WriteString(hit)
 				b.WriteByte('\n')
 			}

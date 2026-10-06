@@ -16,6 +16,7 @@ import (
 	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/script"
+	"karma/internal/shape"
 )
 
 const suidTimeout = 25 * time.Second
@@ -185,13 +186,16 @@ var keyDirs = []string{"/", "/home", "/opt", "/root", "/srv", "/usr/local"}
 // script spells the flags as shell words (script.Join) and the in-process tier
 // as its own argument vector, both from that one list; the find fallback takes
 // the same root and depth. tree is used if present, else the probe falls through
-// to find, whose -printf is arranged in ls -l shape for the ls-l pseudo-lexer.
+// to find, whose -printf rows the reading layer draws as the same tree
+// (shape.HomeTree). -f prints each row's whole path, which is what keeps a rule
+// like hidden-nonhome-path able to read a row at the tree's top level: the
+// drawing moves a name's directory out of its line.
 const (
 	homeTreeRoot  = "/home"
 	homeTreeDepth = 4
 )
 
-var homeTreeFlags = []string{"-a", "-p", "-u", "-g", "-s", "-D", "--timefmt", "%Y-%m-%d %H:%M"}
+var homeTreeFlags = []string{"-a", "-f", "-p", "-u", "-g", "-s", "-D", "--timefmt", "%Y-%m-%d %H:%M"}
 
 // homeTreeScript is the tree tier's ssh branch: the same flags and root as the
 // local argument vector, rendered as shell words.
@@ -233,7 +237,9 @@ var FilesystemChecks = []*model.Check{
 		define.CheckOpt{Syntax: model.SyntaxDf}),
 	define.LinuxCheck("fstab", "Filesystem mount config (fstab)", model.AspectFilesystem,
 		readFilesCheck("/etc/fstab"),
-		define.CheckOpt{Syntax: model.SyntaxFstab, Rules: []model.Rule{mountRemoteFsRule}}),
+		// The six fields are padded to the body's widest cell (shape.Fstab) so
+		// the panel reads the grid; comments keep their own bytes.
+		define.CheckOpt{Syntax: model.SyntaxFstab, Normalize: shape.Fstab, Rules: []model.Rule{mountRemoteFsRule}}),
 	define.LinuxCheck("mounts", "Mount points", model.AspectFilesystem,
 		[]model.Step{
 			{{Label: "findmnt", Inv: model.Dual{Run: native.Findmnt, Script: "findmnt"}}},
@@ -315,8 +321,11 @@ var FilesystemChecks = []*model.Check{
 			{{Label: "find", Inv: model.Dual{Script: homeTreeFind}}},
 		},
 		define.CheckOpt{
-			Syntax: model.SyntaxLsL,
-			Rules:  []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule},
+			// The listing rows both channels' fallbacks print become the tree
+			// tree(1) draws (shape.HomeTree); a target that has tree installed
+			// already drew one, and that body passes through.
+			Normalize: shape.HomeTree,
+			Rules:     []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule},
 		}),
 	define.LinuxCheck("web-dirs", "Recently changed scripts in web directories", model.AspectFilesystem,
 		[]model.Step{{{Label: "find", Inv: model.Dual{

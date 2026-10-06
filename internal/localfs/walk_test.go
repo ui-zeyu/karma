@@ -111,9 +111,9 @@ func TestGrepWalk(t *testing.T) {
 	}
 }
 
-// TestGrepWalkExcludes mirrors the .pth check's own scan: setuptools' two
-// precedence files are excluded by basename at every depth, the include glob
-// keeps the .pth files alone, and MaxHits caps the rows afterwards.
+// TestGrepWalkExcludes pins the scan's name rules: an exclude matches a basename
+// at every depth, the include glob keeps one file class alone, and MaxHits caps
+// the rows afterwards.
 func TestGrepWalkExcludes(t *testing.T) {
 	dir := t.TempDir()
 	nested := filepath.Join(dir, "deep", "nested")

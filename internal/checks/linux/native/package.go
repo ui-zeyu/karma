@@ -129,11 +129,11 @@ func AuthBinaries(paths []string) func(context.Context) (string, error) {
 // "no answer here" rather than an empty answer.
 func UnownedFiles(dirs []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		roots := unownedRoots(dirs)
+		roots, spellings := unownedSpellings(dirs)
 		if len(roots) == 0 {
 			return "", nil
 		}
-		owned, ok := unownedOwned(ctx, roots)
+		owned, ok := unownedOwned(ctx, spellings)
 		if !ok {
 			return "", model.ErrTierUnavailable
 		}
@@ -141,21 +141,36 @@ func UnownedFiles(dirs []string) func(context.Context) (string, error) {
 	}
 }
 
-// unownedRoots resolves each directory to its canonical path and drops the
-// repeats: usrmerge's /bin and /usr/bin are one directory, and the script
-// tier's readlink -f loop reaches the same set.
-func unownedRoots(dirs []string) []string {
-	var roots []string
+// unownedSpelling pairs one requested directory with its canonical path.
+// usrmerge's /bin and /usr/bin are one directory, so the canonical roots are
+// deduplicated — but every original spelling is kept: dpkg's database still
+// records the pre-merge paths, so both spellings are queried and the owned
+// rows are rewritten into the canonical one before the comparison.
+type unownedSpelling struct {
+	original  string
+	canonical string
+}
+
+// unownedSpellings resolves each directory and returns the deduplicated
+// canonical roots with every spelling that reached each.
+func unownedSpellings(dirs []string) ([]string, []unownedSpelling) {
+	var (
+		roots     []string
+		spellings []unownedSpelling
+	)
 	seen := map[string]bool{}
 	for _, dir := range dirs {
 		resolved, err := filepath.EvalSymlinks(dir)
-		if err != nil || seen[resolved] {
+		if err != nil {
 			continue
 		}
-		seen[resolved] = true
-		roots = append(roots, resolved)
+		spellings = append(spellings, unownedSpelling{original: dir, canonical: resolved})
+		if !seen[resolved] {
+			seen[resolved] = true
+			roots = append(roots, resolved)
+		}
 	}
-	return roots
+	return roots, spellings
 }
 
 // unownedEntries lists one directory level, leaving out the
@@ -179,23 +194,41 @@ func unownedEntries(roots []string) []string {
 	return found
 }
 
-// unownedOwned reads the paths the package database knows, through the same two
-// commands the script tier runs: dpkg searched with one wildcard pattern per
-// directory, or rpm listing every file it ships. A pattern that matches nothing
-// makes dpkg complain on stderr and a directory whose every file is unowned is
-// exactly the case this check exists for, so the complaint is dropped.
-func unownedOwned(ctx context.Context, roots []string) ([]string, bool) {
+// unownedOwned reads the paths the package database knows, through the same
+// two commands the script tier runs: dpkg searched with one wildcard pattern
+// per directory spelling, or rpm listing every file it ships. A pattern that
+// matches nothing makes dpkg complain on stderr and a directory whose every
+// file is unowned is exactly the case this check exists for, so the complaint
+// is dropped. The dpkg rows are rewritten from the pre-merge spelling into
+// the canonical root, the spelling the walk found its paths under.
+func unownedOwned(ctx context.Context, spellings []unownedSpelling) ([]string, bool) {
 	if haveBinary("dpkg") {
 		argv := []string{"dpkg", "-S"}
-		for _, root := range roots {
-			argv = append(argv, root+"/*")
+		for _, s := range spellings {
+			argv = append(argv, s.original+"/*")
 		}
-		return ownedRows(runHostQuiet(ctx, argv, true).out), true
+		return canonicalRows(runHostQuiet(ctx, argv, true).out, spellings), true
 	}
 	if haveBinary("rpm") {
 		return ownedRows(runHostQuiet(ctx, []string{"rpm", "-qa", "--qf", `[%{FILENAMES}\n]`}, true).out), true
 	}
 	return nil, false
+}
+
+// canonicalRows parses the manager's listing and rewrites pre-merge spellings
+// to their canonical root: the found paths and the owned paths must be the
+// same strings to compare.
+func canonicalRows(out string, spellings []unownedSpelling) []string {
+	rows := ownedRows(out)
+	for i, path := range rows {
+		for _, s := range spellings {
+			if s.original != s.canonical && strings.HasPrefix(path, s.original+"/") {
+				rows[i] = s.canonical + path[len(s.original):]
+				break
+			}
+		}
+	}
+	return rows
 }
 
 // ownedRows splits a package manager's file listing the way the script tier's

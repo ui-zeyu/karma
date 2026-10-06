@@ -10,13 +10,17 @@
 package render
 
 var (
-	// apt's history.log carries two lines per transaction: when it started and
-	// the command line that did it.
+	// apt's history.log carries two lines per transaction — when it started and
+	// the command line that did it — and the shaped section carries the same two
+	// as one row (shape.AptHistory); both shapes reach here.
 	aptHistoryLine = compile(`^(?P<key>Start-Date|Commandline):[ \t]*(?P<value>.*)$`)
 	// dpkg's log line: the timestamp, the verb that changed which packages are
 	// on disk, then the package and the versions it moved between.
 	dpkgLogLine = compile(`^(?P<date>\d{4}-\d{2}-\d{2}) (?P<time>\d{2}:\d{2}:\d{2}) ` +
 		`(?P<action>install|upgrade|remove|purge) (?P<package>[^:\s]+)(?P<arch>:\S+)?(?: (?P<versions>.*))?$`)
+	// The shaped apt section carries one row per transaction: the start
+	// date, two blanks, the command line (shape.AptHistory builds it).
+	aptHistoryRow = compile(`^(?P<date>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?P<gap>\s{2,})(?P<cmd>\S.*)$`)
 	// A command line is words: the program first, then its arguments.
 	historyWord = compile(`\S+`)
 	historyFlag = compile(`^-{1,2}\S+$`)
@@ -48,6 +52,14 @@ func stylePkgHistory(line string) []paintSpan {
 			}
 		}
 		return spans
+	}
+	if matched, ok := matchLine(aptHistoryRow, line); ok {
+		dateStart, dateEnd, _ := matched.span("date")
+		cmdStart, cmdEnd, _ := matched.span("cmd")
+		return append(
+			[]paintSpan{{Start: dateStart, End: dateEnd, Style: mutedStyle}},
+			commandLineSpans(line, [2]int{cmdStart, cmdEnd})...,
+		)
 	}
 	if matched, ok := matchLine(aptHistoryLine, line); ok {
 		keyStart, keyEnd, _ := matched.span("key")

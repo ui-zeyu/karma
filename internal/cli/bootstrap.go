@@ -65,7 +65,11 @@ func runBootstrap(ctx context.Context, transport session.Transport) error {
 	}
 	dir := "/tmp/karma-" + rand.Text()
 	remote := dir + "/karma"
-	shipment, err := planTransfer(ctx, sess, remote)
+	program, err := selfBytes()
+	if err != nil {
+		return err
+	}
+	shipment, err := planTransfer(ctx, sess, remote, program)
 	if err != nil {
 		return err
 	}
@@ -94,12 +98,9 @@ type transfer struct {
 // target can unpack it — its own gzip or busybox's, since that is what keeps the
 // transfer small; a target with neither still works, at the price of the full
 // binary on the wire, which asks for nothing beyond the shell, cat and chmod
-// every channel already uses.
-func planTransfer(ctx context.Context, sess session.Session, remote string) (transfer, error) {
-	program, err := selfBytes()
-	if err != nil {
-		return transfer{}, err
-	}
+// every channel already uses. The program is the caller's bytes, so what the
+// plan carries is decided without reading this process's own binary first.
+func planTransfer(ctx context.Context, sess session.Session, remote string, program []byte) (transfer, error) {
 	packer := targetPacker(ctx, sess)
 	if packer == "none" {
 		fmt.Fprintf(os.Stderr,

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"karma/internal/model"
+	"karma/internal/shape"
 )
 
 // mountRow is one /proc/self/mounts line.
@@ -244,15 +245,16 @@ func Findmnt(ctx context.Context) (string, error) {
 	return renderFindmntRows(rows), nil
 }
 
-// renderFindmntRows prints the findmnt(1) view: header, then one indented
-// row per mount.
+// renderFindmntRows prints the findmnt(1) view: header, then one row per
+// mount with the target indented by its depth, in the one padded table the
+// reading layer's shapers use (shape.Table) — so the rows line up under the
+// header they name. The options keep mount's own parentheses, the way the
+// flat `mount` output spells them.
 func renderFindmntRows(rows []mountRow) string {
-	var b strings.Builder
-	b.WriteString("TARGET                SOURCE          FSTYPE         OPTIONS\n")
+	table := shape.NewTable("TARGET", "SOURCE", "FSTYPE", "OPTIONS")
 	for _, m := range rows {
 		depth := strings.Count(strings.TrimSuffix(m.point, "/"), "/")
-		fmt.Fprintf(&b, "%s%s %s %s (%s)\n",
-			strings.Repeat("  ", depth), m.point, m.dev, m.fstype, m.opts)
+		table.Add(strings.Repeat("  ", depth)+m.point, m.dev, m.fstype, "("+m.opts+")")
 	}
-	return b.String()
+	return table.String()
 }
