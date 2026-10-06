@@ -79,7 +79,7 @@ var RemoteChecks = []*model.Check{
 		},
 		remoteCtrlServicesFragment),
 	define.WindowsCheck("sunlogin", "Sunlogin Client Logs and Access Code", model.AspectRemote,
-		[]model.Probe{PSProbe("log", sunloginScript)},
+		[]model.Step{{PSProbe("log", sunloginScript)}},
 		define.CheckOpt{
 			Filters: []model.LineFilter{
 				model.NewFilter("sunlogin-keep", sunloginKeep, model.FilterKeep),

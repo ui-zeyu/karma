@@ -5,10 +5,12 @@
 // the interfaces declared here.
 //
 // Every run is harvested the same way (harvest.go): the reads are attached
-// first, a timeout or a cancel (Ctrl-C) stops the data source rather than the
+// first, the deadline or a cancel (Ctrl-C) stops the data source rather than the
 // reads, output already produced is kept, and a row cap stops the source once
 // enough rows exist. One finished call is read into a model.Verdict there, so
-// the chain above reads outcomes rather than exit codes.
+// the chain above reads outcomes rather than exit codes. The deadline is the
+// context's, which is what puts the channel's own setup — a dial, a session
+// open, an exec — inside the same bound as the output.
 package session
 
 import (
@@ -31,11 +33,12 @@ type Session interface {
 	// Channel is which side of the wire karma runs on: the runner resolves
 	// each probe tier against it while walking the chain.
 	Channel() model.Channel
-	// Run executes one invocation, with a per-command timeout and a row cap,
-	// and harvests its output into a model.RunResult whose Verdict says what
-	// happened. A timeout of zero or less is no deadline; a cancelled context
-	// stops the data source and keeps the output already produced.
-	Run(ctx context.Context, inv model.Invocation, timeout time.Duration, cap model.RowCap) model.RunResult
+	// Run executes one call and harvests its output into a model.RunResult
+	// whose Verdict says what happened. The context bounds the whole call — the
+	// channel's own setup, the command, and the output — so a caller states a
+	// deadline with Within; a cancelled context stops the data source and keeps
+	// the output already produced.
+	Run(ctx context.Context, call model.Call) model.RunResult
 	// Close releases the channel's resources.
 	Close() error
 }
@@ -45,7 +48,22 @@ type Session interface {
 // header and the chain resolution start only after a connection exists.
 type Transport interface {
 	Platform() model.Platform
-	Open() (Session, error)
+	// Open connects, under the run's own context: Ctrl-C must end a dial or a
+	// handshake, and one is not interruptible through the channel it has not
+	// finished opening.
+	Open(ctx context.Context) (Session, error)
+}
+
+// Within bounds one call or one walk by budget, and returns the context alone
+// when budget is zero or less: the deadline travels in the context, so it is
+// stated once, where the policy lives — one check's walk in the runner, one
+// host fact or one bootstrap command in the command line — and every layer
+// below it inherits the same one.
+func Within(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	if budget <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, budget)
 }
 
 // Uploader is a channel that can write one file to the target. The bootstrap

@@ -31,7 +31,8 @@ func addRunFlags(cmd *cobra.Command) { runFlags(cmd.Flags()) }
 // share one list.
 func runFlags(flags *pflag.FlagSet) {
 	flags.Int("concurrency", model.DefaultConcurrency, "number of checks to run in parallel")
-	flags.Float64("timeout", model.DefaultTimeout.Seconds(), "default timeout per command in seconds")
+	flags.Float64("timeout", model.DefaultTimeout.Seconds(),
+		"budget of one check in seconds: its whole fallback walk, channel setup included")
 	flags.Int("max-lines", model.DefaultMaxLines, "maximum number of lines shown per check")
 	flags.String("min-severity", "all",
 		"show only rows at or above this severity and count the rest as filtered: "+

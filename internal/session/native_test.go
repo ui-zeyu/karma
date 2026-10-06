@@ -11,7 +11,7 @@ import (
 )
 
 func TestRunNativeSuccess(t *testing.T) {
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{Run: func(context.Context) (string, error) { return "hello\n", nil }}, 0, model.RowCap{})
 	if res.Verdict != model.VerdictAnswered || res.Stdout != "hello\n" || res.Truncated {
 		t.Fatalf("wanted exit 0 with the body, got %+v", res)
@@ -19,7 +19,7 @@ func TestRunNativeSuccess(t *testing.T) {
 }
 
 func TestRunNativeUnavailableFallsThroughLikeAMissingBinary(t *testing.T) {
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{Run: func(context.Context) (string, error) { return "", model.ErrTierUnavailable }}, 0, model.RowCap{})
 	if res.Verdict != model.VerdictUnavailable || res.ExitCode != 127 {
 		t.Fatalf("an unavailable native tier should read as unavailable/127, got %+v", res)
@@ -30,7 +30,7 @@ func TestRunNativeUnavailableFallsThroughLikeAMissingBinary(t *testing.T) {
 // local channel then answers the way the ssh channel would (a non-Linux host
 // runs the host's ps, df, last).
 func TestRunNativeUnavailableFallsBackToTheScript(t *testing.T) {
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{
 			Run:    func(context.Context) (string, error) { return "", model.ErrTierUnavailable },
 			Script: "echo from-script",
@@ -42,7 +42,7 @@ func TestRunNativeUnavailableFallsBackToTheScript(t *testing.T) {
 
 // An answered body is the answer: the script side does not run.
 func TestRunNativeAnsweredBodySkipsTheScript(t *testing.T) {
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{
 			Run:    func(context.Context) (string, error) { return "in-process\n", nil },
 			Script: "echo from-script",
@@ -55,7 +55,7 @@ func TestRunNativeAnsweredBodySkipsTheScript(t *testing.T) {
 // The fallback runs the script once: a script that is itself missing stays the
 // 127 the runner reads as an unavailable tier.
 func TestRunNativeFallbackDoesNotRetryTheBody(t *testing.T) {
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{
 			Run:    func(context.Context) (string, error) { return "", model.ErrTierUnavailable },
 			Script: "exit 127",
@@ -69,19 +69,19 @@ func TestRunNativeFallbackDoesNotRetryTheBody(t *testing.T) {
 // here: the local channel answers with the tier's script side, and stays at 127
 // when the tier carries neither.
 func TestRunNativeWithoutALocalBranch(t *testing.T) {
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{Script: "echo from-script"}, 10*time.Second, model.RowCap{})
 	if res.ExitCode != 0 || res.Stdout != "from-script\n" {
 		t.Fatalf("wanted the script side's answer, got %+v", res)
 	}
-	bare := LocalSession{}.Run(context.Background(), model.Dual{}, 10*time.Second, model.RowCap{})
+	bare := runCall(context.Background(), LocalSession{}, model.Dual{}, 10*time.Second, model.RowCap{})
 	if bare.Verdict != model.VerdictUnavailable || bare.ExitCode != 127 {
 		t.Fatalf("a tier with no branch at all should read as unavailable/127, got %+v", bare)
 	}
 }
 
 func TestRunNativeErrorReportsStderr(t *testing.T) {
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{Run: func(context.Context) (string, error) { return "", errors.New("boom") }}, 0, model.RowCap{})
 	if res.Verdict != model.VerdictFailed || res.ExitCode != 1 || res.Stderr != "boom" {
 		t.Fatalf("wanted exit 1 with the error on stderr, got %+v", res)
@@ -92,18 +92,18 @@ func TestRunNativeErrorReportsStderr(t *testing.T) {
 // outside the runner's recover: an unrecovered panic there would end the
 // process and lose the whole report. It fails as one tier instead.
 func TestRunNativeSurvivesAPanickingBody(t *testing.T) {
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{Run: func(context.Context) (string, error) {
 			var empty []byte
 			return string(empty[1:]), nil // the shape an unguarded slice takes
 		}}, 0, model.RowCap{})
-	if res.Verdict != model.VerdictFailed || !strings.Contains(res.Stderr, "in-process tier panicked") {
+	if res.Verdict != model.VerdictFailed || !strings.Contains(res.Stderr, "in-process tier") {
 		t.Fatalf("wanted a failed tier naming the panic, got %+v", res)
 	}
 }
 
 func TestRunNativeTimeoutKeepsPartialOutput(t *testing.T) {
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{Run: func(ctx context.Context) (string, error) {
 			<-ctx.Done()
 			return "partial", ctx.Err()
@@ -117,7 +117,7 @@ func TestRunNativeCancelKeepsPartialOutput(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	time.AfterFunc(10*time.Millisecond, cancel)
-	res := LocalSession{}.Run(ctx,
+	res := runCall(ctx, LocalSession{},
 		model.Dual{Run: func(ctx context.Context) (string, error) {
 			<-ctx.Done()
 			return "partial", ctx.Err()
@@ -134,7 +134,7 @@ func TestRunNativeAbandonsABodyThatIgnoresTheDeadline(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	started := time.Now()
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{Run: func(context.Context) (string, error) {
 			<-release // the shape of an open(2) waiting for a writer
 			return "late", nil
@@ -155,7 +155,7 @@ func TestRunNativeAbandonsABodyThatIgnoresTheCancel(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	time.AfterFunc(20*time.Millisecond, cancel)
-	res := LocalSession{}.Run(ctx,
+	res := runCall(ctx, LocalSession{},
 		model.Dual{Run: func(context.Context) (string, error) {
 			<-release
 			return "late", nil
@@ -166,7 +166,7 @@ func TestRunNativeAbandonsABodyThatIgnoresTheCancel(t *testing.T) {
 }
 
 func TestRunNativeScanCapTruncates(t *testing.T) {
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{Run: func(context.Context) (string, error) {
 			return "a\nb\nc\nd", nil
 		}}, 0, model.Scan(2))
@@ -209,7 +209,7 @@ func TestCapLinesMatchesTheHarvestBoundary(t *testing.T) {
 func TestRunNativeScriptOnlySkipsTheBody(t *testing.T) {
 	scriptOnly = true
 	t.Cleanup(func() { scriptOnly = false })
-	res := LocalSession{}.Run(context.Background(),
+	res := runCall(context.Background(), LocalSession{},
 		model.Dual{
 			Run:    func(context.Context) (string, error) { return "in-process\n", nil },
 			Script: "echo from-script",

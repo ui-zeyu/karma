@@ -35,7 +35,7 @@ const rdpNLAOffRule = `UserAuthentication\s+REG_DWORD\s+0x0\b`
 // SystemChecks is the system information aspect.
 var SystemChecks = []*model.Check{
 	define.WindowsCheck("software", "Installed Software Inventory (Uninstall)", model.AspectSystem,
-		[]model.Probe{PSProbe("reg", softwareScript)},
+		[]model.Step{{PSProbe("reg", softwareScript)}},
 		define.CheckOpt{
 			Syntax: model.SyntaxPipe,
 			Rules: []model.Rule{
@@ -47,7 +47,7 @@ var SystemChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("hotfixes", "Patch List (Get-HotFix)", model.AspectSystem,
-		[]model.Probe{PSProbe("cim", hotfixScript)},
+		[]model.Step{{PSProbe("cim", hotfixScript)}},
 		define.CheckOpt{Rules: []model.Rule{define.KeywordRule}}),
 	RegCheck("env-vars", "Environment Variables (System and User)", model.AspectSystem,
 		[]RegKey{
@@ -63,7 +63,7 @@ var SystemChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("shares", "Share List (LanmanServer)", model.AspectSystem,
-		[]model.Probe{PSProbe("reg", sharesScript)},
+		[]model.Step{{PSProbe("reg", sharesScript)}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("custom-share", customShare, model.Medium,

@@ -16,6 +16,7 @@ type noopObserver struct{}
 
 func (noopObserver) CheckStarted(*model.Check)                      {}
 func (noopObserver) CheckFinished(*model.Check, *model.CheckResult) {}
+func (noopObserver) Damaged(*model.Check, error)                    {}
 
 func TestSaveObserverWritesEvidenceAndManifest(t *testing.T) {
 	dir := t.TempDir()

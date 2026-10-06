@@ -53,15 +53,15 @@ func firewallScriptText() string {
 // NetworkChecks covers networking.
 var NetworkChecks = []*model.Check{
 	define.LinuxCheck("listen", "Listening and established connections", model.AspectNetwork,
-		[]model.Probe{
-			{Label: "ss", Inv: model.Dual{Run: native.Ss, Script: "ss -tunap"}},
-			{Label: "netstat", Inv: model.NewCommand("netstat", "-tunap")},
-			// The proc-net hex address restore is this probe's own dialect (adapt carries the
-			// section title to tell TCP/UDP); ss and netstat already output the target shape.
-			{Label: "proc-net", Inv: model.Dual{
-				Run:    native.ProcNet(procNetPaths),
-				Script: procNetScript,
-			}, Adapt: native.ParseProcNet},
+		[]model.Step{
+			{{Label: "ss", Inv: model.Dual{Run: native.Ss, Script: "ss -tunap"}}},
+			{{Label: "netstat", Inv: model.NewCommand("netstat", "-tunap")}},
+			{ // The proc-net hex address restore is this probe's own dialect (adapt carries the
+				// section title to tell TCP/UDP); ss and netstat already output the target shape.
+				{Label: "proc-net", Inv: model.Dual{
+					Run:    native.ProcNet(procNetPaths),
+					Script: procNetScript,
+				}, Adapt: native.ParseProcNet}},
 		},
 		define.CheckOpt{
 			Syntax: model.SyntaxListen,
@@ -82,16 +82,16 @@ var NetworkChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("addr", "Network addresses", model.AspectNetwork,
-		[]model.Probe{
-			{Label: "ip", Inv: model.Dual{Run: native.IPAddr, Script: "ip -br addr"}},
-			{Label: "ifconfig", Inv: model.NewCommand("ifconfig", "-a")},
-			{Label: "hostname", Inv: model.Dual{Run: native.HostnameIps, Script: "hostname -I"}},
+		[]model.Step{
+			{{Label: "ip", Inv: model.Dual{Run: native.IPAddr, Script: "ip -br addr"}}},
+			{{Label: "ifconfig", Inv: model.NewCommand("ifconfig", "-a")}},
+			{{Label: "hostname", Inv: model.Dual{Run: native.HostnameIps, Script: "hostname -I"}}},
 		},
 		define.CheckOpt{Syntax: model.SyntaxIPAddr}),
 	define.LinuxCheck("arp", "ARP / neighbor table", model.AspectNetwork,
-		[]model.Probe{
-			{Label: "ip", Inv: model.Dual{Run: native.IPNeigh, Script: "ip neigh"}},
-			{Label: "arp", Inv: model.NewCommand("arp", "-n")},
+		[]model.Step{
+			{{Label: "ip", Inv: model.Dual{Run: native.IPNeigh, Script: "ip neigh"}}},
+			{{Label: "arp", Inv: model.NewCommand("arp", "-n")}},
 		},
 		define.CheckOpt{Syntax: model.SyntaxIPKeyval}),
 	// Both address families: ip route dumps IPv4 alone, and the local tier's
@@ -100,19 +100,19 @@ var NetworkChecks = []*model.Check{
 	// second and its failure is silent: the IPv4 rows are already this tier's
 	// answer, and a kernel without IPv6 leaves them untouched.
 	define.LinuxCheck("route", "Routing table", model.AspectNetwork,
-		[]model.Probe{
-			{Label: "ip", Inv: model.Dual{Run: native.IPRoute, Script: routeScript}},
-			{Label: "route", Inv: model.NewCommand("route", "-n")},
-			{Label: "netstat", Inv: model.NewCommand("netstat", "-rn")},
+		[]model.Step{
+			{{Label: "ip", Inv: model.Dual{Run: native.IPRoute, Script: routeScript}}},
+			{{Label: "route", Inv: model.NewCommand("route", "-n")}},
+			{{Label: "netstat", Inv: model.NewCommand("netstat", "-rn")}},
 		},
 		define.CheckOpt{Syntax: model.SyntaxIPKeyval}),
 	define.LinuxCheck("firewall", "Firewall rules", model.AspectNetwork,
-		[]model.Probe{
-			{Label: "iptables", Inv: model.Dual{
+		[]model.Step{
+			{{Label: "iptables", Inv: model.Dual{
 				Run:    native.Firewall(firewallFamilies, firewallTables),
 				Script: firewallScript,
-			}},
-			{Label: "nft", Inv: model.NewCommand("nft", "list", "ruleset")},
+			}}},
+			{{Label: "nft", Inv: model.NewCommand("nft", "list", "ruleset")}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{

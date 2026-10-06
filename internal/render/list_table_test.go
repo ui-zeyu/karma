@@ -14,11 +14,11 @@ import (
 // layout: a long id, a long title, a six-tier chain, and a one-probe chain.
 func testCatalog() []*model.Check {
 	check := func(id, title string, platform model.Platform, aspect model.Aspect, chain ...string) *model.Check {
-		probes := make([]model.Probe, 0, len(chain))
+		steps := make([]model.Step, 0, len(chain))
 		for _, label := range chain {
-			probes = append(probes, model.Probe{Label: label})
+			steps = append(steps, model.Step{{Label: label}})
 		}
-		return &model.Check{ID: id, Title: title, Platform: platform, Aspect: aspect, Probes: probes}
+		return &model.Check{ID: id, Title: title, Platform: platform, Aspect: aspect, Steps: steps}
 	}
 	return []*model.Check{
 		check("os-release", "Distro and kernel", model.Linux, model.AspectSystem, "cat"),

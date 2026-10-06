@@ -1,18 +1,24 @@
 // Package runner orchestrates execution: run checks concurrently and fall back
-// through probe tiers. Results travel back through the Observer on completion;
-// the presentation layer places the panels in catalog order itself.
+// through each check's walk of steps. Results travel back through the Observer
+// on completion; the presentation layer places the panels in catalog order
+// itself.
 //
-// A tier whose Dual has no branch for the session's channel is skipped
-// silently — it is not part of that channel's chain. Tier fallback covers
-// availability discovered at run time only — a missing binary, a 127 — never
-// which side of the wire karma runs on.
+// A step whose Dual has no branch for the session's channel is skipped silently
+// — it is not part of that channel's chain. Fallback covers availability
+// discovered at run time only — a missing binary, a 127 — never which side of
+// the wire karma runs on.
 //
-// Runner only depends on session.Session's Run callback: it knows neither SSH
-// nor any concrete command. The tier that wins is sent to the target as a
-// whole, with row limits declared by the probe itself (a shape cap is the row
-// set the tier asked for, a scan cap only bounds an open walk). Reading first
-// aligns the winning tier's dialect (adapt) and then normalizes the body for the
-// check (normalize); both run per section and carry the section title.
+// The budget belongs to the walk, not to one tier's call: one deadline covers
+// every step of a check, and the channel's own setup inside it, so the number a
+// panel's note names is the whole answer's, and the worst case of a run is
+// ceil(checks / concurrency) × budget.
+//
+// Runner only depends on session.Session's Run method: it knows neither SSH nor
+// any concrete command. The step that wins is sent to the target as a whole,
+// with row limits declared by the probe itself (a shape cap is the row set the
+// tier asked for, a scan cap only bounds an open walk). Reading first aligns the
+// winning tier's dialect (adapt) and then normalizes the body for the check
+// (normalize); both run per section and carry the section title.
 package runner
 
 import (
@@ -21,10 +27,12 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 
+	"karma/internal/fault"
 	"karma/internal/model"
 	"karma/internal/reader"
 	"karma/internal/runstate"
@@ -37,6 +45,23 @@ import (
 type Observer interface {
 	CheckStarted(check *model.Check)
 	CheckFinished(check *model.Check, result *model.CheckResult)
+	// Damaged reports one piece of the run that could not be presented at all: a
+	// rendering panic, a failed write. The run carries on, so the report can say
+	// what it lost instead of losing the reader too.
+	Damaged(check *model.Check, err error)
+}
+
+// Summary is what a run observed about its own completeness: how many checks
+// produced a result, and the two ways the queue can end early. The command line
+// reports from it, so the exit status and the message come from what the run saw
+// rather than from a context read after the fact.
+type Summary struct {
+	// Results is the number of checks that produced a result.
+	Results int
+	// Interrupted is set when cancellation (Ctrl-C) ended the queue.
+	Interrupted bool
+	// LostChannel is set when the transport died under the run.
+	LostChannel bool
 }
 
 // RunCatalog runs the checks concurrently in catalog order. Each check calls
@@ -50,12 +75,17 @@ type Observer interface {
 // The run's shared reads live in a store on the context (runstate), so checks
 // that want the same expensive view of the host read it once between them.
 func RunCatalog(ctx context.Context, sess session.Session, facts model.HostFacts, checks []*model.Check,
-	options model.RunOptions, observer Observer) {
+	options model.RunOptions, observer Observer) Summary {
 	ctx = runstate.WithStore(ctx)
-	var g errgroup.Group
+	var (
+		g       errgroup.Group
+		results atomic.Int64
+		lost    atomic.Bool
+	)
 	g.SetLimit(max(1, options.Concurrency))
 	for _, check := range checks {
 		if sessionLost(sess) {
+			lost.Store(true)
 			break
 		}
 		g.Go(func() error {
@@ -67,20 +97,42 @@ func RunCatalog(ctx context.Context, sess session.Session, facts model.HostFacts
 			// re-checked here: the loss can land between the loop's check and
 			// this worker's turn on the semaphore
 			if sessionLost(sess) {
+				lost.Store(true)
 				return nil
 			}
-			runObserver(observer, func() { observer.CheckStarted(check) })
-			result := recoverPanic(check, func() *model.CheckResult {
+			guardedObserver(observer, check, func() { observer.CheckStarted(check) })
+			result, damage := fault.Result("check "+check.ID, func() *model.CheckResult {
 				return runCheck(ctx, sess, facts, check, options)
 			})
-			// A rendering panic in CheckFinished is already caught by emit's
-			// internal fallback; reaching here means unexpected internal damage
-			// — dropping one frame beats dragging down the whole run.
-			runObserver(observer, func() { observer.CheckFinished(check, result) })
+			if damage != nil {
+				// One broken check fails alone: the panel names the boundary,
+				// which beats ending the process and the whole report with it.
+				result = &model.CheckResult{Check: check, Outcome: model.Failed, Note: damage.Error()}
+			}
+			results.Add(1)
+			guardedObserver(observer, check, func() { observer.CheckFinished(check, result) })
 			return nil
 		})
 	}
 	_ = g.Wait()
+	return Summary{
+		Results:     int(results.Load()),
+		Interrupted: ctx.Err() != nil,
+		LostChannel: lost.Load() || sessionLost(sess),
+	}
+}
+
+// guardedObserver insures one observer callback: a presentation panic drops that
+// step alone, and the observer hears about it — a report that silently lost a
+// panel is worse than one that says so.
+func guardedObserver(observer Observer, check *model.Check, call func()) {
+	err := fault.Catch("presentation", func() error { call(); return nil })
+	if err == nil {
+		return
+	}
+	// The reporter is presentation too: if it panics in turn, this one line is
+	// what is lost, and the run keeps going.
+	_ = fault.Catch("presentation", func() error { observer.Damaged(check, err); return nil })
 }
 
 // sessionLost reports whether the session's transport died mid-run (a channel
@@ -92,113 +144,69 @@ func sessionLost(sess session.Session) bool {
 	return ok && lost.Lost()
 }
 
-// recoverPanic keeps one broken check from dragging down the whole run.
-func recoverPanic(check *model.Check, run func() *model.CheckResult) (result *model.CheckResult) {
-	defer func() {
-		if problem := recover(); problem != nil {
-			result = &model.CheckResult{
-				Check:   check,
-				Outcome: model.Failed,
-				Note:    fmt.Sprintf("check panic: %v", problem),
-			}
-		}
-	}()
-	return run()
-}
-
-// runObserver insures the observer callback: a presentation-layer panic drops
-// only this step, not the checks that have not finished.
-func runObserver(observer Observer, call func()) {
-	defer func() { _ = recover() }()
-	call()
-}
-
-// probeFailure is the first failing tier with error output on the chain; it
+// probeFailure is the first step of the walk that failed with error output; it
 // goes into the panel at the end.
 type probeFailure struct {
-	probe   model.Probe
+	step    model.Step
+	label   string
 	result  model.RunResult
-	skipped []string // skip chain up to this tier, excluding this tier
+	skipped []string // skip chain up to this step, excluding it
 }
 
-// answeredTier is one tier of an answer set (model.Probe.Together) with the tier
-// it came from, so its row cap can judge its own truncation.
+// answeredTier is one probe of a step with the tier it came from, so its own row
+// cap can judge its truncation.
 type answeredTier struct {
 	probe  model.Probe
 	result model.RunResult
 }
 
-// runCheck walks the fallback chain once.
+// runCheck walks one check's steps once.
 //
-// The verdict decides: a tier that settled the question ends the walk — an
+// The verdict decides: a step that settled the question ends the walk — an
 // answer, or a cut whose partial output is kept — while an unavailable or
-// failed tier leaves the walk going. A tier marked Probe.Together answers with
-// its neighbours rather than instead of them, so the set runs as a whole and its
-// bodies join. If the last tier has both streams empty it stays silent; error
-// text alone goes into the panel. A chain whose tiers were all unavailable
+// failed step leaves the walk going. A step of several probes answers as a whole
+// (model.Step). If the last step has both streams empty the check stays silent;
+// error text alone goes into the panel. A walk whose steps were all unavailable
 // (binary absent from the capability probe, or 127 at run time) is Skipped: the
 // target's environment lacks the command, which is not a finding.
 func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, check *model.Check, options model.RunOptions) *model.CheckResult {
-	timeout := cmp.Or(check.Timeout, options.Timeout)
-	ch := sess.Channel()
+	budget := cmp.Or(check.Timeout, options.Timeout)
+	ctx, cancel := session.Within(ctx, budget)
+	defer cancel()
 
 	var (
 		unavailable bool
 		skipped     []string
 		failure     *probeFailure
-		set         []answeredTier
 	)
-	for i := range check.Probes {
+	for _, step := range check.Steps {
 		if ctx.Err() != nil {
 			break
 		}
-		probe := &check.Probes[i]
-		inv := probe.InvocationFor(ch)
-		if inv == nil {
-			continue // this tier exists on the other channel only
-		}
-		if name := probe.RequiredBin(); name != "" && !facts.Has(name) {
-			unavailable = true
-			skipped = append(skipped, probe.Label)
+		members, missing := stepMembers(ctx, sess, facts, step)
+		skipped = append(skipped, missing...)
+		if len(members) == 0 {
+			// Nothing in this step could run: the tier exists on the other
+			// channel only, or the target lacks its binary.
+			unavailable = unavailable || len(missing) > 0
 			continue
 		}
-		result := sess.Run(ctx, inv, timeout, probe.Cap)
-		// A member of an answer set joins it whatever it reported — an answered
-		// member's text is the check's, and a failed member's stderr is not a
-		// verdict of its own while another member may still answer — unless the
-		// environment lacks it, which is an unavailable tier like any other.
-		if probe.Together && result.Verdict != model.VerdictUnavailable {
-			set = append(set, answeredTier{probe: *probe, result: result})
-			// A cut member ends the set: the source stopped answering, and the
-			// members after it would read the same dead channel.
-			if result.Verdict.Cut() {
-				break
-			}
-			continue
-		}
+		joined, label := joinStep(members)
 		switch {
-		case result.Verdict.Settled():
-			return commandResult(check, probe, result, skipped, resultOptions{
-				timeout:   timeout,
-				floor:     options.MinSeverity,
-				truncated: result.Truncated && probe.Cap.Cut(),
-			})
-		case result.Verdict == model.VerdictUnavailable:
+		case joined.Verdict.Settled():
+			return finishStep(check, step, joined, label, skipped, options, budget)
+		case joined.Verdict == model.VerdictUnavailable:
 			unavailable = true
 		default:
-			if strings.TrimSpace(result.Stderr) != "" && failure == nil {
-				failure = &probeFailure{probe: *probe, result: result, skipped: slices.Clone(skipped)}
+			if failure == nil && strings.TrimSpace(joined.Stderr) != "" {
+				failure = &probeFailure{step: step, label: label, result: joined, skipped: slices.Clone(skipped)}
 			}
 		}
-		skipped = append(skipped, probe.Label)
+		skipped = append(skipped, label)
 	}
 
-	if len(set) > 0 {
-		return setResult(check, set, skipped, options, timeout)
-	}
 	if failure != nil {
-		return commandResult(check, &failure.probe, failure.result, failure.skipped, resultOptions{
-			timeout: timeout, floor: options.MinSeverity})
+		return finishStep(check, failure.step, failure.result, failure.label, failure.skipped, options, budget)
 	}
 	if unavailable {
 		return &model.CheckResult{
@@ -210,28 +218,66 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 	return &model.CheckResult{Check: check, Outcome: model.Collected, SkippedLabels: skipped}
 }
 
-// setResult finishes an answer set: the members' bodies joined in declaration
-// order, as one tier would have printed them. The set is answered when any
-// member answered — the members are sources of one check, not alternatives to one
-// another — so a member that failed while another answered is not the check's
-// verdict. A set with no answer at all is the check's failure, carrying every
-// member's stderr and the first exit code a member reported.
-func setResult(check *model.Check, set []answeredTier, skipped []string, options model.RunOptions, timeout time.Duration) *model.CheckResult {
+// stepMembers runs every probe of one step that this channel can run. A tier
+// whose Dual has no branch here is not part of this channel's walk, and a
+// missing binary belongs to the target's environment; the labels of the probes
+// that did not run come back for the panel's chain.
+func stepMembers(ctx context.Context, sess session.Session, facts model.HostFacts, step model.Step) ([]answeredTier, []string) {
+	var (
+		members []answeredTier
+		missing []string
+	)
+	for _, probe := range step {
+		inv := probe.InvocationFor(sess.Channel())
+		if inv == nil {
+			continue
+		}
+		if name := probe.RequiredBin(); name != "" && !facts.Has(name) {
+			missing = append(missing, probe.Label)
+			continue
+		}
+		members = append(members, answeredTier{
+			probe:  probe,
+			result: sess.Run(ctx, model.Call{Inv: inv, Cap: probe.Cap}),
+		})
+		if members[len(members)-1].result.Verdict.Cut() {
+			// The channel — or the walk's budget — is gone: the members after
+			// this one would read the same dead source.
+			break
+		}
+	}
+	return members, missing
+}
+
+// joinStep merges one step's members into the step's own result: the bodies in
+// declaration order, as one tier would have printed them, and a label naming
+// what ran. The step answered when any member answered — the members are sources
+// of one answer, so a member that failed while another answered is not the
+// check's verdict — and a step whose members all reported the environment
+// lacking it is unavailable, like any single tier. Nothing answered and not all
+// were unavailable means the step failed, carrying every member's stderr and the
+// first exit code one reported.
+func joinStep(members []answeredTier) (model.RunResult, string) {
 	joined := model.RunResult{Verdict: model.VerdictFailed, ExitCode: -1}
-	for _, member := range set {
+	for _, member := range members {
 		switch {
 		case member.result.Verdict == model.VerdictAnswered && joined.Verdict != model.VerdictAnswered:
-			// The first answer names the set's verdict and exit code.
+			// The first answer names the step's verdict and exit code.
 			joined.Verdict, joined.ExitCode = model.VerdictAnswered, member.result.ExitCode
 		case member.result.Verdict.Cut() && joined.Verdict == model.VerdictFailed:
-			// A cut is the set's own end, and a cut call has no exit code.
+			// A cut is the step's own end, and a cut call has no exit code.
 			joined.Verdict = member.result.Verdict
 		}
 	}
+	if joined.Verdict == model.VerdictFailed && allUnavailable(members) {
+		joined.Verdict = model.VerdictUnavailable
+	}
 	var out, errText strings.Builder
 	truncated := false
-	for _, member := range set {
+	for _, member := range members {
 		if member.result.Stdout != "" {
+			// A body that lost its trailing newline would glue onto the next
+			// member's first line.
 			if out.Len() > 0 && !strings.HasSuffix(out.String(), "\n") {
 				out.WriteByte('\n')
 			}
@@ -245,62 +291,63 @@ func setResult(check *model.Check, set []answeredTier, skipped []string, options
 			joined.ExitCode = member.result.ExitCode
 		}
 	}
-	joined.Stdout, joined.Stderr = out.String(), errText.String()
-	labels := make([]string, 0, len(set))
-	for _, member := range set {
+	joined.Stdout, joined.Stderr, joined.Truncated = out.String(), errText.String(), truncated
+	labels := make([]string, 0, len(members))
+	for _, member := range members {
 		labels = append(labels, member.probe.Label)
 	}
-	probe := &model.Probe{Label: strings.Join(labels, " + ")}
-	return commandResult(check, probe, joined, skipped, resultOptions{
-		timeout: timeout, floor: options.MinSeverity, truncated: truncated})
+	return joined, strings.Join(labels, " + ")
 }
 
-// resultOptions is how the tier that won (or failed, or the set that answered)
-// is finished: the deadline its note names, the run's severity floor, and
-// whether the body was cut.
-type resultOptions struct {
-	timeout   time.Duration
-	floor     model.SeverityFloor
-	truncated bool
-}
-
-// commandResult finishes the tier that won (or failed): dialect alignment and
-// body normalization first, then reading into a document.
-func commandResult(check *model.Check, probe *model.Probe, result model.RunResult,
-	skipped []string, opt resultOptions) *model.CheckResult {
-	note := ""
-	switch result.Verdict {
-	case model.VerdictTimedOut:
-		note = fmt.Sprintf("timeout (%gs)", opt.timeout.Seconds()) + keptTail(result)
-	case model.VerdictInterrupted:
-		note = "interrupted" + keptTail(result)
-	case model.VerdictFailed:
-		note = failureNote(result)
+// allUnavailable reports whether every member of a step said the environment
+// lacks it, which is what makes the step unavailable rather than failed.
+func allUnavailable(members []answeredTier) bool {
+	for _, member := range members {
+		if member.result.Verdict != model.VerdictUnavailable {
+			return false
+		}
 	}
-	reading := reader.Analyze(result.Stdout, check.Rules, check.Filters,
-		check.ScanBytes, opt.floor, transforms(probe, check)...)
-	reading.Truncated = reading.Truncated || opt.truncated
+	return len(members) > 0
+}
+
+// finishStep finishes the step that ended the walk (or failed it): the note the
+// verdict deserves, then dialect alignment and body normalization, then reading
+// into a document.
+func finishStep(check *model.Check, step model.Step, joined model.RunResult, label string,
+	skipped []string, options model.RunOptions, budget time.Duration) *model.CheckResult {
+	note := ""
+	switch joined.Verdict {
+	case model.VerdictTimedOut:
+		note = fmt.Sprintf("timeout (%gs)", budget.Seconds()) + keptTail(joined)
+	case model.VerdictInterrupted:
+		note = "interrupted" + keptTail(joined)
+	case model.VerdictFailed:
+		note = failureNote(joined)
+	}
+	reading := reader.Analyze(joined.Stdout, check.Rules, check.Filters,
+		check.ScanBytes, options.MinSeverity, transforms(stepAdapt(step), check)...)
+	reading.Truncated = reading.Truncated || joined.Truncated
 	// Stderr from a zero exit is incidental noise; only a non-zero exit keeps
 	// it alongside the body
-	stderr := result.Stderr
-	if result.ExitCode == 0 {
+	stderr := joined.Stderr
+	if joined.ExitCode == 0 {
 		stderr = ""
 	}
 	return &model.CheckResult{
 		Check:         check,
-		ProbeLabel:    probe.Label,
+		ProbeLabel:    label,
 		Outcome:       model.Collected,
 		SkippedLabels: skipped,
 		// Evidence is what the target actually sent: the raw stdout, before the
 		// reading layer's byte cap, section split, and normalization
-		Raw:      result.Stdout,
+		Raw:      joined.Stdout,
 		Stderr:   stderr,
 		Note:     note,
 		Document: reading,
 	}
 }
 
-// keptTail marks a cut-off tier that has output to keep: a body the deadline
+// keptTail marks a cut-off step that has output to keep: a body the deadline
 // abandoned (a syscall that never returned) keeps nothing, and the note should
 // not claim otherwise.
 func keptTail(result model.RunResult) string {
@@ -310,7 +357,7 @@ func keptTail(result model.RunResult) string {
 	return ", partial output kept"
 }
 
-// failureNote is the note on a failing tier: exit code first, the first stderr
+// failureNote is the note on a failing step: exit code first, the first stderr
 // line after it.
 func failureNote(result model.RunResult) string {
 	head, _, _ := strings.Cut(strings.TrimSpace(result.Stderr), "\n")
@@ -324,14 +371,24 @@ func failureNote(result model.RunResult) string {
 	return base
 }
 
+// stepAdapt is the dialect alignment of one step: a step of several probes joined
+// bodies from several processes, so there is no single dialect to align, while a
+// one-probe step hands its own over.
+func stepAdapt(step model.Step) model.Normalizer {
+	if len(step) == 1 {
+		return step[0].Adapt
+	}
+	return nil
+}
+
 // transforms is the winning tier's dialect alignment followed by the check's
 // body normalization: both shape one section, in this order, and either may be
 // absent. Dialect alignment only produces text; stating spans up front is the
 // check-level normalizer's job.
-func transforms(probe *model.Probe, check *model.Check) []model.Normalizer {
+func transforms(adapt model.Normalizer, check *model.Check) []model.Normalizer {
 	var all []model.Normalizer
-	if probe.Adapt != nil {
-		all = append(all, probe.Adapt)
+	if adapt != nil {
+		all = append(all, adapt)
 	}
 	if check.Normalize != nil {
 		all = append(all, check.Normalize)

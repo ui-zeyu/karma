@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"karma/internal/facts"
 	"karma/internal/model"
@@ -29,16 +28,16 @@ func (s *scriptedSession) Describe() string { return "scripted" }
 
 func (s *scriptedSession) Close() error { return nil }
 
-func (s *scriptedSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ model.RowCap) model.RunResult {
+func (s *scriptedSession) Run(_ context.Context, call model.Call) model.RunResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	switch v := inv.(type) {
+	switch v := call.Inv.(type) {
 	case model.Shell:
 		s.calls = append(s.calls, "sh:"+firstLine(v.Script))
 	case model.Command:
 		s.calls = append(s.calls, strings.Join(v.Argv, " "))
 	}
-	return s.reply(inv)
+	return s.reply(call.Inv)
 }
 
 func (s *scriptedSession) joinedCalls() string {

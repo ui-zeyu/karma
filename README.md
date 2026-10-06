@@ -13,7 +13,7 @@ go build -o dist/karma ./cmd/karma     # this host
 make dist                              # dist/ binaries for linux/amd64, windows/amd64 and this host
 ```
 
-The version is `0.31.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
+The version is `0.32.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
 
 ## Usage
 
@@ -76,8 +76,11 @@ cannot reshape what they print.
 
 ### Options
 
-`--concurrency` (default 6), `--timeout` (30s per command), `--max-lines` (400) and `--min-severity`
-(default `all`) are shared by every collection. With `--save DIR`, each check writes the target's raw
+`--concurrency` (default 6), `--timeout` (30s per check), `--max-lines` (400) and `--min-severity`
+(default `all`) are shared by every collection. `--timeout` is the budget of one check's whole
+fallback walk — its channel's own setup (a dial, a session open, the line typed into a terminal), the
+command, and the last line read — so no check can take longer than that number, and a run's worst case
+is `ceil(checks / concurrency) × --timeout`. With `--save DIR`, each check writes the target's raw
 stdout to `<DIR>/<aspect>/<id>.txt` — the bytes exactly as the channel delivered them — plus a
 `manifest.json` with the run's provenance (version, channel, host facts, start time) and a size and
 sha256 per file.
@@ -89,8 +92,12 @@ legend says which floor is in force, so a quiet host stays readable and a busy o
 question. It filters what is shown, and never what `--save` writes.
 
 Exit codes: 0 a run that finished, 1 a built-in reader that could not read an operand, 2 a run that
-could not happen (a failed connection), 130 interrupted. Ctrl-C stops collection promptly and the
-partial report still prints. Errors go to stderr with a `karma: ` prefix and one plain sentence.
+could not happen (a failed connection, or a channel that died mid-run), 70 karma's own damage — an
+internal error ended the run, so the report is incomplete, and the message names the boundary that
+broke (`--save` keeps the stack beside the evidence) — and 130 interrupted. Ctrl-C stops collection
+promptly and the partial report still prints, saying how many of the selected checks were not
+collected; a second Ctrl-C exits at once, which is the way out of a channel operation the context
+cannot break. Errors go to stderr with a `karma: ` prefix and one plain sentence.
 
 ## Output
 

@@ -20,7 +20,7 @@ import (
 
 // exitError is an error with an exit code; Main prints the message.
 type exitError struct {
-	code int
+	code ExitCode
 	err  error
 }
 
@@ -36,7 +36,7 @@ type usageError struct {
 func (e usageError) Error() string { return e.err.Error() }
 
 // failf builds an error with an exit code; Main prints the message.
-func failf(code int, format string, args ...any) error {
+func failf(code ExitCode, format string, args ...any) error {
 	return exitError{code: code, err: fmt.Errorf(format, args...)}
 }
 
@@ -69,9 +69,9 @@ func reportErrorWith(w io.Writer, err error, st streamStyles) int {
 	}
 	var coded exitError
 	if errors.As(err, &coded) {
-		return coded.code
+		return int(coded.code)
 	}
-	return 0
+	return int(ExitOK)
 }
 
 // flagErrorText turns pflag's flag errors into short sentences; an unfamiliar

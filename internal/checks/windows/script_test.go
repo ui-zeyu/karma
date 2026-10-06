@@ -16,12 +16,14 @@ import (
 func psScripts() map[string]string {
 	scripts := map[string]string{}
 	for _, check := range All {
-		for _, probe := range check.Probes {
-			argv, ok := probe.Inv.(model.Command)
-			if !ok || argv.Argv[0] != "powershell" {
-				continue
+		for _, step := range check.Steps {
+			for _, probe := range step {
+				argv, ok := probe.Inv.(model.Command)
+				if !ok || argv.Argv[0] != "powershell" {
+					continue
+				}
+				scripts[check.ID+"·"+probe.Label] = argv.Argv[len(argv.Argv)-1]
 			}
-			scripts[check.ID+"·"+probe.Label] = argv.Argv[len(argv.Argv)-1]
 		}
 	}
 	return scripts
@@ -104,7 +106,7 @@ func TestUTF16Strings(t *testing.T) {
 // before the rule can call it a hidden account. The filter belongs in the
 // script because only the script knows this machine's name.
 func TestAdminGroupDropsTheMachineAccount(t *testing.T) {
-	probe := testkit.CheckByID(t, All, "admin-group").Probes[0]
+	probe := testkit.CheckByID(t, All, "admin-group").Steps[0][0]
 	argv, ok := probe.Inv.(model.Command)
 	if !ok {
 		t.Fatalf("admin-group should be a PowerShell probe: %+v", probe.Inv)

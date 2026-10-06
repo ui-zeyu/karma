@@ -51,6 +51,6 @@ foreach ($root in 'USBSTOR', 'SCSI', 'USB') {
 // DevicesChecks is the devices aspect.
 var DevicesChecks = []*model.Check{
 	define.WindowsCheck("usb-devices", "USB Storage Devices (USBSTOR/SCSI/USB)", model.AspectDevices,
-		[]model.Probe{PSProbe("reg", usbScript)},
+		[]model.Step{{PSProbe("reg", usbScript)}},
 		define.CheckOpt{Syntax: model.SyntaxPipe}),
 }

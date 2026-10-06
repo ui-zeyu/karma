@@ -143,26 +143,27 @@ var globalRules = map[model.Platform][]model.Rule{
 }
 
 // LinuxCheck builds one Linux check and merges in the Linux global rule pack by
-// default.
-func LinuxCheck(id, title string, aspect model.Aspect, probes []model.Probe, opt CheckOpt) *model.Check {
-	return build(model.Linux, id, title, aspect, probes, opt)
+// default. steps is the check's walk: one entry per tier, an entry of several
+// probes being a tier that answers as a whole.
+func LinuxCheck(id, title string, aspect model.Aspect, steps []model.Step, opt CheckOpt) *model.Check {
+	return build(model.Linux, id, title, aspect, steps, opt)
 }
 
 // WindowsCheck builds one Windows check.
-func WindowsCheck(id, title string, aspect model.Aspect, probes []model.Probe, opt CheckOpt) *model.Check {
-	return build(model.Windows, id, title, aspect, probes, opt)
+func WindowsCheck(id, title string, aspect model.Aspect, steps []model.Step, opt CheckOpt) *model.Check {
+	return build(model.Windows, id, title, aspect, steps, opt)
 }
 
 // build is the shared construction path of both platforms: the check's own rules
 // first, the platform's default pack after. slices.Concat allocates a new slice
 // and never writes through the caller's shared array.
-func build(platform model.Platform, id, title string, aspect model.Aspect, probes []model.Probe, opt CheckOpt) *model.Check {
+func build(platform model.Platform, id, title string, aspect model.Aspect, steps []model.Step, opt CheckOpt) *model.Check {
 	return &model.Check{
 		ID:            id,
 		Title:         title,
 		Aspect:        aspect,
 		Platform:      platform,
-		Probes:        probes,
+		Steps:         steps,
 		Filters:       slices.Concat(opt.Filters, GlobalFilters),
 		Rules:         slices.Concat(opt.Rules, globalRules[platform]),
 		Timeout:       opt.Timeout,

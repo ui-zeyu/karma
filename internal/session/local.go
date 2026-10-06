@@ -3,8 +3,8 @@
 // tiers ask a host binary through their own runner (native.runHost), and
 // Windows stops a process tree with taskkill. Command goes through exec
 // without a shell; Shell goes through /bin/sh -c (rendering shared with SSH via
-// shellcmd, POSIX only). A timeout kills the whole process tree; output already
-// produced is kept.
+// shellcmd, POSIX only). The call's deadline kills the whole process tree;
+// output already produced is kept.
 
 package session
 
@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"time"
 
 	"karma/internal/model"
 )
@@ -35,7 +34,7 @@ func (LocalTransport) Platform() model.Platform {
 }
 
 // Open is the local channel's connection step: there is nothing to connect.
-func (LocalTransport) Open() (Session, error) { return LocalSession{}, nil }
+func (LocalTransport) Open(context.Context) (Session, error) { return LocalSession{}, nil }
 
 // Name is the channel display name.
 func (LocalSession) Name() string { return "local" }
@@ -62,17 +61,17 @@ var scriptOnly = os.Getenv("KARMA_NO_NATIVE") != ""
 // the tier then runs its script side through the local shell. So the local
 // channel answers wherever the ssh channel would, and the in-process body is
 // what a Linux target uses.
-func (s LocalSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, cap model.RowCap) model.RunResult {
-	if d, ok := inv.(model.Dual); ok {
+func (s LocalSession) Run(ctx context.Context, call model.Call) model.RunResult {
+	if d, ok := call.Inv.(model.Dual); ok {
 		// A tier with no in-process body exists on the remote channels only, and
 		// so does a body a parity run is asked to skip: both take the script side.
 		if d.Run == nil || scriptOnly {
 			if d.Script == "" {
 				return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
 			}
-			return runLocal(ctx, posixShell(d.Script), timeout, cap)
+			return runLocal(ctx, posixShell(d.Script), call.Cap)
 		}
-		result := runNative(ctx, d.Run, timeout, cap)
+		result := runNative(ctx, d.Run, call.Cap)
 		// An unavailable body is the tier's own report that it cannot run here,
 		// and it is the only verdict that sends the tier to its script side —
 		// the same fall-through a missing binary takes on every other tier. A
@@ -81,9 +80,9 @@ func (s LocalSession) Run(ctx context.Context, inv model.Invocation, timeout tim
 		if result.Verdict != model.VerdictUnavailable || d.Script == "" {
 			return result
 		}
-		return runLocal(ctx, posixShell(d.Script), timeout, cap)
+		return runLocal(ctx, posixShell(d.Script), call.Cap)
 	}
-	return runLocal(ctx, ArgvFor(inv), timeout, cap)
+	return runLocal(ctx, ArgvFor(call.Inv), call.Cap)
 }
 
 // Close releases the local channel's resources: there are none.
@@ -110,7 +109,7 @@ func (c *localCall) exitCode() int {
 	return c.cmd.ProcessState.ExitCode()
 }
 
-func runLocal(ctx context.Context, argv []string, timeout time.Duration, cap model.RowCap) model.RunResult {
+func runLocal(ctx context.Context, argv []string, cap model.RowCap) model.RunResult {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -132,7 +131,7 @@ func runLocal(ctx context.Context, argv []string, timeout time.Duration, cap mod
 		stdout:  bufio.NewReader(stdout),
 		stderr:  bufio.NewReader(stderrPipe),
 		process: process,
-	}, timeout, cap)
+	}, cap)
 }
 
 // validText replaces bad bytes with U+FFFD: stray output from the target must not blow up the whole check.

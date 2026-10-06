@@ -61,7 +61,7 @@ const sqlSchema = `^(?:CREATE|INDEX|TABLE|UNIQUE|PRAGMA|sqlite_|IN\s*\(|NOT\s+NU
 // TimelineChecks is the timeline aspect.
 var TimelineChecks = []*model.Check{
 	define.WindowsCheck("activity-cache", "Activity Timeline (ActivitiesCache, String Extraction)", model.AspectTimeline,
-		[]model.Probe{PSProbe("strings", stringsScript("UTF8", 8, activityGlob))},
+		[]model.Step{{PSProbe("strings", stringsScript("UTF8", 8, activityGlob))}},
 		define.CheckOpt{
 			Timeout: stringsTimeout,
 			Filters: []model.LineFilter{
@@ -70,7 +70,7 @@ var TimelineChecks = []*model.Check{
 			Rules: []model.Rule{define.KeywordRule},
 		}),
 	define.WindowsCheck("sticky-notes", "Sticky Notes Content (String Extraction)", model.AspectTimeline,
-		[]model.Probe{PSProbe("strings", stringsScript("UTF8", 6, stickyGlob))},
+		[]model.Step{{PSProbe("strings", stringsScript("UTF8", 6, stickyGlob))}},
 		define.CheckOpt{
 			Timeout: stringsTimeout,
 			Filters: []model.LineFilter{

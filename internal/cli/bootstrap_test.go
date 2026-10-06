@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"karma/internal/model"
 	"karma/internal/session"
@@ -31,7 +30,8 @@ func (s *probeSession) Channel() model.Channel { return model.ChanSSH }
 func (s *probeSession) Describe() string { return "ssh" }
 func (s *probeSession) Close() error     { return nil }
 
-func (s *probeSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ model.RowCap) model.RunResult {
+func (s *probeSession) Run(_ context.Context, call model.Call) model.RunResult {
+	inv := call.Inv
 	command := session.RenderShell(inv)
 	s.ran = append(s.ran, command)
 	if strings.Contains(command, "command -v gzip") {
@@ -225,7 +225,8 @@ func (s *commandSession) Channel() model.Channel { return model.ChanSSH }
 func (s *commandSession) Describe() string { return "ssh" }
 func (s *commandSession) Close() error     { return nil }
 
-func (s *commandSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ model.RowCap) model.RunResult {
+func (s *commandSession) Run(_ context.Context, call model.Call) model.RunResult {
+	inv := call.Inv
 	command := session.RenderShell(inv)
 	s.ran = append(s.ran, command)
 	for _, answer := range s.answers {

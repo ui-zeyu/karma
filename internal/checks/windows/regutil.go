@@ -101,28 +101,31 @@ func (k RegKey) fragment() string {
 	return RegQuery(k.Path, k.Recurse)
 }
 
-// RegCheck builds a registry check: one PowerShell probe over all keys (plus any
-// extra fragments that are not plain reg queries), then one direct reg.exe probe
-// per key. The key list is written once and feeds both tiers, so a key cannot end
-// up in the PowerShell script without its fallback or the other way around.
+// RegCheck builds a registry check: one PowerShell step over all keys (plus any
+// extra fragments that are not plain reg queries), then one step of direct
+// reg.exe probes, one per key, all of them answering together. The key list is
+// written once and feeds both steps, so a key cannot end up in the PowerShell
+// script without its fallback or the other way around.
 //
-// The reg.exe tiers answer together (model.Probe.Together): a target without
+// The reg.exe probes are one step of several (model.Step): a target without
 // PowerShell gets every key, one process each, because reg.exe takes one key and
-// the local Windows channel has no shell to loop in — while declaring them as
-// alternatives to one another would let the chain stop at the first key that
-// exists and silently drop the rest of the evidence.
+// the local Windows channel has no shell to loop in — while one step per key
+// would let the walk stop at the first key that exists and silently drop the
+// rest of the evidence.
 func RegCheck(id, title string, aspect model.Aspect, keys []RegKey, opt define.CheckOpt, extra ...string) *model.Check {
 	fragments := make([]string, 0, len(keys)+len(extra))
 	for _, key := range keys {
 		fragments = append(fragments, key.fragment())
 	}
-	probes := []model.Probe{PSProbe("reg", RegScript(append(fragments, extra...)...))}
+	steps := []model.Step{{PSProbe("reg", RegScript(append(fragments, extra...)...))}}
+	fallbacks := make(model.Step, 0, len(keys))
 	for _, key := range keys {
-		probe := RegDirectProbe(key.Label, key.Path, key.Recurse, key.Value)
-		probe.Together = true
-		probes = append(probes, probe)
+		fallbacks = append(fallbacks, RegDirectProbe(key.Label, key.Path, key.Recurse, key.Value))
 	}
-	return define.WindowsCheck(id, title, aspect, probes, opt)
+	if len(fallbacks) > 0 {
+		steps = append(steps, fallbacks)
+	}
+	return define.WindowsCheck(id, title, aspect, steps, opt)
 }
 
 var printable = regexp.MustCompile(`[\x20-\x7E\x{4E00}-\x{9FFF}]{3,}`)

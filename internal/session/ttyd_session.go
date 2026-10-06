@@ -20,6 +20,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"karma/internal/fault"
 	"karma/internal/model"
 )
 
@@ -80,7 +81,7 @@ func (s *TTYDSession) Lost() bool { return s.lost.Load() }
 func (s *TTYDSession) Close() error { return nil }
 
 // Run types one collection line into a fresh terminal and harvests the answer.
-func (s *TTYDSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, cap model.RowCap) model.RunResult {
+func (s *TTYDSession) Run(ctx context.Context, call model.Call) model.RunResult {
 	conn, err := s.connect(ctx)
 	if err != nil {
 		// The endpoint is gone unless the failure is our own cancellation:
@@ -91,8 +92,8 @@ func (s *TTYDSession) Run(ctx context.Context, inv model.Invocation, timeout tim
 		}
 		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
-	call := &ttydCall{conn: conn, spawned: make(chan struct{})}
-	return call.collect(ctx, mustShellText(inv), timeout, cap)
+	terminal := &ttydCall{conn: conn, spawned: make(chan struct{})}
+	return terminal.collect(ctx, mustShellText(call.Inv), call.Cap)
 }
 
 // connect dials the endpoint and sends the JSON handshake. ttyd spawns the
@@ -123,8 +124,10 @@ func (s *TTYDSession) connect(ctx context.Context) (*websocket.Conn, error) {
 // off the tty, and a marker for each outcome. ttydUploadWait bounds the wait for
 // a marker; ttydUploadChunk and ttydUploadPause pace the typed body.
 
-func (s *TTYDSession) probe() error {
-	ctx, cancel := context.WithTimeout(context.Background(), ttydProbeWindow)
+// probe verifies the endpoint end to end on one throwaway connection. It runs
+// under the run's context, so Ctrl-C ends it like every other step.
+func (s *TTYDSession) probe(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, ttydProbeWindow)
 	defer cancel()
 	conn, err := s.connect(ctx)
 	if err != nil {
@@ -140,35 +143,43 @@ func (s *TTYDSession) probe() error {
 	replies := make(chan reply, 16)
 	titles := make(chan string, 1)
 	// The frame pump closes replies when the connection ends, which is what the
-	// select below turns into a verdict. A panic in the pump is reported on the
-	// same channel close, so the select reads it as a verdict too.
-	var pumpErr error
-	go safeCall(func(problem error) { pumpErr = problem }, func() { close(replies) }, func() {
-		_ = call.frames(ctx, func(tag byte, payload []byte) bool {
-			switch tag {
-			case '1':
-				select {
-				case titles <- string(payload):
-				default:
+	// select below turns into a verdict. The reports below are not read after
+	// the close: the select's verdict is the answer either way.
+	var damaged atomic.Pointer[error]
+	go func() {
+		defer close(replies)
+		if err := fault.Catch("ttyd frame pump", func() error {
+			_ = call.frames(ctx, func(tag byte, payload []byte) bool {
+				switch tag {
+				case '1':
+					select {
+					case titles <- string(payload):
+					default:
+					}
+				case '0':
+					echoed := bytes.Contains(payload, []byte(encoded))
+					select {
+					case replies <- reply{echo: echoed, payload: !echoed && bytes.Contains(payload, []byte(marker))}:
+					case <-ctx.Done():
+						return false
+					}
 				}
-			case '0':
-				echoed := bytes.Contains(payload, []byte(encoded))
-				select {
-				case replies <- reply{echo: echoed, payload: !echoed && bytes.Contains(payload, []byte(marker))}:
-				case <-ctx.Done():
-					return false
-				}
-			}
-			return true
-		})
-	})
+				return true
+			})
+			return nil
+		}); err != nil {
+			damaged.Store(&err)
+		}
+	}()
 
 	select {
 	case <-call.spawned:
 	case <-ctx.Done():
 		return fmt.Errorf("ttyd at %s started no terminal within %s", s.endpoint, ttydProbeWindow)
 	}
-	time.Sleep(ttydTypeaheadDelay)
+	if err := sleepCtx(ctx, ttydTypeaheadDelay); err != nil {
+		return err
+	}
 	if err := call.typeLine(ctx, "printf %s "+encoded+" | base64 -d"); err != nil {
 		return err
 	}
@@ -176,6 +187,9 @@ func (s *TTYDSession) probe() error {
 	var echoed, answered bool
 	var command string
 	verdict := func() error {
+		if problem := damaged.Load(); problem != nil {
+			return fmt.Errorf("the ttyd frame pump failed: %w", *problem)
+		}
 		switch {
 		case answered:
 			return nil
@@ -191,9 +205,6 @@ func (s *TTYDSession) probe() error {
 		select {
 		case event, ok := <-replies:
 			if !ok {
-				if pumpErr != nil {
-					return fmt.Errorf("the ttyd frame pump failed: %w", pumpErr)
-				}
 				return verdict()
 			}
 			echoed = echoed || event.echo
@@ -226,8 +237,10 @@ func (c *ttydCall) markSpawned() {
 
 // collect runs one script over the connection and harvests it with the shared
 // timeout machinery: stop is the connection's death, which is also what ends
-// the terminal's process on the target.
-func (c *ttydCall) collect(ctx context.Context, script string, timeout time.Duration, cap model.RowCap) model.RunResult {
+// the terminal's process on the target. The wait for the terminal to spawn and
+// the pause before typing belong to the call's deadline like everything else —
+// they are the channel's own setup.
+func (c *ttydCall) collect(ctx context.Context, script string, cap model.RowCap) model.RunResult {
 	marker := markerSalt()
 	encoded := base64.StdEncoding.EncodeToString([]byte(ttydPayload(script, marker)))
 	line := "printf %s " + encoded + " | base64 -d | /bin/sh"
@@ -247,9 +260,35 @@ func (c *ttydCall) collect(ctx context.Context, script string, timeout time.Dura
 	case <-stream.stopped:
 	case <-ctx.Done():
 	}
-	time.Sleep(ttydTypeaheadDelay)
-	_ = c.typeLine(ctx, line)
-	return harvest(ctx, stream, timeout, cap)
+	if err := sleepCtx(ctx, ttydTypeaheadDelay); err != nil {
+		stream.stop()
+		return model.RunResult{Verdict: cutVerdict(ctx), ExitCode: -1}
+	}
+	if err := c.typeLine(ctx, line); err != nil {
+		// The line never went out, so there is nothing to harvest: the cut is
+		// the call's own deadline or cancel, and anything else is this
+		// connection failing.
+		stream.stop()
+		if ctx.Err() != nil {
+			return model.RunResult{Verdict: cutVerdict(ctx), ExitCode: -1}
+		}
+		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
+	}
+	return harvest(ctx, stream, cap)
+}
+
+// sleepCtx is one of the channel's own pacing waits, ended early by the call's
+// context: the pty's line discipline needs a moment before a typed line, and
+// that moment is part of the call's budget.
+func sleepCtx(ctx context.Context, pause time.Duration) error {
+	timer := time.NewTimer(pause)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ttydStream is one collection over a websocket connection as harvest's data
@@ -273,14 +312,17 @@ type ttydStream struct {
 // mid-stream before done is closed, so the call's own result paths see the
 // reason: it is not known to have read everything.
 func (s *ttydStream) read(ctx context.Context, call *ttydCall, marker string) {
-	go safeCall(
-		func(problem error) { s.stderr = "ttyd reader panicked: " + problem.Error() + "\n" },
-		func() { close(s.done) },
-		func() {
-			defer close(s.lines)
-			defer s.conn.CloseNow()
+	go func() {
+		defer close(s.done)
+		defer close(s.lines)
+		defer s.conn.CloseNow()
+		if err := fault.Catch("ttyd reader", func() error {
 			s.stderr = s.readStream(ctx, call, marker)
-		})
+			return nil
+		}); err != nil {
+			s.stderr = err.Error() + "\n"
+		}
+	}()
 }
 
 func (s *ttydStream) wait() { <-s.done }
@@ -427,10 +469,8 @@ func (c *ttydCall) typeLine(ctx context.Context, line string) error {
 		if len(data) == 0 {
 			break
 		}
-		select {
-		case <-time.After(ttydChunkPause):
-		case <-ctx.Done():
-			return ctx.Err()
+		if err := sleepCtx(ctx, ttydChunkPause); err != nil {
+			return err
 		}
 	}
 	return nil

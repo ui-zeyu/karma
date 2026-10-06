@@ -260,10 +260,10 @@ var ProcessChecks = []*model.Check{
 	// forest nesting is pstree's job there. On ssh the same labels run the
 	// host binaries.
 	define.LinuxCheck("ps", "Process tree", model.AspectProcess,
-		[]model.Probe{
-			{Label: "ps", Inv: model.Dual{Run: native.PsAux, Script: "ps auxwwf"}},
-			{Label: "pstree", Inv: model.Dual{Run: native.Pstree, Script: "pstree -ap"}},
-			{Label: "ps-ef", Inv: model.Dual{Run: native.PsEf, Script: "ps -ef"}},
+		[]model.Step{
+			{{Label: "ps", Inv: model.Dual{Run: native.PsAux, Script: "ps auxwwf"}}},
+			{{Label: "pstree", Inv: model.Dual{Run: native.Pstree, Script: "pstree -ap"}}},
+			{{Label: "ps-ef", Inv: model.Dual{Run: native.PsEf, Script: "ps -ef"}}},
 		},
 		define.CheckOpt{
 			Syntax: model.SyntaxTable,
@@ -291,18 +291,16 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("top", "Resource usage snapshot", model.AspectProcess,
-		[]model.Probe{
-			// these caps are the shape each probe wants: plenty to read, and
-			// small enough that a busy host's snapshot stays a panel
-			{Label: "top", Inv: model.Dual{Run: native.Top, Script: "top -b -n 1"}, Cap: model.Shape(topHead)},
-			{Label: "ps-cpu", Inv: model.Dual{Run: native.PsCPU, Script: "ps aux --sort=-%cpu"}, Cap: model.Shape(psSortHead)},
-			{Label: "ps-mem", Inv: model.Dual{Run: native.PsMem, Script: "ps aux --sort=-%mem"}, Cap: model.Shape(psSortHead)},
+		[]model.Step{
+			{ // these caps are the shape each probe wants: plenty to read, and
+				// small enough that a busy host's snapshot stays a panel
+				{Label: "top", Inv: model.Dual{Run: native.Top, Script: "top -b -n 1"}, Cap: model.Shape(topHead)}},
+			{{Label: "ps-cpu", Inv: model.Dual{Run: native.PsCPU, Script: "ps aux --sort=-%cpu"}, Cap: model.Shape(psSortHead)}},
+			{{Label: "ps-mem", Inv: model.Dual{Run: native.PsMem, Script: "ps aux --sort=-%mem"}, Cap: model.Shape(psSortHead)}},
 		},
 		define.CheckOpt{Syntax: model.SyntaxTop, Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,
-		[]model.Probe{
-			{Label: "caps", Inv: model.Dual{Run: native.ProcCaps(containerCgroupRe), Script: sessionCapsScript}, Adapt: native.DecodeCapMasks},
-		},
+		[]model.Step{{{Label: "caps", Inv: model.Dual{Run: native.ProcCaps(containerCgroupRe), Script: sessionCapsScript}, Adapt: native.DecodeCapMasks}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("cap-container-context", `^context: container`, model.Medium,
@@ -327,10 +325,10 @@ var ProcessChecks = []*model.Check{
 		// find has neither -lname nor -printf. lsof runs raw and is capped by
 		// the reader's scan budget: a source-side line cap would cut the
 		// stream before the keep filter sees the deleted rows.
-		[]model.Probe{
-			{Label: "lsof", Inv: model.Dual{Run: native.DeletedExe, Script: lsofScript}},
-			{Label: "find", Inv: model.Dual{Script: findDeletedScript}, Cap: model.Scan(openScanLines)},
-			{Label: "proc-links", Inv: model.Dual{Script: deletedLinksScript}, Cap: model.Scan(openScanLines)},
+		[]model.Step{
+			{{Label: "lsof", Inv: model.Dual{Run: native.DeletedExe, Script: lsofScript}}},
+			{{Label: "find", Inv: model.Dual{Script: findDeletedScript}, Cap: model.Scan(openScanLines)}},
+			{{Label: "proc-links", Inv: model.Dual{Script: deletedLinksScript}, Cap: model.Scan(openScanLines)}},
 		},
 		define.CheckOpt{
 			// Keep only rows the kernel marked deleted; signal rows bypass keep
@@ -340,9 +338,7 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("cwd-tmp", "Processes with cwd in a temp directory", model.AspectProcess,
-		[]model.Probe{
-			{Label: "proc-cwd", Inv: model.Dual{Run: native.CwdTmp(tmpDirs), Script: cwdTmpScript}},
-		},
+		[]model.Step{{{Label: "proc-cwd", Inv: model.Dual{Run: native.CwdTmp(tmpDirs), Script: cwdTmpScript}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("proc-cwd-tmp", `^/proc/\d+ -> /(?:tmp|var/tmp|dev/shm)/\S*`, model.High,
@@ -350,9 +346,7 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("hidden-procs", "proc vs ps process comparison", model.AspectProcess,
-		[]model.Probe{
-			{Label: "ps", Inv: model.Dual{Run: native.HiddenProcs, Script: hiddenProcsScript}},
-		},
+		[]model.Step{{{Label: "ps", Inv: model.Dual{Run: native.HiddenProcs, Script: hiddenProcsScript}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("proc-not-in-ps", `^[0-9]+$`, model.High,
@@ -361,9 +355,7 @@ var ProcessChecks = []*model.Check{
 		}),
 	define.LinuxCheck("hidden-pids", "Hidden process brute-force (kill(0) vs /proc)", model.AspectProcess,
 		// Both branches print the same text shape, so the rules are shared.
-		[]model.Probe{
-			{Label: "brute", Inv: model.Dual{Run: native.HiddenPIDs, Script: hiddenPidsScript}, Cap: model.Scan(openScanLines)},
-		},
+		[]model.Step{{{Label: "brute", Inv: model.Dual{Run: native.HiddenPIDs, Script: hiddenPidsScript}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("hidden-pid", `^PID \d+ `, model.Critical,
@@ -371,18 +363,16 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("miner", "Cryptominer hunt (processes and drop paths)", model.AspectProcess,
-		[]model.Probe{
-			{Label: "scan", Inv: model.Dual{
-				Run: native.Miner(native.MinerScan{
-					Pattern:   minerPsPattern,
-					DropPaths: minerDropPaths,
-					NameGlobs: minerNameGlobs,
-					TempDirs:  tmpDirs,
-					MaxDepth:  minerWalkDepth,
-				}),
-				Script: minerScript,
-			}, Cap: model.Scan(openScanLines)},
-		},
+		[]model.Step{{{Label: "scan", Inv: model.Dual{
+			Run: native.Miner(native.MinerScan{
+				Pattern:   minerPsPattern,
+				DropPaths: minerDropPaths,
+				NameGlobs: minerNameGlobs,
+				TempDirs:  tmpDirs,
+				MaxDepth:  minerWalkDepth,
+			}),
+			Script: minerScript,
+		}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxTable,
 			// The drop-path and temp-name sections are ls -l shape, the ps section a

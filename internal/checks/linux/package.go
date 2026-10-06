@@ -172,14 +172,12 @@ var (
 // PackageChecks covers packages.
 var PackageChecks = []*model.Check{
 	define.LinuxCheck("containers", "Containers (Docker)", model.AspectPackage,
-		[]model.Probe{
-			{Label: "docker", Inv: model.Dual{Run: native.Docker, Script: dockerScript}},
-		},
+		[]model.Step{{{Label: "docker", Inv: model.Dual{Run: native.Docker, Script: dockerScript}}}},
 		define.CheckOpt{Syntax: model.SyntaxTable, Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("pkg-verify", "Package integrity verification", model.AspectPackage,
-		[]model.Probe{
-			{Label: "dpkg", Inv: model.Dual{Run: native.PkgVerify([]string{"dpkg", "-V"}), Script: verifyScript(pkgVerifyDpkg)}},
-			{Label: "rpm", Inv: model.Dual{Run: native.PkgVerify([]string{"rpm", "-Va"}), Script: verifyScript(pkgVerifyRpm)}},
+		[]model.Step{
+			{{Label: "dpkg", Inv: model.Dual{Run: native.PkgVerify([]string{"dpkg", "-V"}), Script: verifyScript(pkgVerifyDpkg)}}},
+			{{Label: "rpm", Inv: model.Dual{Run: native.PkgVerify([]string{"rpm", "-Va"}), Script: verifyScript(pkgVerifyRpm)}}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -196,25 +194,19 @@ var PackageChecks = []*model.Check{
 			Timeout: pkgVerifyTimeout,
 		}),
 	define.LinuxCheck("unowned-files", "Files no package owns (system directories)", model.AspectPackage,
-		[]model.Probe{
-			{Label: "find", Inv: model.Dual{
-				Run:    native.UnownedFiles(unownedDirs),
-				Script: script.UnownedScript(unownedDirs),
-			}, Cap: model.Scan(openScanLines)},
-		},
+		[]model.Step{{{Label: "find", Inv: model.Dual{
+			Run:    native.UnownedFiles(unownedDirs),
+			Script: script.UnownedScript(unownedDirs),
+		}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{Rules: []model.Rule{unownedFileRule}, Timeout: unownedTimeout}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
-		[]model.Probe{
-			{Label: "log", Inv: model.Dual{
-				Run:    native.PkgHistory(pkgHistoryPaths, pkgHistoryLines),
-				Script: pkgHistoryScript,
-			}},
-		},
+		[]model.Step{{{Label: "log", Inv: model.Dual{
+			Run:    native.PkgHistory(pkgHistoryPaths, pkgHistoryLines),
+			Script: pkgHistoryScript,
+		}}}},
 		define.CheckOpt{Rules: pkgHistoryRules, Filters: pkgHistoryKeep, Syntax: model.SyntaxPkgHistory}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
-		[]model.Probe{
-			{Label: "file", Inv: model.Dual{Run: native.AuthBinaries(authBinPaths), Script: authBinScript}},
-		},
+		[]model.Step{{{Label: "file", Inv: model.Dual{Run: native.AuthBinaries(authBinPaths), Script: authBinScript}}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxLsL,
 			Rules:  []model.Rule{binNotElfRule, define.KeywordRule},

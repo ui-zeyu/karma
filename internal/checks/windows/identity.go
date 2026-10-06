@@ -30,7 +30,7 @@ const adminDollarRule = `(?i)^\S*\$\s`
 // IdentityChecks is the account aspect.
 var IdentityChecks = []*model.Check{
 	define.WindowsCheck("local-users", "Local Users", model.AspectIdentity,
-		[]model.Probe{PSProbe("localuser", localUsersScript)},
+		[]model.Step{{PSProbe("localuser", localUsersScript)}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("local-user-hidden", hiddenUserRule, model.High,
@@ -39,7 +39,7 @@ var IdentityChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("admin-group", "Administrator Group Members", model.AspectIdentity,
-		[]model.Probe{PSProbe("localgroup", adminGroupScript)},
+		[]model.Step{{PSProbe("localgroup", adminGroupScript)}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("admin-group-dollar", adminDollarRule, model.Medium,

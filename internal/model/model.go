@@ -581,6 +581,17 @@ const (
 // cannot silently end up with an empty chain.
 func (c Channel) Remote() bool { return c != ChanLocal }
 
+// Call is one call to run on the target: what to run, and how much of the
+// output this tier wants. The deadline is not here because it is not a
+// property of one call: it travels in the context, established by the caller
+// that owns the policy — the runner gives one check's whole walk a single
+// deadline (session.Within) — so every layer of the call answers to the same
+// one, and the channel's own setup is covered by it too.
+type Call struct {
+	Inv Invocation
+	Cap RowCap
+}
+
 // Probe is one tier. A nil Requires derives from the invocation (Command
 // takes Argv's first word); Adapt only turns this tier's output into the same
 // shape as the other tiers and runs within the section; normalization that
@@ -590,14 +601,16 @@ type Probe struct {
 	Inv   Invocation
 	Adapt Normalizer
 	Cap   RowCap
-	// Together marks a tier that answers alongside the other tiers declared
-	// after it: the set is entered when every plain tier before it failed,
-	// every member runs, and the members' bodies join the check's in declaration
-	// order. It is for a source the channel needs one process per item for — the
-	// local Windows channel has no shell to loop in, so a registry check
-	// declares one reg.exe tier per key this way.
-	Together bool
 }
+
+// Step is one step of a check's walk: the probes that answer as a whole. One
+// probe is the common step. Several are the source that needs one process per
+// item — a PS-less Windows target runs one reg.exe per key because the local
+// channel has no shell to loop in — where the step answers when any member
+// answered and the bodies join in declaration order. Declaring them as
+// alternatives to one another would let the walk stop at the first key that
+// exists and silently drop the rest of the evidence.
+type Step []Probe
 
 // InvocationFor returns the invocation one channel executes for this tier:
 // nil when the tier does not exist on that channel (a Dual with only the
@@ -621,20 +634,22 @@ func (p Probe) RequiredBin() string {
 	return ""
 }
 
-// Check is one check: its fallback chain, its already-composed filters and
+// Check is one check: its fallback walk, its already-composed filters and
 // rules, and an optional body normalizer.
 type Check struct {
-	ID        string
-	Title     string
-	Aspect    Aspect
-	Platform  Platform // catalog platform: the list group banner and the platform selector
-	Probes    []Probe
-	Filters   []LineFilter
-	Rules     []Rule
-	Timeout   time.Duration // 0 means the global timeout from the run options
-	Syntax    Syntax        // syntax declaration for the presentation layer; empty for none
-	Normalize Normalizer    // normalizes the winning body per section; the section title is passed and only dialect alignment (Probe.Adapt) reads it
-	ScanBytes int           // 0 means the default read cap, reader.MaxScanBytes
+	ID       string
+	Title    string
+	Aspect   Aspect
+	Platform Platform // catalog platform: the list group banner and the platform selector
+	Steps    []Step   // the walk: one step per tier or group of tiers that answer together
+	Filters  []LineFilter
+	Rules    []Rule
+	// Timeout is this check's own budget, overriding the run option; 0 means the
+	// run's. It bounds the whole walk (runner.runCheck), not one tier's call.
+	Timeout   time.Duration
+	Syntax    Syntax     // syntax declaration for the presentation layer; empty for none
+	Normalize Normalizer // normalizes the winning body per section; the section title is passed and only dialect alignment (Probe.Adapt) reads it
+	ScanBytes int        // 0 means the default read cap, reader.MaxScanBytes
 	// SectionSyntax overrides Syntax per section: the first entry whose Title
 	// glob (path.Match) matches the section title wins, other sections keep
 	// Syntax. A section usually carries one source's shape, so mixed-output

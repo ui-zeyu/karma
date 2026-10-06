@@ -8,9 +8,7 @@ package cli
 import (
 	"context"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -28,19 +26,18 @@ var buildVersion = "dev"
 // Main wires up the command line and runs it; it returns the process exit code.
 // Ctrl-C (SIGINT/SIGTERM) cancels the run's context: collection stops promptly,
 // in-flight checks keep the output they had already read, the partial report is
-// still presented, and the exit code is 130.
+// still presented, and the exit code is 130 — which the run itself reports, so a
+// signal that arrives after the last check cannot turn a complete report into an
+// interrupted one.
 func Main(version string) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := interruptible()
 	defer stop()
 	buildVersion = version
 	root := newRootCmd(version)
 	if err := root.ExecuteContext(ctx); err != nil {
 		return reportError(os.Stderr, err)
 	}
-	if ctx.Err() != nil {
-		return reportError(os.Stderr, failf(130, "interrupted"))
-	}
-	return 0
+	return int(ExitOK)
 }
 
 func newRootCmd(version string) *cobra.Command {

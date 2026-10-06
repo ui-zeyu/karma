@@ -138,7 +138,7 @@ var PersistenceChecks = []*model.Check{
 		},
 		startupFolderFragment),
 	define.WindowsCheck("nt-services", "Service List (with binPath)", model.AspectPersistence,
-		[]model.Probe{PSProbe("cim", servicesScript)},
+		[]model.Step{{PSProbe("cim", servicesScript)}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("svc-temp", serviceTempRule, model.High,
@@ -149,7 +149,7 @@ var PersistenceChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("tasks", "Scheduled Task List (with Actions)", model.AspectPersistence,
-		[]model.Probe{PSProbe("task", tasksScript)},
+		[]model.Step{{PSProbe("task", tasksScript)}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("task-userpath", autorunTempRule, model.High,
@@ -162,7 +162,7 @@ var PersistenceChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("wmi-subscription", "WMI Event Subscriptions (Persistence)", model.AspectPersistence,
-		[]model.Probe{PSProbe("cim", wmiSubscriptionScript)},
+		[]model.Step{{PSProbe("cim", wmiSubscriptionScript)}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("wmi-consumer", wmiConsumerRule, model.High,
@@ -209,7 +209,7 @@ var PersistenceChecks = []*model.Check{
 		},
 		appPatchFragment),
 	define.WindowsCheck("svc-dll", "svchost Service DLLs (ServiceDll)", model.AspectPersistence,
-		[]model.Probe{PSProbe("cim", serviceDllScript)},
+		[]model.Step{{PSProbe("cim", serviceDllScript)}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				serviceDllTempRule,

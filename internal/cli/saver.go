@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"karma/internal/fault"
 	"karma/internal/model"
 	"karma/internal/runner"
 )
@@ -89,6 +90,31 @@ func (s *saveObserver) CheckFinished(check *model.Check, result *model.CheckResu
 		s.write(check, result)
 	}
 	s.next.CheckFinished(check, result)
+}
+
+// Damaged passes a piece of presentation the run could not show on to the
+// observer that owns the report stream.
+func (s *saveObserver) Damaged(check *model.Check, err error) { s.next.Damaged(check, err) }
+
+// crashName is the record a damaged run leaves in the bundle: the message names
+// the boundary that broke and the file carries the stack, which is what makes an
+// internal error actionable after the fact.
+const crashName = "_karma-internal-error.txt"
+
+// saveCrash writes one internal error beside the evidence. A run without --save
+// has nowhere to put it, and the command line's message is then the whole
+// account.
+func saveCrash(dir string, crash *fault.Panic) {
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintln(os.Stderr, "save failed: "+err.Error())
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, crashName), []byte(crash.Detail()), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, "save failed: "+err.Error())
+	}
 }
 
 // finalize writes manifest.json after the run's checks are done, so the

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"karma/internal/fault"
 	"karma/internal/model"
 )
 
@@ -51,12 +52,14 @@ type observerEvent struct {
 	kind   eventKind
 	check  *model.Check
 	result *model.CheckResult
+	err    error // damagedEvent: what the run could not show
 }
 type eventKind int
 
 const (
 	startedEvent eventKind = iota
 	finishedEvent
+	damagedEvent
 )
 
 // progressInterval is the progress line's refresh cadence.
@@ -90,7 +93,9 @@ func (o *LiveObserver) Start() {
 }
 
 // loop is the single owner of the terminal and the observer state: events
-// apply here and nowhere else, so there is nothing to lock.
+// apply here and nowhere else, so there is nothing to lock. Every frame goes
+// through guard: this goroutine is karma's own, and a panic in it has no recover
+// above it — it would take every panel still queued with it.
 func (o *LiveObserver) loop() {
 	defer func() {
 		if o.tty { // the progress line leaves nothing behind
@@ -107,13 +112,22 @@ func (o *LiveObserver) loop() {
 	for {
 		select {
 		case <-o.stop:
-			o.drain()
+			o.guard(o.drain)
 			return
 		case event := <-o.events:
-			o.apply(event)
+			o.guard(func() { o.apply(event) })
 		case <-ticks:
-			o.drawProgress()
+			o.guard(o.drawProgress)
 		}
+	}
+}
+
+// guard keeps one broken frame from ending the report: the line goes into the
+// report stream where the panel would have been, so a reader sees what is
+// missing instead of nothing at all.
+func (o *LiveObserver) guard(frame func()) {
+	if err := fault.Catch("render", func() error { frame(); return nil }); err != nil {
+		fmt.Fprintf(o.w, "\r\033[Kkarma: %v\n", err)
 	}
 }
 
@@ -138,7 +152,30 @@ func (o *LiveObserver) apply(event observerEvent) {
 		o.finished++
 		o.received[o.order[event.check]] = event.result
 		o.flush()
+	case damagedEvent:
+		o.damaged(event.check, event.err)
 	}
+}
+
+// Damaged records a piece of the run the presentation could not show: the same
+// queue as every other event, because the render goroutine owns the writer.
+func (o *LiveObserver) Damaged(check *model.Check, err error) {
+	o.events <- observerEvent{kind: damagedEvent, check: check, err: err}
+}
+
+// damaged prints what the run lost, and records a placeholder for a check whose
+// result never arrived — the callback that would have recorded it is the one
+// that broke, and without the placeholder every later panel would wait behind it
+// forever.
+func (o *LiveObserver) damaged(check *model.Check, err error) {
+	o.finished++
+	fmt.Fprintf(o.w, "\r\033[Kkarma: %v: %v\n", check.ID, err)
+	if index, known := o.order[check]; known && index >= o.next {
+		if _, recorded := o.received[index]; !recorded {
+			o.received[index] = &model.CheckResult{Check: check, Outcome: model.Failed, Note: err.Error()}
+		}
+	}
+	o.flush()
 }
 
 // CheckStarted queues the progress update.

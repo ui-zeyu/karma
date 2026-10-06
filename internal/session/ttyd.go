@@ -13,6 +13,7 @@
 package session
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -166,7 +167,7 @@ func (t *TTYDTransport) Platform() model.Platform { return model.Linux }
 // reach a shell and come back. A readonly deployment (ttyd from 1.7.4 without
 // -W/--writable) fails here with the reason, instead of leaving every check to
 // collect nothing.
-func (t *TTYDTransport) Open() (Session, error) {
+func (t *TTYDTransport) Open(ctx context.Context) (Session, error) {
 	endpoint, credential, err := ParseTTYDEndpoint(t.Target)
 	if err != nil {
 		return nil, err
@@ -187,7 +188,7 @@ func (t *TTYDTransport) Open() (Session, error) {
 	if credential != "" {
 		sess.header.Set("Authorization", "Basic "+sess.token)
 	}
-	if err := sess.probe(); err != nil {
+	if err := sess.probe(ctx); err != nil {
 		return nil, err
 	}
 	return sess, nil

@@ -40,9 +40,18 @@ import (
 // it is bounded by the link and by the operator's interrupt.
 const bootstrapTimeout = 60 * time.Second
 
+// bootCall runs one bootstrap command under the mode's own budget: the mode
+// makes a handful of small calls around the upload, and none of them is the
+// collection's business.
+func bootCall(ctx context.Context, sess session.Session, inv model.Invocation) model.RunResult {
+	ctx, cancel := session.Within(ctx, bootstrapTimeout)
+	defer cancel()
+	return sess.Run(ctx, model.Call{Inv: inv})
+}
+
 // runBootstrap ships this binary to the target and prints where it landed.
 func runBootstrap(ctx context.Context, transport session.Transport) error {
-	sess, err := transport.Open()
+	sess, err := transport.Open(ctx)
 	if err != nil {
 		return err
 	}
@@ -118,7 +127,7 @@ fi`
 // targetPacker reports how the target unpacks a gzip stream: its own gzip,
 // busybox's, or none at all.
 func targetPacker(ctx context.Context, sess session.Session) string {
-	result := sess.Run(ctx, model.Shell{Script: packerProbe}, bootstrapTimeout, model.RowCap{})
+	result := bootCall(ctx, sess, model.Shell{Script: packerProbe})
 	switch packer := strings.TrimSpace(result.Stdout); packer {
 	case "gzip", "busybox":
 		return packer
@@ -168,10 +177,10 @@ func unpackUpload(ctx context.Context, sess session.Session, remote, unpack stri
 	if unpack != "" {
 		command = unpack + " && " + command
 	}
-	if result := sess.Run(ctx, model.Shell{Script: command}, bootstrapTimeout, model.RowCap{}); result.Verdict != model.VerdictAnswered {
+	if result := bootCall(ctx, sess, model.Shell{Script: command}); result.Verdict != model.VerdictAnswered {
 		return fmt.Errorf("unpacking the upload: %s", commandFailure(result))
 	}
-	result := sess.Run(ctx, model.Shell{Script: script.Join([]string{remote, "version"})}, bootstrapTimeout, model.RowCap{})
+	result := bootCall(ctx, sess, model.Shell{Script: script.Join([]string{remote, "version"})})
 	want := "karma " + buildVersion
 	if got := strings.TrimSpace(result.Stdout); got != want {
 		return fmt.Errorf("the uploaded binary answered %q, want %q: %s", got, want, commandFailure(result))
@@ -201,7 +210,7 @@ func commandFailure(result model.RunResult) string {
 // binary's build: a cross-arch run cannot happen, and the mistake belongs to
 // this command rather than to a failed exec on the target.
 func checkTargetPlatform(ctx context.Context, sess session.Session) error {
-	result := sess.Run(ctx, model.Shell{Script: "uname -s -m"}, bootstrapTimeout, model.RowCap{})
+	result := bootCall(ctx, sess, model.Shell{Script: "uname -s -m"})
 	fields := strings.Fields(result.Stdout)
 	if len(fields) < 2 {
 		return fmt.Errorf("cannot read the target's platform (uname said %q)", strings.TrimSpace(result.Stdout))

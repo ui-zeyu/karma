@@ -265,10 +265,11 @@ func TestArchiveNormalize(t *testing.T) {
 }
 
 // RegCheck assembles the PowerShell script from the key list and appends one
-// direct reg.exe fallback per key; pin the composed shape of both tiers.
+// step of direct reg.exe fallbacks, one probe per key; pin the composed shape of
+// both steps.
 func TestRegCheckComposesScripts(t *testing.T) {
 	runKeys := testkit.CheckByID(t, All, "run-keys")
-	composed := runKeys.Probes[0].Inv.(model.Command).Argv[4]
+	composed := runKeys.Steps[0][0].Inv.(model.Command).Argv[4]
 	// every key queried once in the script, its section title printed only with output
 	const runOnce = `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`
 	if got := strings.Count(composed, "reg query '"+runOnce+"' 2>$null"); got != 1 {
@@ -281,15 +282,15 @@ func TestRegCheckComposesScripts(t *testing.T) {
 	if !strings.Contains(composed, `'== ' + 'Startup Folder'`) {
 		t.Fatalf("startup folder fragment missing: %s", composed)
 	}
-	// one direct fallback per key, in key order, and every one of them answers
-	// together: the chain would otherwise stop at the first key that exists and
-	// never query the rest (the local Windows channel has no shell to loop in).
+	// one direct fallback per key, in key order, and all of them in one step: as
+	// separate steps the walk would stop at the first key that exists and never
+	// query the rest (the local Windows channel has no shell to loop in).
+	if len(runKeys.Steps) != 2 {
+		t.Fatalf("the PowerShell step and one step of reg fallbacks: %d steps", len(runKeys.Steps))
+	}
 	var fallbacks []string
-	for _, probe := range runKeys.Probes[1:] {
+	for _, probe := range runKeys.Steps[1] {
 		fallbacks = append(fallbacks, probe.Inv.(model.Command).Argv[2])
-		if !probe.Together {
-			t.Errorf("key %s must answer together with the other keys", probe.Label)
-		}
 	}
 	want := []string{
 		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
@@ -304,11 +305,11 @@ func TestRegCheckComposesScripts(t *testing.T) {
 
 	// value queries: /v on both tiers
 	track := testkit.CheckByID(t, All, "userassist-track")
-	composed = track.Probes[0].Inv.(model.Command).Argv[4]
+	composed = track.Steps[0][0].Inv.(model.Command).Argv[4]
 	if !strings.Contains(composed, `reg query '`+advancedKey+`' /v Start_TrackEnabled 2>$null`) {
 		t.Fatalf("value query missing: %s", composed)
 	}
-	if argv := track.Probes[1].Inv.(model.Command).Argv; !slices.Equal(argv, []string{"reg", "query", advancedKey, "/v", "Start_TrackEnabled"}) {
+	if argv := track.Steps[1][0].Inv.(model.Command).Argv; !slices.Equal(argv, []string{"reg", "query", advancedKey, "/v", "Start_TrackEnabled"}) {
 		t.Fatalf("fallback /v argv: %v", argv)
 	}
 }
@@ -316,7 +317,7 @@ func TestRegCheckComposesScripts(t *testing.T) {
 func TestRegistryChecksCarryRegFallback(t *testing.T) {
 	dual := map[string]bool{}
 	for _, check := range All {
-		first := check.Probes[0]
+		first := check.Steps[0][0]
 		argv, ok := first.Inv.(model.Command)
 		// Native command probes (system-guaranteed exes like netstat and schtasks) are not wrapped in PS
 		if !ok || argv.Argv[0] != "powershell" {
@@ -331,9 +332,12 @@ func TestRegistryChecksCarryRegFallback(t *testing.T) {
 		if !strings.HasPrefix(argv.Argv[4], powershell.UTF8Prefix) {
 			t.Fatalf("%s missing UTF-8 prefix", check.ID)
 		}
-		if len(check.Probes) > 1 {
+		if len(check.Steps) > 1 {
 			dual[check.ID] = true
-			for _, probe := range check.Probes[1:] {
+			if len(check.Steps) != 2 {
+				t.Fatalf("%s: one PowerShell step and one reg step, got %d steps", check.ID, len(check.Steps))
+			}
+			for _, probe := range check.Steps[1] {
 				rest, ok := probe.Inv.(model.Command)
 				if !ok || probe.RequiredBin() != "reg" || rest.Argv[0] != "reg" || rest.Argv[1] != "query" {
 					t.Fatalf("%s fallback probe should be reg query: %+v", check.ID, probe.Inv)

@@ -106,13 +106,18 @@ func listColumnWidths(selected []*model.Check) (idW, chainW int) {
 	return idW, chainW
 }
 
-// probeChain is the chain as displayed: the fallback ladder of tier labels.
+// probeChain is the walk as displayed: the fallback ladder of step labels, the
+// probes of a step that answers as a whole joined by " + ".
 func probeChain(check *model.Check) string {
-	labels := make([]string, 0, len(check.Probes))
-	for _, probe := range check.Probes {
-		labels = append(labels, probe.Label)
+	steps := make([]string, 0, len(check.Steps))
+	for _, step := range check.Steps {
+		labels := make([]string, 0, len(step))
+		for _, probe := range step {
+			labels = append(labels, probe.Label)
+		}
+		steps = append(steps, strings.Join(labels, " + "))
 	}
-	return strings.Join(labels, " → ")
+	return strings.Join(steps, " → ")
 }
 
 // listRow is one catalog row: blue id, title in the default color, and the

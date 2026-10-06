@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -75,7 +74,7 @@ func tail(text string) fakeChunk { return fakeChunk{text: text, ok: false} } // 
 
 // streamingSource produces lines until stopped and keeps readLine hanging after
 // the stop, so both stop paths run through the grace period. Callers shorten
-// stopGrace with shortGrace.
+// cutGrace with shortGrace.
 type streamingSource struct {
 	baseSource
 	stopped chan struct{}
@@ -104,25 +103,28 @@ func newStreamingSource() *streamingSource {
 	return &streamingSource{stopped: make(chan struct{})}
 }
 
-// stuckSource ignores stop entirely: its reads hang whether or not stop was
-// called, so the grace period is what ends the call.
+// stuckSource ignores stop entirely: after its first row it parks in a read that
+// only the test's own release ends, so the grace period is what finishes the
+// call — the shape of a channel whose stop cannot release its reads.
 type stuckSource struct {
 	baseSource
-	halted chan struct{}
+	reads   int
+	release chan struct{}
 }
+
+func newStuckSource() *stuckSource { return &stuckSource{release: make(chan struct{})} }
 
 func (s *stuckSource) wait() {}
 
-func (s *stuckSource) stop() { close(s.halted) }
+func (s *stuckSource) stop() {}
 
 func (s *stuckSource) readLine() (string, bool) {
-	select {
-	case <-s.halted:
-		<-make(chan struct{}) // hangs forever, stop or no stop
-		return "", false
-	default:
+	s.reads++
+	if s.reads == 1 {
+		return "early\n", true
 	}
-	return "early\n", true
+	<-s.release
+	return "", false
 }
 
 func (s *stuckSource) readAll() string { return "" }
@@ -130,17 +132,27 @@ func (s *stuckSource) readAll() string { return "" }
 func (s *stuckSource) exitCode() int { return -1 }
 
 // shortGrace shortens the grace period for the duration of one test: the real
-// 5s would turn every hung-source test into a slow one.
+// second would turn every hung-source test into a slow one.
 func shortGrace(t *testing.T) {
 	t.Helper()
-	original := stopGrace
-	stopGrace = 50 * time.Millisecond
-	t.Cleanup(func() { stopGrace = original })
+	original := cutGrace
+	cutGrace = 50 * time.Millisecond
+	t.Cleanup(func() { cutGrace = original })
+}
+
+// harvestFor is one harvest under a budget, stated the way the runner states it:
+// the deadline travels in the context, so the source and the channel setup share
+// it.
+func harvestFor(t *testing.T, src source, budget time.Duration, cap model.RowCap) model.RunResult {
+	t.Helper()
+	ctx, cancel := Within(context.Background(), budget)
+	defer cancel()
+	return harvest(ctx, src, cap)
 }
 
 func TestHarvestScanCapCleanEOF(t *testing.T) {
 	src := fakeSourceOf(line("a\n"), line("b\n"), line("c\n"))
-	result := harvest(context.Background(), src, 2*time.Second, model.Scan(3))
+	result := harvestFor(t, src, 2*time.Second, model.Scan(3))
 	if result.Truncated {
 		t.Errorf("EOF exactly at the limit does not count as truncated")
 	}
@@ -154,7 +166,7 @@ func TestHarvestScanCapCleanEOF(t *testing.T) {
 
 func TestHarvestScanCapTruncated(t *testing.T) {
 	src := fakeSourceOf(line("a\n"), line("b\n"), line("c\n"), line("d\n"))
-	result := harvest(context.Background(), src, 2*time.Second, model.Scan(3))
+	result := harvestFor(t, src, 2*time.Second, model.Scan(3))
 	if !result.Truncated {
 		t.Errorf("a complete line after the limit should mark truncated")
 	}
@@ -166,7 +178,7 @@ func TestHarvestScanCapTruncated(t *testing.T) {
 // A trailing partial line has more=false but non-empty content: the truncated flag was once missed because the condition included more.
 func TestHarvestScanCapPartialTail(t *testing.T) {
 	src := fakeSourceOf(line("a\n"), line("b\n"), line("c\n"), tail("partial"))
-	result := harvest(context.Background(), src, 2*time.Second, model.Scan(3))
+	result := harvestFor(t, src, 2*time.Second, model.Scan(3))
 	if !result.Truncated {
 		t.Errorf("a trailing partial line after the limit should mark truncated")
 	}
@@ -177,7 +189,7 @@ func TestHarvestScanCapPartialTail(t *testing.T) {
 
 func TestHarvestByteCap(t *testing.T) {
 	src := fakeSourceCapped(8, []fakeChunk{line("12345678\n"), line("x\n")})
-	result := harvest(context.Background(), src, 2*time.Second, model.RowCap{})
+	result := harvestFor(t, src, 2*time.Second, model.RowCap{})
 	if !result.Truncated {
 		t.Errorf("exceeding the byte safety valve should mark truncated")
 	}
@@ -191,15 +203,15 @@ func TestHarvestByteCap(t *testing.T) {
 // failure.
 func TestHarvestCapStopIsTheAnswer(t *testing.T) {
 	src := fakeSourceCapped(8, []fakeChunk{line("12345678\n"), line("x\n")})
-	result := harvest(context.Background(), src, 2*time.Second, model.RowCap{})
+	result := harvestFor(t, src, 2*time.Second, model.RowCap{})
 	if result.Verdict != model.VerdictAnswered {
 		t.Fatalf("a deliberate stop should read as answered, got %+v", result)
 	}
 }
 
-func TestHarvestTimeoutKeepsPartialOutput(t *testing.T) {
+func TestHarvestDeadlineKeepsPartialOutput(t *testing.T) {
 	shortGrace(t)
-	result := harvest(context.Background(), newStreamingSource(), 30*time.Millisecond, model.RowCap{})
+	result := harvestFor(t, newStreamingSource(), 30*time.Millisecond, model.RowCap{})
 	if result.Verdict != model.VerdictTimedOut {
 		t.Fatalf("should end as a timeout: %+v", result)
 	}
@@ -213,7 +225,7 @@ func TestHarvestCancelKeepsPartialOutput(t *testing.T) {
 	src := newStreamingSource()
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(30 * time.Millisecond); cancel() }()
-	result := harvest(ctx, src, time.Minute, model.RowCap{})
+	result := harvest(ctx, src, model.RowCap{})
 	cancel()
 	if result.Verdict != model.VerdictInterrupted {
 		t.Fatalf("should end as interrupted: %+v", result)
@@ -223,17 +235,23 @@ func TestHarvestCancelKeepsPartialOutput(t *testing.T) {
 	}
 }
 
-// A source that ignores stop entirely: the grace period expires and the output
-// read before the stop is still kept instead of discarded.
+// A source that ignores stop entirely: the grace period expires, the output read
+// before the stop is kept, and the result says the source would not stop — the
+// output that never arrived is missing from the evidence, and a silent gap is
+// the one thing a report must not have.
 func TestHarvestGraceExpiryKeepsReadOutput(t *testing.T) {
 	shortGrace(t)
-	src := &stuckSource{halted: make(chan struct{})}
-	result := harvest(context.Background(), src, 30*time.Millisecond, model.RowCap{})
+	src := newStuckSource()
+	t.Cleanup(func() { close(src.release) })
+	result := harvestFor(t, src, 30*time.Millisecond, model.RowCap{})
 	if result.Verdict != model.VerdictTimedOut {
 		t.Fatalf("should end as a timeout: %+v", result)
 	}
 	if !strings.Contains(result.Stdout, "early\n") {
 		t.Fatalf("output read before the stop should be kept: %q", result.Stdout)
+	}
+	if !strings.Contains(result.Stderr, "did not stop within") {
+		t.Fatalf("a source that would not stop should be reported: %q", result.Stderr)
 	}
 }
 
@@ -251,24 +269,26 @@ func TestHarvestSurvivesAPanickingReader(t *testing.T) {
 		}
 		return src.next()
 	}
-	result := harvest(context.Background(), src, 2*time.Second, model.RowCap{})
+	result := harvestFor(t, src, 2*time.Second, model.RowCap{})
 	if result.Stdout != "a\nb\n" {
 		t.Fatalf("output read before the panic should be kept: %q", result.Stdout)
 	}
 	if !result.Truncated {
 		t.Fatal("a dead reader means the body is not known to be complete")
 	}
-	if !strings.Contains(result.Stderr, "harvest panic: reader blew up") {
+	if !strings.Contains(result.Stderr, "harvest stdout reader") || !strings.Contains(result.Stderr, "reader blew up") {
 		t.Fatalf("the reason should reach the source's stderr: %q", result.Stderr)
 	}
 
-	// The waiter's close(done) is deferred inside the barrier too: a panicking
-	// wait must not leave the caller waiting for a signal that never comes.
+	// The waiter's close(done) is deferred outside the barrier too: a panicking
+	// wait must not leave the caller waiting for a signal that never comes, and
+	// the message must be recorded before the waiter wakes — the read below would
+	// otherwise race the report and this assertion would flake.
 	var once sync.Once
 	hung := fakeSourceOf()
 	hung.onWait = func() { once.Do(func() { panic("wait blew up") }) }
-	waited := harvest(context.Background(), hung, time.Second, model.RowCap{})
-	if !strings.Contains(waited.Stderr, "harvest panic: wait blew up") {
+	waited := harvestFor(t, hung, time.Second, model.RowCap{})
+	if !strings.Contains(waited.Stderr, "harvest wait") || !strings.Contains(waited.Stderr, "wait blew up") {
 		t.Fatalf("a panicking wait should be reported, got %+v", waited)
 	}
 }
@@ -297,34 +317,19 @@ func TestVerdictForReadsTheExitCode(t *testing.T) {
 	}
 }
 
-// safeCall is the one panic barrier of the channel layer: it reports the panic
-// through the call's own result path and signals completion in the same deferred
-// call, so a waiter is never woken before the panic is recorded.
-func TestSafeCallReportsBeforeItSignalsCompletion(t *testing.T) {
-	var (
-		mu     sync.Mutex
-		events []string
-	)
-	done := make(chan struct{})
-	safeCall(
-		func(problem error) {
-			mu.Lock()
-			defer mu.Unlock()
-			events = append(events, "report: "+problem.Error())
-		},
-		func() {
-			mu.Lock()
-			defer mu.Unlock()
-			events = append(events, "finished")
-			close(done)
-		},
-		func() { panic("helper blew up") },
-	)
-	<-done
-	mu.Lock()
-	defer mu.Unlock()
-	want := []string{"report: helper blew up", "finished"}
-	if !slices.Equal(events, want) {
-		t.Fatalf("events = %v, want %v", events, want)
+// cutVerdict is the one place a cut is named: the call's own deadline, or the
+// operator's cancellation.
+func TestCutVerdictReadsTheContext(t *testing.T) {
+	deadline, cancelDeadline := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancelDeadline()
+	<-deadline.Done()
+	if got := cutVerdict(deadline); got != model.VerdictTimedOut {
+		t.Errorf("an expired deadline should read as a timeout, got %v", got)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := cutVerdict(cancelled); got != model.VerdictInterrupted {
+		t.Errorf("a cancel should read as an interruption, got %v", got)
 	}
 }

@@ -165,7 +165,7 @@ var ExecutionChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("psreadline", "PowerShell Command History", model.AspectExecution,
-		[]model.Probe{PSProbe("type", psHistoryScript)},
+		[]model.Step{{PSProbe("type", psHistoryScript)}},
 		define.CheckOpt{
 			Syntax: model.SyntaxPowerShell,
 			Rules: []model.Rule{
@@ -177,7 +177,7 @@ var ExecutionChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("clipboard", "Current Clipboard Content", model.AspectExecution,
-		[]model.Probe{PSProbe("clipboard", clipboardScript)},
+		[]model.Step{{PSProbe("clipboard", clipboardScript)}},
 		define.CheckOpt{
 			Rules: []model.Rule{define.KeywordRule, define.PrivateKeyRule},
 		}),

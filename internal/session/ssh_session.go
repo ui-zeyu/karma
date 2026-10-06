@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"karma/internal/fault"
 	"karma/internal/model"
 	"karma/internal/script"
 )
@@ -48,15 +49,15 @@ func (s *SSHSession) Channel() model.Channel { return model.ChanSSH }
 // run.
 func (s *SSHSession) Lost() bool { return s.lost.Load() }
 
-// Run sends the command string rendered through /bin/sh -c to the channel for execution.
-func (s *SSHSession) Run(ctx context.Context, inv model.Invocation, timeout time.Duration, cap model.RowCap) model.RunResult {
-	script := RenderShell(inv)
-	sess, err := s.client.NewSession()
+// Run sends the command string rendered through /bin/sh -c to the channel for
+// execution. The library takes no context, so its two blocking steps — opening
+// the session and handing it the command — go through setup, which is what puts
+// them inside the call's deadline.
+func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
+	script := RenderShell(call.Inv)
+	sess, err := setup(ctx, "ssh channel open", sshTimeout, s.client.NewSession)
 	if err != nil {
-		if channelLost(err) {
-			s.lost.Store(true)
-		}
-		return channelError(err)
+		return s.setupResult(ctx, err)
 	}
 	defer sess.Close()
 	stdout, err := sess.StdoutPipe()
@@ -67,8 +68,8 @@ func (s *SSHSession) Run(ctx context.Context, inv model.Invocation, timeout time
 	if err != nil {
 		return channelError(err)
 	}
-	if err := sess.Start(script); err != nil {
-		return channelError(err)
+	if err := setupErr(ctx, "ssh exec request", sshTimeout, func() error { return sess.Start(script) }); err != nil {
+		return s.setupResult(ctx, err)
 	}
 	// The decoding strategy matches the local channel: line reads clean bad
 	// bytes, stderr switches to U+FFFD after draining. stop closes the channel
@@ -78,7 +79,39 @@ func (s *SSHSession) Run(ctx context.Context, inv model.Invocation, timeout time
 		sess:   sess,
 		stdout: bufio.NewReader(stdout),
 		stderr: bufio.NewReader(stderrPipe),
-	}, timeout, cap)
+	}, call.Cap)
+}
+
+// setupResult reads a setup that did not finish. The call's deadline and the
+// operator's cancel are cuts, an unanswered transport is a failure that latches
+// the channel lost, and anything else is a failure of this one call — the
+// server's own refusal leaves the transport answering.
+func (s *SSHSession) setupResult(ctx context.Context, err error) model.RunResult {
+	s.setupFailure(err)
+	switch {
+	case errors.Is(err, errSetupUnanswered):
+		return model.RunResult{Verdict: model.VerdictFailed, Stderr: err.Error() + ": karma could not open a session", ExitCode: -1}
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return model.RunResult{Verdict: cutVerdict(ctx), ExitCode: -1}
+	}
+	return channelError(err)
+}
+
+// setupFailure keeps the channel's own state true after a setup step failed: an
+// unanswered transport is closed and latched lost, which releases the goroutine
+// still parked on the request and stops the runner from queueing the checks it
+// would all fail; a refused channel leaves the connection answering.
+func (s *SSHSession) setupFailure(err error) {
+	switch {
+	case errors.Is(err, errSetupUnanswered):
+		s.lost.Store(true)
+		_ = s.client.Close()
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+	default:
+		if channelLost(err) {
+			s.lost.Store(true)
+		}
+	}
 }
 
 // sshCall is one ssh session as harvest's data source.
@@ -106,8 +139,9 @@ func (c *sshCall) exitCode() int            { return commandExitCode(c.waitErr) 
 // session's umask, before the bytes: a partial upload cannot be taken for a
 // complete one.
 func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) error {
-	sess, err := s.client.NewSession()
+	sess, err := setup(ctx, "ssh upload open", sshTimeout, s.client.NewSession)
 	if err != nil {
+		s.setupFailure(err)
 		return err
 	}
 	defer sess.Close()
@@ -118,30 +152,30 @@ func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) er
 	cancelled := make(chan struct{})
 	var stopWatch sync.Once
 	defer stopWatch.Do(func() { close(cancelled) })
-	go safeCall(func(error) {}, func() {}, func() {
+	go fault.Catch("upload cancel watch", func() error {
 		select {
 		case <-ctx.Done():
 			_ = sess.Close()
 		case <-cancelled:
 		}
+		return nil
 	})
 	var stalled atomic.Bool
 	written := make(chan error, 1)
-	go safeCall(
-		// The receive below is the join, so a panic before the writer's own send
-		// reports here: the channel is buffered, which keeps this send from
+	go func() {
+		// The receive below is the join, so a panic is reported before the
+		// writer's own send: the channel is buffered, which keeps a panic from
 		// blocking whether or not the caller has already taken a value.
-		func(problem error) { written <- fmt.Errorf("upload writer panicked: %w", problem) },
-		func() {},
-		func() {
-			err := writeUpload(stdin, content, &stalled, func() { _ = sess.Close() })
+		written <- fault.Catch("upload writer", func() error {
+			writeErr := writeUpload(stdin, content, &stalled, func() { _ = sess.Close() })
 			// Closing the pipe is what tells the target's cat that the file is
 			// complete: without it the remote side waits for more bytes.
-			if closeErr := stdin.Close(); err == nil {
-				err = closeErr
+			if closeErr := stdin.Close(); writeErr == nil {
+				writeErr = closeErr
 			}
-			written <- err
+			return writeErr
 		})
+	}()
 	// umask first: the target's umask may leave the file world-readable, and
 	// this one is a program the caller is about to exec — its own mode is set
 	// once the bytes are in place, so a partial upload is never executable.
@@ -150,7 +184,10 @@ func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) er
 		script.Join([]string{"mkdir", "-p", filepath.Dir(path)}) + "; " +
 		script.Join([]string{"cat"}) + " > " + script.Join([]string{path}) +
 		" && " + script.Join([]string{"chmod", "700", path})
-	if err := sess.Start(RenderShell(model.Shell{Script: command})); err != nil {
+	if err := setupErr(ctx, "ssh upload command", sshTimeout, func() error {
+		return sess.Start(RenderShell(model.Shell{Script: command}))
+	}); err != nil {
+		s.setupFailure(err)
 		return err
 	}
 	writeErr := <-written
@@ -170,11 +207,10 @@ func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) er
 	return nil
 }
 
-// uploadChunk and uploadStall pace one upload: the ssh transport has no
-// deadline of its own (the context the command line carries only sees SIGINT),
-// so a target that stops draining the channel would block a Write forever. The
-// idle timer is reset after every chunk, and the chunk is small enough that it
-// measures a stop rather than a slow link.
+// uploadChunk and uploadStall pace one upload: a target that stops draining
+// the channel would block a Write forever, and the idle timer is what says the
+// transfer is dead rather than slow. The timer is reset after every chunk, and
+// the chunk is small enough that it measures a stop rather than a slow link.
 const (
 	uploadChunk = 64 << 10
 )
@@ -233,9 +269,10 @@ func commandExitCode(err error) int {
 // Close closes the connection. A hung Close does not wait past closeGrace, so the whole collection does not stall on teardown.
 func (s *SSHSession) Close() error {
 	done := make(chan struct{})
-	go safeCall(func(error) {}, func() { close(done) }, func() {
-		_ = s.client.Close()
-	})
+	go func() {
+		defer close(done)
+		_ = fault.Catch("ssh channel close", func() error { return s.client.Close() })
+	}()
 	timer := time.NewTimer(closeGrace)
 	defer timer.Stop()
 	select {

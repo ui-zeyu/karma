@@ -229,15 +229,15 @@ var keyDirRules = []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRu
 var FilesystemChecks = []*model.Check{
 	// Locally df reads /proc/self/mounts and statfs in-process (native_fs).
 	define.LinuxCheck("df", "Disk usage", model.AspectFilesystem,
-		[]model.Probe{{Label: "df", Inv: model.Dual{Run: native.Df, Script: "df -h"}}},
+		[]model.Step{{{Label: "df", Inv: model.Dual{Run: native.Df, Script: "df -h"}}}},
 		define.CheckOpt{Syntax: model.SyntaxDf}),
 	define.LinuxCheck("fstab", "Filesystem mount config (fstab)", model.AspectFilesystem,
 		readFilesCheck("/etc/fstab"),
 		define.CheckOpt{Syntax: model.SyntaxFstab, Rules: []model.Rule{mountRemoteFsRule}}),
 	define.LinuxCheck("mounts", "Mount points", model.AspectFilesystem,
-		[]model.Probe{
-			{Label: "findmnt", Inv: model.Dual{Run: native.Findmnt, Script: "findmnt"}},
-			{Label: "mount", Inv: model.Dual{Run: native.Mount, Script: "mount"}},
+		[]model.Step{
+			{{Label: "findmnt", Inv: model.Dual{Run: native.Findmnt, Script: "findmnt"}}},
+			{{Label: "mount", Inv: model.Dual{Run: native.Mount, Script: "mount"}}},
 		},
 		define.CheckOpt{
 			Filters: []model.LineFilter{
@@ -252,12 +252,10 @@ var FilesystemChecks = []*model.Check{
 	// stand in). Both listings cover the root filesystem and every local-storage
 	// mount — a data disk and a tmpfs /tmp included.
 	define.LinuxCheck("suid", "SUID files", model.AspectFilesystem,
-		[]model.Probe{
-			{Label: "find", Inv: model.Dual{
-				Run:    native.ModeBitScan(os.ModeSetuid, privFsTypes),
-				Script: privilegeFind("-4000"),
-			}},
-		},
+		[]model.Step{{{Label: "find", Inv: model.Dual{
+			Run:    native.ModeBitScan(os.ModeSetuid, privFsTypes),
+			Script: privilegeFind("-4000"),
+		}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("suid-gtfobins", gtfobinsPattern, model.Critical,
@@ -269,12 +267,10 @@ var FilesystemChecks = []*model.Check{
 			Timeout: suidTimeout,
 		}),
 	define.LinuxCheck("sgid", "SGID files", model.AspectFilesystem,
-		[]model.Probe{
-			{Label: "find", Inv: model.Dual{
-				Run:    native.ModeBitScan(os.ModeSetgid, privFsTypes),
-				Script: privilegeFind("-2000"),
-			}},
-		},
+		[]model.Step{{{Label: "find", Inv: model.Dual{
+			Run:    native.ModeBitScan(os.ModeSetgid, privFsTypes),
+			Script: privilegeFind("-2000"),
+		}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("sgid-gtfobins", gtfobinsPattern, model.High,
@@ -287,14 +283,12 @@ var FilesystemChecks = []*model.Check{
 		}),
 	// Capabilities are another escalation path besides SUID: cap_setuid equals SUID
 	define.LinuxCheck("caps", "File capabilities (getcap)", model.AspectFilesystem,
-		[]model.Probe{
-			// getcap -r / recurses across mounts on its own, so the script tier
+		[]model.Step{{ // getcap -r / recurses across mounts on its own, so the script tier
 			// needs no root list; the local tier walks the same vocabulary.
 			{Label: "getcap", Inv: model.Dual{
 				Run:    native.FileCaps(privFsTypes),
 				Script: "getcap -r / 2>/dev/null",
-			}, Cap: model.Scan(openScanLines)},
-		},
+			}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				// Both rules span the whole `cap_...=value` assignment: the span is
@@ -313,29 +307,27 @@ var FilesystemChecks = []*model.Check{
 	listingCheck("etc-listing", "Configuration directory listing (/etc, by mtime)", model.AspectFilesystem,
 		[]string{"/etc"}, 200, keyDirRules),
 	define.LinuxCheck("home-tree", "/home directory tree (four levels deep, including hidden files)", model.AspectFilesystem,
-		[]model.Probe{
-			{Label: "tree", Inv: model.Dual{
+		[]model.Step{
+			{{Label: "tree", Inv: model.Dual{
 				Run:    native.HomeTree(homeTreeRoot, homeTreeFlags, homeTreeDepth),
 				Script: homeTreeScript,
-			}},
-			{Label: "find", Inv: model.Dual{Script: homeTreeFind}},
+			}}},
+			{{Label: "find", Inv: model.Dual{Script: homeTreeFind}}},
 		},
 		define.CheckOpt{
 			Syntax: model.SyntaxLsL,
 			Rules:  []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule},
 		}),
 	define.LinuxCheck("web-dirs", "Recently changed scripts in web directories", model.AspectFilesystem,
-		[]model.Probe{
-			{Label: "find", Inv: model.Dual{
-				Run: native.RecentFiles(native.RecentScan{
-					Roots:    webScriptRoots,
-					Suffixes: webScriptSuffixes,
-					MaxDepth: webScriptDepth,
-					Window:   webScriptWindow,
-				}),
-				Script: webScriptFind,
-			}, Cap: model.Scan(openScanLines)},
-		},
+		[]model.Step{{{Label: "find", Inv: model.Dual{
+			Run: native.RecentFiles(native.RecentScan{
+				Roots:    webScriptRoots,
+				Suffixes: webScriptSuffixes,
+				MaxDepth: webScriptDepth,
+				Window:   webScriptWindow,
+			}),
+			Script: webScriptFind,
+		}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("web-script", `\.(?:php[3-5]?|phtml|jsp|jspx|sh|py)$`, model.Medium,
@@ -347,16 +339,14 @@ var FilesystemChecks = []*model.Check{
 	// grep and the rules share one signature regex: filter lines on the target, grade
 	// by group locally
 	define.LinuxCheck("webshell-grep", "Webshell content signatures", model.AspectFilesystem,
-		[]model.Probe{
-			{Label: "grep", Inv: model.Dual{
-				Run: localfs.Grep(webshellRoots, localfs.GrepScan{
-					Pattern:     webshellRe,
-					Includes:    webshellFiles,
-					ExcludeDirs: webshellExcludeDirs,
-				}),
-				Script: webshellGrep,
-			}, Cap: model.Scan(openScanLines)},
-		},
+		[]model.Step{{{Label: "grep", Inv: model.Dual{
+			Run: localfs.Grep(webshellRoots, localfs.GrepScan{
+				Pattern:     webshellRe,
+				Includes:    webshellFiles,
+				ExcludeDirs: webshellExcludeDirs,
+			}),
+			Script: webshellGrep,
+		}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("webshell-direct", `(?i)`+webshellDirect, model.Critical,

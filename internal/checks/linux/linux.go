@@ -35,8 +35,8 @@ func filesTier(label string, shellCmd string, transform func(string) string, pat
 }
 
 // readFilesCheck is the cat-a-file-list tier pair.
-func readFilesCheck(paths ...string) []model.Probe {
-	return []model.Probe{filesTier("cat", `cat "$f"`, nil, paths)}
+func readFilesCheck(paths ...string) []model.Step {
+	return []model.Step{{filesTier("cat", `cat "$f"`, nil, paths)}}
 }
 
 // findNameArgs renders a find name test alternation: one -name/-iname word per
@@ -49,8 +49,8 @@ func findNameArgs(option string, patterns []string) string {
 }
 
 // tailFilesCheck reads the tail of every file in the list.
-func tailFilesCheck(n int, paths ...string) []model.Probe {
-	return []model.Probe{filesTier("tail", fmt.Sprintf(`tail -n %d "$f"`, n), localfs.TailLines(n), paths)}
+func tailFilesCheck(n int, paths ...string) []model.Step {
+	return []model.Step{{filesTier("tail", fmt.Sprintf(`tail -n %d "$f"`, n), localfs.TailLines(n), paths)}}
 }
 
 // All is every Linux check; catalog-level validation lives in the checks package.
@@ -78,9 +78,9 @@ var listingNormalize = cluster.ListingNormalize(time.Now)
 // tier, so the check is declared once for both channels.
 func listingCheck(id, title string, aspect model.Aspect, dirs []string, head int, rules []model.Rule) *model.Check {
 	return define.LinuxCheck(id, title, aspect,
-		[]model.Probe{{Label: "find", Inv: model.Dual{
+		[]model.Step{{{Label: "find", Inv: model.Dual{
 			Run:    localfs.Listing(dirs, head),
 			Script: script.ListingSections(dirs, head),
-		}}},
+		}}}},
 		define.CheckOpt{Rules: rules, Syntax: model.SyntaxLsL, Normalize: listingNormalize})
 }

@@ -155,9 +155,7 @@ exit 0
 // KernelChecks covers the kernel.
 var KernelChecks = []*model.Check{
 	define.LinuxCheck("modules-load", "Boot-loaded modules (/etc/modules, modules-load.d)", model.AspectKernel,
-		[]model.Probe{
-			{Label: "cat", Inv: model.Dual{Run: native.ModulesLoad(modulesLoadPaths), Script: modulesLoadScript}},
-		},
+		[]model.Step{{{Label: "cat", Inv: model.Dual{Run: native.ModulesLoad(modulesLoadPaths), Script: modulesLoadScript}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				// Exclude a leading /: an == section title is a file path and should not light
@@ -175,9 +173,9 @@ var KernelChecks = []*model.Check{
 	// binary does not print — that tier is the module list as the host tool lays
 	// it out, so the rules fire on the raw tier alone.
 	define.LinuxCheck("lsmod", "Kernel modules", model.AspectKernel,
-		[]model.Probe{
-			{Label: "lsmod", Inv: model.Dual{Run: native.Lsmod, Script: "lsmod"}},
-			{Label: "proc-modules", Inv: model.Dual{Run: native.ProcModules, Script: "cat /proc/modules 2>/dev/null"}},
+		[]model.Step{
+			{{Label: "lsmod", Inv: model.Dual{Run: native.Lsmod, Script: "lsmod"}}},
+			{{Label: "proc-modules", Inv: model.Dual{Run: native.ProcModules, Script: "cat /proc/modules 2>/dev/null"}}},
 		},
 		define.CheckOpt{
 			// The Used by tail can contain spaces, which the generic table word-by-word
@@ -213,9 +211,7 @@ var KernelChecks = []*model.Check{
 	// one's empty exit-0 diff answer for the whole check, and the symbol table
 	// would never be read.
 	define.LinuxCheck("modules-hidden", "Hidden module cross-check (/sys/module and kallsyms vs /proc/modules)", model.AspectKernel,
-		[]model.Probe{
-			{Label: "diff", Inv: model.Dual{Run: native.ModulesHidden(hiddenModuleAttrs), Script: hiddenModuleScript}},
-		},
+		[]model.Step{{{Label: "diff", Inv: model.Dual{Run: native.ModulesHidden(hiddenModuleAttrs), Script: hiddenModuleScript}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				// The span carries the name: the reason is about that module, and the
@@ -225,9 +221,7 @@ var KernelChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("module-sig-config", "Kernel module signature config", model.AspectKernel,
-		[]model.Probe{
-			{Label: "zcat", Inv: model.Dual{Run: native.ModuleSig, Script: moduleSigScript}},
-		},
+		[]model.Step{{{Label: "zcat", Inv: model.Dual{Run: native.ModuleSig, Script: moduleSigScript}}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxEnv,
 			Rules: []model.Rule{
@@ -242,12 +236,10 @@ var KernelChecks = []*model.Check{
 	// in brackets. grep is both collector and filter — no hit is a clean exit 1,
 	// which stays silent, exactly like webshell-grep.
 	define.LinuxCheck("kallsyms", "Kernel symbol table rootkit signatures (/proc/kallsyms)", model.AspectKernel,
-		[]model.Probe{
-			{Label: "grep", Inv: model.Dual{
-				Run:    native.Kallsyms(kallsymsRe),
-				Script: kallsymsScript,
-			}, Cap: model.Scan(openScanLines)},
-		},
+		[]model.Step{{{Label: "grep", Inv: model.Dual{
+			Run:    native.Kallsyms(kallsymsRe),
+			Script: kallsymsScript,
+		}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("kallsyms-rootkit", `\b(?:`+rootkitSyms+`)\b`, model.Critical,
@@ -255,9 +247,7 @@ var KernelChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("tainted", "Kernel tainted flags", model.AspectKernel,
-		[]model.Probe{
-			{Label: "tainted", Inv: model.Dual{Run: native.Tainted, Script: "cat /proc/sys/kernel/tainted 2>/dev/null"}},
-		},
+		[]model.Step{{{Label: "tainted", Inv: model.Dual{Run: native.Tainted, Script: "cat /proc/sys/kernel/tainted 2>/dev/null"}}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("kernel-tainted", `^[1-9]`, model.Medium,
@@ -268,7 +258,7 @@ var KernelChecks = []*model.Check{
 	// before the big lsmod table. Locally the ring buffer is read through
 	// syslog(2) in-process (native_dmesg_linux).
 	define.LinuxCheck("dmesg", "Kernel module logs", model.AspectKernel,
-		[]model.Probe{{Label: "dmesg", Inv: model.Dual{Run: native.Dmesg, Script: "dmesg"}}},
+		[]model.Step{{{Label: "dmesg", Inv: model.Dual{Run: native.Dmesg, Script: "dmesg"}}}},
 		define.CheckOpt{
 			Syntax:  model.SyntaxDmesg,
 			Filters: dmesgKeepFilters,

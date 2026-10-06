@@ -20,9 +20,9 @@ const unitStateKeep = `^\s*UNIT\b|\s(?:active|failed|activating|waiting)\s|^\s*\
 // ServiceChecks covers services.
 var ServiceChecks = []*model.Check{
 	define.LinuxCheck("services", "Running services", model.AspectService,
-		[]model.Probe{
-			{Label: "systemctl", Inv: model.NewCommand("systemctl", "list-units", "--type=service", "--all")},
-			{Label: "service", Inv: model.NewCommand("service", "--status-all")},
+		[]model.Step{
+			{{Label: "systemctl", Inv: model.NewCommand("systemctl", "list-units", "--type=service", "--all")}},
+			{{Label: "service", Inv: model.NewCommand("service", "--status-all")}},
 		},
 		define.CheckOpt{
 			// The systemd probe's header legend row does not match the keep pattern
@@ -37,6 +37,6 @@ var ServiceChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("timers", "systemd timers", model.AspectService,
-		[]model.Probe{{Label: "systemctl", Inv: model.NewCommand("systemctl", "list-timers", "--all")}},
+		[]model.Step{{{Label: "systemctl", Inv: model.NewCommand("systemctl", "list-timers", "--all")}}},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 }

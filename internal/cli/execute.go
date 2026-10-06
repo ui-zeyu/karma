@@ -16,6 +16,7 @@ import (
 
 	"karma/internal/checks"
 	"karma/internal/facts"
+	"karma/internal/fault"
 	"karma/internal/model"
 	"karma/internal/render"
 	"karma/internal/runner"
@@ -52,7 +53,21 @@ func terminalWidth(w io.Writer) int {
 // the run: in-flight checks keep the output they had already read, and the
 // partial report is still presented. The returned error is printed by the
 // command-line layer.
-func Execute(ctx context.Context, w io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
+//
+// This is also the run's own damage boundary. Nothing above it recovers: main
+// only turns the returned error into an exit status, so a panic on this path
+// would print a Go stack trace, lose the report written so far, and leave the
+// same status a failed connection uses. Here it becomes one message, the exit
+// code that says the tool itself broke, and — with --save — a record of what
+// went wrong beside the evidence.
+func Execute(ctx context.Context, w io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) (err error) {
+	defer func() {
+		if problem := recover(); problem != nil {
+			crash := fault.New("collection", problem)
+			saveCrash(options.SaveDir, crash)
+			err = failf(ExitInternal, "%s", crash.Error())
+		}
+	}()
 	started := time.Now()
 	target := catalog
 	if target == nil {
@@ -65,9 +80,9 @@ func Execute(ctx context.Context, w io.Writer, transport session.Transport, opti
 
 	// CLI boundary: a connection failure (authentication failure, rejected host
 	// key) is one environmental failure, with exit code 2
-	sess, err := transport.Open()
+	sess, err := transport.Open(ctx)
 	if err != nil {
-		return failf(2, "connection failed: %v", err)
+		return failf(ExitEnvironment, "connection failed: %v", err)
 	}
 	defer sess.Close()
 
@@ -97,9 +112,18 @@ func Execute(ctx context.Context, w io.Writer, transport session.Transport, opti
 		defer saver.finalize()
 		observer = saver
 	}
-	runner.RunCatalog(ctx, sess, factsValue, selected, options, observer)
-	if lost, ok := sess.(session.LostChannel); ok && lost.Lost() {
-		return failf(2, "channel lost mid-run: the checks still queued were not collected")
+	summary := runner.RunCatalog(ctx, sess, factsValue, selected, options, observer)
+	// The run reports how it ended: the exit status and the message come from
+	// what it saw, so a signal that lands after the last check cannot turn a
+	// complete report into an interrupted one, and a run that stopped early says
+	// how much it is missing.
+	switch {
+	case summary.Interrupted:
+		return failf(ExitInterrupted, "interrupted: %d of the %d selected checks were not collected",
+			len(selected)-summary.Results, len(selected))
+	case summary.LostChannel:
+		return failf(ExitEnvironment, "channel lost mid-run: %d of the %d selected checks were not collected",
+			len(selected)-summary.Results, len(selected))
 	}
 	return nil
 }
@@ -109,9 +133,11 @@ func Execute(ctx context.Context, w io.Writer, transport session.Transport, opti
 func catalogBins(selected []*model.Check) []string {
 	names := map[string]bool{}
 	for _, check := range selected {
-		for _, probe := range check.Probes {
-			if name := probe.RequiredBin(); name != "" {
-				names[name] = true
+		for _, step := range check.Steps {
+			for _, probe := range step {
+				if name := probe.RequiredBin(); name != "" {
+					names[name] = true
+				}
 			}
 		}
 	}

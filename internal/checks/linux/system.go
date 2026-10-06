@@ -13,25 +13,23 @@ const osReleaseScript = "cat /etc/os-release 2>/dev/null || lsb_release -a 2>/de
 // SystemChecks covers system information.
 var SystemChecks = []*model.Check{
 	define.LinuxCheck("os-release", "Distro and kernel", model.AspectSystem,
-		[]model.Probe{
-			{Label: "cat", Inv: model.Dual{Run: native.OsRelease, Script: osReleaseScript}},
-		},
+		[]model.Step{{{Label: "cat", Inv: model.Dual{Run: native.OsRelease, Script: osReleaseScript}}}},
 		// os-release is KEY=VALUE, so the env pseudo-lexer is reused directly
 		define.CheckOpt{Syntax: model.SyntaxEnv}),
 	define.LinuxCheck("uptime", "Hostname and boot time", model.AspectSystem,
-		[]model.Probe{
-			{Label: "uptime", Inv: model.Dual{Run: native.Uptime, Script: "uptime"}},
-			{Label: "proc-uptime", Inv: model.Dual{Run: native.ProcUptime, Script: "cat /proc/uptime"}},
+		[]model.Step{
+			{{Label: "uptime", Inv: model.Dual{Run: native.Uptime, Script: "uptime"}}},
+			{{Label: "proc-uptime", Inv: model.Dual{Run: native.ProcUptime, Script: "cat /proc/uptime"}}},
 		},
 		define.CheckOpt{}),
 	define.LinuxCheck("time", "System time and timezone", model.AspectSystem,
-		[]model.Probe{
-			{Label: "timedatectl", Inv: model.NewCommand("timedatectl")},
-			{Label: "date", Inv: model.Dual{Run: native.Date, Script: "date"}},
+		[]model.Step{
+			{{Label: "timedatectl", Inv: model.NewCommand("timedatectl")}},
+			{{Label: "date", Inv: model.Dual{Run: native.Date, Script: "date"}}},
 		},
 		define.CheckOpt{}),
 	define.LinuxCheck("env", "Environment variables (security-relevant)", model.AspectSystem,
-		[]model.Probe{{Label: "env", Inv: model.Dual{Run: native.Env, Script: "env"}}},
+		[]model.Step{{{Label: "env", Inv: model.Dual{Run: native.Env, Script: "env"}}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxEnv,
 			// No filter: a whitelist would hide hijack vectors outside the list

@@ -69,7 +69,9 @@ func (s *TTYDSession) Upload(ctx context.Context, path string, content []byte) e
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	time.Sleep(ttydTypeaheadDelay)
+	if err := sleepCtx(ctx, ttydTypeaheadDelay); err != nil {
+		return err
+	}
 	if err := call.typeLine(ctx, setup); err != nil {
 		return err
 	}
@@ -224,10 +226,8 @@ func (c *ttydCall) typeBody(ctx context.Context, encoded string) error {
 		if len(data) == 0 {
 			break
 		}
-		select {
-		case <-time.After(ttydUploadPause):
-		case <-ctx.Done():
-			return ctx.Err()
+		if err := sleepCtx(ctx, ttydUploadPause); err != nil {
+			return err
 		}
 	}
 	return nil

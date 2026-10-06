@@ -10,6 +10,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -32,8 +33,13 @@ import (
 
 const (
 	closeGrace = 5 * time.Second
-	sshTimeout = 30 * time.Second
 )
+
+// sshTimeout bounds the ssh library's own answers: the dial, the handshake, and
+// one session's open plus exec request. A healthy server answers each in
+// milliseconds, so one number says the same thing about all three — past it, the
+// transport stopped answering. A variable so tests can shorten it.
+var sshTimeout = 30 * time.Second
 
 // defaultIdentities is the default private key locations when -i is not given,
 // matching OpenSSH's default search order (hardware-key variants included).
@@ -85,7 +91,7 @@ func (t *SSHTransport) Platform() model.Platform { return model.Linux }
 
 // Open establishes the connection. The password comes only from --password;
 // without it only public key auth is used, and rejection fails immediately with no interactive input.
-func (t *SSHTransport) Open() (Session, error) {
+func (t *SSHTransport) Open(ctx context.Context) (Session, error) {
 	callback, err := t.hostKeyCallback()
 	if err != nil {
 		return nil, err
@@ -102,7 +108,7 @@ func (t *SSHTransport) Open() (Session, error) {
 		}
 	}()
 	open := func(auth []ssh.AuthMethod) (Session, error) {
-		client, err := t.connect(auth, callback)
+		client, err := t.connect(ctx, auth, callback)
 		if err != nil {
 			return nil, err
 		}
@@ -116,7 +122,7 @@ func (t *SSHTransport) Open() (Session, error) {
 	return open(keys)
 }
 
-func (t *SSHTransport) connect(auth []ssh.AuthMethod, callback ssh.HostKeyCallback) (*ssh.Client, error) {
+func (t *SSHTransport) connect(ctx context.Context, auth []ssh.AuthMethod, callback ssh.HostKeyCallback) (*ssh.Client, error) {
 	port := t.Port
 	if port == 0 {
 		port = t.Destination.Port
@@ -129,23 +135,29 @@ func (t *SSHTransport) connect(auth []ssh.AuthMethod, callback ssh.HostKeyCallba
 	}
 	// Keepalive on: a collection run holds the connection for minutes, and a
 	// NAT or firewall that silently drops idle TCP would otherwise leave the
-	// next command hanging until its timeout
+	// next command hanging until its deadline
 	dialer := &net.Dialer{Timeout: sshTimeout, KeepAlive: 30 * time.Second}
-	conn, err := dialer.Dial("tcp", addr)
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		if isTimeout(err) {
 			return nil, fmt.Errorf("connection timed out (%gs): %s", sshTimeout.Seconds(), t.Destination.Display())
 		}
 		return nil, err
 	}
-	// The handshake has no deadline of its own (ClientConfig.Timeout only
-	// bounds ssh.Dial's own dial): a server that accepts the connection and
-	// then stalls would hang the whole run here. Bound it, release it once the
-	// connection is up.
-	_ = conn.SetDeadline(time.Now().Add(sshTimeout))
+	// The handshake has no context to give it (ClientConfig.Timeout only bounds
+	// ssh.Dial's own dial), so bound it on the connection: the earlier of the
+	// library's own bound and the run's deadline. A server that accepts the
+	// connection and then stalls would hang the whole run here.
+	_ = conn.SetDeadline(deadlineWithin(ctx, sshTimeout))
 	client, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
 	if err != nil {
 		_ = conn.Close()
+		// Ctrl-C during a handshake is the operator ending the run, which the
+		// command line reports as an interruption rather than as a failed
+		// connection.
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if isTimeout(err) {
 			return nil, fmt.Errorf("handshake with %s timed out (%gs)", t.Destination.Display(), sshTimeout.Seconds())
 		}
@@ -157,6 +169,16 @@ func (t *SSHTransport) connect(auth []ssh.AuthMethod, callback ssh.HostKeyCallba
 	_ = conn.SetDeadline(time.Time{})
 	go ssh.DiscardRequests(reqs)
 	return ssh.NewClient(client, chans, reqs), nil
+}
+
+// deadlineWithin is the earlier of a library's own bound and the run's deadline:
+// a handshake must not outlive either.
+func deadlineWithin(ctx context.Context, bound time.Duration) time.Time {
+	limit := time.Now().Add(bound)
+	if deadline, ok := ctx.Deadline(); ok && deadline.Before(limit) {
+		return deadline
+	}
+	return limit
 }
 
 func isTimeout(err error) bool {

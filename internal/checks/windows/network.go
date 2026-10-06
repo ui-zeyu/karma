@@ -24,7 +24,7 @@ const winHostsScript = `Get-Content 'C:\Windows\System32\drivers\etc\hosts' -Err
 // NetworkChecks is the network aspect.
 var NetworkChecks = []*model.Check{
 	define.WindowsCheck("connections", "Network Connections and Ports (netstat)", model.AspectNetwork,
-		[]model.Probe{{Label: "netstat", Inv: model.NewCommand("netstat", "-ano")}},
+		[]model.Step{{{Label: "netstat", Inv: model.NewCommand("netstat", "-ano")}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxNetstat,
 			Rules: []model.Rule{
@@ -34,7 +34,7 @@ var NetworkChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("portproxy", "Port Forwarding (netsh portproxy)", model.AspectNetwork,
-		[]model.Probe{{Label: "netsh", Inv: model.NewCommand("netsh", "interface", "portproxy", "show", "all")}},
+		[]model.Step{{{Label: "netsh", Inv: model.NewCommand("netsh", "interface", "portproxy", "show", "all")}}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("portproxy-forward", portproxyRow, model.High,
@@ -43,7 +43,7 @@ var NetworkChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("win-hosts", "Hosts File", model.AspectNetwork,
-		[]model.Probe{PSProbe("type", winHostsScript)},
+		[]model.Step{{PSProbe("type", winHostsScript)}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("hosts-map", hostsMapRule, model.Medium,

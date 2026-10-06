@@ -203,19 +203,19 @@ var IdentityChecks = []*model.Check{
 	// Locally the utmp/wtmp files are parsed in-process (native_utmp); on ssh
 	// the same labels run the util-linux binaries.
 	define.LinuxCheck("logins", "Current logins", model.AspectIdentity,
-		[]model.Probe{
-			{Label: "w", Inv: model.Dual{Run: native.W, Script: "w"}},
-			{Label: "who", Inv: model.Dual{Run: native.Who, Script: "who"}},
+		[]model.Step{
+			{{Label: "w", Inv: model.Dual{Run: native.W, Script: "w"}}},
+			{{Label: "who", Inv: model.Dual{Run: native.Who, Script: "who"}}},
 		},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("last", "Login history (last)", model.AspectIdentity,
-		[]model.Probe{{Label: "last", Inv: model.Dual{
+		[]model.Step{{{Label: "last", Inv: model.Dual{
 			Run:    native.Last(lastRows),
 			Script: "last -n " + strconv.Itoa(lastRows),
-		}}},
+		}}}},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("lastlog", "Last account login (lastlog)", model.AspectIdentity,
-		[]model.Probe{{Label: "lastlog", Inv: model.Dual{Run: native.Lastlog, Script: "lastlog"}}},
+		[]model.Step{{{Label: "lastlog", Inv: model.Dual{Run: native.Lastlog, Script: "lastlog"}}}},
 		define.CheckOpt{
 			// The header is mixed case, so the columns are anchored by their own
 			// syntax; the note line ahead of the header stays plain.
@@ -225,9 +225,9 @@ var IdentityChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("sudoers", "Sudo grants", model.AspectIdentity,
-		[]model.Probe{
-			{Label: "cat", Inv: model.Dual{Run: native.Sudoers(sudoersPaths), Script: sudoersScript}},
-			{Label: "sudo", Inv: model.NewCommand("sudo", "-n", "-l")},
+		[]model.Step{
+			{{Label: "cat", Inv: model.Dual{Run: native.Sudoers(sudoersPaths), Script: sudoersScript}}},
+			{{Label: "sudo", Inv: model.NewCommand("sudo", "-n", "-l")}},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -240,12 +240,10 @@ var IdentityChecks = []*model.Check{
 	listingCheck("pam", "PAM config and module directories", model.AspectIdentity, pamDirs, 100,
 		[]model.Rule{define.KeywordRule}),
 	define.LinuxCheck("authorized-keys", "SSH authorized keys", model.AspectIdentity,
-		[]model.Probe{
-			{Label: "find", Inv: model.Dual{
-				Run:    native.AuthorizedKeys(homeGlobs, authorizedKeysDepth, sshdConfigPaths),
-				Script: authorizedKeysScript,
-			}},
-		},
+		[]model.Step{{{Label: "find", Inv: model.Dual{
+			Run:    native.AuthorizedKeys(homeGlobs, authorizedKeysDepth, sshdConfigPaths),
+			Script: authorizedKeysScript,
+		}}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxSSHPubkey,
 			Rules: []model.Rule{

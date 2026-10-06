@@ -18,6 +18,7 @@ import (
 
 	"github.com/samber/lo"
 
+	"karma/internal/fault"
 	"karma/internal/model"
 	"karma/internal/powershell"
 	"karma/internal/regout"
@@ -30,6 +31,14 @@ var linuxFactBins = []string{"hostname", "uname", "id"}
 
 // windowsFactBins are the binaries collect_windows's own commands need; callers merge them into the capability probe list.
 var windowsFactBins = []string{"powershell", "reg"}
+
+// Fact budgets: the capability probe searches PATH once per name, and one host
+// fact is a single small command whose output the header shows. Both are this
+// package's policy, stated where the call is made.
+const (
+	factProbeBudget = 15 * time.Second
+	factBudget      = 10 * time.Second
+)
 
 const hostnameScript = "hostname 2>/dev/null || cat /proc/sys/kernel/hostname"
 
@@ -75,16 +84,18 @@ func CollectFor(ctx context.Context, platform model.Platform, sess session.Sessi
 func Collect(ctx context.Context, sess session.Session, bins []string) model.HostFacts {
 	names := probeBins(bins, linuxFactBins)
 	results := gather(ctx, map[string]func(context.Context) model.RunResult{
-		"bins":     func(ctx context.Context) model.RunResult { return runShell(ctx, sess, binProbe(names), 15*time.Second) },
-		"hostname": func(ctx context.Context) model.RunResult { return runShell(ctx, sess, hostnameScript, 10*time.Second) },
+		"bins": func(ctx context.Context) model.RunResult {
+			return runShell(ctx, sess, binProbe(names), factProbeBudget)
+		},
+		"hostname": func(ctx context.Context) model.RunResult { return runShell(ctx, sess, hostnameScript, factBudget) },
 		"kernel": func(ctx context.Context) model.RunResult {
-			return sess.Run(ctx, model.NewCommand("uname", "-r"), 10*time.Second, model.RowCap{})
+			return call(ctx, sess, model.NewCommand("uname", "-r"), factBudget)
 		},
 		"os": func(ctx context.Context) model.RunResult {
-			return runShell(ctx, sess, "cat /etc/os-release", 10*time.Second)
+			return runShell(ctx, sess, "cat /etc/os-release", factBudget)
 		},
 		"uid": func(ctx context.Context) model.RunResult {
-			return sess.Run(ctx, model.NewCommand("id", "-u"), 10*time.Second, model.RowCap{})
+			return call(ctx, sess, model.NewCommand("id", "-u"), factBudget)
 		},
 	})
 	return model.HostFacts{
@@ -107,12 +118,12 @@ func Collect(ctx context.Context, sess session.Session, bins []string) model.Hos
 // usual for "missing powershell".
 func CollectWindows(ctx context.Context, sess session.Session, bins []string) model.HostFacts {
 	names := probeBins(bins, windowsFactBins)
-	probe := runPS(ctx, sess, probeScript(names), 15*time.Second)
+	probe := runPS(ctx, sess, probeScript(names), factProbeBudget)
 	available := availableBins(probe.Stdout, names)
 
 	if available["powershell"] {
 		// one PS cold start brings back all facts; the four paths are evaluated eagerly, 15s is the grace
-		values := labeledLines(runPS(ctx, sess, windowsFactsScript, 15*time.Second).Stdout)
+		values := labeledLines(runPS(ctx, sess, windowsFactsScript, factProbeBudget).Stdout)
 		return model.HostFacts{
 			AvailableBins: available,
 			Hostname:      cmp.Or(values["host"], "unknown"),
@@ -128,13 +139,13 @@ func CollectWindows(ctx context.Context, sess session.Session, bins []string) mo
 	// ProductName/CurrentVersion/CurrentBuildNumber/UBR/DisplayVersion
 	results := gather(ctx, map[string]func(context.Context) model.RunResult{
 		"version": func(ctx context.Context) model.RunResult {
-			return sess.Run(ctx, model.NewCommand("reg", "query", currentVersionReg), 10*time.Second, model.RowCap{})
+			return call(ctx, sess, model.NewCommand("reg", "query", currentVersionReg), factBudget)
 		},
 		"hostname": func(ctx context.Context) model.RunResult {
-			return sess.Run(ctx, model.NewCommand("reg", "query", computerNameReg, "/v", "ComputerName"), 10*time.Second, model.RowCap{})
+			return call(ctx, sess, model.NewCommand("reg", "query", computerNameReg, "/v", "ComputerName"), factBudget)
 		},
 		"username": func(ctx context.Context) model.RunResult {
-			return sess.Run(ctx, model.NewCommand("reg", "query", volatileEnvReg, "/v", "USERNAME"), 10*time.Second, model.RowCap{})
+			return call(ctx, sess, model.NewCommand("reg", "query", volatileEnvReg, "/v", "USERNAME"), factBudget)
 		},
 	})
 	version := results["version"]
@@ -158,23 +169,37 @@ func CollectWindows(ctx context.Context, sess session.Session, bins []string) mo
 	}
 }
 
-func runShell(ctx context.Context, sess session.Session, script string, timeout time.Duration) model.RunResult {
-	return sess.Run(ctx, model.Shell{Script: script}, timeout, model.RowCap{})
+func runShell(ctx context.Context, sess session.Session, script string, budget time.Duration) model.RunResult {
+	return call(ctx, sess, model.Shell{Script: script}, budget)
 }
 
-func runPS(ctx context.Context, sess session.Session, script string, timeout time.Duration) model.RunResult {
-	return sess.Run(ctx, powershell.PowerShell(script), timeout, model.RowCap{})
+func runPS(ctx context.Context, sess session.Session, script string, budget time.Duration) model.RunResult {
+	return call(ctx, sess, powershell.PowerShell(script), budget)
+}
+
+// call runs one fact's invocation under a budget of its own: the header is
+// assembled before any check runs, so a target that stalls here must not hold
+// the run up.
+func call(ctx context.Context, sess session.Session, inv model.Invocation, budget time.Duration) model.RunResult {
+	ctx, cancel := session.Within(ctx, budget)
+	defer cancel()
+	return sess.Run(ctx, model.Call{Inv: inv})
 }
 
 // gather runs all fact collection concurrently, keyed by job name so a result can
 // never drift onto the wrong fact; a failed path falls back to an empty answer.
+// A job that panics fails that one fact (fault.Result) rather than ending the
+// run: a fact is one line of the header, and the checks matter more than it.
 func gather(ctx context.Context, jobs map[string]func(context.Context) model.RunResult) map[string]model.RunResult {
 	results := make(map[string]model.RunResult, len(jobs))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for name, job := range jobs {
 		wg.Go(func() {
-			result := job(ctx)
+			result, damage := fault.Result("host fact "+name, func() model.RunResult { return job(ctx) })
+			if damage != nil {
+				result = model.RunResult{Verdict: model.VerdictFailed, Stderr: damage.Error(), ExitCode: -1}
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			results[name] = result

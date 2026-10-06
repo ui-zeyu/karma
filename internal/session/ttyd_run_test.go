@@ -171,7 +171,7 @@ func (f *fakeTTYD) serve(w http.ResponseWriter, r *http.Request) {
 // openTTYD opens a transport against a fake, failing the test on any error.
 func openTTYD(t *testing.T, target, credential string) Session {
 	t.Helper()
-	sess, err := (&TTYDTransport{Target: target, Credential: credential}).Open()
+	sess, err := (&TTYDTransport{Target: target, Credential: credential}).Open(context.Background())
 	if err != nil {
 		t.Fatalf("open the ttyd channel: %v", err)
 	}
@@ -191,7 +191,8 @@ func TestTTYDSessionMeta(t *testing.T) {
 
 func TestTTYDRunCollectsBodyAndExitCode(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
-	result := sess.Run(context.Background(), model.Shell{Script: "echo hello; echo oops 1>&2; exit 3"}, 10*time.Second, model.RowCap{})
+	result := runCall(context.Background(), sess,
+		model.Shell{Script: "echo hello; echo oops 1>&2; exit 3"}, 10*time.Second, model.RowCap{})
 	if result.Stdout != "hello\n" {
 		t.Fatalf("stdout: %q", result.Stdout)
 	}
@@ -215,14 +216,16 @@ func TestTTYDRunCollectsBodyAndExitCode(t *testing.T) {
 // stdout, the shell's complaint on stderr, exit 127.
 func TestTTYDRunSeparatesStderrFromStdout(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
-	result := sess.Run(context.Background(), model.Shell{Script: "echo first; nosuchbinary-karma; echo last"}, 10*time.Second, model.RowCap{})
+	result := runCall(context.Background(), sess,
+		model.Shell{Script: "echo first; nosuchbinary-karma; echo last"}, 10*time.Second, model.RowCap{})
 	if result.Stdout != "first\nlast\n" {
 		t.Fatalf("stdout: %q", result.Stdout)
 	}
 	if !strings.Contains(result.Stderr, "nosuchbinary-karma") {
 		t.Fatalf("stderr: %q", result.Stderr)
 	}
-	missing := sess.Run(context.Background(), model.Shell{Script: "nosuchbinary-karma"}, 10*time.Second, model.RowCap{})
+	missing := runCall(context.Background(), sess,
+		model.Shell{Script: "nosuchbinary-karma"}, 10*time.Second, model.RowCap{})
 	if missing.Stdout != "" || !strings.Contains(missing.Stderr, "not found") || missing.Verdict != model.VerdictUnavailable {
 		t.Fatalf("a missing binary must answer like the ssh channel: %+v", missing)
 	}
@@ -230,7 +233,8 @@ func TestTTYDRunSeparatesStderrFromStdout(t *testing.T) {
 
 func TestTTYDRunTimesOutAndKeepsPartialOutput(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
-	result := sess.Run(context.Background(), model.Shell{Script: "echo one; sleep 5; echo two"}, 1500*time.Millisecond, model.RowCap{})
+	result := runCall(context.Background(), sess,
+		model.Shell{Script: "echo one; sleep 5; echo two"}, 1500*time.Millisecond, model.RowCap{})
 	if !strings.Contains(result.Stdout, "one") || strings.Contains(result.Stdout, "two") {
 		t.Fatalf("stdout: %q", result.Stdout)
 	}
@@ -241,7 +245,8 @@ func TestTTYDRunTimesOutAndKeepsPartialOutput(t *testing.T) {
 
 func TestTTYDRunKeepsTrailingPartialLine(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
-	result := sess.Run(context.Background(), model.Shell{Script: "printf tail"}, 10*time.Second, model.RowCap{})
+	result := runCall(context.Background(), sess,
+		model.Shell{Script: "printf tail"}, 10*time.Second, model.RowCap{})
 	if result.Stdout != "tail" || result.Verdict != model.VerdictAnswered {
 		t.Fatalf("result: %+v", result)
 	}
@@ -251,7 +256,8 @@ func TestTTYDRunNormalizesCarriageReturns(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	// The fake's pty already turns every \n into \r\n; the channel must put
 	// the plain line endings back so the reading layers see the ssh shape.
-	result := sess.Run(context.Background(), model.Shell{Script: "printf 'x\\ty\\nz\\n'"}, 10*time.Second, model.RowCap{})
+	result := runCall(context.Background(), sess,
+		model.Shell{Script: "printf 'x\\ty\\nz\\n'"}, 10*time.Second, model.RowCap{})
 	if result.Stdout != "x\ty\nz\n" {
 		t.Fatalf("stdout: %q", result.Stdout)
 	}
@@ -260,7 +266,8 @@ func TestTTYDRunNormalizesCarriageReturns(t *testing.T) {
 func TestTTYDRunTypesLongLines(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	script := strings.Repeat("# padding to push the typed line past one chunk\n", 120) + "echo done"
-	result := sess.Run(context.Background(), model.Shell{Script: script}, 10*time.Second, model.RowCap{})
+	result := runCall(context.Background(), sess,
+		model.Shell{Script: script}, 10*time.Second, model.RowCap{})
 	if !strings.Contains(result.Stdout, "done") || result.Verdict != model.VerdictAnswered {
 		t.Fatalf("result: code=%d stdout=%q", result.ExitCode, result.Stdout)
 	}
@@ -270,7 +277,7 @@ func TestTTYDProbeRejectsReadonlyServer(t *testing.T) {
 	oldWindow := ttydProbeWindow
 	ttydProbeWindow = 600 * time.Millisecond
 	t.Cleanup(func() { ttydProbeWindow = oldWindow })
-	_, err := (&TTYDTransport{Target: newFakeTTYD(t, "", true).url()}).Open()
+	_, err := (&TTYDTransport{Target: newFakeTTYD(t, "", true).url()}).Open(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "readonly") {
 		t.Fatalf("error: %v", err)
 	}
@@ -278,11 +285,12 @@ func TestTTYDProbeRejectsReadonlyServer(t *testing.T) {
 
 func TestTTYDAuthorization(t *testing.T) {
 	fake := newFakeTTYD(t, "u:p", false)
-	if _, err := (&TTYDTransport{Target: fake.url(), Credential: "u:wrong"}).Open(); err == nil {
+	if _, err := (&TTYDTransport{Target: fake.url(), Credential: "u:wrong"}).Open(context.Background()); err == nil {
 		t.Fatal("a wrong credential must fail the connection")
 	}
 	sess := openTTYD(t, fake.url(), "u:p")
-	result := sess.Run(context.Background(), model.Shell{Script: "echo authed"}, 10*time.Second, model.RowCap{})
+	result := runCall(context.Background(), sess,
+		model.Shell{Script: "echo authed"}, 10*time.Second, model.RowCap{})
 	if result.Stdout != "authed\n" || result.Verdict != model.VerdictAnswered {
 		t.Fatalf("result: %+v", result)
 	}
@@ -290,7 +298,7 @@ func TestTTYDAuthorization(t *testing.T) {
 
 func TestTTYDTargetUnreachable(t *testing.T) {
 	// Port 1 on the loopback refuses connections without needing a listener.
-	_, err := (&TTYDTransport{Target: "ws://127.0.0.1:1/ws"}).Open()
+	_, err := (&TTYDTransport{Target: "ws://127.0.0.1:1/ws"}).Open(context.Background())
 	if err == nil {
 		t.Fatal("an unreachable endpoint must fail the open")
 	}

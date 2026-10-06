@@ -16,7 +16,7 @@ const procPayload = `(?i)(?:\s-enc(?:odedcommand)?\s|\bdownloadstring\b|\binvoke
 // ProcessChecks is the process aspect.
 var ProcessChecks = []*model.Check{
 	define.WindowsCheck("processes", "Process List (with Command Line)", model.AspectProcess,
-		[]model.Probe{PSProbe("cim", processesScript)},
+		[]model.Step{{PSProbe("cim", processesScript)}},
 		define.CheckOpt{
 			Rules: []model.Rule{
 				model.NewRule("proc-temp-exe", procTempExe, model.High,
