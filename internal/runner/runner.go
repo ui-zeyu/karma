@@ -313,9 +313,7 @@ func finishStep(check *model.Check, step model.Step, joined model.RunResult, lab
 	case model.VerdictFailed:
 		note = failureNote(joined)
 	}
-	reading := reader.Analyze(assembleBody(step, joined.Stdout), check.Rules, check.Filters,
-		check.ScanBytes, options.MinSeverity, transforms(stepAdapt(step), check)...)
-	reading.Truncated = reading.Truncated || joined.Truncated
+	reading := readingOf(check, step, joined.Stdout, joined.Truncated, options)
 	// Stderr from a zero exit is incidental noise; only a non-zero exit keeps
 	// it alongside the body
 	stderr := joined.Stderr
@@ -358,6 +356,53 @@ func failureNote(result model.RunResult) string {
 		return base + ": " + head
 	}
 	return base
+}
+
+// readingOf is the reading of one step's winning text: the tier's own join over
+// the raw output (assemble), the step's dialect alignment, the check's
+// normalization, then the reading pipeline — and the source-side cut travels
+// into the document, because a panel marks a body a row cap stopped, which is
+// something only the channel knows.
+func readingOf(check *model.Check, step model.Step, raw string, truncated bool, options model.RunOptions) model.Document {
+	reading := reader.Analyze(assembleBody(step, raw), check.Rules, check.Filters,
+		check.ScanBytes, options.MinSeverity, transforms(stepAdapt(step), check)...)
+	reading.Truncated = reading.Truncated || truncated
+	return reading
+}
+
+// Reading reads text that did not arrive through this process's own call — the
+// collector protocol hands a collected run's results here, and a remote report
+// is drawn from them — into the document its panel shows. The step is found by
+// the tier's label, so a check whose walk has several tiers reads the one that
+// answered, and ok is false when this catalog has no such tier: a collector of
+// another build is not something to render half of.
+func Reading(check *model.Check, probeLabel, raw string, truncated bool, options model.RunOptions) (model.Document, bool) {
+	step, ok := stepFor(check, probeLabel)
+	if !ok {
+		return model.Document{}, false
+	}
+	return readingOf(check, step, raw, truncated, options), true
+}
+
+// stepFor is the step one tier label names: a one-tier step's own label, or the
+// joined "a + b" label a step of several tiers reports (which is what joinStep
+// writes into the result's ProbeLabel).
+func stepFor(check *model.Check, label string) (model.Step, bool) {
+	for _, step := range check.Steps {
+		if stepLabel(step) == label {
+			return step, true
+		}
+	}
+	return nil, false
+}
+
+// stepLabel names a step by the tiers it holds, in declaration order.
+func stepLabel(step model.Step) string {
+	labels := make([]string, 0, len(step))
+	for _, probe := range step {
+		labels = append(labels, probe.Label)
+	}
+	return strings.Join(labels, " + ")
 }
 
 // stepAdapt is the dialect alignment of one step: a step of several probes joined

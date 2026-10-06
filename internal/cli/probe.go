@@ -110,14 +110,9 @@ func probeCheck(catalog []*model.Check, id string) (*model.Check, error) {
 // probeTier resolves a probe label within one check, suggesting the check's own
 // labels: a label is unique inside its check, which is why the caller names both.
 func probeTier(check *model.Check, label string) (model.Probe, error) {
-	var labels []string
-	for _, step := range check.Steps {
-		for _, probe := range step {
-			if probe.Label == label {
-				return probe, nil
-			}
-			labels = append(labels, probe.Label)
-		}
+	if probe, ok := check.ProbeFor(label); ok {
+		return probe, nil
 	}
-	return model.Probe{}, fmt.Errorf("check %q has no probe %q%s", check.ID, label, closeMatches(label, labels))
+	return model.Probe{}, fmt.Errorf("check %q has no probe %q%s",
+		check.ID, label, closeMatches(label, check.ProbeLabels()))
 }

@@ -237,6 +237,31 @@ const (
 	Failed
 )
 
+// outcomeNames is the name of each Outcome in declaration order; the collector
+// protocol writes one of them and reads it back, so a result that crossed a
+// process boundary says how its walk ended in one vocabulary.
+var outcomeNames = []string{"collected", "skipped", "failed"}
+
+// String names the outcome.
+func (o Outcome) String() string {
+	if o < 0 || int(o) >= len(outcomeNames) {
+		return "unknown"
+	}
+	return outcomeNames[o]
+}
+
+// ParseOutcome resolves one of the names String writes; ok is false for an
+// unknown name.
+func ParseOutcome(name string) (Outcome, bool) {
+	if index := slices.Index(outcomeNames, name); index >= 0 {
+		return Outcome(index), true
+	}
+	return 0, false
+}
+
+// OutcomeNames returns every outcome name in declaration order.
+func OutcomeNames() []string { return slices.Clone(outcomeNames) }
+
 // FilterMode is the direction of a line filter: Drop removes matching lines,
 // Keep shows only matching lines (allowlist).
 type FilterMode int
@@ -637,6 +662,32 @@ type Probe struct {
 // exists and silently drop the rest of the evidence.
 type Step []Probe
 
+// ProbeFor returns the tier with this label, wherever it sits in the walk. A
+// label is unique inside its check (the catalog test pins that), which is why
+// the collector protocol can address a tier by its check's id and this label.
+func (c *Check) ProbeFor(label string) (Probe, bool) {
+	for _, step := range c.Steps {
+		for _, probe := range step {
+			if probe.Label == label {
+				return probe, true
+			}
+		}
+	}
+	return Probe{}, false
+}
+
+// ProbeLabels returns every tier label of the walk in declaration order, for the
+// messages that have to name a check's tiers when one of them is unknown.
+func (c *Check) ProbeLabels() []string {
+	labels := make([]string, 0, len(c.Steps))
+	for _, step := range c.Steps {
+		for _, probe := range step {
+			labels = append(labels, probe.Label)
+		}
+	}
+	return labels
+}
+
 // Check is one check: its fallback walk, its already-composed filters and
 // rules, and an optional body normalizer.
 type Check struct {
@@ -707,4 +758,10 @@ type RunOptions struct {
 	// places on the target and where it puts one, empty for the default order.
 	FindDir  string
 	PlaceDir string
+	// JSON emits the run as the collector protocol — one JSON object per check,
+	// written when that check finishes — instead of drawing the report. The
+	// objects carry the tiers' raw text and how each walk ended; the reading, the
+	// rules and the presentation stay with whoever reads the stream, so this side
+	// applies MinSeverity and MaxLines to nothing.
+	JSON bool
 }

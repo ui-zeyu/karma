@@ -37,6 +37,9 @@ func runFlags(flags *pflag.FlagSet) {
 	flags.String("min-severity", "all",
 		"show only rows at or above this severity and count the rest as filtered: "+
 			"all|"+strings.Join(model.SeverityNames(), "|"))
+	flags.Bool("json", false,
+		"print one JSON object per check (the collector's protocol) instead of drawing the report: "+
+			"each line carries the tier's raw text and how its walk ended, and nothing has been read or shaped")
 }
 
 // addPlaceFlags registers where a remote channel may put the collector and where
@@ -73,6 +76,7 @@ func runOptions(flags *pflag.FlagSet, selectorArgs []string) (model.RunOptions, 
 		MinSeverity: floor,
 		FindDir:     stringFlag(flags, "find"),
 		PlaceDir:    stringFlag(flags, "place"),
+		JSON:        boolFlag(flags, "json"),
 	}, nil
 }
 

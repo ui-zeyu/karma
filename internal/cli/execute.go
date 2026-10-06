@@ -14,6 +14,7 @@ import (
 	"golang.org/x/term"
 
 	"karma/internal/checks"
+	"karma/internal/collect"
 	"karma/internal/facts"
 	"karma/internal/fault"
 	"karma/internal/model"
@@ -110,20 +111,40 @@ func execute(ctx context.Context, w, warn io.Writer, transport session.Transport
 		fmt.Fprintln(warn,
 			"karma: the capability probe timed out: a tool it did not reach reads as absent, so the host facts may be thinner than they look")
 	}
-	width := terminalWidth(w)
-	render.RenderHeader(w, factsValue, render.HeaderInfo{
-		Channel:   sess.Describe(),
-		Version:   buildVersion,
-		Started:   started,
-		Selected:  len(selected),
-		Total:     len(target),
-		Selectors: SelectorTokens(options.Selectors),
-		Floor:     options.MinSeverity,
-	}, width)
-	live := render.NewLiveObserver(w, selected, options.MaxLines, width, isTerminal(w))
-	live.Start()
-	defer live.Close()
-	summary := runner.RunCatalog(ctx, sess, selected, options, live)
+	// Two ways to hand the operator what the run saw. The report draws each panel
+	// as its check finishes; the collector protocol writes one JSON object per
+	// check instead, which is what a run asks for when it is going to be read by
+	// another karma rather than by a person. The walk, the concurrency and the
+	// budgets are the same either way.
+	var (
+		observer runner.Observer
+		stream   *collect.Writer
+	)
+	if options.JSON {
+		stream = collect.NewWriter(w)
+		observer = stream
+	} else {
+		width := terminalWidth(w)
+		render.RenderHeader(w, factsValue, render.HeaderInfo{
+			Channel:   sess.Describe(),
+			Version:   buildVersion,
+			Started:   started,
+			Selected:  len(selected),
+			Total:     len(target),
+			Selectors: SelectorTokens(options.Selectors),
+			Floor:     options.MinSeverity,
+		}, width)
+		live := render.NewLiveObserver(w, selected, options.MaxLines, width, isTerminal(w))
+		live.Start()
+		defer live.Close()
+		observer = live
+	}
+	summary := runner.RunCatalog(ctx, sess, selected, options, observer)
+	// A stream that stopped early is a result the reader is missing, so the run
+	// says so rather than ending as if it had delivered the whole set.
+	if stream != nil && stream.Err() != nil {
+		return failf(ExitRead, "the result stream could not be written: %v", stream.Err())
+	}
 	// The run reports how it ended: the exit status and the message come from
 	// what it saw, so a signal that lands after the last check cannot turn a
 	// complete report into an interrupted one, and a run that stopped early says

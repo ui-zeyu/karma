@@ -103,6 +103,13 @@ Rows below the floor are left out and counted with the check's own filtered line
 legend says which floor is in force, so a quiet host stays readable and a busy one answers one
 question. It filters the reading and nothing else.
 
+`--json` prints the run as the collector protocol instead of the report: one JSON object per check,
+written as that check finishes, carrying the check id, how its walk ended (`collected`, `skipped`,
+`failed`), the tier that answered, the chain it passed, that tier's raw text and standard error, and
+whether a row cap stopped it. Nothing in a line has been read or shaped, so the floors and the
+lexers above are the reader's business — this is the stream a remote collection reads, and it is also
+a scripting surface for a local one (`karma local --json df mounts | jq`).
+
 Exit codes: 0 a run that finished, 1 a built-in reader that could not read an operand, 2 a run that
 could not happen (a failed connection, or a channel that died mid-run), 70 karma's own damage — an
 internal error ended the run, so the report is incomplete, and the message names the boundary that
