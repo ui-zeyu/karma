@@ -183,7 +183,7 @@ var NavigationChecks = []*model.Check{
 	RegCheck("typedpaths", "Address Bar Typed Paths (TypedPaths)", model.AspectNavigation,
 		typedpathsKeys,
 		define.CheckOpt{
-			Syntax: "reg",
+			Syntax: model.SyntaxReg,
 			Rules: []model.Rule{
 				model.NewRule("typedpaths-nonlocal", nonlocalPath, model.Medium,
 					"FTP or network share path typed in address bar"),

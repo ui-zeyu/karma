@@ -7,7 +7,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -16,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"karma/internal/checks"
-	"karma/internal/checks/linux"
 	"karma/internal/model"
 	"karma/internal/render"
 	"karma/internal/session"
@@ -141,13 +139,14 @@ func runMtimeMode(cmd *cobra.Command, transport session.Transport, dirs []string
 }
 
 // runMtime is the mtime mode's body: one dynamic check appended after the
-// directories. Clustering walks a Linux tree, so a channel that is not Linux
-// (the local one on Windows) has nothing to walk.
+// directories. Which platforms have a tree to walk is the catalog registry's
+// answer, so the command line carries no platform of its own.
 func runMtime(ctx context.Context, transport session.Transport, dirs []string, options model.RunOptions) error {
-	if transport.Platform() != model.Linux {
-		return fmt.Errorf("mtime clustering is a Linux check; Windows targets are not supported")
+	check, err := checks.HuntCheckFor(transport.Platform(), dirs)
+	if err != nil {
+		return err
 	}
-	return Execute(ctx, os.Stdout, transport, options, []*model.Check{linux.HuntCheck(dirs)})
+	return Execute(ctx, os.Stdout, transport, options, []*model.Check{check})
 }
 
 func newLocalCmd() *cobra.Command {

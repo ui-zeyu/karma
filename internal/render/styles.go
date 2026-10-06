@@ -183,7 +183,7 @@ type LineStyler func(line string) []Span
 // with insurance: a lexer panic (odd target output hitting a hard-coded line
 // shape) permanently degrades this check's syntax coloring to plain text,
 // while hit highlighting and body output carry on.
-func newLineStyler(syntax string) LineStyler {
+func newLineStyler(syntax model.Syntax) LineStyler {
 	return safeLineStyler(buildLineStyler(syntax))
 }
 
@@ -211,54 +211,54 @@ func safeLineStyler(styler LineStyler) LineStyler {
 // buildLineStyler is the syntax table. Built-in pseudo-lexers are reused
 // directly; bash goes through chroma; an unknown declaration means no
 // highlighting.
-func buildLineStyler(syntax string) LineStyler {
+func buildLineStyler(syntax model.Syntax) LineStyler {
 	switch syntax {
-	case "ls-l":
+	case model.SyntaxLsL:
 		return styleLsL
-	case "env":
+	case model.SyntaxEnv:
 		return styleEnv
-	case "dmesg":
+	case model.SyntaxDmesg:
 		return styleDmesg
-	case "sshd-config":
+	case model.SyntaxSshdConfig:
 		return styleSshdConfig
-	case "ssh-pubkey":
+	case model.SyntaxSSHPubkey:
 		return styleSSHPublicKey
-	case "colon":
+	case model.SyntaxColon:
 		return styleColonTable
-	case "lsmod":
+	case model.SyntaxLsmod:
 		return styleLsmod
-	case "ip-addr":
+	case model.SyntaxIPAddr:
 		return styleIPAddr
-	case "table":
+	case model.SyntaxTable:
 		return newTableStyler(nil, true).style
-	case "top":
+	case model.SyntaxTop:
 		// Cycle off: top -b's summary lines (banner, Tasks, %Cpu, MiB Mem) are
 		// prose, not columns. The process table anchors on its all-caps header;
 		// everything before it stays plain.
 		return newTableStyler(nil, false).style
-	case "df":
+	case model.SyntaxDf:
 		return newTableStyler([]*regexp.Regexp{dfHeader}, true).style
-	case "lastlog":
+	case model.SyntaxLastlog:
 		return newTableStyler([]*regexp.Regexp{lastlogHeader}, true).style
-	case "units":
+	case model.SyntaxUnits:
 		return newUnitStyler().style
-	case "listen":
+	case model.SyntaxListen:
 		return newTableStyler([]*regexp.Regexp{compile(`^Netid\s+State\s`), compile(`^Proto\s+Recv-Q\s+Send-Q\s`)}, true).style
-	case "netstat":
+	case model.SyntaxNetstat:
 		return newTableStyler([]*regexp.Regexp{compile(`^\s*Proto\s+Local`)}, true).style
-	case "ip-keyval":
+	case model.SyntaxIPKeyval:
 		return newKeyvalStyler().style
-	case "pkg-history":
+	case model.SyntaxPkgHistory:
 		return stylePkgHistory
-	case "fstab":
+	case model.SyntaxFstab:
 		return styleFstab
-	case "reg":
+	case model.SyntaxReg:
 		return styleReg
-	case "pipe":
+	case model.SyntaxPipe:
 		return stylePipeTable
-	case "powershell":
+	case model.SyntaxPowerShell:
 		return chromaLineStyler(chromaLexers["powershell"])
-	case "bash":
+	case model.SyntaxBash:
 		return chromaLineStyler(chromaLexers["bash"])
 	}
 	return nil

@@ -22,7 +22,7 @@ func TestRenderHeader(t *testing.T) {
 		UID:      0,
 	}
 	var out bytes.Buffer
-	RenderHeader(&out, "ssh", facts, 100)
+	RenderHeader(&out, "ssh", facts, 100, model.FloorAll)
 	text := out.String()
 	body := plain(text)
 	for _, want := range []string{"web-01", `CORP\alice`, "root", "Ubuntu 22.04", "5.15.0-91-generic", "ssh", "critical", "high", "medium", "low"} {

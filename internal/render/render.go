@@ -52,8 +52,10 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 // RenderHeader draws the report header as the report's first rail panel: the
 // karma band over the host facts, the severity legend on the last row. It is
-// not a check, so the rail stays muted and the body carries no reason.
-func RenderHeader(w io.Writer, sessionName string, facts model.HostFacts, width int) {
+// not a check, so the rail stays muted and the body carries no reason. floor is
+// the run's severity floor, which the legend states: a level it excludes is
+// muted, and the floor is named after it.
+func RenderHeader(w io.Writer, sessionName string, facts model.HostFacts, width int, floor model.SeverityFloor) {
 	var pieces []string
 	pieces = append(pieces, style{bold: true}.seq().Render(facts.Hostname))
 	if facts.User != "" {
@@ -67,19 +69,30 @@ func RenderHeader(w io.Writer, sessionName string, facts model.HostFacts, width 
 	body := []string{
 		strings.Join(pieces, " · "),
 		fmt.Sprintf("%s · %s · %s", cmp.Or(facts.OsPretty, "unknown distro"), facts.Kernel, sessionName),
-		legend(),
+		legend(floor),
 	}
 	fmt.Fprintln(w, checkBlock(model.Info, bandHead(subBandStyle.Render("KARMA"), "", style{}, width), body, width))
 	fmt.Fprintln(w)
 }
 
-func legend() string {
+// legend is the severity key: each signal level's dot in its own color, with
+// the levels the floor excludes muted — they cannot appear in this report — and
+// the floor's own name after them.
+func legend(floor model.SeverityFloor) string {
 	var parts []string
 	for severity := range severityTheme {
 		level := model.Severity(severity)
-		parts = append(parts, severityStyle(level).seq().Render("● "+level.String()))
+		st := severityStyle(level)
+		if !floor.Keeps(level) {
+			st = mutedStyle
+		}
+		parts = append(parts, st.seq().Render("● "+level.String()))
 	}
-	return strings.Join(parts, "  ")
+	row := strings.Join(parts, "  ")
+	if floor == model.FloorAll {
+		return row
+	}
+	return row + mutedStyle.seq().Render("  · showing ≥ "+floor.String())
 }
 
 // headingBand is a level-one heading band: a full-width strip with bold white
@@ -111,7 +124,7 @@ func fillBand(label string, width int, st lipgloss.Style) string {
 // coloring without hit spans — so a caller outside the report (the built-in
 // readers) prints the same paint its panels get. An unknown syntax returns
 // the line unchanged.
-func SyntaxLine(syntax, line string) string {
+func SyntaxLine(syntax model.Syntax, line string) string {
 	styler := newLineStyler(syntax)
 	if styler == nil {
 		return line
@@ -421,7 +434,7 @@ func bodyRows(result *model.CheckResult, maxLines, term int) []string {
 
 // sectionSyntax resolves one section's syntax: the first SectionSyntax entry
 // whose title glob matches wins, other sections keep the check's syntax.
-func sectionSyntax(check *model.Check, title string) string {
+func sectionSyntax(check *model.Check, title string) model.Syntax {
 	for _, override := range check.SectionSyntax {
 		if ok, _ := path.Match(override.Title, title); ok {
 			return override.Syntax

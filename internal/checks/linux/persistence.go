@@ -6,10 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"karma/internal/checks/linux/native"
-	"karma/internal/cluster"
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/script"
@@ -228,7 +226,7 @@ var PersistenceChecks = []*model.Check{
 		define.CheckOpt{
 			// pygments has no crontab lexer; the bash lexer approximates the command part well
 			// enough
-			Syntax: "bash",
+			Syntax: model.SyntaxBash,
 			Rules: []model.Rule{
 				model.NewRule("cron-reboot", `@reboot\b`, model.High, "cron job run on reboot"),
 				model.NewRule("cron-every-minute", `^\s*\*(?:/1)?\s+\*\s+\*\s+\*\s+\*`, model.Medium,
@@ -238,7 +236,7 @@ var PersistenceChecks = []*model.Check{
 		}),
 	define.LinuxCheck("at", "at one-shot job queue", model.AspectPersistence,
 		[]model.Probe{{Label: "at", Inv: model.NewCommand("atq")}},
-		define.CheckOpt{Syntax: "table"}),
+		define.CheckOpt{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("enabled-units", "Units enabled at boot", model.AspectPersistence,
 		[]model.Probe{{Label: "systemctl",
 			Inv: model.NewCommand("systemctl", "list-unit-files", "--state=enabled")}},
@@ -247,7 +245,7 @@ var PersistenceChecks = []*model.Check{
 				model.NewFilter("unit-files-header", `^UNIT FILE\b`, model.FilterDrop),
 				model.NewFilter("unit-files-listed", `^\d+ unit files listed`, model.FilterDrop),
 			},
-			Syntax: "table",
+			Syntax: model.SyntaxTable,
 		}),
 	listingCheck("unit-dirs", "systemd unit directories (by mtime)", model.AspectPersistence,
 		unitDirs, 100, nil),
@@ -256,14 +254,14 @@ var PersistenceChecks = []*model.Check{
 			{Label: "find", Inv: model.Dual{Run: native.Generators(generatorDirs, generatorHead), Script: generatorsScript}},
 		},
 		define.CheckOpt{
-			Syntax:    "ls-l",
-			Normalize: cluster.ListingNormalize(time.Now),
+			Syntax:    model.SyntaxLsL,
+			Normalize: listingNormalize,
 			Rules:     []model.Rule{define.KeywordRule},
 		}),
 	define.LinuxCheck("rc-local", "rc.local boot script", model.AspectPersistence,
 		readFilesCheck("/etc/rc.local", "/etc/rc.d/rc.local"),
 		define.CheckOpt{
-			Syntax: "bash",
+			Syntax: model.SyntaxBash,
 			Rules: []model.Rule{
 				model.NewRule("rc-b64-shell", `\bbase64\b[^|\n]*\|\s*[^|\n]*\b(?:ba|z|da|k)?sh\b`,
 					model.High, "base64 piped to shell (at boot)"),
@@ -289,8 +287,8 @@ var PersistenceChecks = []*model.Check{
 			}},
 		},
 		define.CheckOpt{
-			Syntax:    "ls-l",
-			Normalize: cluster.ListingNormalize(time.Now),
+			Syntax:    model.SyntaxLsL,
+			Normalize: listingNormalize,
 			Rules: []model.Rule{
 				// The span carries the key and the value it runs (RUN+="…",
 				// IMPORT{program}="…"): the command is the finding, and the span is
@@ -338,20 +336,20 @@ var PersistenceChecks = []*model.Check{
 		readFilesCheck(shellRcPaths...),
 		define.CheckOpt{
 			Rules:  []model.Rule{aliasShadowRule, historyOffRule, define.KeywordRule},
-			Syntax: "bash",
+			Syntax: model.SyntaxBash,
 		}),
 	define.LinuxCheck("skel", "Home directory templates (/etc/skel)", model.AspectPersistence,
 		[]model.Probe{
 			{Label: "cat", Inv: model.Dual{Run: native.Skel(skelDir, skelHead, skelTemplates), Script: skelScript}},
 		},
 		define.CheckOpt{
-			Syntax:    "bash",
-			Normalize: cluster.ListingNormalize(time.Now),
+			Syntax:    model.SyntaxBash,
+			Normalize: listingNormalize,
 			Rules:     []model.Rule{define.KeywordRule},
 			// the listing section speaks ls -l, the collected files speak shell
-			SectionSyntax: []model.SectionSyntax{{Title: "/etc/skel", Syntax: "ls-l"}},
+			SectionSyntax: []model.SectionSyntax{{Title: "/etc/skel", Syntax: model.SyntaxLsL}},
 		}),
 	define.LinuxCheck("motd", "motd login banner", model.AspectPersistence,
 		readFilesCheck("/etc/motd", "/etc/update-motd.d/*"),
-		define.CheckOpt{Syntax: "bash", Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Syntax: model.SyntaxBash, Rules: []model.Rule{define.KeywordRule}}),
 }

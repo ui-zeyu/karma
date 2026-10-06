@@ -37,7 +37,7 @@ var SystemChecks = []*model.Check{
 	define.WindowsCheck("software", "Installed Software Inventory (Uninstall)", model.AspectSystem,
 		[]model.Probe{PSProbe("reg", softwareScript)},
 		define.CheckOpt{
-			Syntax: "pipe",
+			Syntax: model.SyntaxPipe,
 			Rules: []model.Rule{
 				model.NewRule("software-pentest", softwarePentest, model.High,
 					"password/pentest tool in software inventory"),
@@ -55,7 +55,7 @@ var SystemChecks = []*model.Check{
 			{Path: `HKCU\Environment`, Label: "hkcu"},
 		},
 		define.CheckOpt{
-			Syntax: "reg",
+			Syntax: model.SyntaxReg,
 			Rules: []model.Rule{
 				model.NewRule("env-path-suspicious", envPathSuspicious, model.Medium,
 					"PATH contains temp/public directory (hijack surface)"),
@@ -78,7 +78,7 @@ var SystemChecks = []*model.Check{
 			{Path: `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp`, Value: "PortNumber", Label: "port"},
 		},
 		define.CheckOpt{
-			Syntax: "reg",
+			Syntax: model.SyntaxReg,
 			Rules: []model.Rule{
 				model.NewRule("rdp-enabled", rdpEnabledRule, model.Medium,
 					"Remote Desktop enabled (brute-force surface)"),

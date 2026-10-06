@@ -17,7 +17,7 @@ var SystemChecks = []*model.Check{
 			{Label: "cat", Inv: model.Dual{Run: native.OsRelease, Script: osReleaseScript}},
 		},
 		// os-release is KEY=VALUE, so the env pseudo-lexer is reused directly
-		define.CheckOpt{Syntax: "env"}),
+		define.CheckOpt{Syntax: model.SyntaxEnv}),
 	define.LinuxCheck("uptime", "Hostname and boot time", model.AspectSystem,
 		[]model.Probe{
 			{Label: "uptime", Inv: model.Dual{Run: native.Uptime, Script: "uptime"}},
@@ -33,7 +33,7 @@ var SystemChecks = []*model.Check{
 	define.LinuxCheck("env", "Environment variables (security-relevant)", model.AspectSystem,
 		[]model.Probe{{Label: "env", Inv: model.Dual{Run: native.Env, Script: "env"}}},
 		define.CheckOpt{
-			Syntax: "env",
+			Syntax: model.SyntaxEnv,
 			// No filter: a whitelist would hide hijack vectors outside the list
 			// (PYTHONPATH/NODE_OPTIONS etc.); a blacklist cannot be exhaustive, so show
 			// everything and let the rules color it

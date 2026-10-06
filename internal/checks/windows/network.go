@@ -26,7 +26,7 @@ var NetworkChecks = []*model.Check{
 	define.WindowsCheck("connections", "Network Connections and Ports (netstat)", model.AspectNetwork,
 		[]model.Probe{{Label: "netstat", Inv: model.NewCommand("netstat", "-ano")}},
 		define.CheckOpt{
-			Syntax: "netstat",
+			Syntax: model.SyntaxNetstat,
 			Rules: []model.Rule{
 				model.NewRule("conn-evil-port", connEvilPort, model.High,
 					"connection to a common remote-control/reverse-shell port"),

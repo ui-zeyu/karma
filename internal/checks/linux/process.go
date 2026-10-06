@@ -248,6 +248,13 @@ done
 exit 0
 `
 
+// topHead and psSortHead are the row shapes the resource snapshot asks for:
+// top's own table, and the two ps listings sorted by CPU and by memory.
+const (
+	topHead    = 25
+	psSortHead = 10
+)
+
 // ProcessChecks covers processes.
 var ProcessChecks = []*model.Check{
 	// Locally every tier renders the in-process /proc snapshot (native_ps);
@@ -260,7 +267,7 @@ var ProcessChecks = []*model.Check{
 			{Label: "ps-ef", Inv: model.Dual{Run: native.PsEf, Script: "ps -ef"}},
 		},
 		define.CheckOpt{
-			Syntax: "table",
+			Syntax: model.SyntaxTable,
 			Rules: []model.Rule{
 				model.NewRule("ps-tmp-path", `\s/(?:tmp|var/tmp|dev/shm)/\S*`, model.Medium,
 					"command line references temp path"),
@@ -286,13 +293,13 @@ var ProcessChecks = []*model.Check{
 		}),
 	define.LinuxCheck("top", "Resource usage snapshot", model.AspectProcess,
 		[]model.Probe{
-			// head is the shape this probe wants: stop when enough is read, count it as a
-			// complete answer, and do not mark it "truncated"
-			{Label: "top", Inv: model.Dual{Run: native.Top, Script: "top -b -n 1"}, Head: 25},
-			{Label: "ps-cpu", Inv: model.Dual{Run: native.PsCPU, Script: "ps aux --sort=-%cpu"}, Head: 10},
-			{Label: "ps-mem", Inv: model.Dual{Run: native.PsMem, Script: "ps aux --sort=-%mem"}, Head: 10},
+			// these caps are the shape each probe wants: plenty to read, and
+			// small enough that a busy host's snapshot stays a panel
+			{Label: "top", Inv: model.Dual{Run: native.Top, Script: "top -b -n 1"}, Head: topHead},
+			{Label: "ps-cpu", Inv: model.Dual{Run: native.PsCPU, Script: "ps aux --sort=-%cpu"}, Head: psSortHead},
+			{Label: "ps-mem", Inv: model.Dual{Run: native.PsMem, Script: "ps aux --sort=-%mem"}, Head: psSortHead},
 		},
-		define.CheckOpt{Syntax: "top", Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Syntax: model.SyntaxTop, Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,
 		[]model.Probe{
 			{Label: "caps", Inv: model.Dual{Run: native.ProcCaps(containerCgroupRe), Script: sessionCapsScript}, Adapt: native.DecodeCapMasks},
@@ -323,8 +330,8 @@ var ProcessChecks = []*model.Check{
 		// stream before the keep filter sees the deleted rows.
 		[]model.Probe{
 			{Label: "lsof", Inv: model.Dual{Run: native.DeletedExe, Script: lsofScript}},
-			{Label: "find", Inv: model.Dual{Script: findDeletedScript}, LineLimit: 200},
-			{Label: "proc-links", Inv: model.Dual{Script: deletedLinksScript}, LineLimit: 200},
+			{Label: "find", Inv: model.Dual{Script: findDeletedScript}, LineLimit: openScanLines},
+			{Label: "proc-links", Inv: model.Dual{Script: deletedLinksScript}, LineLimit: openScanLines},
 		},
 		define.CheckOpt{
 			// Keep only rows the kernel marked deleted; signal rows bypass keep
@@ -356,7 +363,7 @@ var ProcessChecks = []*model.Check{
 	define.LinuxCheck("hidden-pids", "Hidden process brute-force (kill(0) vs /proc)", model.AspectProcess,
 		// Both branches print the same text shape, so the rules are shared.
 		[]model.Probe{
-			{Label: "brute", Inv: model.Dual{Run: native.HiddenPIDs, Script: hiddenPidsScript}, LineLimit: 200},
+			{Label: "brute", Inv: model.Dual{Run: native.HiddenPIDs, Script: hiddenPidsScript}, LineLimit: openScanLines},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -375,15 +382,15 @@ var ProcessChecks = []*model.Check{
 					MaxDepth:  minerWalkDepth,
 				}),
 				Script: minerScript,
-			}, LineLimit: 200},
+			}, LineLimit: openScanLines},
 		},
 		define.CheckOpt{
-			Syntax: "table",
+			Syntax: model.SyntaxTable,
 			// The drop-path and temp-name sections are ls -l shape, the ps section a
 			// process table; one override per section keeps both colored
 			SectionSyntax: []model.SectionSyntax{
-				{Title: "drop paths", Syntax: "ls-l"},
-				{Title: "temp names", Syntax: "ls-l"},
+				{Title: "drop paths", Syntax: model.SyntaxLsL},
+				{Title: "temp names", Syntax: model.SyntaxLsL},
 			},
 			Rules: []model.Rule{
 				// Fires on process lines and on file lines alike: a file literally named

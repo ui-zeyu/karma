@@ -10,7 +10,7 @@ import (
 
 // readDocument is the reading shortcut the tests use.
 func readDocument(text string, rules []model.Rule, filters []model.LineFilter, normalize model.Normalizer) model.Document {
-	return reader.Analyze(text, rules, filters, normalize, 0)
+	return reader.Analyze(text, rules, filters, normalize, 0, model.FloorAll)
 }
 
 func rule(id, pattern string, severity model.Severity) model.Rule {
@@ -153,7 +153,7 @@ func TestEmptySectionsDropped(t *testing.T) {
 
 func TestCapBytesTruncatesOnRuneBoundary(t *testing.T) {
 	text := strings.Repeat("a", reader.MaxScanBytes) + "→"
-	document := reader.Analyze(text, nil, nil, nil, 0)
+	document := reader.Analyze(text, nil, nil, nil, 0, model.FloorAll)
 	if !document.Truncated {
 		t.Fatal("over limit should mark truncated")
 	}

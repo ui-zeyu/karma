@@ -64,7 +64,7 @@ var NetworkChecks = []*model.Check{
 			}, Adapt: native.ParseProcNet},
 		},
 		define.CheckOpt{
-			Syntax: "listen",
+			Syntax: model.SyntaxListen,
 			Rules: []model.Rule{
 				// Established connections are the normal-case listing (every SSH session is in
 				// it), so making them always-printed findings would let --max-lines fail to bound
@@ -87,13 +87,13 @@ var NetworkChecks = []*model.Check{
 			{Label: "ifconfig", Inv: model.NewCommand("ifconfig", "-a")},
 			{Label: "hostname", Inv: model.Dual{Run: native.HostnameIps, Script: "hostname -I"}},
 		},
-		define.CheckOpt{Syntax: "ip-addr"}),
+		define.CheckOpt{Syntax: model.SyntaxIPAddr}),
 	define.LinuxCheck("arp", "ARP / neighbor table", model.AspectNetwork,
 		[]model.Probe{
 			{Label: "ip", Inv: model.Dual{Run: native.IPNeigh, Script: "ip neigh"}},
 			{Label: "arp", Inv: model.NewCommand("arp", "-n")},
 		},
-		define.CheckOpt{Syntax: "ip-keyval"}),
+		define.CheckOpt{Syntax: model.SyntaxIPKeyval}),
 	// Both address families: ip route dumps IPv4 alone, and the local tier's
 	// netlink dump covers both, so an IPv6 route — a C2's default route, a
 	// tunnel's — would otherwise show on one channel only. The IPv6 dump runs
@@ -105,7 +105,7 @@ var NetworkChecks = []*model.Check{
 			{Label: "route", Inv: model.NewCommand("route", "-n")},
 			{Label: "netstat", Inv: model.NewCommand("netstat", "-rn")},
 		},
-		define.CheckOpt{Syntax: "ip-keyval"}),
+		define.CheckOpt{Syntax: model.SyntaxIPKeyval}),
 	define.LinuxCheck("firewall", "Firewall rules", model.AspectNetwork,
 		[]model.Probe{
 			{Label: "iptables", Inv: model.Dual{

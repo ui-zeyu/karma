@@ -816,10 +816,10 @@ func TestUnitStateCellsPaintedByMeaning(t *testing.T) {
 // check syntax. Glob titles let dynamic per-file sections match too.
 func TestSectionSyntaxOverridesByTitle(t *testing.T) {
 	check := &model.Check{
-		ID: "skel", Syntax: "bash",
+		ID: "skel", Syntax: model.SyntaxBash,
 		SectionSyntax: []model.SectionSyntax{
-			{Title: "/etc/skel", Syntax: "ls-l"},
-			{Title: "/home/*/.*_history", Syntax: "colon"},
+			{Title: "/etc/skel", Syntax: model.SyntaxLsL},
+			{Title: "/home/*/.*_history", Syntax: model.SyntaxColon},
 		},
 	}
 	if got := sectionSyntax(check, "/etc/skel"); got != "ls-l" {
@@ -831,7 +831,7 @@ func TestSectionSyntaxOverridesByTitle(t *testing.T) {
 	if got := sectionSyntax(check, "/home/deploy/.zsh_history"); got != "colon" {
 		t.Fatalf("a glob should match dynamic titles: %q", got)
 	}
-	if got := sectionSyntax(&model.Check{Syntax: "bash"}, "/etc/skel"); got != "bash" {
+	if got := sectionSyntax(&model.Check{Syntax: model.SyntaxBash}, "/etc/skel"); got != "bash" {
 		t.Fatalf("no overrides means the check syntax everywhere: %q", got)
 	}
 }
@@ -840,7 +840,7 @@ func TestSectionSyntaxOverridesByTitle(t *testing.T) {
 // syntax paints the state cells by meaning.
 func TestUnitsPanelPaintsStateCells(t *testing.T) {
 	result := &model.CheckResult{
-		Check:   &model.Check{ID: "services", Aspect: model.AspectService, Syntax: "units"},
+		Check:   &model.Check{ID: "services", Aspect: model.AspectService, Syntax: model.SyntaxUnits},
 		Outcome: model.Collected,
 		Document: model.Document{Sections: []model.Section{{Lines: []model.Line{
 			{Text: "UNIT             LOAD   ACTIVE   SUB        DESCRIPTION", Severity: model.Info},
@@ -863,7 +863,7 @@ func TestUnitsPanelPaintsStateCells(t *testing.T) {
 // one the systemd table gives its UNIT column.
 func TestUnitsPanelPaintsSysvStateMarkers(t *testing.T) {
 	result := &model.CheckResult{
-		Check:   &model.Check{ID: "services", Aspect: model.AspectService, Syntax: "units"},
+		Check:   &model.Check{ID: "services", Aspect: model.AspectService, Syntax: model.SyntaxUnits},
 		Outcome: model.Collected,
 		Document: model.Document{Sections: []model.Section{{Title: "service", Lines: []model.Line{
 			{Text: " [ + ]  apache2", Severity: model.Info},
@@ -908,8 +908,8 @@ func TestLineTextMostSevereSpanWins(t *testing.T) {
 func TestSkelPanelKeepsLsColorsForTheListing(t *testing.T) {
 	result := &model.CheckResult{
 		Check: &model.Check{
-			ID: "skel", Aspect: model.AspectPersistence, Syntax: "bash",
-			SectionSyntax: []model.SectionSyntax{{Title: "/etc/skel", Syntax: "ls-l"}},
+			ID: "skel", Aspect: model.AspectPersistence, Syntax: model.SyntaxBash,
+			SectionSyntax: []model.SectionSyntax{{Title: "/etc/skel", Syntax: model.SyntaxLsL}},
 		},
 		Outcome: model.Collected,
 		Document: model.Document{Sections: []model.Section{

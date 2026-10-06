@@ -151,9 +151,13 @@ func GrepWalk(ctx context.Context, root string, opt GrepScan) []string {
 		if err != nil || bytes.IndexByte(data, 0) >= 0 {
 			return true
 		}
-		for i, line := range strings.Split(string(data), "\n") {
+		// SplitSeq splits on \n alone, the way grep does, and without building the
+		// file's whole line slice (a scanned log can be tens of MB).
+		number := 0
+		for line := range strings.SplitSeq(string(data), "\n") {
+			number++
 			if opt.Pattern.MatchString(line) {
-				hits = append(hits, fmt.Sprintf("%s:%d:%s", path, i+1, line))
+				hits = append(hits, fmt.Sprintf("%s:%d:%s", path, number, line))
 				if opt.MaxHits > 0 && len(hits) >= opt.MaxHits {
 					return false
 				}

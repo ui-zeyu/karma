@@ -123,15 +123,40 @@ func TestRunOptions(t *testing.T) {
 	}
 	if options.Concurrency != model.DefaultConcurrency ||
 		options.Timeout != model.DefaultTimeout ||
-		options.MaxLines != model.DefaultMaxLines {
+		options.MaxLines != model.DefaultMaxLines ||
+		options.MinSeverity != model.FloorAll {
 		t.Fatalf("wrong defaults: %+v", options)
 	}
 
-	for name, value := range map[string]string{"concurrency": "0", "timeout": "0.4", "max-lines": "0"} {
+	for name, value := range map[string]string{
+		"concurrency": "0", "timeout": "0.4", "max-lines": "0", "min-severity": "severe",
+	} {
 		flags := newRunFlags()
 		flags.Set(name, value)
 		if _, err := runOptions(flags, nil); err == nil {
 			t.Fatalf("%s=%s should fail", name, value)
+		}
+	}
+
+	// The severity floor takes the level vocabulary plus the word that keeps the
+	// whole report; each level name is the floor above it.
+	for word, want := range map[string]model.SeverityFloor{
+		"all":      model.FloorAll,
+		"critical": model.FloorAbove(model.Critical),
+		"high":     model.FloorAbove(model.High),
+		"medium":   model.FloorAbove(model.Medium),
+		"low":      model.FloorAbove(model.Low),
+		"info":     model.FloorAbove(model.Info),
+		"benign":   model.FloorAbove(model.Benign),
+	} {
+		flags := newRunFlags()
+		flags.Set("min-severity", word)
+		options, err := runOptions(flags, nil)
+		if err != nil {
+			t.Fatalf("min-severity=%s: %v", word, err)
+		}
+		if options.MinSeverity != want {
+			t.Fatalf("min-severity=%s mapped to %v, want %v", word, options.MinSeverity, want)
 		}
 	}
 

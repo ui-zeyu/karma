@@ -115,7 +115,7 @@ var IdentityChecks = []*model.Check{
 		readFilesCheck("/etc/passwd", "/etc/passwd-"),
 		// passwd/group are colon-separated tables; color fields in a cycle to separate columns
 		define.CheckOpt{
-			Syntax: "colon",
+			Syntax: model.SyntaxColon,
 			Filters: []model.LineFilter{
 				model.NewFilter("acct-nologin",
 					`:(?:/usr/sbin/nologin|/sbin/nologin|/bin/false|/usr/bin/false)$`, model.FilterDrop),
@@ -142,7 +142,7 @@ var IdentityChecks = []*model.Check{
 	define.LinuxCheck("shadow", "Shadow passwords (/etc/shadow)", model.AspectIdentity,
 		readFilesCheck("/etc/shadow", "/etc/shadow-"),
 		define.CheckOpt{
-			Syntax: "colon",
+			Syntax: model.SyntaxColon,
 			// Ubuntu locks with !*, RedHat with !; only entries whose field 2 is entirely
 			// */!/!! are dropped, while !+hash (what passwd -l leaves) is kept.
 			Filters: []model.LineFilter{
@@ -161,7 +161,7 @@ var IdentityChecks = []*model.Check{
 	define.LinuxCheck("groups", "Groups (/etc/group, /etc/gshadow)", model.AspectIdentity,
 		readFilesCheck("/etc/group", "/etc/gshadow", "/etc/group-", "/etc/gshadow-"),
 		define.CheckOpt{
-			Syntax: "colon",
+			Syntax: model.SyntaxColon,
 			// Only entries with no members and a normal placeholder password (x/*/!/!*) are
 			// hidden: an anomalous password field (a real hash is set, letting anyone newgrp
 			// into the group) is a signal, and a group with members may be an attacker's
@@ -184,16 +184,16 @@ var IdentityChecks = []*model.Check{
 			{Label: "w", Inv: model.Dual{Run: native.W, Script: "w"}},
 			{Label: "who", Inv: model.Dual{Run: native.Who, Script: "who"}},
 		},
-		define.CheckOpt{Syntax: "table"}),
+		define.CheckOpt{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("last", "Login history (last)", model.AspectIdentity,
 		[]model.Probe{{Label: "last", Inv: model.Dual{Run: native.Last, Script: "last -n 200"}}},
-		define.CheckOpt{Syntax: "table"}),
+		define.CheckOpt{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("lastlog", "Last account login (lastlog)", model.AspectIdentity,
 		[]model.Probe{{Label: "lastlog", Inv: model.Dual{Run: native.Lastlog, Script: "lastlog"}}},
 		define.CheckOpt{
 			// The header is mixed case, so the columns are anchored by their own
 			// syntax; the note line ahead of the header stays plain.
-			Syntax: "lastlog",
+			Syntax: model.SyntaxLastlog,
 			Filters: []model.LineFilter{
 				model.NewFilter("lastlog-never", `Never logged in`, model.FilterDrop),
 			},
@@ -221,7 +221,7 @@ var IdentityChecks = []*model.Check{
 			}},
 		},
 		define.CheckOpt{
-			Syntax: "ssh-pubkey",
+			Syntax: model.SyntaxSSHPubkey,
 			Rules: []model.Rule{
 				model.NewRule("authkeys-force-command", `\bcommand="[^"\n]*"`, model.Medium,
 					"authorized_keys forced command"),
@@ -233,7 +233,7 @@ var IdentityChecks = []*model.Check{
 	define.LinuxCheck("sshd-config", "sshd config", model.AspectIdentity,
 		readFilesCheck(sshdConfigPaths...),
 		define.CheckOpt{
-			Syntax: "sshd-config",
+			Syntax: model.SyntaxSshdConfig,
 			Rules: []model.Rule{
 				model.NewRule("sshd-authorized-keys-file", `^\s*AuthorizedKeysFile\b`, model.Medium,
 					"AuthorizedKeysFile overridden"),
@@ -248,7 +248,7 @@ var IdentityChecks = []*model.Check{
 	define.LinuxCheck("ssh-client-config", "SSH client config", model.AspectIdentity,
 		readFilesCheck(sshClientConfigPaths...),
 		define.CheckOpt{
-			Syntax: "sshd-config",
+			Syntax: model.SyntaxSshdConfig,
 			Rules: []model.Rule{
 				model.NewRule("ssh-client-proxy-command", `^\s*ProxyCommand\b`, model.Medium,
 					"ProxyCommand configured"),

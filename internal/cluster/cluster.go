@@ -1,13 +1,12 @@
 // Package cluster does mtime clustering: parse the find metadata stream, break
 // clusters at silences, and grade outlier lines on the spot. mtime-hunt and the
 // directory listing checks (key-dirs, tmp-listing, pam, etc.) share the same
-// thresholds and verdict semantics: file lines time-isolated from the main cluster
-// rate LOW (scripts/hidden files upgraded by path), and mtimes in the future or
-// over a day before ctime rate HIGH (where touch-forged old timestamps show
-// up). Severity and reason are fixed at cluster time from the parsed path
-// (OutlierMatch) and surface as the line's color plus its ⟨reason⟩ annotation; the
-// text itself carries no prefix. The collection rows are built in internal/script;
-// this only consumes the retrieved text.
+// thresholds and verdict semantics: a file time-isolated from the main cluster is
+// an outlier, and an mtime in the future or over a day before ctime is the
+// forged-timestamp case (where touch-forged old timestamps show up). OutlierMatch
+// grades both from the parsed path, and the verdict surfaces as the line's color
+// plus its ⟨reason⟩ annotation; the text itself carries no prefix. The collection
+// rows are built in internal/script; this only consumes the retrieved text.
 package cluster
 
 import (
@@ -45,8 +44,7 @@ var (
 // cluster time from the parsed path. marker is the internal verdict code from
 // OutlierMarker; span is the displayed line length, and the range covers the whole
 // line (a flagged line is colored entirely by severity and carries the ⟨reason⟩
-// annotation). At most one per line: `!!` timestamp anomaly is heaviest, otherwise
-// the higher of hidden file, script, plain outlier is taken.
+// annotation).
 func OutlierMatch(path, marker string, span int) *model.Match {
 	verdict := func(id string, severity model.Severity, message string) *model.Match {
 		return &model.Match{ID: id, Severity: severity, Message: message, Start: 0, End: span}
@@ -66,9 +64,9 @@ func OutlierMatch(path, marker string, span int) *model.Match {
 	}
 }
 
-// OutlierMarker is the internal verdict code: mtime in the future, or (when
-// outlying) over a day before ctime, is `!!`; an outlier is `!`; otherwise empty.
-// It is never printed; the verdict shows as the line's severity color and annotation.
+// OutlierMarker is the internal verdict code a collection row's marker prefix
+// carries. It is never printed: the verdict shows as the line's severity color
+// and its ⟨reason⟩ annotation.
 func OutlierMarker(mtime, ctime float64, outlier bool, now time.Time) string {
 	future := mtime > float64(now.Unix())+futureSlack
 	forged := outlier && ctime-mtime > forgedGap
@@ -296,14 +294,11 @@ type row struct {
 // ListingNormalize shapes a directory listing section (key-dirs/unit-dirs etc.):
 // cluster and grade outliers, strip the collection prefix, and line the rows up
 // into ls -l columns. The title parameter comes from the reading layer's section
-// split; clustering looks only at body lines. Same clustering thresholds as
-// mtime-hunt: file lines time-isolated from the main cluster rate LOW (hidden
-// files and scripts upgraded by path), and mtimes in the future or over a day
-// before ctime rate HIGH; severity and reason are laid down as ranges on the
-// spot at cluster time (OutlierMatch). A section with sparse small clusters and no
-// dominant main cluster is the environment's daily write cadence; flagging
-// everything would only flood the screen, so it stays quiet; non-collection rows
-// pass through as-is.
+// split; clustering looks only at body lines. The thresholds and verdicts are
+// mtime-hunt's, laid down as ranges on the spot at cluster time (OutlierMatch). A
+// section with sparse small clusters and no dominant main cluster is the
+// environment's daily write cadence; flagging everything would only flood the
+// screen, so it stays quiet; non-collection rows pass through as-is.
 //
 // Columns are lined up here, on the whole section, so what the panel shows is
 // what the SSH channel's find rows and the local channel's own rows both become;

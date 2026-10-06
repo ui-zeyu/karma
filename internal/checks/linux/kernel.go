@@ -181,7 +181,7 @@ var KernelChecks = []*model.Check{
 		define.CheckOpt{
 			// The Used by tail can contain spaces, which the generic table word-by-word
 			// coloring would split apart
-			Syntax: "lsmod",
+			Syntax: model.SyntaxLsmod,
 			Rules: []model.Rule{
 				// Out-of-tree and unsigned are common on a healthy host (dkms, nvidia,
 				// virtualbox), so both are leads rather than findings: what makes them
@@ -228,7 +228,7 @@ var KernelChecks = []*model.Check{
 			{Label: "zcat", Inv: model.Dual{Run: native.ModuleSig, Script: moduleSigScript}},
 		},
 		define.CheckOpt{
-			Syntax: "env",
+			Syntax: model.SyntaxEnv,
 			Rules: []model.Rule{
 				model.NewRule("module-sig-off", `^CONFIG_MODULE_SIG=(?:n|m)`, model.Medium, "module signing not enabled"),
 				model.NewRule("module-sig-not-forced", `^CONFIG_MODULE_SIG_FORCE=n`, model.Medium,
@@ -245,7 +245,7 @@ var KernelChecks = []*model.Check{
 			{Label: "grep", Inv: model.Dual{
 				Run:    native.Kallsyms(kallsymsRe),
 				Script: kallsymsScript,
-			}, LineLimit: 200},
+			}, LineLimit: openScanLines},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -269,7 +269,7 @@ var KernelChecks = []*model.Check{
 	define.LinuxCheck("dmesg", "Kernel module logs", model.AspectKernel,
 		[]model.Probe{{Label: "dmesg", Inv: model.Dual{Run: native.Dmesg, Script: "dmesg"}}},
 		define.CheckOpt{
-			Syntax:  "dmesg",
+			Syntax:  model.SyntaxDmesg,
 			Filters: dmesgKeepFilters,
 			Rules: []model.Rule{
 				model.NewRule("dmesg-taint", `(?i)\btaint`, model.Medium,

@@ -126,7 +126,7 @@ var PersistenceChecks = []*model.Check{
 			{Path: `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`, Label: "hkcu-runonce"},
 		},
 		define.CheckOpt{
-			Syntax: "reg",
+			Syntax: model.SyntaxReg,
 			Rules: []model.Rule{
 				model.NewRule("autorun-temp", autorunTempRule, model.High,
 					"autorun points to temp/public directory"),
@@ -172,7 +172,7 @@ var PersistenceChecks = []*model.Check{
 	RegCheck("ifeo", "Debugger Hijack (Image File Execution Options, SilentProcessExit)", model.AspectPersistence,
 		ifeoKeys,
 		define.CheckOpt{
-			Syntax: "reg",
+			Syntax: model.SyntaxReg,
 			Rules: []model.Rule{
 				model.NewRule("ifeo-debugger", ifeoDebuggerRule, model.High,
 					"Debugger value takes over a program at launch (confirm it is expected)"),
@@ -184,7 +184,7 @@ var PersistenceChecks = []*model.Check{
 	RegCheck("winlogon", "Logon Hooks and DLL Injection (Winlogon, AppInit_DLLs)", model.AspectPersistence,
 		winlogonKeys,
 		define.CheckOpt{
-			Syntax: "reg",
+			Syntax: model.SyntaxReg,
 			Rules: []model.Rule{
 				winlogonShellRule,
 				winlogonUserinitRule,
@@ -198,7 +198,7 @@ var PersistenceChecks = []*model.Check{
 	RegCheck("appcompat", "Compatibility Shims (AppCompatFlags Layers, custom sdb)", model.AspectPersistence,
 		[]RegKey{{Path: appcompatLayersKey, Label: "layers"}},
 		define.CheckOpt{
-			Syntax: "reg",
+			Syntax: model.SyntaxReg,
 			Rules: []model.Rule{
 				appcompatTempRule,
 				appcompatLayerRule,

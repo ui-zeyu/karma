@@ -13,7 +13,7 @@ go build -o dist/karma ./cmd/karma     # this host
 make dist                              # dist/ binaries for linux/amd64, windows/amd64 and this host
 ```
 
-The version is `0.26.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
+The version is `0.27.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
 
 ## Usage
 
@@ -76,10 +76,17 @@ cannot reshape what they print.
 
 ### Options
 
-`--concurrency` (default 6), `--timeout` (30s per command) and `--max-lines` (400) are shared by
-every collection. With `--save DIR`, each check writes the target's raw stdout to
-`<DIR>/<aspect>/<id>.txt` — the bytes exactly as the channel delivered them — plus a `manifest.json`
-with the run's provenance (version, channel, host facts, start time) and a size and sha256 per file.
+`--concurrency` (default 6), `--timeout` (30s per command), `--max-lines` (400) and `--min-severity`
+(default `all`) are shared by every collection. With `--save DIR`, each check writes the target's raw
+stdout to `<DIR>/<aspect>/<id>.txt` — the bytes exactly as the channel delivered them — plus a
+`manifest.json` with the run's provenance (version, channel, host facts, start time) and a size and
+sha256 per file.
+
+`--min-severity` is the triage knob: it names the least severe row the report keeps — `critical`,
+`high`, `medium`, `low`, `info` or `benign` — or `all`, the default, which keeps the whole report.
+Rows below the floor are left out and counted with the check's own filtered lines, and the header
+legend says which floor is in force, so a quiet host stays readable and a busy one answers one
+question. It filters what is shown, and never what `--save` writes.
 
 Exit codes: 0 a run that finished, 1 a built-in reader that could not read an operand, 2 a run that
 could not happen (a failed connection), 130 interrupted. Ctrl-C stops collection promptly and the
@@ -87,7 +94,7 @@ partial report still prints. Errors go to stderr with a `karma: ` prefix and one
 
 ## Output
 
-Every bit of the layout is drawn by lipgloss: a header box with the host facts, a banner per aspect,
+Every bit of the layout is drawn by lipgloss: a header panel with the host facts, a banner per aspect,
 and a left-rail panel per check. The rail is the highest hit severity for a signal and grey
 otherwise; the first line inside it carries the check id, the fallback chain, `filtered N` and
 `truncated` where they apply. Long lines are soft-wrapped rather than cut, nothing is padded with

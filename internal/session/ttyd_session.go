@@ -178,48 +178,84 @@ func (s *TTYDSession) Upload(ctx context.Context, path string, content []byte) e
 	return nil
 }
 
-// pumpFrames reads the terminal's frames and reports every line that ends with
-// one of the markers; everything else — the echo of the typed line, the shell's
-// prompt, the echoed body — is dropped, so the read side never blocks on
-// output nobody wants.
-func (c *ttydCall) pumpFrames(ctx context.Context, markers []string, found chan<- string, failure chan<- error) {
-	var buffered []byte
+// frames pumps the terminal's frames until the connection ends, in order: the
+// tag byte ttyd opens each frame with and its payload. A frame that is not data
+// ('0') is one of the server's own — its title, its preferences — which is what
+// proves the terminal's process was spawned; input typed before that is dropped.
+// yield returns false to stop the pump, which is then not an error.
+func (c *ttydCall) frames(ctx context.Context, yield func(tag byte, payload []byte) bool) error {
 	for {
 		_, reader, err := c.conn.Reader(ctx)
 		if err != nil {
-			failure <- err
-			return
+			return err
 		}
 		frame, err := io.ReadAll(reader)
 		if err != nil {
-			failure <- err
-			return
+			return err
 		}
 		if len(frame) == 0 {
 			continue
 		}
 		if frame[0] != '0' {
 			c.markSpawned()
-			continue
 		}
-		buffered = append(buffered, frame[1:]...)
+		if !yield(frame[0], frame[1:]) {
+			return nil
+		}
+	}
+}
+
+// frameLines is frames with the pty's line discipline put back: the data frames
+// are buffered and cut at newlines. A line the connection ended in the middle of
+// comes back as leftover, for the caller to treat as the partial row it is;
+// leftover is empty when yield stopped the pump itself.
+func (c *ttydCall) frameLines(ctx context.Context, yield func(line string) bool) (string, error) {
+	var buffered []byte
+	stopped := false
+	err := c.frames(ctx, func(tag byte, payload []byte) bool {
+		if tag != '0' {
+			return true
+		}
+		buffered = append(buffered, payload...)
 		for {
 			end := bytes.IndexByte(buffered, '\n')
 			if end < 0 {
-				break
+				return true
 			}
-			text := strings.TrimSuffix(string(buffered[:end]), "\r")
+			line := strings.TrimSuffix(string(buffered[:end]), "\r")
 			buffered = buffered[end+1:]
-			for _, marker := range markers {
-				if strings.HasSuffix(text, marker) {
-					select {
-					case found <- marker:
-					case <-ctx.Done():
-						return
-					}
-				}
+			if !yield(line) {
+				stopped = true
+				return false
 			}
 		}
+	})
+	if stopped || len(buffered) == 0 {
+		return "", err
+	}
+	return strings.TrimSuffix(string(buffered), "\r"), err
+}
+
+// pumpFrames reads the terminal's frames and reports every line that ends with
+// one of the markers; everything else — the echo of the typed line, the shell's
+// prompt, the echoed body — is dropped, so the read side never blocks on
+// output nobody wants.
+func (c *ttydCall) pumpFrames(ctx context.Context, markers []string, found chan<- string, failure chan<- error) {
+	_, err := c.frameLines(ctx, func(line string) bool {
+		for _, marker := range markers {
+			if !strings.HasSuffix(line, marker) {
+				continue
+			}
+			select {
+			case found <- marker:
+			case <-ctx.Done():
+				return false
+			}
+		}
+		return true
+	})
+	if err != nil {
+		failure <- err
 	}
 }
 
@@ -307,40 +343,27 @@ func (s *TTYDSession) probe() error {
 	type reply struct{ echo, payload bool }
 	replies := make(chan reply, 16)
 	titles := make(chan string, 1)
+	// The frame pump closes replies when the connection ends, which is what the
+	// select below turns into a verdict.
 	go func() {
 		defer close(replies)
-		for {
-			_, reader, err := conn.Reader(ctx)
-			if err != nil {
-				return
-			}
-			frame, err := io.ReadAll(reader)
-			if err != nil {
-				return
-			}
-			if len(frame) == 0 {
-				continue
-			}
-			switch frame[0] {
-			case '1', '2':
-				if frame[0] == '1' {
-					select {
-					case titles <- string(frame[1:]):
-					default:
-					}
-				}
-				call.markSpawned()
-			case '0':
-				out := frame[1:]
-				event := reply{payload: !bytes.Contains(out, []byte(encoded)) && bytes.Contains(out, []byte(marker))}
-				event.echo = bytes.Contains(out, []byte(encoded))
+		_ = call.frames(ctx, func(tag byte, payload []byte) bool {
+			switch tag {
+			case '1':
 				select {
-				case replies <- event:
+				case titles <- string(payload):
+				default:
+				}
+			case '0':
+				echoed := bytes.Contains(payload, []byte(encoded))
+				select {
+				case replies <- reply{echo: echoed, payload: !echoed && bytes.Contains(payload, []byte(marker))}:
 				case <-ctx.Done():
-					return
+					return false
 				}
 			}
-		}
+			return true
+		})
 	}()
 
 	select {
@@ -485,7 +508,6 @@ func (c *ttydCall) readStream(ctx context.Context, marker string, exitCode *atom
 	errEnd := "__KRM_" + marker + "_X__"
 	rcPrefix := "__KRM_" + marker + "_R_"
 	phase := "cut" // cut → body → stderr → tail
-	var buffered []byte
 	var errText strings.Builder
 	emit := func(text string) {
 		select {
@@ -493,77 +515,54 @@ func (c *ttydCall) readStream(ctx context.Context, marker string, exitCode *atom
 		case <-stopped:
 		}
 	}
-	for {
-		_, reader, err := c.conn.Reader(ctx)
-		if err != nil {
-			break
-		}
-		frame, err := io.ReadAll(reader)
-		if err != nil {
-			break
-		}
-		if len(frame) == 0 {
-			continue
-		}
-		switch frame[0] {
-		case '1', '2':
-			c.markSpawned()
-		case '0':
-			buffered = append(buffered, frame[1:]...)
-			for {
-				end := bytes.IndexByte(buffered, '\n')
-				if end < 0 {
-					break
-				}
-				text := strings.TrimSuffix(string(buffered[:end]), "\r")
-				buffered = buffered[end+1:]
-				switch phase {
-				case "cut":
-					// The marker ends its line; a prompt the shell left
-					// unnewline'd may sit in front of it.
-					if strings.HasSuffix(text, start) {
-						phase = "body"
-					}
-				case "body":
-					if text == errBegin {
-						phase = "stderr"
-						continue
-					}
-					if body, code, done := splitTTYDRC(text, rcPrefix); done {
-						// The rc marker ends its line too: a body without a
-						// trailing newline glues in front of it, and keeps
-						// its shape — the terminator never crossed the pty.
-						if body != "" {
-							select {
-							case lines <- body:
-							case <-stopped:
-							}
-						}
-						exitCode.Store(int32(code))
-						return errText.String()
-					}
-					emit(text)
-				case "stderr":
-					if text == errEnd {
-						phase = "tail"
-						continue
-					}
-					errText.WriteString(text)
-					errText.WriteByte('\n')
-				case "tail":
-					// Only the rc marker may follow the stderr section.
-					if _, code, done := splitTTYDRC(text, rcPrefix); done {
-						exitCode.Store(int32(code))
-						return errText.String()
-					}
-				}
+	// The rc marker ends its line too: a body without a trailing newline glues
+	// in front of it and keeps its shape — the terminator never crossed the pty.
+	finish := func(body string, code int) {
+		if body != "" {
+			select {
+			case lines <- body:
+			case <-stopped:
 			}
 		}
+		exitCode.Store(int32(code))
 	}
-	if phase == "body" && len(buffered) > 0 {
-		text := strings.TrimSuffix(string(buffered), "\r")
+	leftover, _ := c.frameLines(ctx, func(line string) bool {
+		switch phase {
+		case "cut":
+			// The marker ends its line; a prompt the shell left unnewline'd may
+			// sit in front of it.
+			if strings.HasSuffix(line, start) {
+				phase = "body"
+			}
+		case "body":
+			if line == errBegin {
+				phase = "stderr"
+				return true
+			}
+			if body, code, done := splitTTYDRC(line, rcPrefix); done {
+				finish(body, code)
+				return false
+			}
+			emit(line)
+		case "stderr":
+			if line == errEnd {
+				phase = "tail"
+				return true
+			}
+			errText.WriteString(line)
+			errText.WriteByte('\n')
+		case "tail":
+			// Only the rc marker may follow the stderr section.
+			if _, code, done := splitTTYDRC(line, rcPrefix); done {
+				finish("", code)
+				return false
+			}
+		}
+		return true
+	})
+	if phase == "body" && leftover != "" {
 		select {
-		case lines <- text:
+		case lines <- leftover:
 		case <-stopped:
 		}
 	}

@@ -148,7 +148,7 @@ var ExecutionChecks = []*model.Check{
 	RegCheck("userassist-track", "Program Execution Tracking Switches (Anti-Forensics)", model.AspectExecution,
 		trackKeys,
 		define.CheckOpt{
-			Syntax: "reg",
+			Syntax: model.SyntaxReg,
 			Rules: []model.Rule{
 				model.NewRule("userassist-track-disabled", trackDisabled, model.High,
 					"UserAssist program execution tracking disabled"),
@@ -167,7 +167,7 @@ var ExecutionChecks = []*model.Check{
 	define.WindowsCheck("psreadline", "PowerShell Command History", model.AspectExecution,
 		[]model.Probe{PSProbe("type", psHistoryScript)},
 		define.CheckOpt{
-			Syntax: "powershell",
+			Syntax: model.SyntaxPowerShell,
 			Rules: []model.Rule{
 				model.NewRule("psreadline-suspicious", historySuspicious, model.High,
 					"history command with payload execution traits"),

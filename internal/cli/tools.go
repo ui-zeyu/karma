@@ -20,6 +20,7 @@ import (
 	// The two built-in readers are the local channel's own in-process view of the
 	// filesystem, so they call internal/localfs directly: no check, no catalog.
 	"karma/internal/localfs"
+	"karma/internal/model"
 	"karma/internal/render"
 )
 
@@ -76,7 +77,7 @@ func newLsCmd() *cobra.Command {
 					if strings.HasPrefix(line, "== ") {
 						line = st.bold(line)
 					} else {
-						line = render.SyntaxLine("ls-l", line)
+						line = render.SyntaxLine(model.SyntaxLsL, line)
 					}
 					fmt.Fprintln(w, line)
 				}

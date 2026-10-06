@@ -36,8 +36,8 @@ func styleLsL(line string) []Span {
 		dateStyle = style{fg: "6"} // year only, cyan
 	}
 	spans = append(spans, Span{Start: matched["date"][0], End: matched["date"][1], Style: dateStyle})
-	if kind := lsKindStyle(perms); kind != nil {
-		spans = append(spans, Span{Start: nameAt, End: len(line), Style: *kind})
+	if kind, ok := lsKindStyle(perms); ok {
+		spans = append(spans, Span{Start: nameAt, End: len(line), Style: kind})
 		if perms[0] == 'l' { // symlink: the arrow is dimmed, name and target share a color
 			if arrow := strings.Index(line[nameAt:], " -> "); arrow >= 0 {
 				spans = append(spans, Span{Start: nameAt + arrow, End: nameAt + arrow + 4, Style: mutedStyle})
@@ -51,58 +51,58 @@ func styleLsL(line string) []Span {
 // the type, and missing bits plus a trailing ACL indicator (. +) stay muted.
 func permissionSpans(perms string) []Span {
 	return lo.FilterMap([]byte(perms), func(flag byte, offset int) (Span, bool) {
-		st := lsFlagStyle(flag)
+		st, ok := lsFlagStyle(flag)
 		if offset == 0 {
-			st = lsTypeStyle(flag)
+			st, ok = lsTypeStyle(flag)
 		}
-		if st == nil {
+		if !ok {
 			return Span{}, false
 		}
-		return Span{Start: offset, End: offset + 1, Style: *st}, true
+		return Span{Start: offset, End: offset + 1, Style: st}, true
 	})
 }
 
 // Permission bits one by one; missing bits and a trailing ACL indicator (. +)
 // stay muted
-func lsFlagStyle(flag byte) *style {
+func lsFlagStyle(flag byte) (style, bool) {
 	switch flag {
 	case 'r':
-		return &style{fg: "2"}
+		return style{fg: "2"}, true
 	case 'w':
-		return &style{fg: "3"}
+		return style{fg: "3"}, true
 	case 'x':
-		return &style{fg: "1"}
+		return style{fg: "1"}, true
 	case 's', 'S', 't', 'T':
-		return &style{fg: "5", bold: true}
+		return style{fg: "5", bold: true}, true
 	}
-	return nil
+	return style{}, false
 }
 
 // The type character shares the name's color family (not bold); a regular
 // file's - stays muted
-func lsTypeStyle(flag byte) *style {
+func lsTypeStyle(flag byte) (style, bool) {
 	switch flag {
 	case 'd':
-		return &style{fg: "4"}
+		return style{fg: "4"}, true
 	case 'l':
-		return &style{fg: "6"}
+		return style{fg: "6"}, true
 	case 'b', 'c', 'p', 's':
-		return &style{fg: "5"}
+		return style{fg: "5"}, true
 	}
-	return nil
+	return style{}, false
 }
 
-func lsKindStyle(perms string) *style {
+func lsKindStyle(perms string) (style, bool) {
 	switch {
 	case perms[0] == 'd':
-		return &style{fg: "4", bold: true}
+		return style{fg: "4", bold: true}, true
 	case perms[0] == 'l':
-		return &style{fg: "6"}
+		return style{fg: "6"}, true
 	case strings.ContainsRune("bcps", rune(perms[0])) ||
 		strings.ContainsAny(perms, "sS"):
-		return &style{fg: "5", bold: true}
+		return style{fg: "5", bold: true}, true
 	case strings.Contains(perms, "x"):
-		return &style{fg: "2", bold: true}
+		return style{fg: "2", bold: true}, true
 	}
-	return nil
+	return style{}, false
 }

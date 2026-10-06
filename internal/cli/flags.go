@@ -33,6 +33,9 @@ func runFlags(flags *pflag.FlagSet) {
 	flags.Int("concurrency", model.DefaultConcurrency, "number of checks to run in parallel")
 	flags.Float64("timeout", model.DefaultTimeout.Seconds(), "default timeout per command in seconds")
 	flags.Int("max-lines", model.DefaultMaxLines, "maximum number of lines shown per check")
+	flags.String("min-severity", "all",
+		"show only rows at or above this severity and count the rest as filtered: "+
+			"all|"+strings.Join(model.SeverityNames(), "|"))
 	flags.String("save", "", "write each check's raw text to <dir>/<aspect>/<id>.txt")
 }
 
@@ -42,6 +45,7 @@ func runOptions(flags *pflag.FlagSet, selectorArgs []string) (model.RunOptions, 
 	concurrency := intFlag(flags, "concurrency")
 	seconds := floatFlag(flags, "timeout")
 	maxLines := intFlag(flags, "max-lines")
+	floor, ok := model.ParseSeverityFloor(stringFlag(flags, "min-severity"))
 	switch {
 	case concurrency < 1:
 		return model.RunOptions{}, fmt.Errorf("--concurrency must be >= 1")
@@ -49,12 +53,16 @@ func runOptions(flags *pflag.FlagSet, selectorArgs []string) (model.RunOptions, 
 		return model.RunOptions{}, fmt.Errorf("--timeout must be >= 0.5s")
 	case maxLines < 1:
 		return model.RunOptions{}, fmt.Errorf("--max-lines must be >= 1")
+	case !ok:
+		return model.RunOptions{}, fmt.Errorf("--min-severity must be all|%s (got: %s)",
+			strings.Join(model.SeverityNames(), "|"), stringFlag(flags, "min-severity"))
 	}
 	return model.RunOptions{
 		Selectors:   selectorArgs,
 		Concurrency: concurrency,
 		Timeout:     time.Duration(seconds * float64(time.Second)),
 		MaxLines:    maxLines,
+		MinSeverity: floor,
 		SaveDir:     stringFlag(flags, "save"),
 	}, nil
 }

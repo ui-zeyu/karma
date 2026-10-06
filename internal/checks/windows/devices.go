@@ -52,5 +52,5 @@ foreach ($root in 'USBSTOR', 'SCSI', 'USB') {
 var DevicesChecks = []*model.Check{
 	define.WindowsCheck("usb-devices", "USB Storage Devices (USBSTOR/SCSI/USB)", model.AspectDevices,
 		[]model.Probe{PSProbe("reg", usbScript)},
-		define.CheckOpt{Syntax: "pipe"}),
+		define.CheckOpt{Syntax: model.SyntaxPipe}),
 }

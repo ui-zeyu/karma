@@ -153,7 +153,7 @@ func TestUnownedFileGrades(t *testing.T) {
 		{`/usr/lib/.inject.so`, model.High, "unowned-file"},
 	}
 	for _, tc := range cases {
-		document := reader.Analyze(tc.text, check.Rules, check.Filters, check.Normalize, 0)
+		document := reader.Analyze(tc.text, check.Rules, check.Filters, check.Normalize, 0, model.FloorAll)
 		line := document.Sections[0].Lines[0]
 		if line.Severity != tc.severity {
 			t.Errorf("%q should be graded %v, got %v", tc.text, tc.severity, line.Severity)

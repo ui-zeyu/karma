@@ -194,7 +194,7 @@ var DocumentsChecks = []*model.Check{
 		define.CheckOpt{Normalize: officeMruNormalize, Rules: []model.Rule{define.KeywordRule}}),
 	RegCheck("adobe-recent", "Adobe Recent PDFs (cRecentFiles)", model.AspectDocuments,
 		adobeKeys,
-		define.CheckOpt{Syntax: "reg", Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Syntax: model.SyntaxReg, Rules: []model.Rule{define.KeywordRule}}),
 	define.WindowsCheck("lnk-recent", "Shortcut Targets (Recent LNK)", model.AspectDocuments,
 		[]model.Probe{PSProbe("com", lnkScript)},
 		define.CheckOpt{

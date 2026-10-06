@@ -144,7 +144,8 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 			// command wants and is not marked (catalog invariant: Head and
 			// LineLimit are mutually exclusive)
 			truncated := result.Truncated && probe.Head == 0
-			return commandResult(check, probe, result, skipped, timeout, noteOptions{truncated: truncated})
+			return commandResult(check, probe, result, skipped, resultOptions{
+				timeout: timeout, floor: options.MinSeverity, truncated: truncated})
 		case result.ExitCode == 127:
 			unavailable = true
 		case strings.TrimSpace(result.Stderr) != "" && failure == nil:
@@ -154,8 +155,8 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 	}
 
 	if failure != nil {
-		return commandResult(check, &failure.probe, failure.result, failure.skipped, timeout,
-			noteOptions{failure: true})
+		return commandResult(check, &failure.probe, failure.result, failure.skipped, resultOptions{
+			timeout: timeout, floor: options.MinSeverity, failure: true})
 	}
 	if unavailable {
 		return &model.CheckResult{
@@ -167,7 +168,12 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 	return &model.CheckResult{Check: check, Outcome: model.Collected, SkippedLabels: skipped}
 }
 
-type noteOptions struct {
+// resultOptions is how the tier that won (or failed) is finished: the deadline
+// its note names, the run's severity floor, and whether the result is a
+// truncated one, a failed tier, or an ordinary answer.
+type resultOptions struct {
+	timeout   time.Duration
+	floor     model.SeverityFloor
 	truncated bool
 	failure   bool
 }
@@ -175,18 +181,18 @@ type noteOptions struct {
 // commandResult finishes the tier that won (or failed): dialect alignment and
 // body normalization first, then reading into a document.
 func commandResult(check *model.Check, probe *model.Probe, result model.RunResult,
-	skipped []string, timeout time.Duration, opt noteOptions) *model.CheckResult {
+	skipped []string, opt resultOptions) *model.CheckResult {
 	note := ""
 	switch {
 	case result.TimedOut:
-		note = fmt.Sprintf("timeout (%gs), partial output kept", timeout.Seconds())
+		note = fmt.Sprintf("timeout (%gs), partial output kept", opt.timeout.Seconds())
 	case result.Interrupted:
 		note = "interrupted, partial output kept"
 	case opt.failure:
 		note = failureNote(result)
 	}
 	reading := reader.Analyze(result.Stdout, check.Rules, check.Filters,
-		readingTransform(probe, check.Normalize), check.ScanBytes)
+		readingTransform(probe, check.Normalize), check.ScanBytes, opt.floor)
 	reading.Truncated = reading.Truncated || opt.truncated
 	// Stderr from a zero exit is incidental noise; only a non-zero exit keeps
 	// it alongside the body

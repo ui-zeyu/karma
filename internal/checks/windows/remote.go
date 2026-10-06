@@ -59,14 +59,14 @@ const sunloginKeep = `(?i)(\[Acceptor\]|new acceptor|path:\s*/|encry_pwd|no_wind
 var RemoteChecks = []*model.Check{
 	RegCheck("putty", "PuTTY Sessions and Host Keys", model.AspectRemote,
 		[]RegKey{{Path: puttyKey, Recurse: true, Label: "reg-direct"}},
-		define.CheckOpt{Syntax: "reg"}),
+		define.CheckOpt{Syntax: model.SyntaxReg}),
 	RegCheck("rdp-history", "Remote Desktop Connection History (tsclient)", model.AspectRemote,
 		[]RegKey{{Path: rdpKey, Recurse: true, Label: "reg-direct"}},
-		define.CheckOpt{Syntax: "reg"}),
+		define.CheckOpt{Syntax: model.SyntaxReg}),
 	RegCheck("remote-control", "Remote Control Software (Sunlogin/ToDesk/TeamViewer/RustDesk/VNC)", model.AspectRemote,
 		remoteCtrlKeys,
 		define.CheckOpt{
-			Syntax: "reg",
+			Syntax: model.SyntaxReg,
 			Rules: []model.Rule{
 				model.NewRule("remote-ctrl-registry", remoteCtrlRegistry, model.High,
 					"remote control software registry traces"),

@@ -71,7 +71,7 @@ func Execute(ctx context.Context, w io.Writer, transport session.Transport, opti
 	bins := catalogBins(selected)
 	factsValue := facts.CollectFor(ctx, transport.Platform(), sess, bins)
 	width := terminalWidth(w)
-	render.RenderHeader(w, sess.Name(), factsValue, width)
+	render.RenderHeader(w, sess.Name(), factsValue, width, options.MinSeverity)
 	live := render.NewLiveObserver(w, selected, options.MaxLines, width, isTerminal(w))
 	live.Start()
 	defer live.Close()

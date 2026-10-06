@@ -59,6 +59,39 @@ var aspectOrder = []Aspect{
 	AspectDevices, AspectTimeline,
 }
 
+// Syntax is the presentation layer's lexer declaration for a check's body
+// lines: the pseudo-lexer, or the chroma lexer, that colors its rows. It is a
+// vocabulary like Aspect, so a catalog names one only through the constants
+// below and a misspelling is a compile error rather than a panel that silently
+// loses its color. The empty syntax declares none; the presentation layer's
+// lexer table is checked against every syntax the catalog declares.
+type Syntax string
+
+const (
+	SyntaxLsL        Syntax = "ls-l"
+	SyntaxEnv        Syntax = "env"
+	SyntaxDmesg      Syntax = "dmesg"
+	SyntaxSshdConfig Syntax = "sshd-config"
+	SyntaxSSHPubkey  Syntax = "ssh-pubkey"
+	SyntaxColon      Syntax = "colon"
+	SyntaxLsmod      Syntax = "lsmod"
+	SyntaxIPAddr     Syntax = "ip-addr"
+	SyntaxTable      Syntax = "table"
+	SyntaxTop        Syntax = "top"
+	SyntaxDf         Syntax = "df"
+	SyntaxLastlog    Syntax = "lastlog"
+	SyntaxUnits      Syntax = "units"
+	SyntaxListen     Syntax = "listen"
+	SyntaxNetstat    Syntax = "netstat"
+	SyntaxIPKeyval   Syntax = "ip-keyval"
+	SyntaxPkgHistory Syntax = "pkg-history"
+	SyntaxFstab      Syntax = "fstab"
+	SyntaxReg        Syntax = "reg"
+	SyntaxPipe       Syntax = "pipe"
+	SyntaxPowerShell Syntax = "powershell"
+	SyntaxBash       Syntax = "bash"
+)
+
 // enumNames and enumByName turn an enum's declaration order into its name list
 // and its name lookup: every vocabulary in this package comes from one of them,
 // so the report grouping and the selector accept the same words.
@@ -116,28 +149,75 @@ const (
 	Benign
 )
 
+// severityNames is the name of each severity, in the Severity declaration
+// order; the name lookup and the flag vocabularies read it, so a level is named
+// once. A test pins its length against the last constant.
+var severityNames = []string{"critical", "high", "medium", "low", "info", "benign"}
+
 func (s Severity) String() string {
-	switch s {
-	case Critical:
-		return "critical"
-	case High:
-		return "high"
-	case Medium:
-		return "medium"
-	case Low:
-		return "low"
-	case Info:
-		return "info"
-	case Benign:
-		return "benign"
+	if s < 0 || int(s) >= len(severityNames) {
+		return "unknown"
 	}
-	return "unknown"
+	return severityNames[s]
 }
+
+// SeverityByName resolves a severity name; ok is false for an unknown name.
+func SeverityByName(name string) (Severity, bool) {
+	if index := slices.Index(severityNames, name); index >= 0 {
+		return Severity(index), true
+	}
+	return 0, false
+}
+
+// SeverityNames returns every severity name in declaration order; the selector
+// and flag vocabularies and their messages read it.
+func SeverityNames() []string { return slices.Clone(severityNames) }
 
 // IsSignal reports whether a line is a finding: it lights up the hit and the
 // rail, is always printed, and is exempt from the display budget. benign
 // (baseline rows of routine listings) and Info (no hit) are quiet levels.
 func (s Severity) IsSignal() bool { return s < Info }
+
+// SeverityFloor is how much of a report a run keeps: a row below the floor is
+// counted like a filtered line and left out of the document. The value is one
+// past the least severe level it keeps, which is what makes the zero value mean
+// "no floor" — an unset run option has to show the whole report — while a level
+// still names itself through FloorAbove.
+type SeverityFloor Severity
+
+// FloorAll keeps every row, the quiet baseline levels included. It is the zero
+// value, and the run option's default.
+const FloorAll SeverityFloor = 0
+
+// FloorAbove is the floor that keeps level and every more severe level.
+func FloorAbove(level Severity) SeverityFloor { return SeverityFloor(level) + 1 }
+
+// Keeps reports whether a row at this severity is at or above the floor.
+func (f SeverityFloor) Keeps(severity Severity) bool {
+	return f == FloorAll || severity < Severity(f)
+}
+
+// String names the least severe level the floor keeps, or "all" for the floor
+// that keeps every row.
+func (f SeverityFloor) String() string {
+	if f == FloorAll {
+		return "all"
+	}
+	return Severity(f - 1).String()
+}
+
+// ParseSeverityFloor resolves a --min-severity word: "all" keeps the whole
+// report, and a level name keeps that level and every more severe one.
+func ParseSeverityFloor(name string) (SeverityFloor, bool) {
+	if name == "all" {
+		return FloorAll, true
+	}
+	level, ok := SeverityByName(name)
+	if !ok {
+		return FloorAll, false
+	}
+	return FloorAbove(level), true
+}
 
 // Outcome is how a check ended: output collected, environment lacked the
 // command, or execution failed.
@@ -478,7 +558,7 @@ type Check struct {
 	Filters   []LineFilter
 	Rules     []Rule
 	Timeout   time.Duration // 0 means the global timeout from the run options
-	Syntax    string        // syntax declaration for the presentation layer; empty for none
+	Syntax    Syntax        // syntax declaration for the presentation layer; empty for none
 	Normalize Normalizer    // normalizes the winning body per section; the section title is passed and only dialect alignment (Probe.Adapt) reads it
 	ScanBytes int           // 0 means the default read cap, reader.MaxScanBytes
 	// SectionSyntax overrides Syntax per section: the first entry whose Title
@@ -492,7 +572,7 @@ type Check struct {
 // SectionSyntax is one title-syntax override of Check.Syntax.
 type SectionSyntax struct {
 	Title  string // glob against the section title (path.Match)
-	Syntax string
+	Syntax Syntax
 }
 
 // CheckResult is the outcome of one check. Outcome separates "not collected"
@@ -526,6 +606,11 @@ type RunOptions struct {
 	Concurrency int
 	Timeout     time.Duration
 	MaxLines    int
+	// MinSeverity is how much of the reading each check keeps: rows below the
+	// floor are counted like filtered lines and left out of its document, so a
+	// triage run can drop everything under one level. It filters what is shown,
+	// never what is saved: SaveDir writes the channel's raw text.
+	MinSeverity SeverityFloor
 	// SaveDir is the evidence directory; an empty string saves nothing. The
 	// channel's raw output is written per file as <aspect>/<check id>.txt.
 	SaveDir string

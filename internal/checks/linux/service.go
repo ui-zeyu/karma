@@ -30,7 +30,7 @@ var ServiceChecks = []*model.Check{
 			Filters: []model.LineFilter{
 				model.NewFilter("unit-state", unitStateKeep, model.FilterKeep),
 			},
-			Syntax: "units",
+			Syntax: model.SyntaxUnits,
 			Rules: []model.Rule{
 				model.NewRule("unit-crashloop", `\bauto-restart\b`, model.Medium,
 					"service crash loop (dwell sign)"),
@@ -38,5 +38,5 @@ var ServiceChecks = []*model.Check{
 		}),
 	define.LinuxCheck("timers", "systemd timers", model.AspectService,
 		[]model.Probe{{Label: "systemctl", Inv: model.NewCommand("systemctl", "list-timers", "--all")}},
-		define.CheckOpt{Syntax: "table"}),
+		define.CheckOpt{Syntax: model.SyntaxTable}),
 }

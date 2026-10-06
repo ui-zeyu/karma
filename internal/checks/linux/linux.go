@@ -18,6 +18,12 @@ import (
 	"karma/internal/script"
 )
 
+// openScanLines is the row cap an open scan carries: a listing, a walk or a
+// signature grep that has produced this many rows has produced volume rather
+// than evidence, so the source is stopped and the panel marks the body
+// truncated. A tier that stops at the shape it wants uses Probe.Head instead.
+const openScanLines = 200
+
 // filesTier is the read-a-file-list tier: one `== path` section per file,
 // missing files skipped, each body shaped by the shell command's native
 // counterpart (cat reads the file whole, tail keeps the last n lines).
@@ -61,6 +67,11 @@ var All = slices.Concat(
 	PackageChecks,
 )
 
+// listingNormalize is the clustering normalizer of every listing-shaped tier:
+// whatever produced the rows (a find pipeline, the in-process walk, a host
+// tool), they are clustered and graded the same way before they are shown.
+var listingNormalize = cluster.ListingNormalize(time.Now)
+
 // listingCheck is a directory-listing check: one section per directory, rows
 // in ls -l shape capped at head, clustered locally to mark outliers. The
 // in-process branch and the find pipeline are two implementations of the one
@@ -71,5 +82,5 @@ func listingCheck(id, title string, aspect model.Aspect, dirs []string, head int
 			Run:    localfs.Listing(dirs, head),
 			Script: script.ListingSections(dirs, head),
 		}}},
-		define.CheckOpt{Rules: rules, Syntax: "ls-l", Normalize: cluster.ListingNormalize(time.Now)})
+		define.CheckOpt{Rules: rules, Syntax: model.SyntaxLsL, Normalize: listingNormalize})
 }

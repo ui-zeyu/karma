@@ -19,7 +19,7 @@ type CheckOpt struct {
 	Filters       []model.LineFilter
 	Rules         []model.Rule
 	Normalize     model.Normalizer
-	Syntax        string
+	Syntax        model.Syntax
 	SectionSyntax []model.SectionSyntax
 	Timeout       time.Duration
 	ScanBytes     int

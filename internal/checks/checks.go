@@ -3,15 +3,20 @@
 package checks
 
 import (
+	"fmt"
+
 	"karma/internal/checks/linux"
 	"karma/internal/checks/windows"
 	"karma/internal/model"
 )
 
-// platformCatalog is one registered platform catalog.
+// platformCatalog is one registered platform catalog. hunt builds the
+// mtime-clustering check for a user-specified directory list, and is nil for a
+// platform whose clustering has no directory tree to walk.
 type platformCatalog struct {
 	platform model.Platform
 	checks   []*model.Check
+	hunt     func(dirs []string) *model.Check
 }
 
 // catalogs is the single registry of platform catalogs: ChecksFor resolves a
@@ -21,8 +26,8 @@ type platformCatalog struct {
 // unique rule and filter ids within a check) are locked by the tests; nothing
 // validates at run time.
 var catalogs = []platformCatalog{
-	{model.Linux, linux.All},
-	{model.Windows, windows.All},
+	{model.Linux, linux.All, linux.HuntCheck},
+	{model.Windows, windows.All, nil},
 }
 
 // ChecksFor returns one platform's check catalog. Running another platform's
@@ -46,4 +51,20 @@ func AllChecks() []*model.Check {
 		all = append(all, catalog.checks...)
 	}
 	return all
+}
+
+// HuntCheckFor builds the mtime-clustering check for one platform. Clustering
+// walks a directory tree, so a platform the registry gives no hunt to is
+// refused here, next to the catalogs that say which platforms exist.
+func HuntCheckFor(platform model.Platform, dirs []string) (*model.Check, error) {
+	for _, catalog := range catalogs {
+		if catalog.platform != platform {
+			continue
+		}
+		if catalog.hunt == nil {
+			break
+		}
+		return catalog.hunt(dirs), nil
+	}
+	return nil, fmt.Errorf("mtime clustering is a Linux check; %s targets are not supported", platform)
 }

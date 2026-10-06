@@ -173,7 +173,7 @@ var PackageChecks = []*model.Check{
 		[]model.Probe{
 			{Label: "docker", Inv: model.Dual{Run: native.Docker, Script: dockerScript}},
 		},
-		define.CheckOpt{Syntax: "table", Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Syntax: model.SyntaxTable, Rules: []model.Rule{define.KeywordRule}}),
 	define.LinuxCheck("pkg-verify", "Package integrity verification", model.AspectPackage,
 		[]model.Probe{
 			{Label: "dpkg", Inv: model.Dual{Run: native.PkgVerify([]string{"dpkg", "-V"}), Script: verifyScript(pkgVerifyDpkg)}},
@@ -190,7 +190,7 @@ var PackageChecks = []*model.Check{
 			},
 			// The `== ls` forensics section is ls -l shape; dpkg -V and file lines do not fit
 			// and are left as-is
-			Syntax:  "ls-l",
+			Syntax:  model.SyntaxLsL,
 			Timeout: pkgVerifyTimeout,
 		}),
 	define.LinuxCheck("unowned-files", "Files no package owns (system directories)", model.AspectPackage,
@@ -198,20 +198,20 @@ var PackageChecks = []*model.Check{
 			{Label: "find", Inv: model.Dual{
 				Run:    native.UnownedFiles(unownedDirs),
 				Script: script.UnownedScript(unownedDirs),
-			}, LineLimit: 200},
+			}, LineLimit: openScanLines},
 		},
 		define.CheckOpt{Rules: []model.Rule{unownedFileRule}, Timeout: unownedTimeout}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
 		[]model.Probe{
 			{Label: "log", Inv: model.Dual{Run: native.PkgHistory(pkgHistoryPaths), Script: pkgHistoryScript}},
 		},
-		define.CheckOpt{Rules: pkgHistoryRules, Filters: pkgHistoryKeep, Syntax: "pkg-history"}),
+		define.CheckOpt{Rules: pkgHistoryRules, Filters: pkgHistoryKeep, Syntax: model.SyntaxPkgHistory}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
 		[]model.Probe{
 			{Label: "file", Inv: model.Dual{Run: native.AuthBinaries(authBinPaths), Script: authBinScript}},
 		},
 		define.CheckOpt{
-			Syntax: "ls-l",
+			Syntax: model.SyntaxLsL,
 			Rules:  []model.Rule{binNotElfRule, define.KeywordRule},
 		}),
 }

@@ -24,7 +24,7 @@ func CheckByID(t *testing.T, catalog []*model.Check, id string) *model.Check {
 // HitIDs reads one sample text the way the report would and returns the rule ids it lights.
 func HitIDs(t *testing.T, text string, check *model.Check) []string {
 	t.Helper()
-	document := reader.Analyze(text, check.Rules, check.Filters, check.Normalize, 0)
+	document := reader.Analyze(text, check.Rules, check.Filters, check.Normalize, 0, model.FloorAll)
 	var ids []string
 	for _, section := range document.Sections {
 		for _, match := range section.TitleMatches {

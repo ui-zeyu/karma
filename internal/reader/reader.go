@@ -21,13 +21,20 @@ import (
 // MaxScanBytes is the output cap for a single check's reading input, preventing huge files from bogging down the terminal.
 const MaxScanBytes = 2 * 1024 * 1024
 
+// belowFloor is the id the severity floor counts the rows it hides under: the
+// floor is the run's own filter, and a hidden row is counted the way a filter's
+// rows are, so the panel reports both in one number.
+const belowFloor = "below-severity"
+
 // Analyze reads one command output into a document.
 //
 // Order is fixed: byte-cap by the check's scan limit (0 uses MaxScanBytes), split
 // sections by `== `, normalize each body (with the section title), rule matches,
 // then line filtering decides whether a body line stays. Titles run rules but are
-// not filtered.
-func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normalize model.Normalizer, scanBytes int) model.Document {
+// not filtered. floor is the run's severity floor: a row below it is counted and
+// left out before the filters are consulted, so a triage run drops it whichever
+// filter would have kept it. model.FloorAll keeps every row.
+func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normalize model.Normalizer, scanBytes int, floor model.SeverityFloor) model.Document {
 	capped, truncated := capBytes(text, scanBytes)
 	keepFilters, dropFilters := lo.FilterReject(filters, func(f model.LineFilter, _ int) bool {
 		return f.Mode == model.FilterKeep
@@ -47,6 +54,11 @@ func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normal
 		for index, line := range piece.lines {
 			number++
 			matches := append(lineMatches(line, rules), piece.notes[index]...)
+			severity := lineSeverity(matches)
+			if !floor.Keeps(severity) {
+				filtered = filtered.add(belowFloor)
+				continue
+			}
 			if id, hidden := hideReason(line, matches, keepFilters, dropFilters); hidden {
 				filtered = filtered.add(id)
 				continue
@@ -54,7 +66,7 @@ func Analyze(text string, rules []model.Rule, filters []model.LineFilter, normal
 			kept = append(kept, model.Line{
 				Number:   number,
 				Text:     line,
-				Severity: lineSeverity(matches),
+				Severity: severity,
 				Matches:  matches,
 			})
 		}

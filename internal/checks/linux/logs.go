@@ -163,12 +163,16 @@ var (
 
 const accessLogTimeout = 60 * time.Second // six windows read and counted on the target
 
+// accessLogLines caps the summary: three tables per file plus the request
+// lines worth reading, past which the log has only volume left.
+const accessLogLines = 400
+
 // LogsChecks covers logs.
 var LogsChecks = []*model.Check{
 	define.LinuxCheck("history", "User command history (tail)", model.AspectLog,
 		tailFilesCheck(400, historyPaths...),
 		define.CheckOpt{
-			Syntax:    "bash",
+			Syntax:    model.SyntaxBash,
 			Normalize: collapseRepeats,
 			Rules:     []model.Rule{historyOffRule, historyClearRule, define.KeywordRule},
 		}),
@@ -184,7 +188,7 @@ var LogsChecks = []*model.Check{
 		}),
 	define.LinuxCheck("lastb", "Failed login records", model.AspectLog,
 		[]model.Probe{{Label: "lastb", Inv: model.Dual{Run: native.Lastb, Script: "lastb -n 400"}}},
-		define.CheckOpt{Syntax: "table"}),
+		define.CheckOpt{Syntax: model.SyntaxTable}),
 	listingCheck("log-dirs", "Log directory listing (by mtime)", model.AspectLog,
 		[]string{"/var/log", "/var/log/journal"}, 100,
 		[]model.Rule{
@@ -206,7 +210,7 @@ var LogsChecks = []*model.Check{
 			{Label: "log", Inv: model.Dual{
 				Run:    native.AccessLog(accessLogPaths, accessLogKeepRe),
 				Script: script.AccessLogScript(accessLogPaths, accessLogKeep),
-			}, LineLimit: 400},
+			}, LineLimit: accessLogLines},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{

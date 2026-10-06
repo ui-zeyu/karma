@@ -219,15 +219,21 @@ var tunnelToolRule = model.NewRule("tunnel-tool",
 	`\bfrps?c?\b|\bnps\b|\bnpc\b|\bchisel\b|\bgost\b|\biox\b|\bngrok\b|\bsuo5\b`,
 	model.Medium, "tunnel/proxy tool (frp/ngrok/chisel)")
 
+// keyDirRules is the rule pack of the key-directory listings — the temp
+// directories, the system roots, and /etc: the places a dropped file shows up
+// as a name, where SSH key material, a tunnel tool and a secret-looking name
+// are what the analyst reads the listing for.
+var keyDirRules = []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}
+
 // FilesystemChecks covers disks and files.
 var FilesystemChecks = []*model.Check{
 	// Locally df reads /proc/self/mounts and statfs in-process (native_fs).
 	define.LinuxCheck("df", "Disk usage", model.AspectFilesystem,
 		[]model.Probe{{Label: "df", Inv: model.Dual{Run: native.Df, Script: "df -h"}}},
-		define.CheckOpt{Syntax: "df"}),
+		define.CheckOpt{Syntax: model.SyntaxDf}),
 	define.LinuxCheck("fstab", "Filesystem mount config (fstab)", model.AspectFilesystem,
 		readFilesCheck("/etc/fstab"),
-		define.CheckOpt{Syntax: "fstab", Rules: []model.Rule{mountRemoteFsRule}}),
+		define.CheckOpt{Syntax: model.SyntaxFstab, Rules: []model.Rule{mountRemoteFsRule}}),
 	define.LinuxCheck("mounts", "Mount points", model.AspectFilesystem,
 		[]model.Probe{
 			{Label: "findmnt", Inv: model.Dual{Run: native.Findmnt, Script: "findmnt"}},
@@ -237,7 +243,7 @@ var FilesystemChecks = []*model.Check{
 			Filters: []model.LineFilter{
 				model.NewFilter("mount-noise", mountNoise, model.FilterDrop),
 			},
-			Syntax: "table",
+			Syntax: model.SyntaxTable,
 			Rules:  []model.Rule{mountRemoteFsRule},
 		}),
 	// GTFOBins is the only verdict surface on these listings: a documented
@@ -287,7 +293,7 @@ var FilesystemChecks = []*model.Check{
 			{Label: "getcap", Inv: model.Dual{
 				Run:    native.FileCaps(privFsTypes),
 				Script: "getcap -r / 2>/dev/null",
-			}, LineLimit: 200},
+			}, LineLimit: openScanLines},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -301,11 +307,11 @@ var FilesystemChecks = []*model.Check{
 			Timeout: suidTimeout,
 		}),
 	listingCheck("tmp-listing", "Temp directory listing", model.AspectFilesystem, tmpDirs, 200,
-		[]model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}),
+		keyDirRules),
 	listingCheck("key-dirs", "Key directory listing (by mtime)", model.AspectFilesystem,
-		keyDirs, 100, []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}),
+		keyDirs, 100, keyDirRules),
 	listingCheck("etc-listing", "Configuration directory listing (/etc, by mtime)", model.AspectFilesystem,
-		[]string{"/etc"}, 200, []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}),
+		[]string{"/etc"}, 200, keyDirRules),
 	define.LinuxCheck("home-tree", "/home directory tree (four levels deep, including hidden files)", model.AspectFilesystem,
 		[]model.Probe{
 			{Label: "tree", Inv: model.Dual{
@@ -315,7 +321,7 @@ var FilesystemChecks = []*model.Check{
 			{Label: "find", Inv: model.Dual{Script: homeTreeFind}},
 		},
 		define.CheckOpt{
-			Syntax: "ls-l",
+			Syntax: model.SyntaxLsL,
 			Rules:  []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule},
 		}),
 	define.LinuxCheck("web-dirs", "Recently changed scripts in web directories", model.AspectFilesystem,
@@ -328,7 +334,7 @@ var FilesystemChecks = []*model.Check{
 					Window:   webScriptWindow,
 				}),
 				Script: webScriptFind,
-			}, LineLimit: 200},
+			}, LineLimit: openScanLines},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
@@ -349,7 +355,7 @@ var FilesystemChecks = []*model.Check{
 					ExcludeDirs: webshellExcludeDirs,
 				}),
 				Script: webshellGrep,
-			}, LineLimit: 200},
+			}, LineLimit: openScanLines},
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
