@@ -10,8 +10,9 @@ import (
 	"karma/internal/model"
 )
 
-// The report header is the only rounded box: host facts on the first line, the
-// system line and the severity legend below, everything inside the line width.
+// The report header is the report's first rail panel: the karma band over the
+// host facts, the system line and the severity legend below, everything inside
+// the line width and wearing the same rail as a check panel.
 func TestRenderHeader(t *testing.T) {
 	facts := model.HostFacts{
 		Hostname: "web-01",
@@ -27,6 +28,15 @@ func TestRenderHeader(t *testing.T) {
 	for _, want := range []string{"web-01", `CORP\alice`, "root", "Ubuntu 22.04", "5.15.0-91-generic", "ssh", "critical", "high", "medium", "low"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("header should carry %q:\n%s", want, body)
+		}
+	}
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	if !strings.HasPrefix(lines[0], "▌ KARMA") {
+		t.Fatalf("the header opens with the karma band on the panel rail:\n%s", body)
+	}
+	for _, line := range lines[1:] {
+		if !strings.HasPrefix(line, "▌  ") {
+			t.Fatalf("header rows sit in the panel body, indented behind the rail:\n%s", body)
 		}
 	}
 	for i, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {

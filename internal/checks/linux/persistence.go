@@ -38,9 +38,13 @@ var cronScript = script.Lines(
 
 // shellRcPaths: home files lead and the global profile layer trails — the
 // per-user startup files are the productive surface, the /etc sections are
-// usually stock; within each group the shell read order is kept.
+// usually stock; within each group the shell read order is kept. .bash_aliases
+// is read next to .bashrc because that is what sources it: an alias is session
+// state until it is written there, and an alias is how a command the analyst
+// trusts is made to lie.
 var shellRcPaths = []string{
 	"/root/.bashrc",
+	"/root/.bash_aliases",
 	"/root/.bash_profile",
 	"/root/.bash_login",
 	"/root/.profile",
@@ -48,6 +52,7 @@ var shellRcPaths = []string{
 	"/root/.zshrc",
 	"/root/.config/fish/config.fish",
 	"/home/*/.bashrc",
+	"/home/*/.bash_aliases",
 	"/home/*/.bash_profile",
 	"/home/*/.bash_login",
 	"/home/*/.profile",
@@ -202,6 +207,18 @@ var generatorsScript = script.Lines(
 	"done",
 )
 
+// aliasShadowRule marks an alias that redefines a tool the analyst reads the
+// host with. `alias netstat=…` makes the connection table whatever the line
+// says, and BlackCat pointed `cat` at a file named -t so a UID 0 account stayed
+// out of /etc/passwd output. The alias's value is graded by the global rules;
+// this rule names the shape. The Debian-family colour aliases are the same
+// shape on every stock host, so their --color marker suppresses the line.
+var aliasShadowRule = model.NewRule("alias-command-shadow",
+	`\balias[ \t]+(?:cat|ls|ps|netstat|ss|find|grep|top|lsof|stat|md5sum|sha1sum|sha256sum`+
+		`|lsmod|crontab|systemctl|journalctl|id|who|w|last|lastlog|df|du|ip|ifconfig|arp`+
+		`|route|file|pgrep|pkill|kill)[ \t]*=`,
+	model.Medium, "alias redefines a system inspection command").WithExclude(`--color`)
+
 // PersistenceChecks covers persistence.
 var PersistenceChecks = []*model.Check{
 	define.LinuxCheck("cron", "Scheduled tasks", model.AspectPersistence,
@@ -319,7 +336,10 @@ var PersistenceChecks = []*model.Check{
 		}),
 	define.LinuxCheck("shell-rc", "Shell startup files", model.AspectPersistence,
 		readFilesCheck(shellRcPaths...),
-		define.CheckOpt{Rules: []model.Rule{historyOffRule, define.KeywordRule}, Syntax: "bash"}),
+		define.CheckOpt{
+			Rules:  []model.Rule{aliasShadowRule, historyOffRule, define.KeywordRule},
+			Syntax: "bash",
+		}),
 	define.LinuxCheck("skel", "Home directory templates (/etc/skel)", model.AspectPersistence,
 		[]model.Probe{
 			{Label: "cat", Inv: model.Dual{Run: native.Skel(skelDir, skelHead, skelTemplates), Script: skelScript}},

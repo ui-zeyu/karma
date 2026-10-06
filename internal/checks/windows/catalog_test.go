@@ -47,6 +47,15 @@ func TestSystemCheckRules(t *testing.T) {
 		{"portproxy", `0.0.0.0         8080        10.0.0.5        80`, "portproxy-forward"},
 		{"svc-dll", `WebClient  C:\Windows\Temp\evil.dll`, "svcdll-temp"},
 		{"svc-dll", `CustomSvc  C:\Program Files\App\svc.dll`, "svcdll-outside-system"},
+		// The Sunlogin client's own log and config: the exploit's two steps, the
+		// connection it accepted, and the access code stored beside it.
+		{"sunlogin", `2025-04-17 17:53:53.922 - Info - [Acceptor][HTTP] new RC HTTP connection 219.142.42.9:33321, path: /check?cmd=ping../../../../../../windows/system32/whoami, version: HTTP/1.1`,
+			"sunlogin-remote-cmd"},
+		{"sunlogin", `2025-04-17 17:53:53.850 - Info - [Acceptor][HTTP] new RC HTTP connection 219.142.42.9:33317, path: /cgi-bin/rpc?action=verify-haras, version: HTTP/1.1`,
+			"sunlogin-verify-haras"},
+		{"sunlogin", `2025-04-17 17:41:10.112 - Info - [service][TcpAcceptor] new acceptor 219.142.42.9:33317-->172.26.18.236:49829`,
+			"sunlogin-connection"},
+		{"sunlogin", `encry_pwd=XYEFFLTz2p4=`, "sunlogin-access-code"},
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.id)

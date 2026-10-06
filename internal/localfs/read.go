@@ -5,6 +5,7 @@ package localfs
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -15,6 +16,33 @@ import (
 // hook on the host binary cannot reshape the answer.
 func Cat(path string) ([]byte, error) {
 	return os.ReadFile(path)
+}
+
+// Tail is the reader form of `tail -c n`: the file's last n bytes, or the whole
+// file when it is smaller. The read is bounded by n, so a log that has grown
+// for years costs what the window costs — and it starts exactly on the offset
+// tail starts on, partial first line and all, so both channels see the same
+// bytes. A directory is not a body and reports an error.
+func Tail(path string, n int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("%s is a directory", path)
+	}
+	size := info.Size()
+	if size > n {
+		if _, err := file.Seek(size-n, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
+	return io.ReadAll(io.LimitReader(file, n))
 }
 
 // ReadSections mirrors script.ReadFiles: one "== path" section per existing

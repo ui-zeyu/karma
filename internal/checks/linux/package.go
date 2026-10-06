@@ -47,6 +47,23 @@ const (
 
 const pkgVerifyTimeout = 180 * time.Second // a full package verify takes a minute or two on a small VPS, so the timeout is raised here
 
+// unownedDirs are the directories a distribution owns end to end: the program
+// and library trees. A file here that no package lists arrived outside the
+// package manager — a hand-built install, a vendor agent, or a dropped payload
+// (/bin/.lib.so, /usr/lib/inject.so, /bin/-t). /usr/local is left out on
+// purpose: it exists for software the administrator builds.
+var unownedDirs = []string{
+	"/bin", "/sbin", "/usr/bin", "/usr/sbin",
+	"/lib", "/lib64", "/usr/lib", "/usr/lib64", "/usr/libexec",
+}
+
+const unownedTimeout = 60 * time.Second
+
+// unownedFileRule paints the whole row: the body is bare paths, so the row is
+// the file the package database does not carry.
+var unownedFileRule = model.NewRule("unowned-file", `^/.*\S$`, model.High,
+	"file in a system directory that no package owns")
+
 // pkgHistoryScript: what was installed, upgraded, or removed recently. apt and dpkg
 // keep live text logs; the RedHat family answers from its transaction database, so
 // both surfaces go into one sectioned script (the empty branch on the other family
@@ -176,6 +193,14 @@ var PackageChecks = []*model.Check{
 			Syntax:  "ls-l",
 			Timeout: pkgVerifyTimeout,
 		}),
+	define.LinuxCheck("unowned-files", "Files no package owns (system directories)", model.AspectPackage,
+		[]model.Probe{
+			{Label: "find", Inv: model.Dual{
+				Run:    native.UnownedFiles(unownedDirs),
+				Script: script.UnownedScript(unownedDirs),
+			}, LineLimit: 200},
+		},
+		define.CheckOpt{Rules: []model.Rule{unownedFileRule}, Timeout: unownedTimeout}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
 		[]model.Probe{
 			{Label: "log", Inv: model.Dual{Run: native.PkgHistory(pkgHistoryPaths), Script: pkgHistoryScript}},

@@ -115,6 +115,26 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"dmesg", `[  123.456789] real_sys_call_table: 00000000c05a4000`, "dmesg-syscall-hook"},
 		{"dmesg", `[  123.456789] update __NR_openat: 0000000000000000->0000000000000000`, "dmesg-syscall-hook"},
 		{"log-dirs", `-rw-r----- 1 www adm 0 Jun  1 10:00 access.log`, "logdir-middleware"},
+		// a file the package database does not carry, and the two names that
+		// mark it: a leading dash (BlackCat's /bin/-t) and a dot in a library
+		// directory
+		{"unowned-files", `/usr/lib/inject.so`, "unowned-file"},
+		{"unowned-files", `/bin/-t`, "odd-dash-name"},
+		{"key-dirs", `-rw-r--r-- 1 root root 0 Jun  1 10:00 /usr/lib/.inject.so`, "hidden-nonhome-path"},
+		{"tmp-listing", `-rw-r--r-- 1 root root 0 Jun  1 10:00 /tmp/-rf`, "odd-dash-tmp"},
+		// a shell alias that redefines a tool the analyst reads the host with,
+		// and the payload inside its value the global rules grade
+		{"shell-rc", `alias netstat='(echo YmFzaCAtYyAn|base64 -d|bash -i 2>/dev/null &);netstat'`,
+			"alias-command-shadow"},
+		{"shell-rc", `alias cat='-t'`, "alias-command-shadow"},
+		// a hidden file directly in /home, and one in the root directory: the
+		// two places the hidden-file rules only reach by naming them
+		{"home-tree", `-rw-r--r-- 1 root root 13 Oct 06 02:45 /home/.hacker`, "hidden-nonhome-path"},
+		{"key-dirs", `-rwsr-xr-x 1 root root 1100000 Oct 06 02:45 /.root`, "hidden-root-path"},
+		{"suid", `/.root`, "hidden-root-path"},
+		// a command line that ends in a hidden root path names one, while a
+		// request line carrying it mid-row is a URL
+		{"history", `cat /.env`, "hidden-root-path"},
 	}
 
 	for _, tc := range cases {
@@ -173,6 +193,23 @@ func TestLinuxRuleExclusions(t *testing.T) {
 		{"lsmod", `nf_tables 409600 0 - Live 0xffffffffc0567000`, "module-out-of-tree"},
 		{"lsmod", `nf_tables 409600 0 - Live 0xffffffffc0567000`, "module-unsigned"},
 		{"lsmod", `nvidia             1234  5`, "module-out-of-tree"},
+		// the stock colour aliases are the same shape as a shadowing one, and
+		// systemd's root mount unit is the one dash-led name a listing carries
+		{"shell-rc", `alias ls='ls --color=auto'`, "alias-command-shadow"},
+		{"shell-rc", `alias ll='ls -alF'`, "alias-command-shadow"},
+		{"systemd-generators", `-rw-r--r-- 1 root root 0 Jun  1 10:00 /run/systemd/generator/-.mount`,
+			"odd-dash-name"},
+		{"key-dirs", `drwxr-xr-x 3 root root 0 Jun  1 10:00 /usr/lib/.build-id`, "hidden-nonhome-path"},
+		// a dotfile in a user's own home is the normal case, and the container
+		// marker, the SELinux flag and the OpenSSL seed are the stock root ones
+		{"home-tree", `-rw-r--r-- 1 root root 13 Oct 06 02:45 /home/alice/.bashrc`, "hidden-nonhome-path"},
+		{"key-dirs", `-rw-r--r-- 1 root root 0 Jun  1 10:00 /.dockerenv`, "hidden-root-path"},
+		{"key-dirs", `-rw-r--r-- 1 root root 0 Jun  1 10:00 /.autorelabel`, "hidden-root-path"},
+		{"key-dirs", `-rw------- 1 root root 0 Jun  1 10:00 /.rnd`, "hidden-root-path"},
+		{"home-tree", `-rw-r--r-- 1 root root 13 Oct 06 02:45 /home/.snapshots`, "hidden-nonhome-path"},
+		// a URL in a request line is a path somewhere else
+		{"access-log", `10.0.0.9 - - [18/Apr/2024:02:36:00 +0800] "GET /../../etc/passwd HTTP/1.1" 404 0`,
+			"hidden-root-path"},
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.check)
@@ -245,6 +282,14 @@ func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
 		{"modules-hidden", `HIDDEN rootkit size 16384 taint O`, "module-hidden", `HIDDEN rootkit`},
 		{"lsmod", `nvidia 1234 5 - Live 0x0000000000000000 (POE)`, "module-out-of-tree", `(POE)`},
 		{"lsmod", `vboxdrv 1234 5 - Live 0x0000000000000000 (E)`, "module-unsigned", `(E)`},
+		// the unowned-file rule paints the row whole, the find rows being bare
+		// paths
+		{"unowned-files", `/usr/lib/inject.so`, "unowned-file", `/usr/lib/inject.so`},
+		{"unowned-files", `/bin/-t`, "unowned-file", `/bin/-t`},
+		// a bare-path row carries the root-level name alone
+		{"suid", `/.root`, "hidden-root-path", `/.root`},
+		{"home-tree", `-rw-r--r-- 1 root root 13 Oct 06 02:45 /home/.hacker`, "hidden-nonhome-path",
+			`/home/.hacker`},
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.check)

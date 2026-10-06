@@ -50,8 +50,9 @@ var commentLine = regexp.MustCompile(`^[ \t]*#`)
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// RenderHeader draws the report header: the only rounded box in the whole
-// report, followed by one blank line.
+// RenderHeader draws the report header as the report's first rail panel: the
+// karma band over the host facts, the severity legend on the last row. It is
+// not a check, so the rail stays muted and the body carries no reason.
 func RenderHeader(w io.Writer, sessionName string, facts model.HostFacts, width int) {
 	var pieces []string
 	pieces = append(pieces, style{bold: true}.seq().Render(facts.Hostname))
@@ -68,8 +69,7 @@ func RenderHeader(w io.Writer, sessionName string, facts model.HostFacts, width 
 		fmt.Sprintf("%s · %s · %s", cmp.Or(facts.OsPretty, "unknown distro"), facts.Kernel, sessionName),
 		legend(),
 	}
-	fmt.Fprintln(w, headerBlock(width,
-		style{bold: true, fg: "14"}.seq().Render("karma"), "", body))
+	fmt.Fprintln(w, checkBlock(model.Info, bandHead(subBandStyle.Render("KARMA"), "", style{}, width), body, width))
 	fmt.Fprintln(w)
 }
 
@@ -130,23 +130,9 @@ func Panel(label string, rows []string, term int) string {
 	return checkBlock(model.Info, head, rows, term)
 }
 
-// roundedBox is the report header's box. lipgloss draws the border and one
-// column of padding on each side, and Width then measures content width
-// including padding and excluding the border.
-func roundedBox() lipgloss.Style {
-	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
-}
-
 // lineWidth is the widest a line may be: the terminal width minus one column of
 // right-edge slack.
 func lineWidth(term int) int { return max(term-1, 8) }
-
-// innerWidth is the report header's content width: line width minus the border,
-// with one column of padding as the floor.
-func innerWidth(term int) int {
-	box := roundedBox()
-	return max(lineWidth(term)-box.GetHorizontalBorderSize(), box.GetHorizontalPadding()+1)
-}
 
 // railInner is the usable width to the right of the rail (padding included).
 func railInner(term int) int { return max(lineWidth(term)-1, 8) }
@@ -158,19 +144,6 @@ func headTextWidth(term int) int { return max(railInner(term)-headPad-rightPad, 
 // textWidth is the text width available for the panel body: the body is
 // indented two more columns and then gives up one pair of padding.
 func textWidth(term int) int { return max(railInner(term)-bodyPad-rightPad, 4) }
-
-// headerBlock is the report header's rounded box. title sits left and meta
-// right, both on the box's first line; the body follows below. Wrapping and
-// padding are lipgloss's Width; the caller's lines are laid out to line width.
-func headerBlock(term int, title, meta string, lines []string) string {
-	box := roundedBox()
-	inner := innerWidth(term)
-	text := spread(inner-box.GetHorizontalPadding(), title, meta)
-	if len(lines) > 0 {
-		text += "\n" + strings.Join(lines, "\n")
-	}
-	return box.Width(inner).Render(text)
-}
 
 // checkBlock is a check panel's rail: a half-block rail, carrying the severity
 // color for signals and muted otherwise. lipgloss draws the rail; inside it
@@ -229,20 +202,6 @@ func boundRow(row string, width int) string {
 		return wrapped
 	}
 	return xansi.Hardwrap(wrapped, width, false)
-}
-
-// spread lays a left and a right piece out on one line; if the right piece does
-// not fit, it goes on its own line.
-func spread(width int, left, right string) string {
-	if right == "" {
-		return left
-	}
-	room := width - lipgloss.Width(left)
-	if room < 2 {
-		return lipgloss.JoinVertical(lipgloss.Left, left, right)
-	}
-	aligned := lipgloss.NewStyle().Width(room).Align(lipgloss.Right).Render(right)
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, aligned)
 }
 
 // checkPanel is one check's display panel. With a body it is a rail panel;

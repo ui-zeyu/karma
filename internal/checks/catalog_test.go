@@ -13,12 +13,12 @@ import (
 
 func TestCatalogShape(t *testing.T) {
 	linux := checks.ChecksFor(model.Linux)
-	if len(linux) != 75 {
-		t.Fatalf("the Linux catalog should hold 75 checks, got %d", len(linux))
+	if len(linux) != 77 {
+		t.Fatalf("the Linux catalog should hold 77 checks, got %d", len(linux))
 	}
 	windows := checks.ChecksFor(model.Windows)
-	if len(windows) != 42 {
-		t.Fatalf("the Windows catalog should hold 42 checks, got %d", len(windows))
+	if len(windows) != 43 {
+		t.Fatalf("the Windows catalog should hold 43 checks, got %d", len(windows))
 	}
 	aspects := map[model.Aspect]bool{}
 	for _, check := range windows {

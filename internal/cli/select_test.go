@@ -23,7 +23,7 @@ func TestOtherPlatformAspectIsUnknown(t *testing.T) {
 		ids[i] = check.ID
 	}
 	slices.Sort(ids)
-	if !slices.Equal(ids, []string{"putty", "rdp-history", "remote-control"}) {
+	if !slices.Equal(ids, []string{"putty", "rdp-history", "remote-control", "sunlogin"}) {
 		t.Fatalf("the remote aspect: %v", ids)
 	}
 }

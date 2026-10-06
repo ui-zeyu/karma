@@ -47,8 +47,19 @@ var KeywordRule = model.NewRule(
 // hiddenExclude is the line-level exclusion shared by the hidden-file rules:
 // the system's standard hidden entries on each distribution (socket
 // directories such as .X11-unix, display locks, apt's updated, the passwd
-// lock).
-const hiddenExclude = `/+\.(?:(?:X11|ICE|font|XIM|Test)-unix|X[0-9]+-lock|updated|pwd\.lock)`
+// lock, the RedHat family's per-binary build-id tree under /usr/lib, and the
+// snapshot and desktop trash directories of /home and the root).
+const hiddenExclude = `/+\.(?:(?:X11|ICE|font|XIM|Test)-unix|X[0-9]+-lock|updated|pwd\.lock|build-id|snapshots?|Trash-[0-9]+|DS_Store)`
+
+// rootHiddenExclude is hiddenExclude plus the markers a container and the
+// RedHat family write at the filesystem root: .dockerenv, the SELinux relabel
+// flag, and the OpenSSL seed file ssh-keygen leaves behind.
+const rootHiddenExclude = hiddenExclude + `|(?:^|\s)/\.(?:dockerenv|autorelabel|rnd)\b`
+
+// dashUnitExclude is the one dash-led name a stock system writes into a
+// listing: systemd's root mount unit is `-.mount` and its root slice `-.slice`,
+// and the generator directories that produce them sit in the unit listings.
+const dashUnitExclude = `/-\.(?:mount|slice|target|service|socket|device|swap)$`
 
 // GlobalRules is the cross-check rule pack of the Linux catalog. Rules must be
 // written for high precision: for critical / high, spare rather than overreach.
@@ -80,15 +91,34 @@ var GlobalRules = []model.Rule{
 		"chmod sets SUID/SGID or another special bit"),
 	PrivateKeyRule,
 	// Hidden files (`.foo`): temporary directories are the most common drop
-	// point for malicious persistence (HIGH), then /opt /srv /usr/local /etc
-	// (MEDIUM); dotfiles in home directories are normal and are not marked.
-	// A rule's span is what the panel paints, so both name the whole path: a
-	// pattern that stopped after the first character of the name painted half
-	// of it.
+	// point for malicious persistence (HIGH), then /opt /srv /usr/local /etc,
+	// the program and library directories, and /home itself (MEDIUM); dotfiles
+	// in the user directories below /home are normal and are not marked, which
+	// is why /home has to be named separately from /home/*. A rule's span is
+	// what the panel paints, so both name the whole path: a pattern that
+	// stopped after the first character of the name painted half of it.
 	model.NewRule("hidden-tmp-path", `/?(?:(?:var/)?tmp|dev/shm)/\.[A-Za-z0-9_.-]+`, model.High,
 		"hidden file in a temporary directory (common persistence spot)").WithExclude(hiddenExclude),
-	model.NewRule("hidden-nonhome-path", `/?(?:opt|srv|usr/local|etc)/\.[A-Za-z0-9_.-]+`, model.Medium,
-		"hidden file outside a home directory").WithExclude(hiddenExclude),
+	model.NewRule("hidden-nonhome-path",
+		`/?(?:opt|srv|usr/local|etc|bin|sbin|lib|lib64|libexec|home)/\.[A-Za-z0-9_.-]+`, model.Medium,
+		"hidden file outside a user home directory").WithExclude(hiddenExclude),
+	// A hidden file in the root directory itself — /.root was the SUID copy of
+	// nologin in the training case. The name has to end the row: a listing row,
+	// a bare-path row and a command's last argument all end with their path,
+	// while a request line carries `GET /.env` in the middle, where it is a URL
+	// rather than a file on this host. The leading space of a listing row is
+	// part of the match, so a bare-path row paints the path alone.
+	model.NewRule("hidden-root-path", `(?:^|\s)/\.[A-Za-z0-9_.-]+$`, model.Medium,
+		"hidden file in the root directory").WithExclude(rootHiddenExclude),
+	// A file whose name begins with a dash: a shell hands it to the next
+	// command as an option, which is why `/bin/-t` was what BlackCat's `cat`
+	// alias pointed at. The listing rows are bare paths, so the name follows
+	// a slash; the temporary-directory grade mirrors the hidden-file pair.
+	model.NewRule("odd-dash-tmp", `/(?:tmp|var/tmp|dev/shm)/-[^\s/]+`, model.High,
+		"file name starting with a dash in a temporary directory"),
+	model.NewRule("odd-dash-name", `/-[^\s/]+`, model.Medium,
+		"file name starting with a dash (a shell reads it as an option)").
+		WithExclude(dashUnitExclude),
 }
 
 // WindowsGlobalRules is the cross-check global rule pack of the Windows

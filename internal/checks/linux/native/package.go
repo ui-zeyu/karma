@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"karma/internal/localfs"
@@ -116,4 +117,96 @@ func AuthBinaries(paths []string) func(context.Context) (string, error) {
 		forensics(&b, localfs.ExpandFiles(paths))
 		return b.String(), nil
 	}
+}
+
+// UnownedFiles mirrors UnownedScript: the entries one level inside each system
+// directory that the package database does not list. A host with neither
+// package manager has no database to compare against, which is the tier's
+// "no answer here" rather than an empty answer.
+func UnownedFiles(dirs []string) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		roots := unownedRoots(dirs)
+		if len(roots) == 0 {
+			return "", nil
+		}
+		owned, ok := unownedOwned(ctx, roots)
+		if !ok {
+			return "", model.ErrTierUnavailable
+		}
+		return script.UnownedBody(unownedEntries(roots), owned), nil
+	}
+}
+
+// unownedRoots resolves each directory to its canonical path and drops the
+// repeats: usrmerge's /bin and /usr/bin are one directory, and the script
+// tier's readlink -f loop reaches the same set.
+func unownedRoots(dirs []string) []string {
+	var roots []string
+	seen := map[string]bool{}
+	for _, dir := range dirs {
+		resolved, err := filepath.EvalSymlinks(dir)
+		if err != nil || seen[resolved] {
+			continue
+		}
+		seen[resolved] = true
+		roots = append(roots, resolved)
+	}
+	return roots
+}
+
+// unownedEntries lists one directory level, leaving out the
+// update-alternatives links the script's find -lname filter leaves out.
+func unownedEntries(roots []string) []string {
+	var found []string
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			path := root + "/" + entry.Name()
+			target, err := os.Readlink(path)
+			if err == nil && strings.HasPrefix(target, "/etc/alternatives/") {
+				continue
+			}
+			found = append(found, path)
+		}
+	}
+	return found
+}
+
+// unownedOwned reads the paths the package database knows, through the same two
+// commands the script tier runs: dpkg searched with one wildcard pattern per
+// directory, or rpm listing every file it ships. A pattern that matches nothing
+// makes dpkg complain on stderr and a directory whose every file is unowned is
+// exactly the case this check exists for, so the complaint is dropped.
+func unownedOwned(ctx context.Context, roots []string) ([]string, bool) {
+	if haveBinary("dpkg") {
+		argv := []string{"dpkg", "-S"}
+		for _, root := range roots {
+			argv = append(argv, root+"/*")
+		}
+		return ownedRows(runHostQuiet(ctx, argv, true).out), true
+	}
+	if haveBinary("rpm") {
+		return ownedRows(runHostQuiet(ctx, []string{"rpm", "-qa", "--qf", `[%{FILENAMES}\n]`}, true).out), true
+	}
+	return nil, false
+}
+
+// ownedRows splits a package manager's file listing the way the script tier's
+// `sed 's/^.*: //'` does: a dpkg row is `package: path`, a multiarch row
+// `package:arch: path`, so the path is what follows the last separator, and a
+// row without one is already a path.
+func ownedRows(out string) []string {
+	var paths []string
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if cut := strings.LastIndex(line, ": "); cut >= 0 {
+			line = line[cut+2:]
+		}
+		if line != "" {
+			paths = append(paths, line)
+		}
+	}
+	return paths
 }

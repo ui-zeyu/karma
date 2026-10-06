@@ -13,6 +13,7 @@ package native
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -34,6 +35,18 @@ type hostResult struct {
 var runHost = defaultRunHost
 
 func defaultRunHost(ctx context.Context, argv []string, cLocale bool) hostResult {
+	return execHost(ctx, argv, cLocale, false)
+}
+
+// runHostQuiet is runHost with the command's standard error dropped, the way a
+// script tier's 2>/dev/null does: dpkg -S writes a complaint for every pattern
+// that matches no file, and those complaints belong in neither the panel nor
+// karma's own error stream.
+func runHostQuiet(ctx context.Context, argv []string, cLocale bool) hostResult {
+	return execHost(ctx, argv, cLocale, true)
+}
+
+func execHost(ctx context.Context, argv []string, cLocale, quiet bool) hostResult {
 	if len(argv) == 0 {
 		return hostResult{}
 	}
@@ -43,6 +56,9 @@ func defaultRunHost(ctx context.Context, argv []string, cLocale bool) hostResult
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	if cLocale {
 		cmd.Env = append(os.Environ(), "LC_ALL=C")
+	}
+	if quiet {
+		cmd.Stderr = io.Discard
 	}
 	var out bytes.Buffer
 	cmd.Stdout = &out

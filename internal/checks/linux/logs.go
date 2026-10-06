@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/samber/lo"
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
+	"karma/internal/script"
 	"karma/internal/textutil"
 )
 
@@ -88,6 +90,79 @@ var historyOffRule = model.NewRule("history-off",
 var historyClearRule = model.NewRule("history-clear", `\bhistory\s+-c\b`, model.Medium,
 	"history cleared (earlier lines kept)")
 
+// accessLogPaths: the request logs of the two web server layouts, the current
+// file and the first rotation each — the rotation is where the attack day often
+// sits once the site has been up for a while. Per-vhost logs and the compressed
+// rotations stay out: the list is fixed so the summary costs the same on every
+// host, and karma's built-in readers can reach a specific file on request.
+var accessLogPaths = []string{
+	"/var/log/apache2/access.log",
+	"/var/log/apache2/access.log.1",
+	"/var/log/apache2/other_vhosts_access.log",
+	"/var/log/httpd/access_log",
+	"/var/log/nginx/access.log",
+	"/var/log/nginx/access.log.1",
+}
+
+// The access-log vocabulary. The keep pattern below is one POSIX ERE — the
+// target's awk reads it, so it carries no RE2-only syntax (no \b, no (?:), and
+// it is matched against the lowercased line) — and the rules are built from the
+// same lists, so a tool name or a parameter cannot be in one and missing from
+// the other.
+var (
+	// accessLogTools name themselves in a User-Agent or in a path.
+	accessLogTools = []string{
+		"sqlmap", "nuclei", "fscan", "masscan", "nikto", "dirbuster", "gobuster",
+		"wpscan", "hydra", "zgrab", "nessus", "acunetix", "xray",
+	}
+	// accessLogParams carry a command, a file or a credential: in a log the
+	// exploit payload arrives URL-encoded, so the eval-shaped webshell rules
+	// never see it and the parameter name is what is left.
+	accessLogParams = []string{
+		"cmd", "exec", "system", "shell", "eval", "assert",
+		"upload", "include", "passwd", "password", "key",
+	}
+	// accessLogFiles are the install, backup and console artifacts a probe
+	// asks for, plus the suffixes of a dumped file.
+	accessLogFiles = []string{
+		"install", "readme", "backup", "dump", "wp-login.php",
+		"phpmyadmin", "adminer", "manager/html", "actuator", "solr/admin",
+	}
+	// accessLogTraversal covers the whole run of hops, so the paint is the
+	// traversal the reason names rather than its first step.
+	accessLogTraversal = `((\.\./)+|%2e%2e)`
+	accessLogDotDirs   = `\.(git|env|svn|ssh)/`
+	accessLogSuffixes  = `\.(sql|zip|tar\.gz|bak|old|swp|save|env|git)`
+)
+
+// accessLogKeep is the one pattern the collection keeps request lines by; the
+// rules below grade exactly its arms, so a line in the panel always has a
+// reason.
+var accessLogKeep = `(` + accessLogTraversal + `|` + accessLogDotDirs +
+	`|[?&](` + strings.Join(accessLogParams, "|") + `)=|(` +
+	strings.Join(accessLogTools, "|") + `)|/(` + strings.Join(accessLogFiles, "|") +
+	`)|` + accessLogSuffixes + `)`
+
+// accessLogKeepRe is the reader side of accessLogKeep; the (?i) is the awk
+// pass's tolower.
+var accessLogKeepRe = regexp.MustCompile(`(?i)` + accessLogKeep)
+
+var (
+	logScanToolRule = model.NewRule("log-scan-tool",
+		`(?i)\b(?:`+strings.Join(accessLogTools, "|")+`)\b`, model.High,
+		"scanner or attack tool in the request log")
+	logTraversalRule = model.NewRule("log-traversal", accessLogTraversal, model.High,
+		"path traversal in a request")
+	logExecParamRule = model.NewRule("log-exec-param",
+		`(?i)[?&](?:`+strings.Join(accessLogParams, "|")+`)=`, model.High,
+		"command, file or credential parameter in a request URL")
+	logSensitiveFileRule = model.NewRule("log-sensitive-file",
+		`(?i)/(?:`+strings.Join(accessLogFiles, "|")+`)|`+accessLogDotDirs+`|`+accessLogSuffixes,
+		model.Medium, "install, backup or console file requested")
+)
+
+const accessLogTimeout = 60 * time.Second // six windows read and counted on the target
+
 // LogsChecks covers logs.
 var LogsChecks = []*model.Check{
 	define.LinuxCheck("history", "User command history (tail)", model.AspectLog,
@@ -122,5 +197,21 @@ var LogsChecks = []*model.Check{
 				model.Low, "login/auth records (SSH entry point)"),
 			model.NewRule("logdir-cron", `\bcron`, model.Low, "cron logs (persistence trail)"),
 			define.KeywordRule,
+		}),
+	// The summary itself is context — who hammered the host and when — and the
+	// request lines it carries are the findings, so the keep pattern and the
+	// rules are one vocabulary.
+	define.LinuxCheck("access-log", "Web access log summary (clients, minutes, probes)", model.AspectLog,
+		[]model.Probe{
+			{Label: "log", Inv: model.Dual{
+				Run:    native.AccessLog(accessLogPaths, accessLogKeepRe),
+				Script: script.AccessLogScript(accessLogPaths, accessLogKeep),
+			}, LineLimit: 400},
+		},
+		define.CheckOpt{
+			Rules: []model.Rule{
+				logScanToolRule, logTraversalRule, logExecParamRule, logSensitiveFileRule,
+			},
+			Timeout: accessLogTimeout,
 		}),
 }
