@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -150,8 +149,7 @@ func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) er
 		return err
 	}
 	cancelled := make(chan struct{})
-	var stopWatch sync.Once
-	defer stopWatch.Do(func() { close(cancelled) })
+	defer close(cancelled)
 	go fault.Catch("upload cancel watch", func() error {
 		select {
 		case <-ctx.Done():

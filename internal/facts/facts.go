@@ -8,6 +8,7 @@ package facts
 import (
 	"cmp"
 	"context"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -185,26 +186,31 @@ func call(ctx context.Context, sess session.Session, inv model.Invocation, budge
 	return sess.Run(ctx, model.Call{Inv: inv})
 }
 
-// gather runs all fact collection concurrently, keyed by job name so a result can
-// never drift onto the wrong fact; a failed path falls back to an empty answer.
-// A job that panics fails that one fact (fault.Result) rather than ending the
-// run: a fact is one line of the header, and the checks matter more than it.
+// gather runs all fact collection concurrently, keyed by job name so a result
+// can never drift onto the wrong fact: each goroutine writes its own slot of
+// the slice — distinct slots are independently writable, so no lock guards
+// them — and the map is assembled once the jobs join. A job that panics fails
+// that one fact (fault.Result) rather than ending the run: a fact is one line
+// of the header, and the checks matter more than it.
 func gather(ctx context.Context, jobs map[string]func(context.Context) model.RunResult) map[string]model.RunResult {
-	results := make(map[string]model.RunResult, len(jobs))
-	var mu sync.Mutex
+	names := slices.Sorted(maps.Keys(jobs))
+	collected := make([]model.RunResult, len(names))
 	var wg sync.WaitGroup
-	for name, job := range jobs {
+	for i, name := range names {
+		job := jobs[name]
 		wg.Go(func() {
 			result, damage := fault.Result("host fact "+name, func() model.RunResult { return job(ctx) })
 			if damage != nil {
 				result = model.RunResult{Verdict: model.VerdictFailed, Stderr: damage.Error(), ExitCode: -1}
 			}
-			mu.Lock()
-			defer mu.Unlock()
-			results[name] = result
+			collected[i] = result
 		})
 	}
 	wg.Wait()
+	results := make(map[string]model.RunResult, len(names))
+	for i, name := range names {
+		results[name] = collected[i]
+	}
 	return results
 }
 

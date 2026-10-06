@@ -9,8 +9,8 @@ import (
 	"karma/internal/model"
 )
 
-// gather writes the shared result map from one goroutine per job; every write
-// must be ordered (an unordered pair is a runtime-fatal concurrent map write).
+// gather writes each job's own slice slot from its goroutine and assembles the
+// map after the join, so every result must arrive keyed by its own job name.
 func TestGatherKeysEachResultByItsJobName(t *testing.T) {
 	jobs := make(map[string]func(context.Context) model.RunResult)
 	for i := range 32 {

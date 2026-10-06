@@ -250,8 +250,8 @@ func (c *ttydCall) collect(ctx context.Context, script string, cap model.RowCap)
 		lines:   make(chan string, 16),
 		stopped: make(chan struct{}),
 		done:    make(chan struct{}),
+		code:    -1,
 	}
-	stream.code.Store(-1)
 	stream.read(ctx, c, marker)
 
 	select {
@@ -302,7 +302,9 @@ type ttydStream struct {
 	stopped  chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
-	code     atomic.Int32
+	// code is the exit code the rc marker carried; like stderr, it is written
+	// by the reader goroutine and read only after done.
+	code int
 	// stderr is the stderr section the reader cut out of the stream; it is
 	// written by the reader goroutine and read after done.
 	stderr string
@@ -343,7 +345,7 @@ func (s *ttydStream) readAll() string {
 	return s.stderr
 }
 
-func (s *ttydStream) exitCode() int { return int(s.code.Load()) }
+func (s *ttydStream) exitCode() int { return s.code }
 
 // nextLine takes one harvested body line, or reports the end of the stream.
 // The stopped branch keeps what the reader had already produced before the
@@ -390,7 +392,7 @@ func (s *ttydStream) readStream(ctx context.Context, call *ttydCall, marker stri
 			case <-s.stopped:
 			}
 		}
-		s.code.Store(int32(code))
+		s.code = code
 	}
 	leftover, _ := call.frameLines(ctx, func(line string) bool {
 		switch phase {
