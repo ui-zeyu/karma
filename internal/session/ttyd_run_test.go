@@ -349,31 +349,3 @@ func TestTTYDUploadRefusedByReadonlyServer(t *testing.T) {
 		t.Fatal("the file was written although the upload failed")
 	}
 }
-
-// Stream passes the terminal's output through as it arrives instead of
-// harvesting a report: the exit code still comes from the rc marker.
-func TestTTYDStreamPassesOutputThrough(t *testing.T) {
-	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
-	streamer, ok := sess.(Streamer)
-	if !ok {
-		t.Fatal("the ttyd session is not a Streamer")
-	}
-	var out, errOut bytes.Buffer
-	code, err := streamer.Stream(context.Background(),
-		model.Shell{Script: "echo first; echo oops 1>&2; echo second; exit 4"}, &out, &errOut)
-	if err != nil {
-		t.Fatalf("stream: %v", err)
-	}
-	if code != 4 {
-		t.Fatalf("exit code: %d, want 4", code)
-	}
-	if out.String() != "first\nsecond\n" {
-		t.Fatalf("streamed stdout: %q", out.String())
-	}
-	if errOut.String() != "oops\n" {
-		t.Fatalf("streamed stderr: %q", errOut.String())
-	}
-	if strings.Contains(out.String(), "__KRM") {
-		t.Fatalf("a marker leaked into the stream: %q", out.String())
-	}
-}

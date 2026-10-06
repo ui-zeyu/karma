@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -63,57 +62,6 @@ func (s *SSHSession) Run(ctx context.Context, inv model.Invocation, timeout time
 		readAll:  func() string { return drainText(errReader) },
 		exitCode: func() int { return commandExitCode(waitErr) },
 	}, timeout, lineLimit)
-}
-
-// Stream runs one invocation with its stdout and stderr passed through as they
-// arrive, without harvesting: bootstrap runs the target's own karma, whose
-// report is already rendered. A cancelled context closes the session, which
-// ends the remote process group; the exit code is -1 when the channel cannot
-// report one.
-func (s *SSHSession) Stream(ctx context.Context, inv model.Invocation, out, errOut io.Writer) (int, error) {
-	sess, err := s.client.NewSession()
-	if err != nil {
-		return -1, err
-	}
-	defer sess.Close()
-	stdout, err := sess.StdoutPipe()
-	if err != nil {
-		return -1, err
-	}
-	stderrPipe, err := sess.StderrPipe()
-	if err != nil {
-		return -1, err
-	}
-	if err := sess.Start(RenderShell(inv)); err != nil {
-		return -1, err
-	}
-	var pumps sync.WaitGroup
-	pumps.Add(2)
-	go func() {
-		defer pumps.Done()
-		_, _ = io.Copy(out, stdout)
-	}()
-	go func() {
-		defer pumps.Done()
-		_, _ = io.Copy(errOut, stderrPipe)
-	}()
-	// Wait must be called once, after both streams drain; the cancel watchdog
-	// closes the session and stops early.
-	cancelled := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = sess.Close()
-		case <-cancelled:
-		}
-	}()
-	pumps.Wait()
-	code := commandExitCode(sess.Wait())
-	close(cancelled)
-	if ctx.Err() != nil {
-		return -1, ctx.Err()
-	}
-	return code, nil
 }
 
 // Upload writes one file to the target: the content goes over the session's

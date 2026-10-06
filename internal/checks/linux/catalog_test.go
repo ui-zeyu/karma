@@ -93,9 +93,9 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"pkg-verify", `-rwxr-xr-x  1 root root  8600 May 18 07:20 /bin/ls`, "pkg-changed-exec"},
 		{"pkg-verify", `-rw-rwxr-- 1 root root 8600 May 18 07:20 /usr/lib/x/helper`, "pkg-changed-exec"},
 		{"pkg-verify", `-rw-rw-rwx 1 root root 8600 May 18 07:20 /usr/lib/x/helper`, "pkg-changed-exec"},
-		{"pkg-history", `2025-06-01 10:20 install nginx:amd64 <none> 1.18.0`, "pkg-changed"},
-		{"pkg-history", `Commandline: apt-get install -y nginx`, "pkg-apt-record"},
-		{"pkg-history", `Start-Date: 2025-06-01  10:20:11`, "pkg-apt-record"},
+		// the history records themselves are context (the check paints them by
+		// shape); what signals there is the keyword rule over a command line
+		{"pkg-history", `Commandline: curl -u deploy:secret https://example.invalid/x`, "secret-keyword"},
 		{"modules-load", `evil_module`, "modules-boot-entry"},
 		{"modules-hidden", `HIDDEN rootkit`, "module-hidden"},
 		// the two evidence shapes a hidden module leaves: the sysfs one carries

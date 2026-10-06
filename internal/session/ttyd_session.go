@@ -78,7 +78,7 @@ func (s *TTYDSession) Run(ctx context.Context, inv model.Invocation, timeout tim
 		return model.RunResult{Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
 	call := &ttydCall{conn: conn, spawned: make(chan struct{})}
-	return call.collect(ctx, bodyText(inv), timeout, lineLimit, nil)
+	return call.collect(ctx, bodyText(inv), timeout, lineLimit)
 }
 
 // connect dials the endpoint and sends the JSON handshake. ttyd spawns the
@@ -102,27 +102,6 @@ func (s *TTYDSession) connect(ctx context.Context) (*websocket.Conn, error) {
 		return nil, err
 	}
 	return conn, nil
-}
-
-// Stream runs one invocation with its body passed to out as it arrives. The pty
-// keeps the remote program's output live — the target's own karma draws its
-// progress line there — so bootstrap passes the bytes through instead of
-// harvesting a report that is already rendered. A cancelled context closes the
-// connection, which ends the terminal's process on the target.
-func (s *TTYDSession) Stream(ctx context.Context, inv model.Invocation, out, errOut io.Writer) (int, error) {
-	conn, err := s.connect(ctx)
-	if err != nil {
-		return -1, err
-	}
-	call := &ttydCall{conn: conn, spawned: make(chan struct{})}
-	result := call.collect(ctx, bodyText(inv), 0, 0, func(line string) { fmt.Fprint(out, line) })
-	if result.Stderr != "" {
-		fmt.Fprint(errOut, result.Stderr)
-	}
-	if ctx.Err() != nil {
-		return -1, ctx.Err()
-	}
-	return result.ExitCode, nil
 }
 
 // The upload conversation: raw mode first (a payload this size cannot go
@@ -425,7 +404,7 @@ func (c *ttydCall) markSpawned() {
 // collect runs one script over the connection and harvests it with the shared
 // timeout machinery: stop is the connection's death, which is also what ends
 // the terminal's process on the target.
-func (c *ttydCall) collect(ctx context.Context, script string, timeout time.Duration, lineLimit int, echo func(string)) model.RunResult {
+func (c *ttydCall) collect(ctx context.Context, script string, timeout time.Duration, lineLimit int) model.RunResult {
 	marker := randomToken()
 	encoded := base64.StdEncoding.EncodeToString([]byte(ttydPayload(script, marker)))
 	line := "printf %s " + encoded + " | base64 -d | /bin/sh"
@@ -464,11 +443,7 @@ func (c *ttydCall) collect(ctx context.Context, script string, timeout time.Dura
 		wait: func() { <-done },
 		stop: stop,
 		readLine: func() (string, bool) {
-			line, ok := c.nextLine(lines, stopped)
-			if ok && echo != nil {
-				echo(line)
-			}
-			return line, ok
+			return c.nextLine(lines, stopped)
 		},
 		readAll: func() string {
 			// The stderr section precedes the rc marker in the stream, so it

@@ -248,6 +248,8 @@ func buildLineStyler(syntax string) LineStyler {
 		return newTableStyler([]*regexp.Regexp{compile(`^\s*Proto\s+Local`)}, true).style
 	case "ip-keyval":
 		return newKeyvalStyler().style
+	case "pkg-history":
+		return stylePkgHistory
 	case "fstab":
 		return styleFstab
 	case "reg":

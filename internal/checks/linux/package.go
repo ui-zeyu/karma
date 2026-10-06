@@ -60,12 +60,13 @@ var pkgHistoryScript = script.Lines(
 	`echo "== dnf history"; dnf history 2>/dev/null || yum history 2>/dev/null | head -n 300`,
 )
 
+// pkgHistoryRules is what can be a finding in the history: the keyword rule,
+// which catches a secret written into a package manager's command line. The
+// records themselves — apt's history entries, dpkg's log lines, dnf's table —
+// are context rather than findings: the check keeps them with keep filters and
+// paints them by shape (the `pkg-history` syntax), so a row carries no severity
+// and no reason repeating what the check's own title says.
 var pkgHistoryRules = []model.Rule{
-	model.NewRule("pkg-changed", `^\d{4}-\d{2}-\d{2}\s+\S+\s+(?:install|upgrade|remove|purge|update)\b`,
-		model.Low, "package transaction record"),
-	model.NewRule("pkg-apt-record", `^(?:Start-Date|Commandline):`, model.Low,
-		"apt transaction record"),
-	model.NewRule("pkg-dnf-record", `^\s*\d+\s+\|`, model.Low, "dnf transaction record"),
 	// The keyword rule is excluded from the package lists apt prints: they are
 	// package names, and "debian-keyring" is not a leaked key. A signal there
 	// would also drag the whole line — one apt Install record runs to
@@ -181,7 +182,7 @@ var PackageChecks = []*model.Check{
 		[]model.Probe{
 			{Label: "log", Inv: model.Dual{Run: native.PkgHistory(pkgHistoryPaths), Script: pkgHistoryScript}},
 		},
-		define.CheckOpt{Rules: pkgHistoryRules, Filters: pkgHistoryKeep}),
+		define.CheckOpt{Rules: pkgHistoryRules, Filters: pkgHistoryKeep, Syntax: "pkg-history"}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
 		[]model.Probe{
 			{Label: "file", Inv: model.Dual{Run: native.AuthBinaries(authBinPaths), Script: authBinScript}},

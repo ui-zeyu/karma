@@ -1,10 +1,41 @@
 // Bootstrap's own pieces: the platform gate that keeps a cross-arch upload
-// from reaching the target, and the mode split that puts the form after the
-// target the way mtime does.
+// from reaching the target, the mode split that puts the form after the target
+// the way mtime does, and the archive that travels.
 
 package cli
 
-import "testing"
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"io"
+	"strings"
+	"testing"
+	"time"
+
+	"karma/internal/model"
+	"karma/internal/session"
+)
+
+// probeSession answers the packer probe with what a target reported and records
+// every command the mode ran there.
+type probeSession struct {
+	answer string
+	ran    []string
+}
+
+func (s *probeSession) Name() string           { return "probe" }
+func (s *probeSession) Channel() model.Channel { return model.ChanSSH }
+func (s *probeSession) Close() error           { return nil }
+
+func (s *probeSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ int) model.RunResult {
+	command := session.RenderShell(inv)
+	s.ran = append(s.ran, command)
+	if strings.Contains(command, "command -v gzip") {
+		return model.RunResult{Stdout: s.answer + "\n", ExitCode: 0}
+	}
+	return model.RunResult{ExitCode: 0}
+}
 
 func TestUnamePlatformMapsTheTargetsKernelAndMachine(t *testing.T) {
 	cases := []struct {
@@ -43,16 +74,120 @@ func TestUnamePlatformRejectsUnknownNames(t *testing.T) {
 }
 
 func TestBootstrapArgsSplitsTheMode(t *testing.T) {
-	if selectors, ok := bootstrapArgs([]string{"bootstrap", "identity", "!kernel"}); !ok || len(selectors) != 2 {
-		t.Fatalf("bootstrapArgs = %v, %v", selectors, ok)
+	if extra, ok := bootstrapArgs([]string{"bootstrap"}); !ok || len(extra) != 0 {
+		t.Fatalf("a bare bootstrap form = %v, %v", extra, ok)
 	}
-	if selectors, ok := bootstrapArgs([]string{"bootstrap"}); !ok || len(selectors) != 0 {
-		t.Fatalf("a bare bootstrap form = %v, %v", selectors, ok)
+	if extra, ok := bootstrapArgs([]string{"bootstrap", "identity"}); !ok || len(extra) != 1 {
+		t.Fatalf("the words after bootstrap = %v, %v", extra, ok)
 	}
 	if _, ok := bootstrapArgs([]string{"identity"}); ok {
 		t.Fatal("a selector was taken for the bootstrap form")
 	}
 	if _, ok := bootstrapArgs(nil); ok {
 		t.Fatal("no arguments were taken for the bootstrap form")
+	}
+}
+
+// The mode uploads and stops; a selector or --save would suggest a run that
+// does not happen, so each is refused rather than ignored.
+func TestBootstrapModeRefusesARunOfItsOwn(t *testing.T) {
+	if err := runBootstrapMode(newSSHCmd(), nil, []string{"identity"}); err == nil {
+		t.Fatal("a selector after bootstrap was accepted")
+	}
+	cmd := newSSHCmd()
+	if err := cmd.Flags().Set("save", "/tmp/karma-save"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runBootstrapMode(cmd, nil, nil); err == nil {
+		t.Fatal("--save was accepted by bootstrap")
+	}
+}
+
+// The archive is what travels when the target can unpack it: it must be a gzip
+// stream that unpacks to this very binary, so the target's decompressor can
+// verify the transfer by its checksum.
+func TestGzipBytesUnpacksToThisBinary(t *testing.T) {
+	program, err := selfBytes()
+	if err != nil {
+		t.Fatalf("selfBytes: %v", err)
+	}
+	archive, err := gzipBytes(program)
+	if err != nil {
+		t.Fatalf("gzipBytes: %v", err)
+	}
+	if len(archive) == 0 {
+		t.Fatal("the archive is empty")
+	}
+	if len(archive) >= len(program) {
+		t.Fatalf("the archive holds %d bytes for a %d-byte binary", len(archive), len(program))
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatalf("the archive is not a gzip stream: %v", err)
+	}
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("reading the archive: %v", err)
+	}
+	if !bytes.Equal(got, program) {
+		t.Fatalf("the archive unpacks to %d bytes, want this binary's %d", len(got), len(program))
+	}
+}
+
+// The probe names the target's decompressor, and the unpack command follows it:
+// a target with neither program still gets the binary, uncompressed, which is
+// the whole point of not depending on the host.
+func TestPackerProbeNamesADecompressorOrNone(t *testing.T) {
+	for _, want := range []string{"gzip", "busybox", "none"} {
+		if !strings.Contains(packerProbe, "echo "+want) {
+			t.Errorf("the probe never answers %q: %s", want, packerProbe)
+		}
+	}
+	if !strings.Contains(packerProbe, "command -v gzip") || !strings.Contains(packerProbe, "command -v busybox") {
+		t.Errorf("the probe does not look for both programs: %s", packerProbe)
+	}
+}
+
+// planTransfer is the mode's whole dependency story: gzip when the target's own
+// gzip can unpack it, busybox's when that is what the target has, and the plain
+// binary — with an uncompressed transfer — when it has neither.
+func TestPlanTransferFollowsTheTargetsDecompressor(t *testing.T) {
+	remote := "/tmp/karma-x/karma"
+	cases := []struct {
+		answer string
+		path   string
+		unpack string
+		plural string
+	}{
+		{"gzip", remote + ".gz", "gzip -d -f /tmp/karma-x/karma.gz", "gzipped"},
+		{"busybox", remote + ".gz", "busybox gunzip -f /tmp/karma-x/karma.gz", "gzipped"},
+		{"none", remote, "", "plain"},
+	}
+	for _, c := range cases {
+		sess := &probeSession{answer: c.answer}
+		got, err := planTransfer(context.Background(), sess, remote)
+		if err != nil {
+			t.Fatalf("%s: planTransfer: %v", c.answer, err)
+		}
+		if got.path != c.path || got.unpack != c.unpack {
+			t.Errorf("%s: path/unpack = %q/%q, want %q/%q", c.answer, got.path, got.unpack, c.path, c.unpack)
+		}
+		program, err := selfBytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch c.plural {
+		case "gzipped":
+			if len(got.body) >= len(program) {
+				t.Errorf("%s: the body is %d bytes, not compressed", c.answer, len(got.body))
+			}
+		case "plain":
+			if len(got.body) != len(program) {
+				t.Errorf("%s: the body is %d bytes, want the binary's %d", c.answer, len(got.body), len(program))
+			}
+		}
+		if len(sess.ran) != 1 || !strings.Contains(sess.ran[0], "command -v gzip") {
+			t.Errorf("%s: the probe ran %q, want one probe command", c.answer, sess.ran)
+		}
 	}
 }
