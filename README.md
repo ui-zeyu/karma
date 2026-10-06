@@ -51,24 +51,38 @@ console the operator is looking at. SSH accepts `[user@]host`, `ssh://[user@]hos
 `-i` private key (repeatable), `--password` (also the passphrase of an encrypted key) and
 `-o StrictHostKeyChecking=no|accept-new|yes`.
 
+**A remote collection runs through a collector.** `ssh` and `ttyd` place this binary on the target,
+keep it there, and collect through it: every tier then runs in process on the target, so a remote
+report is the one a local run on that host would have drawn — the shell is not in the path, and the
+kernel is read directly. The copy is reused on later runs and is proved before it is executed (its
+md5 equals the build's, and a copy that does not match is replaced rather than run). It is looked for
+in the account's own directory first (`$HOME/.karma/karma`) and then in `/tmp/karma/karma`;
+`--find DIR` looks in that directory first, and `--place DIR` pins where the copy lives.
+
+The program placed on the target is the artifact built for *its* platform, not the operator's: a
+release's artifacts sit beside the binary (`dist/karma-linux-amd64`, `dist/karma-linux-arm64`), so an
+operator on macOS audits a Linux host with `dist/karma` and the artifact next to it. A target karma
+cannot be placed on — no writable and executable directory, no build for its platform — is collected
+by running karma on it itself.
+
 ### Working on a target
 
 ```bash
 dist/karma local mtime /var/www              # cluster directory change times; ssh and ttyd take DIR... too
 dist/karma local cat /etc/passwd /etc/shadow # print files, in process
 dist/karma local ls /tmp /var/tmp            # list directories the way the report's rows look
+dist/karma ssh root@10.0.0.8 tainted         # one check, through the collector it places first
 
-dist/karma ssh root@10.0.0.8 bootstrap       # upload this binary to the target and print its path
+dist/karma ssh root@10.0.0.8 bootstrap       # place the collector and print its path, collecting nothing
 dist/karma ttyd ws://10.0.0.8:7681 bootstrap
+dist/karma ssh root@10.0.0.8 --place /srv/k bootstrap   # pin where it lives
 ```
 
-`bootstrap` puts a compressed copy of the running binary under `/tmp/karma-<id>/karma` on the
-target, verifies it, and prints the path — nothing else runs. The copy travels gzip-compressed when
-the target can unpack it (its own `gzip`, or busybox's) and uncompressed when it cannot, so the mode
-depends on nothing the channel does not already use. The binary has to be built for the target
-(`GOOS`/`GOARCH`); karma refuses a mismatch before uploading. Run it on the target yourself, for
-example `/tmp/karma-<id>/karma local`. This is how an SSH or ttyd target gets the local channel's
-in-process checks, such as userland rootkit detection.
+`bootstrap` places a compressed copy of the binary on the target, verifies it and prints the path —
+nothing else runs. The copy travels gzip-compressed when the target can unpack it (its own `gzip`, or
+busybox's) and uncompressed when it cannot, so the mode depends on nothing the channel does not
+already use. Run it on the target yourself, for example `$HOME/.karma/karma local`. This is how an
+SSH or ttyd target gets the local channel's in-process checks, such as userland rootkit detection.
 
 `mtime` walks each given directory on its own filesystem, skipping `/proc`, `/sys` and `/dev`. `cat`
 and `ls` read in process rather than through the host's own binaries, so a preload hook on those

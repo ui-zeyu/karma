@@ -9,6 +9,8 @@ import (
 	"compress/gzip"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -189,15 +191,6 @@ func TestPlanTransferFollowsTheTargetsDecompressor(t *testing.T) {
 	}
 }
 
-// theTargetAndThisBuild is a target that is not this binary's platform: the
-// machine name is chosen from this build, so the mismatch holds on any host.
-func theTargetAndThisBuild() string {
-	if runtime.GOARCH == "amd64" {
-		return "Linux aarch64"
-	}
-	return "Linux x86_64"
-}
-
 // commandSession answers each command by the first of the given patterns it
 // contains, and records what the mode ran.
 type commandSession struct {
@@ -226,30 +219,57 @@ func (s *commandSession) Run(_ context.Context, call model.Call) model.RunResult
 	return model.RunResult{Verdict: model.VerdictAnswered}
 }
 
-// A target of another architecture cannot run this binary, and the mistake is
-// cheaper to catch here than as a failed exec on the host.
-func TestCheckTargetPlatformRefusesAMismatch(t *testing.T) {
-	sess := &commandSession{answers: []struct {
-		match  string
-		result model.RunResult
-	}{{match: "uname -s -m", result: model.RunResult{Verdict: model.VerdictAnswered, Stdout: theTargetAndThisBuild() + "\n"}}}}
-	err := checkTargetPlatform(context.Background(), sess)
-	if err == nil {
-		t.Fatal("a cross-arch target was accepted")
+// anotherPlatform is a platform this build cannot run on, so the artifact
+// lookup is exercised rather than the binary reading itself.
+func anotherPlatform() (string, string) {
+	if runtime.GOOS == "linux" && runtime.GOARCH == "arm64" {
+		return "linux", "amd64"
 	}
-	if !strings.Contains(err.Error(), "GOOS=") || !strings.Contains(err.Error(), "bootstrap that build") {
-		t.Fatalf("the refusal should say how to build for the target: %v", err)
+	return "linux", "arm64"
+}
+
+// A target of another platform cannot run this binary: the placement asks for
+// the artifact built for it beside this binary, and says what to build when
+// there is none.
+func TestProgramForRefusesAMissingArtifact(t *testing.T) {
+	goos, goarch := anotherPlatform()
+	_, err := programFor(t.TempDir(), goos, goarch)
+	if err == nil {
+		t.Fatal("a target this binary cannot run on was accepted")
+	}
+	for _, want := range []string{goos + "/" + goarch, artifactName(goos, goarch)} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal should name %q: %v", want, err)
+		}
+	}
+}
+
+// An artifact beside the binary is what a workstation collects a target of
+// another platform with, so the placement serves those bytes.
+func TestProgramForPrefersTheArtifactOfTheTargetPlatform(t *testing.T) {
+	goos, goarch := anotherPlatform()
+	dir := t.TempDir()
+	content := []byte("a build for the target platform")
+	if err := os.WriteFile(filepath.Join(dir, artifactName(goos, goarch)), content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := programFor(dir, goos, goarch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("programFor read %q, want the artifact's bytes", got)
 	}
 }
 
 // A target whose uname says nothing (a stripped container) is refused with what
-// it did say, rather than uploaded to and failed on.
-func TestCheckTargetPlatformNeedsBothFields(t *testing.T) {
+// it did say, rather than placed on and failed on.
+func TestTargetPlatformNeedsBothFields(t *testing.T) {
 	sess := &commandSession{answers: []struct {
 		match  string
 		result model.RunResult
 	}{{match: "uname -s -m", result: model.RunResult{Verdict: model.VerdictAnswered, Stdout: "Linux\n"}}}}
-	if err := checkTargetPlatform(context.Background(), sess); err == nil {
+	if _, _, err := targetPlatform(context.Background(), sess); err == nil {
 		t.Fatal("a target with no machine name was accepted")
 	}
 }

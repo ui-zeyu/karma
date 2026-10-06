@@ -15,7 +15,9 @@
 // one (a transfer that lost or changed a byte cannot pass), and by the binary's
 // version line (the file is executable and is this build).
 //
-// Nothing is run on the target: the mode uploads and reports the path.
+// Where the file goes is place.go's business: the account's own directory first,
+// then /tmp, reused when a copy is already there and proved to be this build.
+// Nothing is run on the target: the mode places and reports the path.
 
 package cli
 
@@ -23,10 +25,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/rand"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -49,40 +49,23 @@ func bootCall(ctx context.Context, sess session.Session, inv model.Invocation) m
 	return sess.Run(ctx, model.Call{Inv: inv})
 }
 
-// runBootstrap ships this binary to the target and prints where it landed.
-func runBootstrap(ctx context.Context, transport session.Transport) error {
+// runBootstrap places this binary on the target and prints where it landed.
+func runBootstrap(ctx context.Context, transport session.Transport, opts placeOptions) error {
 	sess, err := transport.Open(ctx)
 	if err != nil {
 		return err
 	}
 	defer sess.Close()
-	uploader, ok := sess.(session.Uploader)
-	if !ok {
-		return fmt.Errorf("the %s channel cannot carry a binary upload", sess.Name())
-	}
-	if err := checkTargetPlatform(ctx, sess); err != nil {
-		return err
-	}
-	dir := "/tmp/karma-" + rand.Text()
-	remote := dir + "/karma"
-	program, err := selfBytes()
+	path, reused, err := placeCollector(ctx, sess, opts)
 	if err != nil {
 		return err
 	}
-	shipment, err := planTransfer(ctx, sess, remote, program)
-	if err != nil {
-		return err
+	if reused {
+		fmt.Printf("karma %s is already at %s (md5 verified)\n", buildVersion, path)
+	} else {
+		fmt.Printf("karma %s placed at %s\n", buildVersion, path)
 	}
-	// The compressed file is written first and gone once it is unpacked, so
-	// the directory the operator finds holds the program alone.
-	if err := uploader.Upload(ctx, shipment.path, shipment.body); err != nil {
-		return fmt.Errorf("uploading %s: %w", remote, err)
-	}
-	if err := unpackUpload(ctx, sess, remote, shipment.unpack); err != nil {
-		return err
-	}
-	fmt.Printf("karma %s uploaded to %s\n", buildVersion, remote)
-	fmt.Printf("run it on the target yourself, for example: %s local\n", remote)
+	fmt.Printf("run it on the target yourself, for example: %s local\n", path)
 	return nil
 }
 
@@ -134,19 +117,6 @@ func targetPacker(ctx context.Context, sess session.Session) string {
 		return packer
 	}
 	return "none"
-}
-
-// selfBytes reads this process's own binary.
-func selfBytes() ([]byte, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("cannot find this binary: %w", err)
-	}
-	content, err := os.ReadFile(exe)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %w", exe, err)
-	}
-	return content, nil
 }
 
 // gzipBytes compresses the binary at the best level the local side can afford:
@@ -207,24 +177,17 @@ func commandFailure(result model.RunResult) string {
 	return fmt.Sprintf("the target exited with %d", result.ExitCode)
 }
 
-// checkTargetPlatform compares the target's kernel and machine with this
-// binary's build: a cross-arch run cannot happen, and the mistake belongs to
-// this command rather than to a failed exec on the target.
-func checkTargetPlatform(ctx context.Context, sess session.Session) error {
+// targetPlatform reads the target's kernel and machine and maps them to the
+// GOOS/GOARCH pair a binary must be built for. A cross-arch run cannot happen,
+// and the mistake belongs to this command rather than to a failed exec on the
+// target.
+func targetPlatform(ctx context.Context, sess session.Session) (string, string, error) {
 	result := bootCall(ctx, sess, model.Shell{Script: "uname -s -m"})
 	fields := strings.Fields(result.Stdout)
 	if len(fields) < 2 {
-		return fmt.Errorf("cannot read the target's platform (uname said %q)", strings.TrimSpace(result.Stdout))
+		return "", "", fmt.Errorf("cannot read the target's platform (uname said %q)", strings.TrimSpace(result.Stdout))
 	}
-	targetOS, targetArch, err := unamePlatform(fields[0], fields[1])
-	if err != nil {
-		return err
-	}
-	if targetOS != runtime.GOOS || targetArch != runtime.GOARCH {
-		return fmt.Errorf("the target runs %s/%s and this karma is %s/%s; build for the target (GOOS=%s GOARCH=%s) and bootstrap that build",
-			targetOS, targetArch, runtime.GOOS, runtime.GOARCH, targetOS, targetArch)
-	}
-	return nil
+	return unamePlatform(fields[0], fields[1])
 }
 
 // unameGOOS and unameGOARCH map `uname -s -m`'s words to the GOOS/GOARCH pair

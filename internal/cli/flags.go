@@ -39,6 +39,14 @@ func runFlags(flags *pflag.FlagSet) {
 			"all|"+strings.Join(model.SeverityNames(), "|"))
 }
 
+// addPlaceFlags registers where a remote channel may put the collector and where
+// it looks for one already there. Only the channels that place a binary have
+// them: the local channel is the collector.
+func addPlaceFlags(cmd *cobra.Command) {
+	cmd.Flags().String("find", "", "look for a placed collector in this directory first")
+	cmd.Flags().String("place", "", "put the collector in this directory instead")
+}
+
 // runOptions gathers the run options from the command line; selectorArgs are the
 // selector words (without the subcommand's target).
 func runOptions(flags *pflag.FlagSet, selectorArgs []string) (model.RunOptions, error) {
@@ -63,6 +71,8 @@ func runOptions(flags *pflag.FlagSet, selectorArgs []string) (model.RunOptions, 
 		Timeout:     time.Duration(seconds * float64(time.Second)),
 		MaxLines:    maxLines,
 		MinSeverity: floor,
+		FindDir:     stringFlag(flags, "find"),
+		PlaceDir:    stringFlag(flags, "place"),
 	}, nil
 }
 
