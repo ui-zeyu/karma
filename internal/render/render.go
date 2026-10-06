@@ -93,8 +93,12 @@ const authorLabel = "yuyy"
 
 // mastheadBand is the report's level-one band: KARMA on the left and the author
 // on the right edge of the same strip.
-func mastheadBand(term int) string {
-	rows := bandHead(bandStyle, "KARMA", authorLabel,
+func mastheadBand(term int) string { return titleBand("KARMA", authorLabel, term) }
+
+// titleBand is a level-one band: the label on the left, the meta on its right
+// edge, filled out to the line.
+func titleBand(label, meta string, term int) string {
+	rows := bandHead(bandStyle, label, meta,
 		style{fg: bandMetaColor, bg: bannerColor}, lineWidth(term))
 	return trimPadding(strings.Join(rows, "\n"))
 }
@@ -359,12 +363,6 @@ func fillBand(label string, width int, st lipgloss.Style) string {
 	return st.Render(label + strings.Repeat(" ", width-lipgloss.Width(label)))
 }
 
-// Band and Panel expose the heading tree to callers outside the report: the
-// CLI skeleton's help and error usage blocks reuse the exact report surfaces,
-// so both sides stay one visual language. Band is the level-one full-width
-// strip the aspect banners use; Panel is the quiet muted rail with a sub-band
-// head, the list's aspect-group shape.
-
 // SyntaxLine paints one line's declared syntax — the report's body-line
 // coloring without hit spans — so a caller outside the report (the built-in
 // readers) prints the same paint its panels get. An unknown syntax returns
@@ -377,9 +375,19 @@ func SyntaxLine(syntax model.Syntax, line string) string {
 	return paintLine(line, styler(line))
 }
 
-// Band renders name as a level-one heading band.
-func Band(name string, term int) string {
-	return headingBand(name, term)
+// Masthead and Panel expose the report's own surfaces to callers outside it:
+// the command-line skeleton's help screen and its usage blocks reuse them, so
+// the tool's first screen and its report read as one language.
+
+// Masthead draws the report's first panel: the level-one band with the byline
+// on its right edge, the level-two head carrying the build's version, and the
+// body lines inside the same rail. The command-line skeleton's help screen
+// wears it, with the command path as its band label and the command's own
+// description as its body.
+func Masthead(label, version string, body []string, term int) string {
+	band := titleBand(strings.ToUpper(label), authorLabel, term)
+	head := []string{fillBand(" "+version, railInner(term), subBandStyle)}
+	return band + "\n" + checkBlock(model.Info, head, body, term)
 }
 
 // Panel renders label as a quiet rail panel head over the body rows.

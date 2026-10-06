@@ -13,7 +13,7 @@ go build -o dist/karma ./cmd/karma     # this host
 make dist                              # dist/ binaries for linux/amd64, windows/amd64 and this host
 ```
 
-The version is `0.30.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
+The version is `0.30.1`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
 
 ## Usage
 
@@ -113,6 +113,10 @@ blank space, and the rows of an `ls -l` listing line up column by column.
 Below the hit colors sits syntax coloring — bash and PowerShell through chroma, and built-in shapes
 for `ls -l`, `env`, `dmesg`, tables, `passwd`, listen tables, `ip` addresses and routes, and so on.
 Color is dropped when the output is not a terminal, and `NO_COLOR`/`CLICOLOR` are honored.
+
+The command line's own screens are that first panel too: `--help` opens with the command's band
+carrying the author on its right edge, the build's version on the rail's first line, and the
+command's description inside the same panel, then the usage sections as rail panels.
 
 On Windows, PowerShell 5.1's `>` decodes karma's UTF-8 output with the console code page and
 re-encodes it, so the file opens as garbage. Use cmd redirection, PowerShell 7, or `--save`, which

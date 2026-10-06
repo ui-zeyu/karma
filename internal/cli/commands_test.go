@@ -443,6 +443,42 @@ func TestUsageAndHelpAreEnglish(t *testing.T) {
 	}
 }
 
+// The help screen is the report's first panel: the command path as the
+// level-one band with the byline on its right edge, the build's version as the
+// level-two head underneath, and the command's description inside the same
+// rail — the skeleton and the evidence read as one language.
+func TestHelpWearsTheFirstPanelsShape(t *testing.T) {
+	root := newRootCmd("9.9.9")
+	root.SetArgs([]string{"local", "--help"})
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&bytes.Buffer{})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	lines := strings.Split(got, "\n")
+	if !strings.HasPrefix(lines[0], " KARMA LOCAL") || !strings.Contains(lines[0], "yuyy") {
+		t.Fatalf("the help opens with the command band and its byline: %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "▌ 9.9.9") {
+		t.Fatalf("the panel head under the band carries the version: %q", lines[1])
+	}
+	described := false
+	for _, line := range lines {
+		if !strings.Contains(line, "Collect read-only evidence from the local host.") {
+			continue
+		}
+		if !strings.HasPrefix(line, "▌") {
+			t.Fatalf("the description belongs inside the rail: %q", line)
+		}
+		described = true
+	}
+	if !described {
+		t.Fatalf("the help should carry the command's own description: %q", got)
+	}
+}
+
 // flagErrorText recognizes pflag's four error shapes; an unknown shape keeps its
 // original text.
 func TestFlagErrorText(t *testing.T) {

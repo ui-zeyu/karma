@@ -141,6 +141,52 @@ func TestRenderHeader(t *testing.T) {
 	}
 }
 
+// The command-line skeleton's banner is the report's first panel: the same
+// level-one band with the byline on its right edge, the version as the
+// level-two head, and the caller's body inside the same rail.
+func TestMastheadBanner(t *testing.T) {
+	const width = 60
+	body := plain(Masthead("karma local", "9.9.9",
+		[]string{"Collect read-only evidence from the local host."}, width))
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("the banner is a band over a rail panel:\n%s", body)
+	}
+	if !strings.HasPrefix(lines[0], " KARMA LOCAL") {
+		t.Fatalf("the band carries the caller's label:\n%s", body)
+	}
+	if got := lipgloss.Width(lines[0]); got != lineWidth(width) {
+		t.Fatalf("the band is %d columns wide, a level-one band is %d:\n%s",
+			got, lineWidth(width), body)
+	}
+	if byline := strings.TrimRight(lines[0], " "); !strings.HasSuffix(byline, authorLabel) {
+		t.Fatalf("the band should carry the byline on its right edge:\n%s", body)
+	}
+	if end := column(lines[0], strings.LastIndex(lines[0], authorLabel)+len(authorLabel)); end != lineWidth(width)-rightPad {
+		t.Fatalf("the byline ends at column %d, the band's right edge is %d:\n%s",
+			end, lineWidth(width)-rightPad, body)
+	}
+	if head := strings.TrimRight(lines[1], " "); head != "▌ 9.9.9" {
+		t.Fatalf("the panel head should carry the version alone, got %q:\n%s", head, body)
+	}
+	if !strings.Contains(body, "Collect read-only evidence from the local host.") {
+		t.Fatalf("the body belongs inside the panel:\n%s", body)
+	}
+	for index, line := range lines[2:] {
+		if !strings.HasPrefix(line, "▌") {
+			t.Fatalf("body row %d is outside the rail:\n%s", index, body)
+		}
+	}
+
+	// A caller with no body keeps the band and its version head: the help of a
+	// command carrying no description is still the same shape.
+	headless := plain(Masthead("karma version", "9.9.9", nil, width))
+	if !strings.HasPrefix(headless, " KARMA VERSION") ||
+		!strings.Contains(headless, "▌ 9.9.9") || strings.Contains(headless, "\n\n") {
+		t.Fatalf("an empty body should leave the band over its head:\n%s", headless)
+	}
+}
+
 // A narrowed run names its scope and, with --save, where the raw evidence is
 // being written; a whole-catalog run has no evidence row. The severity key
 // keeps its own row and states the floor in force.

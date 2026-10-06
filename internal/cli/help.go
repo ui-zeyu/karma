@@ -1,12 +1,13 @@
 // Help routing: cobra's own help output, plus the two cases where a word does
 // not name a command of the root — a name mounted elsewhere, and a typo. Help
 // and usage blocks render in the report's visual language via the render
-// package's Band and Panel: the command as a level-one band, each section as a
-// quiet rail panel.
+// package's Masthead and Panel: the command wears the report's first panel, and
+// each section is a quiet rail panel.
 
 package cli
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"strings"
@@ -16,20 +17,29 @@ import (
 	"karma/internal/render"
 )
 
-// styledHelp renders one command's help: the command band, the long
-// description, then the section panels. Writing straight to the command's
-// output stream keeps profile detection on the real stream — cobra's
-// UsageString would route the block through a capture buffer, which always
-// looks like a pipe.
+// styledHelp renders one command's help in the report's own first-panel shape:
+// the command path as the level-one band with the byline on its right edge, the
+// build's version as the level-two head, the command's description inside the
+// rail, and then the section panels. Writing straight to the command's output
+// stream keeps profile detection on the real stream — cobra's UsageString would
+// route the block through a capture buffer, which always looks like a pipe.
 func styledHelp(cmd *cobra.Command) {
 	w := cmd.OutOrStdout()
-	fmt.Fprintln(w, render.Band(cmd.CommandPath(), terminalWidth(w)))
-	if long := cmd.Long; long != "" {
-		fmt.Fprintf(w, "%s\n\n", strings.TrimRight(long, "\n"))
-	} else if cmd.Short != "" {
-		fmt.Fprintf(w, "%s\n\n", cmd.Short)
-	}
+	fmt.Fprintln(w, render.Masthead(cmd.CommandPath(), cmd.Root().Version,
+		descriptionRows(cmd), terminalWidth(w)))
+	fmt.Fprintln(w)
 	styledUsageWith(w, cmd, stylesFor(w))
+}
+
+// descriptionRows is the banner's body: the command's long description, or its
+// one-line short when it carries no long one. A command with neither still gets
+// the banner, its version head over an empty panel.
+func descriptionRows(cmd *cobra.Command) []string {
+	text := strings.TrimRight(cmp.Or(cmd.Long, cmd.Short), "\n")
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
 }
 
 // styledUsageWith renders the usage block in the report's visual language: a
