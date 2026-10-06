@@ -269,6 +269,54 @@ func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
 	}
 }
 
+func TestPreloadSurfacesAreCritical(t *testing.T) {
+	cases := []struct{ check, text string }{
+		{"ld-preload", `/tmp/.preload.so`},
+		{"env", `LD_PRELOAD=/tmp/preload.so`},
+		{"cron", `*/5 * * * * LD_PRELOAD=/tmp/.x.so /usr/sbin/backuptool`},
+		{"shell-rc", `export LD_AUDIT=/tmp/audit.so`},
+	}
+	for _, tc := range cases {
+		check := testkit.CheckByID(t, All, tc.check)
+		document := reader.Analyze(tc.text, check.Rules, check.Filters, check.Normalize, 0)
+		line := document.Sections[0].Lines[0]
+		if line.Severity != model.Critical {
+			t.Errorf("%s: %q should be critical, got %v", tc.check, tc.text, line.Severity)
+		}
+	}
+}
+
+func TestPkgVerifyGradesTheVerifierRows(t *testing.T) {
+	check := testkit.CheckByID(t, All, "pkg-verify")
+	cases := []struct {
+		text     string
+		severity model.Severity
+		rule     string
+		span     string
+	}{
+		{`??5??????   /bin/ls`, model.Medium, "pkg-changed-file", `??5??????   /bin/ls`},
+		{`??5?????? c /etc/hosts`, model.High, "pkg-checksum", `??5`},
+		{`/bin/ls: ELF 64-bit LSB executable`, model.Critical, "pkg-changed-elf",
+			`/bin/ls: ELF 64-bit LSB executable`},
+		{`-rwxr-xr-x 1 root root 8600 May 18 07:20 /bin/ls`, model.Critical, "pkg-changed-exec",
+			`-rwxr-xr-x 1 root root 8600 May 18 07:20 /bin/ls`},
+	}
+	for _, tc := range cases {
+		document := reader.Analyze(tc.text, check.Rules, check.Filters, check.Normalize, 0)
+		line := document.Sections[0].Lines[0]
+		if line.Severity != tc.severity {
+			t.Errorf("%q should be graded %v, got %v", tc.text, tc.severity, line.Severity)
+		}
+		if len(line.Matches) != 1 || line.Matches[0].ID != tc.rule {
+			t.Errorf("%q should be graded by %s alone, got %+v", tc.text, tc.rule, line.Matches)
+			continue
+		}
+		if got := line.Text[line.Matches[0].Start:line.Matches[0].End]; got != tc.span {
+			t.Errorf("%s paints %q, want %q", tc.rule, got, tc.span)
+		}
+	}
+}
+
 // The dmesg allowlist is a precision filter, not a net: the loader's own records
 // and the words a hooked kernel prints come through, ordinary kernel messages do
 // not, and a line that names the syscall table is a High finding rather than a

@@ -58,13 +58,11 @@ func TestHuntNormalizeMarksOutliers(t *testing.T) {
 	if !marked {
 		t.Fatalf("the isolated file should be printed as an outlier: %+v", document.Sections[0].Lines)
 	}
-	if verdict.ID != "mtime-outlier" || verdict.Severity != model.Medium {
+	if verdict.ID != "mtime-outlier" || verdict.Severity != model.Low {
 		t.Fatalf("the cluster verdict should grade the outlier line: %+v", verdict)
 	}
 }
 
-// A timestamp in the future (past the clock-skew slack) is critical on its own,
-// cluster or not.
 func TestHuntNormalizeFlagsFutureTimestamp(t *testing.T) {
 	hunt := HuntCheck([]string{"/srv"})
 	future := float64(time.Now().Add(4000 * time.Second).Unix())

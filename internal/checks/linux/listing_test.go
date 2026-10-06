@@ -75,6 +75,43 @@ func TestTempListingAlignsRowsAndNamesTheHiddenEntry(t *testing.T) {
 	}
 }
 
+func TestEtcListingFlagsAnIsolatedEntry(t *testing.T) {
+	check := testkit.CheckByID(t, All, "etc-listing")
+	base := time.Now().Add(-31 * 24 * time.Hour).Unix()
+	var body strings.Builder
+	body.WriteString("== /etc\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&body, "%d.000\t%d.000\t-rw-r--r-- 1 root root 100 Jan 01 00:00 /etc/conf%d\n",
+			base+int64(i), base+int64(i), i)
+	}
+	// the dropped file: 30 days after the package batch, ctime with it
+	fmt.Fprintf(&body, "%d.000\t%d.000\t-rw-r--r-- 1 root root 100 Jan 01 00:00 /etc/.backdoor\n",
+		base+30*86400, base+30*86400)
+
+	document := reader.Analyze(body.String(), check.Rules, check.Filters, check.Normalize, 0)
+	if len(document.Sections) != 1 || len(document.Sections[0].Lines) != 41 {
+		t.Fatalf("every row should survive: %+v", document.Sections)
+	}
+	flagged := 0
+	for _, line := range document.Sections[0].Lines {
+		verdict, named := false, false
+		for _, match := range line.Matches {
+			if match.ID == "mtime-outlier-hidden" {
+				verdict = match.Severity == model.Medium && match.End == len(line.Text)
+			}
+			if match.ID == "hidden-nonhome-path" && line.Text[match.Start:match.End] == "/etc/.backdoor" {
+				named = true
+			}
+		}
+		if verdict && named {
+			flagged++
+		}
+	}
+	if flagged != 1 {
+		t.Fatalf("the isolated hidden file should be flagged once, got %d:\n%s", flagged, joined(document.Sections[0].Lines))
+	}
+}
+
 func joined(lines []model.Line) string {
 	var b strings.Builder
 	for _, line := range lines {

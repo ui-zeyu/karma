@@ -13,7 +13,7 @@ go build -o dist/karma ./cmd/karma     # this host
 make dist                              # dist/ binaries for linux/amd64, windows/amd64 and this host
 ```
 
-The version is `0.24.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
+The version is `0.25.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
 
 ## Usage
 
@@ -111,7 +111,7 @@ keeps the bytes intact.
 ## Catalog
 
 Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log`
-`kernel` `package` (74 checks). Windows aspects: `system` `identity` `process` `network`
+`kernel` `package` (75 checks). Windows aspects: `system` `identity` `process` `network`
 `persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (42 checks).
 `karma list` prints them as a heading tree, every row carrying the check id, its title and its probe
 chain; column widths are measured over the whole selection, so the groups line up.

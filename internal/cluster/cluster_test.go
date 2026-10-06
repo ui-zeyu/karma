@@ -49,16 +49,19 @@ func TestOutlierMarkerAndMatch(t *testing.T) {
 	}
 
 	verdict := cluster.OutlierMatch("/tmp/.hidden", "!", 20)
-	if verdict == nil || verdict.Severity != model.High || verdict.End != 20 {
-		t.Fatalf("hidden file outlier should be high over the whole line: %+v", verdict)
+	if verdict == nil || verdict.Severity != model.Medium || verdict.End != 20 {
+		t.Fatalf("hidden file outlier should be medium over the whole line: %+v", verdict)
 	}
-	if v := cluster.OutlierMatch("/tmp/x.sh", "!", 10); v == nil || v.Severity != model.Medium {
-		t.Fatalf("script outlier should be medium: %+v", v)
+	if v := cluster.OutlierMatch("/tmp/x.sh", "!", 10); v == nil || v.Severity != model.Low {
+		t.Fatalf("script outlier should be low: %+v", v)
+	}
+	if v := cluster.OutlierMatch("/tmp/x", "!", 10); v == nil || v.Severity != model.Low {
+		t.Fatalf("plain outlier should be low: %+v", v)
 	}
 	if v := cluster.OutlierMatch("/tmp/x", "", 10); v != nil {
 		t.Fatalf("no marker, no verdict: %+v", v)
 	}
-	if v := cluster.OutlierMatch("/tmp/x", "!!", 10); v == nil || v.Severity != model.Critical {
+	if v := cluster.OutlierMatch("/tmp/x", "!!", 10); v == nil || v.Severity != model.High {
 		t.Fatalf("timestamp anomaly is heaviest: %+v", v)
 	}
 }

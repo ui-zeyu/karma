@@ -304,6 +304,8 @@ var FilesystemChecks = []*model.Check{
 		[]model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}),
 	listingCheck("key-dirs", "Key directory listing (by mtime)", model.AspectFilesystem,
 		keyDirs, 100, []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}),
+	listingCheck("etc-listing", "Configuration directory listing (/etc, by mtime)", model.AspectFilesystem,
+		[]string{"/etc"}, 200, []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}),
 	define.LinuxCheck("home-tree", "/home directory tree (four levels deep, including hidden files)", model.AspectFilesystem,
 		[]model.Probe{
 			{Label: "tree", Inv: model.Dual{

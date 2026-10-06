@@ -289,12 +289,12 @@ var PersistenceChecks = []*model.Check{
 		},
 		define.CheckOpt{
 			Rules: []model.Rule{
-				model.NewRule("preload-entry", `^[^#\n]\S+`, model.High, "preloaded shared library configured"),
+				model.NewRule("preload-entry", `^[^#\n]\S+`, model.Critical, "preloaded shared library configured"),
 			},
 		}),
 	// ld.so.conf is a list of library search directories whose entries are normally
 	// present, so it only gets a LOW hint; kept separate from ld.so.preload so one
-	// HIGH rule does not flag the whole directory list.
+	// CRITICAL rule does not flag the whole directory list.
 	define.LinuxCheck("ld-conf", "Dynamic library search path (ld.so.conf)", model.AspectPersistence,
 		readFilesCheck("/etc/ld.so.conf", "/etc/ld.so.conf.d/*"),
 		define.CheckOpt{

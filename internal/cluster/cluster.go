@@ -2,8 +2,8 @@
 // clusters at silences, and grade outlier lines on the spot. mtime-hunt and the
 // directory listing checks (key-dirs, tmp-listing, pam, etc.) share the same
 // thresholds and verdict semantics: file lines time-isolated from the main cluster
-// rate MEDIUM (scripts/hidden files upgraded by path), and mtimes in the future or
-// over a day before ctime rate CRITICAL (where touch-forged old timestamps show
+// rate LOW (scripts/hidden files upgraded by path), and mtimes in the future or
+// over a day before ctime rate HIGH (where touch-forged old timestamps show
 // up). Severity and reason are fixed at cluster time from the parsed path
 // (OutlierMatch) and surface as the line's color plus its ⟨reason⟩ annotation; the
 // text itself carries no prefix. The collection rows are built in internal/script;
@@ -53,16 +53,16 @@ func OutlierMatch(path, marker string, span int) *model.Match {
 	}
 	switch {
 	case marker == "!!":
-		return verdict("mtime-stamp-anomaly", model.Critical,
+		return verdict("mtime-stamp-anomaly", model.High,
 			"mtime in the future or over a day before ctime (timestamp likely forged)")
 	case marker != "!":
 		return nil
 	case hiddenName.MatchString(path):
-		return verdict("mtime-outlier-hidden", model.High, "hidden file with outlier mtime")
+		return verdict("mtime-outlier-hidden", model.Medium, "hidden file with outlier mtime")
 	case scriptSuffix.MatchString(path):
-		return verdict("mtime-outlier-script", model.Medium, "script with outlier mtime (webshell hunting)")
+		return verdict("mtime-outlier-script", model.Low, "script with outlier mtime (webshell hunting)")
 	default:
-		return verdict("mtime-outlier", model.Medium, "mtime isolated from the main cluster (outlier)")
+		return verdict("mtime-outlier", model.Low, "mtime isolated from the main cluster (outlier)")
 	}
 }
 
@@ -297,9 +297,9 @@ type row struct {
 // cluster and grade outliers, strip the collection prefix, and line the rows up
 // into ls -l columns. The title parameter comes from the reading layer's section
 // split; clustering looks only at body lines. Same clustering thresholds as
-// mtime-hunt: file lines time-isolated from the main cluster rate MEDIUM (hidden
+// mtime-hunt: file lines time-isolated from the main cluster rate LOW (hidden
 // files and scripts upgraded by path), and mtimes in the future or over a day
-// before ctime rate CRITICAL; severity and reason are laid down as ranges on the
+// before ctime rate HIGH; severity and reason are laid down as ranges on the
 // spot at cluster time (OutlierMatch). A section with sparse small clusters and no
 // dominant main cluster is the environment's daily write cadence; flagging
 // everything would only flood the screen, so it stays quiet; non-collection rows
