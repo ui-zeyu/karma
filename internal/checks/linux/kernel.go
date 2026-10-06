@@ -126,21 +126,29 @@ done
 
 // hiddenSymbolDiffText is the kallsyms half over a given module list and symbol
 // table: the module tags in the symbol table are a second registry, and one that
-// /proc/modules does not name is a hidden module. JITed BPF programs are tagged
-// [bpf] without being modules, so the tag is dropped. One awk pass reads the
-// module list first and the symbol table second — no temporary file on the
-// target — and the count is how many of the module's symbols are still there.
+// /proc/modules does not name is a hidden module. The pseudo-module tags
+// (native.PseudoModuleTags: JITed BPF programs and the kernel's own ftrace
+// trampolines) are dropped, because they are not modules and would otherwise be
+// reported as hidden on every host that has them. One awk pass reads the module
+// list first and the symbol table second — no temporary file on the target —
+// and the count is how many of the module's symbols are still there.
 // The first operand is picked by name (ARGV[1]): the NR==FNR idiom reads the
 // second file as the first when the module list is empty or unreadable. The two
 // file operands are substituted, so the tests run this same pipeline over
 // fixtures.
 func hiddenSymbolDiffText(modulesPath, symbolsPath string) string {
+	// The drop list is the same one the in-process half uses, so the two
+	// channels cannot disagree about what a module is.
+	drops := make([]string, 0, len(native.PseudoModuleTags))
+	for _, tag := range native.PseudoModuleTags {
+		drops = append(drops, `n != "`+tag+`"`)
+	}
 	return fmt.Sprintf(`awk 'FILENAME == ARGV[1] {mods[$1]=1; next}
-     {n=$NF; if (n ~ /^\[/ && n != "[bpf]") {gsub(/[][]/,"",n); if (!(n in mods)) print n}}' \
+     {n=$NF; if (n ~ /^\[/) {gsub(/[][]/,"",n); if (%s && !(n in mods)) print n}}' \
   %s %s 2>/dev/null | sort | uniq -c | sort -k2 |
 while read -r count name; do echo "HIDDEN $name symbols $count"; done
 exit 0
-`, modulesPath, symbolsPath)
+`, strings.Join(drops, " && "), modulesPath, symbolsPath)
 }
 
 // KernelChecks covers the kernel.

@@ -33,10 +33,14 @@ type ModuleAttr struct {
 	File  string
 }
 
-// bpfModuleTag is the pseudo-module kallsyms tags JITed BPF programs with. Those
-// programs are not modules and /proc/modules never lists them, so the tag is
-// dropped from the symbol-table cross-check.
-const bpfModuleTag = "bpf"
+// PseudoModuleTags are the module tags in /proc/kallsyms that are not modules:
+// JITed BPF programs carry [bpf], and the kernel's own ftrace trampolines carry
+// [__builtin__ftrace] (ftrace_mod_address_lookup names them so a stack trace can
+// tell them apart from a module's symbols). The loader registered neither, so
+// /proc/modules never lists them and the cross-check would report a hidden
+// module that does not exist — on every host whose kernel has ftrace
+// trampolines, container or not.
+var PseudoModuleTags = []string{"bpf", "__builtin__ftrace"}
 
 // The three kernel surfaces the hidden-module cross-check diffs.
 const (
@@ -146,7 +150,7 @@ func loadedModuleNames(body string) map[string]bool {
 // symbolModuleNames counts the module tags in a /proc/kallsyms body. A tagged
 // line ends with the module in brackets after a tab
 // ("__kstrtab_nft_do_chain\t[nf_tables]"); an untagged line is a kernel symbol.
-// The [bpf] tag JITed BPF programs carry is not a module and is left out, so the
+// The pseudo-module tags — [bpf], [__builtin__ftrace] — are left out, so the
 // difference against /proc/modules stays a hidden-module signal.
 func symbolModuleNames(body string) map[string]int {
 	counts := map[string]int{}
@@ -159,7 +163,7 @@ func symbolModuleNames(body string) map[string]int {
 			continue
 		}
 		name := line[start+1 : len(line)-1]
-		if name == "" || name == bpfModuleTag {
+		if name == "" || slices.Contains(PseudoModuleTags, name) {
 			continue
 		}
 		counts[name]++

@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -292,5 +293,87 @@ func TestTTYDTargetUnreachable(t *testing.T) {
 	_, err := (&TTYDTransport{Target: "ws://127.0.0.1:1/ws"}).Open()
 	if err == nil {
 		t.Fatal("an unreachable endpoint must fail the open")
+	}
+}
+
+// The upload conversation end to end: the base64 body is typed into the
+// terminal, head(1) reads it off the same stream, and the file lands with the
+// bytes and the mode the bootstrap mode expects.
+func TestTTYDUploadWritesTheFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "karma")
+	// Random bytes so the body cannot be typed from a pattern, and long enough
+	// to cross the typed-chunk boundary several times.
+	content := make([]byte, 40*1024)
+	for i := range content {
+		content[i] = byte((i*7 + i/251) % 251)
+	}
+	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
+	uploader, ok := sess.(Uploader)
+	if !ok {
+		t.Fatal("the ttyd session is not an Uploader")
+	}
+	if err := uploader.Upload(context.Background(), path, content); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the uploaded file: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("the uploaded file holds %d bytes, want %d", len(got), len(content))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("mode: %v, want 0700", info.Mode().Perm())
+	}
+}
+
+// A readonly server drops INPUT, so the upload never starts: the conversation
+// has to end in an error rather than a silent half-file. (Open refuses such a
+// server before this point — see the probe test — so the session is built
+// here the way a channel that got past the probe would be.)
+func TestTTYDUploadRefusedByReadonlyServer(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "karma")
+	sess := &TTYDSession{endpoint: newFakeTTYD(t, "", true).url()}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := sess.Upload(ctx, target, []byte("payload")); err == nil {
+		t.Fatal("a readonly server accepted the upload")
+	}
+	if _, statErr := os.Stat(target); statErr == nil {
+		t.Fatal("the file was written although the upload failed")
+	}
+}
+
+// Stream passes the terminal's output through as it arrives instead of
+// harvesting a report: the exit code still comes from the rc marker.
+func TestTTYDStreamPassesOutputThrough(t *testing.T) {
+	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
+	streamer, ok := sess.(Streamer)
+	if !ok {
+		t.Fatal("the ttyd session is not a Streamer")
+	}
+	var out, errOut bytes.Buffer
+	code, err := streamer.Stream(context.Background(),
+		model.Shell{Script: "echo first; echo oops 1>&2; echo second; exit 4"}, &out, &errOut)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if code != 4 {
+		t.Fatalf("exit code: %d, want 4", code)
+	}
+	if out.String() != "first\nsecond\n" {
+		t.Fatalf("streamed stdout: %q", out.String())
+	}
+	if errOut.String() != "oops\n" {
+		t.Fatalf("streamed stderr: %q", errOut.String())
+	}
+	if strings.Contains(out.String(), "__KRM") {
+		t.Fatalf("a marker leaked into the stream: %q", out.String())
 	}
 }

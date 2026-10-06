@@ -47,7 +47,8 @@ func writeAttr(t *testing.T, path, value string) {
 // hiddenModuleFixture is the two registries the cross-check diffs, on disk: a
 // rootkit both of them carry and the module list does not, an nf_tables the list
 // carries, a built-in module with no sections/ directory (so not a candidate),
-// and a [bpf] tag that is a JITed program rather than a module.
+// and the two pseudo-module tags — a [bpf] JITed program and the kernel's own
+// ftrace trampolines — that are not modules and must not read as hidden ones.
 func hiddenModuleFixture(t *testing.T) (sysfs, modules, symbols string) {
 	t.Helper()
 	root := t.TempDir()
@@ -74,6 +75,8 @@ func hiddenModuleFixture(t *testing.T) (sysfs, modules, symbols string) {
 		"ffffffffc05a4000 t my_init\t[rootkit]",
 		"ffffffffc05a4010 t my_exit\t[rootkit]",
 		"ffffffffc0700000 t bpf_prog_1\t[bpf]",
+		"ffffffff82000000 t ftrace_trampoline\t[__builtin__ftrace]",
+		"ffffffff82000010 t ftrace_trampoline\t[__builtin__ftrace]",
 		"",
 	}, "\n")
 	if err := os.WriteFile(symbols, []byte(kallsyms), 0o644); err != nil {
@@ -97,8 +100,8 @@ func TestHiddenSysfsDiffFindsAHiddenModule(t *testing.T) {
 }
 
 // The kallsyms diff reads two files in one awk pass: the module list decides
-// what is expected, the symbol tags are the second registry. The [bpf]
-// pseudo-module and the modules the list carries stay out.
+// what is expected, the symbol tags are the second registry. The pseudo-modules
+// ([bpf], [__builtin__ftrace]) and the modules the list carries stay out.
 func TestHiddenSymbolDiffFindsAHiddenModule(t *testing.T) {
 	requireSh(t, "sh", "awk", "sort", "uniq")
 	_, modules, symbols := hiddenModuleFixture(t)
@@ -121,7 +124,8 @@ func TestHiddenSymbolDiffReadsTheTableFromItsFirstLine(t *testing.T) {
 	}
 	symbols := filepath.Join(root, "kallsyms")
 	body := "ffffffffc05a4000 t my_init\t[rootkit]\n" +
-		"ffffffffc05a4010 t my_exit\t[rootkit]\n"
+		"ffffffffc05a4010 t my_exit\t[rootkit]\n" +
+		"ffffffff82000000 t ftrace_trampoline\t[__builtin__ftrace]\n"
 	if err := os.WriteFile(symbols, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

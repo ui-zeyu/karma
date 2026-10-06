@@ -95,6 +95,7 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"pkg-verify", `-rw-rw-rwx 1 root root 8600 May 18 07:20 /usr/lib/x/helper`, "pkg-changed-exec"},
 		{"pkg-history", `2025-06-01 10:20 install nginx:amd64 <none> 1.18.0`, "pkg-changed"},
 		{"pkg-history", `Commandline: apt-get install -y nginx`, "pkg-apt-record"},
+		{"pkg-history", `Start-Date: 2025-06-01  10:20:11`, "pkg-apt-record"},
 		{"modules-load", `evil_module`, "modules-boot-entry"},
 		{"modules-hidden", `HIDDEN rootkit`, "module-hidden"},
 		// the two evidence shapes a hidden module leaves: the sysfs one carries

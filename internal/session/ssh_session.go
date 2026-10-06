@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 
 	"karma/internal/model"
+	"karma/internal/script"
 )
 
 // SSHSession is one established SSH connection. agent is an optional ssh-agent
@@ -60,6 +63,114 @@ func (s *SSHSession) Run(ctx context.Context, inv model.Invocation, timeout time
 		readAll:  func() string { return drainText(errReader) },
 		exitCode: func() int { return commandExitCode(waitErr) },
 	}, timeout, lineLimit)
+}
+
+// Stream runs one invocation with its stdout and stderr passed through as they
+// arrive, without harvesting: bootstrap runs the target's own karma, whose
+// report is already rendered. A cancelled context closes the session, which
+// ends the remote process group; the exit code is -1 when the channel cannot
+// report one.
+func (s *SSHSession) Stream(ctx context.Context, inv model.Invocation, out, errOut io.Writer) (int, error) {
+	sess, err := s.client.NewSession()
+	if err != nil {
+		return -1, err
+	}
+	defer sess.Close()
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		return -1, err
+	}
+	stderrPipe, err := sess.StderrPipe()
+	if err != nil {
+		return -1, err
+	}
+	if err := sess.Start(RenderShell(inv)); err != nil {
+		return -1, err
+	}
+	var pumps sync.WaitGroup
+	pumps.Add(2)
+	go func() {
+		defer pumps.Done()
+		_, _ = io.Copy(out, stdout)
+	}()
+	go func() {
+		defer pumps.Done()
+		_, _ = io.Copy(errOut, stderrPipe)
+	}()
+	// Wait must be called once, after both streams drain; the cancel watchdog
+	// closes the session and stops early.
+	cancelled := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = sess.Close()
+		case <-cancelled:
+		}
+	}()
+	pumps.Wait()
+	code := commandExitCode(sess.Wait())
+	close(cancelled)
+	if ctx.Err() != nil {
+		return -1, ctx.Err()
+	}
+	return code, nil
+}
+
+// Upload writes one file to the target: the content goes over the session's
+// stdin, so the bootstrap mode ships a binary without a shell or a file
+// transfer protocol in between. The remote side creates the file with the
+// session's umask, before the bytes: a partial upload cannot be taken for a
+// complete one.
+func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) error {
+	sess, err := s.client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+	stdin, err := sess.StdinPipe()
+	if err != nil {
+		return err
+	}
+	written := make(chan error, 1)
+	go func() {
+		_, err := stdin.Write(content)
+		if closeErr := stdin.Close(); err == nil {
+			err = closeErr
+		}
+		written <- err
+	}()
+	// umask first: the target's umask may leave the file world-readable, and
+	// this one is a program the caller is about to exec — its own mode is set
+	// once the bytes are in place, so a partial upload is never executable.
+	// The directory comes with it, so the caller names a path and nothing else.
+	command := script.Join([]string{"umask", "077"}) + "; " +
+		script.Join([]string{"mkdir", "-p", filepath.Dir(path)}) + "; " +
+		script.Join([]string{"cat"}) + " > " + script.Join([]string{path}) +
+		" && " + script.Join([]string{"chmod", "700", path})
+	if err := sess.Start(RenderShell(model.Shell{Script: command})); err != nil {
+		return err
+	}
+	cancelled := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = sess.Close()
+		case <-cancelled:
+		}
+	}()
+	writeErr := <-written
+	waitErr := sess.Wait()
+	close(cancelled)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if writeErr != nil {
+		return writeErr
+	}
+	if waitErr != nil {
+		return fmt.Errorf("upload refused by the target: %w", waitErr)
+	}
+	return nil
 }
 
 func channelError(err error) model.RunResult {

@@ -9,14 +9,38 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"karma/internal/script"
 )
 
-func TestVerifyChangedParsesMd5Flag(t *testing.T) {
-	out := "??5?????? c /etc/passwd\n c /etc/shadow\n..5?????? c /usr/bin/sudo\n"
-	got := verifyChanged(out)
-	want := []string{"/etc/passwd", "/usr/bin/sudo"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("verifyChanged = %v, want %v", got, want)
+// verifyFacts is the local half of the classification the shell tier reaches
+// from file(1) and ls -l: an executable (or ELF object) is named on its own, a
+// text file is left to be counted by its directory, and a path that is gone is
+// missing — dpkg's own flag field cannot tell that case apart.
+func TestVerifyFactsClassifiesProgramsAndMissingPaths(t *testing.T) {
+	dir := t.TempDir()
+	program := filepath.Join(dir, "tool")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := filepath.Join(dir, "readme")
+	if err := os.WriteFile(text, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(dir, "absent")
+	cases := []struct {
+		name string
+		path string
+		want script.VerifyFacts
+	}{
+		{"an executable", program, script.VerifyFacts{Key: true}},
+		{"a text file", text, script.VerifyFacts{}},
+		{"a path that is gone", gone, script.VerifyFacts{Missing: true}},
+	}
+	for _, c := range cases {
+		if got := verifyFacts(c.path); got != c.want {
+			t.Errorf("verifyFacts(%s) = %+v, want %+v", c.name, got, c.want)
+		}
 	}
 }
 

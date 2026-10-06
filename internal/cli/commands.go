@@ -100,6 +100,30 @@ func mtimeArgs(args []string) ([]string, bool) {
 	return args[1:], true
 }
 
+// bootstrapArgs splits the bootstrap form out of a channel command's positional
+// arguments, the way mtimeArgs splits the mtime form: the word follows the
+// target, before any selector.
+func bootstrapArgs(args []string) ([]string, bool) {
+	if len(args) == 0 || args[0] != "bootstrap" {
+		return nil, false
+	}
+	return args[1:], true
+}
+
+// runBootstrapMode is the bootstrap form's entry from either channel: the
+// target's own karma runs there, so the run options travel to it as flags and
+// --save has nothing to write from here.
+func runBootstrapMode(cmd *cobra.Command, transport session.Transport, selectors []string) error {
+	options, err := runOptions(cmd.Flags(), nil)
+	if err != nil {
+		return err
+	}
+	if options.SaveDir != "" {
+		return usagef(cmd, "bootstrap runs the target's own karma, so --save would write on the target; leave the binary with --keep to run it there yourself")
+	}
+	return runBootstrap(cmd.Context(), transport, options, selectors, boolFlag(cmd.Flags(), "keep"))
+}
+
 // runMtimeMode is the mtime form's entry from either channel: dirs are the words
 // after "mtime" and form is how that channel's command line is spelled, for the
 // usage error when none was given.
@@ -156,7 +180,9 @@ func newSSHCmd() *cobra.Command {
 		Long: "Collect read-only evidence from an SSH target. Destinations follow OpenSSH: [user@]host or " +
 			"ssh://[user@]host[:port] (bracket IPv6 addresses). Aspect names or check ids follow; all of " +
 			"them run when omitted, and a leading ! on a name excludes those checks. " +
-			"Change-time clustering is written karma ssh TARGET mtime DIR...",
+			"Change-time clustering is written karma ssh TARGET mtime DIR..., and " +
+			"karma ssh TARGET bootstrap ships this binary to the target and runs its local " +
+			"mode there — the checks that read the kernel in process, with no shell in the path.",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return usagef(cmd, "ssh needs a target: [user@]host or ssh://[user@]host[:port]")
@@ -171,6 +197,9 @@ func newSSHCmd() *cobra.Command {
 			if dirs, ok := mtimeArgs(args[1:]); ok {
 				return runMtimeMode(cmd, transport, dirs, "ssh TARGET")
 			}
+			if selectors, ok := bootstrapArgs(args[1:]); ok {
+				return runBootstrapMode(cmd, transport, selectors)
+			}
 			options, err := runOptions(cmd.Flags(), args[1:])
 			if err != nil {
 				return err
@@ -180,6 +209,7 @@ func newSSHCmd() *cobra.Command {
 	}
 	addRunFlags(cmd)
 	addSSHFlags(cmd)
+	addBootstrapFlags(cmd)
 	return cmd
 }
 
@@ -197,7 +227,9 @@ func newTTYDCmd() *cobra.Command {
 			"ttyd from 1.7.4 needs -W/--writable. The channel is Linux only, like ssh. " +
 			"Aspect names or check ids follow; all of them run when omitted, and a leading ! " +
 			"on a name excludes those checks. " +
-			"Change-time clustering is written karma ttyd TARGET mtime DIR...",
+			"Change-time clustering is written karma ttyd TARGET mtime DIR..., and " +
+			"karma ttyd TARGET bootstrap types this binary into the terminal and runs its " +
+			"local mode there — the checks that read the kernel in process.",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return usagef(cmd, "ttyd needs a target: ws://host[:port] or host[:port]")
@@ -212,6 +244,9 @@ func newTTYDCmd() *cobra.Command {
 			if dirs, ok := mtimeArgs(args[1:]); ok {
 				return runMtimeMode(cmd, transport, dirs, "ttyd TARGET")
 			}
+			if selectors, ok := bootstrapArgs(args[1:]); ok {
+				return runBootstrapMode(cmd, transport, selectors)
+			}
 			options, err := runOptions(cmd.Flags(), args[1:])
 			if err != nil {
 				return err
@@ -221,6 +256,7 @@ func newTTYDCmd() *cobra.Command {
 	}
 	addRunFlags(cmd)
 	addTTYDFlags(cmd)
+	addBootstrapFlags(cmd)
 	return cmd
 }
 

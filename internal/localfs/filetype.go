@@ -56,6 +56,22 @@ func fileTypeWords(path string) string {
 	return "data"
 }
 
+// ProgramFile reports whether path is a file a package-verify divergence
+// should name on its own: an ELF object (a binary, a shared library or a core
+// file) or a path carrying an execute bit. Everything else is text or data
+// that counts toward the directory it lives in. A path that is gone is not a
+// program: its type is unknown, and the caller reports it as missing instead.
+func ProgramFile(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	if info.Mode()&0o111 != 0 {
+		return true
+	}
+	return strings.HasPrefix(fileTypeWords(path), "ELF")
+}
+
 // elfWords spells the ELF header the way file(1) opens that line. The reader is
 // the whole file rather than the first block it was classified from: debug/elf
 // resolves the section and program headers by offset, and every real binary

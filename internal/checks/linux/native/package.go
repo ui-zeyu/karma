@@ -6,10 +6,14 @@ package native
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"os"
 	"strings"
 
 	"karma/internal/localfs"
 	"karma/internal/model"
+	"karma/internal/script"
 )
 
 // Docker mirrors dockerScript: containers then images, one blank line
@@ -21,23 +25,6 @@ func Docker(ctx context.Context) (string, error) {
 	ps := runHost(ctx, []string{"docker", "ps", "-a"}, false)
 	images := runHost(ctx, []string{"docker", "images"}, false)
 	return ps.out + "\n" + images.out, nil
-}
-
-// verifyChanged parses dpkg -V / rpm -Va output: column 3 of the first field
-// is the md5 flag, and the files it failed land in the forensics block —
-// awk 'substr($1, 3, 1) == "5" {print $NF}'.
-func verifyChanged(verifyOut string) []string {
-	var changed []string
-	for _, line := range strings.Split(verifyOut, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 || len(fields[0]) < 3 {
-			continue
-		}
-		if fields[0][2] == '5' {
-			changed = append(changed, fields[len(fields)-1])
-		}
-	}
-	return changed
 }
 
 // forensics appends the in-place forensics sections for one file list —
@@ -54,9 +41,29 @@ func forensics(b *strings.Builder, files []string) {
 	b.WriteString(localfs.LsRows(files))
 }
 
-// PkgVerify mirrors verifyScript: the verifier's own output when
-// non-empty, then forensics on the md5-failed files; no differences is an
-// empty answer, not a fall-through to the other package manager.
+// verifyFacts classifies one verifier-listed path the way the shell tier's
+// file(1) and ls -l answers do: a path that is gone is missing (dpkg's flag
+// field cannot tell a deleted file from a modified one), an ELF object or an
+// executable is named on its own, anything else is counted by PkgVerifyBody
+// under its directory.
+func verifyFacts(path string) script.VerifyFacts {
+	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+		return script.VerifyFacts{Missing: true}
+	}
+	return script.VerifyFacts{Key: localfs.ProgramFile(path)}
+}
+
+// verifyDetail renders the `== file` and `== ls` forensics for the paths the
+// body names, built in process by localfs rather than through the target's
+// binaries.
+func verifyDetail(paths []string) (string, string) {
+	return localfs.FileRows(paths), localfs.LsRows(paths)
+}
+
+// PkgVerify mirrors PkgVerifyScript: the files that can be a finding are named
+// with their type and attributes, the rest are counted per directory. No
+// differences is an empty answer, not a fall-through to the other package
+// manager.
 func PkgVerify(argv []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		if !haveBinary(argv[0]) {
@@ -64,12 +71,7 @@ func PkgVerify(argv []string) func(context.Context) (string, error) {
 			return "", model.ErrTierUnavailable
 		}
 		res := runHost(ctx, argv, false)
-		var b strings.Builder
-		if strings.TrimRight(res.out, "\n") != "" {
-			b.WriteString(res.out)
-		}
-		forensics(&b, verifyChanged(res.out))
-		return b.String(), nil
+		return script.PkgVerifyBody(res.out, verifyFacts, verifyDetail), nil
 	}
 }
 

@@ -11,6 +11,7 @@ package session
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"karma/internal/model"
@@ -39,4 +40,21 @@ type Session interface {
 type Transport interface {
 	Platform() model.Platform
 	Open() (Session, error)
+}
+
+// Uploader is a channel that can write a file to the target. The bootstrap mode
+// ships karma's own binary over it and runs it there, so the target's kernel
+// interfaces are read without a shell, coreutils or a hooked libc in between.
+// content is the complete file: an upload either arrives whole or fails.
+type Uploader interface {
+	Upload(ctx context.Context, path string, content []byte) error
+}
+
+// Streamer is a channel that can run one invocation with its output passed
+// through as it arrives. Bootstrap needs it: the target runs its own karma,
+// which renders its own report, so the outer process hands the bytes to the
+// terminal instead of harvesting and re-rendering them. The exit code is the
+// remote command's, or -1 when the channel could not report one.
+type Streamer interface {
+	Stream(ctx context.Context, inv model.Invocation, out, errOut io.Writer) (int, error)
 }

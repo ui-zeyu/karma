@@ -31,24 +31,14 @@ fi
 `, variable)
 }
 
-// forensicsTail: column 3 of a dpkg -V / rpm -Va output line is the md5 check
-// flag, where '5' means the check failed; the files that failed go to the shared
-// forensics block.
-var forensicsTail = "\nchanged=$(printf '%s\\n' \"$verify\" | awk 'substr($1, 3, 1) == \"5\" {print $NF}')\n" +
-	forensicsBlock("changed")
-
-// verifyScript stores the package-verify output in $verify, prints it only when
-// non-empty, then gathers forensics in place. The verifier has already run: no
-// differences is an empty answer with exit code 0, not a fall-through to another
-// package manager. The leading command -v gate keeps that exit 0 from answering
-// for a missing package manager: the tier answers 127 instead and the chain
-// falls to the other package manager's tier.
-func verifyScript(command string) string {
-	binary, _, _ := strings.Cut(command, " ")
-	head := fmt.Sprintf("command -v %s >/dev/null 2>&1 || exit 127\nverify=$(%s 2>/dev/null)\n[ -n \"$verify\" ] && printf '%%s\\n' \"$verify\"\n",
-		binary, command)
-	return head + forensicsTail + "exit 0\n"
-}
+// verifyScript is the ssh and ttyd tier for one verifier: the body both
+// channels render (script.PkgVerifyScript), which names the files that can be a
+// finding and counts the rest per directory. The verifier has already run: no
+// differences is an empty answer with exit code 0, not a fall-through to
+// another package manager. The leading command -v gate keeps that exit 0 from
+// answering for a missing package manager: the tier answers 127 instead and the
+// chain falls to the other package manager's tier.
+func verifyScript(command string) string { return script.PkgVerifyScript(command) }
 
 const (
 	pkgVerifyDpkg = "dpkg -V" // wrapped by verifyScript, this is the dpkg probe
@@ -73,10 +63,30 @@ var pkgHistoryScript = script.Lines(
 var pkgHistoryRules = []model.Rule{
 	model.NewRule("pkg-changed", `^\d{4}-\d{2}-\d{2}\s+\S+\s+(?:install|upgrade|remove|purge|update)\b`,
 		model.Low, "package transaction record"),
-	model.NewRule("pkg-apt-record", `^(?:Commandline|Install|Upgrade|Remove|Purge):`, model.Low,
+	model.NewRule("pkg-apt-record", `^(?:Start-Date|Commandline):`, model.Low,
 		"apt transaction record"),
 	model.NewRule("pkg-dnf-record", `^\s*\d+\s+\|`, model.Low, "dnf transaction record"),
-	define.KeywordRule,
+	// The keyword rule is excluded from the package lists apt prints: they are
+	// package names, and "debian-keyring" is not a leaked key. A signal there
+	// would also drag the whole line — one apt Install record runs to
+	// kilobytes — past the history filter.
+	define.KeywordRule.WithExclude(`^(?:Install|Upgrade|Remove|Purge):`),
+}
+
+// pkgHistoryKeep is the allowlist the history check reads through: apt's own
+// package lists are dropped from the panel (one Install line can run to
+// kilobytes, and dpkg's log names every package and version that changed), and
+// what dpkg logs is narrowed to the transactions themselves rather than the
+// unpack/configure/status churn around them. Everything else is counted as
+// filtered; the raw text --save writes still carries it all.
+var pkgHistoryKeep = []model.LineFilter{
+	model.NewFilter("pkg-apt-record", `^(?:Start-Date|Commandline):`, model.FilterKeep),
+	// dpkg writes four lines per transaction (install, then configure, then the
+	// status churn); the install line's timestamp is the one that matters, so
+	// only the verbs that changed which package is on disk are kept.
+	model.NewFilter("pkg-dpkg-record",
+		`^\d{4}-\d{2}-\d{2} \d\d:\d\d:\d\d (?:install|upgrade|remove|purge) `, model.FilterKeep),
+	model.NewFilter("pkg-dnf-record", `^(?:ID\s*\||-{3,}|\s*\d+\s*\|)`, model.FilterKeep),
 }
 
 // authBinPaths are the programs most often replaced in the login auth chain;
@@ -126,8 +136,11 @@ var pkgChangedFileRule = model.NewRule("pkg-changed-file",
 // otherwise color; the rules are for pkg-verify alone, because its ls section is
 // the changed-file list — auth-binaries lists every auth binary, changed or not.
 var (
+	// file(1) pads its type column when it reads many names at once, so the
+	// separator is ": " with any run of spaces after it — the local channel's
+	// in-process rows use a single space.
 	pkgChangedELFRule = model.NewRule("pkg-changed-elf",
-		`^/\S+: ELF.*$`, model.High, "ELF binary or library changed since install")
+		`^/\S+:\s+ELF.*$`, model.High, "ELF binary or library changed since install")
 	pkgChangedExecRule = model.NewRule("pkg-changed-exec",
 		`^(?:-[r-][w-][xsS].*|-...[r-][w-][xsS].*|-......[r-][w-][xsS].*)$`, model.High,
 		"executable changed since install")
@@ -168,7 +181,7 @@ var PackageChecks = []*model.Check{
 		[]model.Probe{
 			{Label: "log", Inv: model.Dual{Run: native.PkgHistory(pkgHistoryPaths), Script: pkgHistoryScript}},
 		},
-		define.CheckOpt{Rules: pkgHistoryRules}),
+		define.CheckOpt{Rules: pkgHistoryRules, Filters: pkgHistoryKeep}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
 		[]model.Probe{
 			{Label: "file", Inv: model.Dual{Run: native.AuthBinaries(authBinPaths), Script: authBinScript}},

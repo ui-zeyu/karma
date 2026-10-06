@@ -118,6 +118,13 @@ func ttydFlags(flags *pflag.FlagSet) {
 		"wss: the server certificate's SHA-256 fingerprint as 64 hex characters, verified instead of the chain")
 }
 
+// addBootstrapFlags registers the bootstrap mode's own option: it is accepted
+// on both channels and unused outside that mode.
+func addBootstrapFlags(cmd *cobra.Command) {
+	cmd.Flags().Bool("keep", false,
+		"bootstrap: leave the uploaded binary on the target instead of removing it")
+}
+
 // buildTTYDTransport reads the ttyd flags into the transport; the endpoint
 // itself is parsed when the connection opens.
 func buildTTYDTransport(flags *pflag.FlagSet, target string) (session.Transport, error) {

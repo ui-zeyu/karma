@@ -97,3 +97,43 @@ func TestFileRows(t *testing.T) {
 		t.Errorf("script row = %q", lines[1])
 	}
 }
+
+// TestProgramFile is the classification the package-verify body names files by:
+// an ELF object or an execute bit keeps a path in view, text and data do not,
+// and a path that is gone cannot be either.
+func TestProgramFile(t *testing.T) {
+	dir := t.TempDir()
+	elf := filepath.Join(dir, "lib.so")
+	if err := os.WriteFile(elf, minimalELF64(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	quiet := filepath.Join(dir, "run.sh.not")
+	if err := os.WriteFile(quiet, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	text := filepath.Join(dir, "readme.txt")
+	if err := os.WriteFile(text, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"a library without an execute bit", elf, true},
+		{"an executable script", script, true},
+		{"a script without an execute bit", quiet, false},
+		{"a text file", text, false},
+		{"a path that is gone", filepath.Join(dir, "absent"), false},
+		{"a directory", dir, true},
+	}
+	for _, c := range cases {
+		if got := ProgramFile(c.path); got != c.want {
+			t.Errorf("ProgramFile(%s) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
