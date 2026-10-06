@@ -98,12 +98,13 @@ func execute(ctx context.Context, w, warn io.Writer, transport session.Transport
 	// target: one copy per run, reused when one is already there and proved to
 	// be this build. A channel that cannot carry an upload — or a target that is
 	// not Linux, where karma has no in-process bodies — runs the tiers itself.
-	if delegator, ok := sess.(session.Delegator); ok && transport.Platform() == model.Linux {
+	var collectorPath string
+	if _, ok := sess.(session.Uploader); ok && transport.Platform() == model.Linux {
 		path, _, err := placeCollector(ctx, sess, placeOptions{find: options.FindDir, place: options.PlaceDir})
 		if err != nil {
 			return failf(ExitEnvironment, "%v", err)
 		}
-		delegator.UseCollector(path)
+		collectorPath = path
 	}
 
 	factsValue := facts.CollectFor(ctx, transport.Platform(), sess)
@@ -139,7 +140,18 @@ func execute(ctx context.Context, w, warn io.Writer, transport session.Transport
 		defer live.Close()
 		observer = live
 	}
-	summary := runner.RunCatalog(ctx, sess, selected, options, observer)
+	// A channel that placed a collector collects through it: one call carries the
+	// whole run and the results arrive as its checks finish. Every other channel
+	// walks the checks here.
+	var summary runner.Summary
+	if collectorPath != "" {
+		summary, err = runDelegated(ctx, sess, collectorPath, selected, options, observer, warn)
+		if err != nil {
+			return err
+		}
+	} else {
+		summary = runner.RunCatalog(ctx, sess, selected, options, observer)
+	}
 	// A stream that stopped early is a result the reader is missing, so the run
 	// says so rather than ending as if it had delivered the whole set.
 	if stream != nil && stream.Err() != nil {

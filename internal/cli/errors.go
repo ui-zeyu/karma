@@ -40,14 +40,6 @@ func failf(code ExitCode, format string, args ...any) error {
 	return exitError{code: code, err: fmt.Errorf(format, args...)}
 }
 
-// silentError ends the process at its code with nothing printed: a mode whose
-// stdout and stderr already are the answer — the probe reader hands back a
-// tier's own streams and status — has nothing to add to them, and a line karma
-// wrote there would be read as the tier's own.
-type silentError struct{ code ExitCode }
-
-func (e silentError) Error() string { return "" }
-
 // usagef builds a usage error; Main appends the usage block.
 func usagef(cmd *cobra.Command, format string, args ...any) error {
 	return usageError{err: fmt.Errorf(format, args...), cmd: cmd}
@@ -63,11 +55,6 @@ func reportError(w io.Writer, err error) int {
 // reportErrorWith renders at a fixed set of styles; tests use it to force color
 // on a capture buffer.
 func reportErrorWith(w io.Writer, err error, st streamStyles) int {
-	// A silent ending owns both streams already: its status is the whole report.
-	var silent silentError
-	if errors.As(err, &silent) {
-		return int(silent.code)
-	}
 	msg := "karma: " + err.Error()
 	// A suggestion tail ("Did you mean: …") is guidance, not the failure, so it
 	// takes the hint color while the failure itself stays red.

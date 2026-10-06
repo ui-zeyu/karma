@@ -46,21 +46,6 @@ func mustShellText(inv model.Invocation) string {
 // posixShell: the login shell may not be POSIX, so both remote and shell-based local calls wrap another sh layer.
 func posixShell(scriptText string) []string { return []string{"/bin/sh", "-c", scriptText} }
 
-// commandText renders one remote call as a shell command: one probe of the
-// collector placed on the target when there is one — that binary runs the tier
-// in process and answers with the tier's own streams and status — and the
-// invocation itself otherwise, the way every remote channel has always run it.
-//
-// Only a call that names a catalog tier can be delegated: the fact layer's own
-// probes and the placement's small commands carry no check and no probe, and for
-// them the invocation is the whole command.
-func commandText(collector string, call model.Call) (string, bool) {
-	if collector != "" && call.Check != "" && call.Probe != "" {
-		return script.Join([]string{collector, "local", "probe", call.Check, call.Probe}), true
-	}
-	return shellText(call.Inv)
-}
-
 // noShellFor is the result a remote channel gives a call it cannot render: a
 // Native body performs its tier inside karma's process, so a channel with no
 // collector on the target has nothing to run for it. Unavailable — the 127 a

@@ -620,15 +620,8 @@ func (c Channel) Remote() bool { return c != ChanLocal }
 // deadline (session.Within) — so every layer of the call answers to the same
 // one, and the channel's own setup is covered by it too.
 type Call struct {
-	// Check and Probe address the tier by name in the catalog both ends carry.
-	// A channel that collects through a karma binary it placed on the target
-	// asks that binary for this tier — `local probe CHECK PROBE` — instead of
-	// running Inv here; a channel that runs the tier itself uses Inv and ignores
-	// the two names.
-	Check string
-	Probe string
-	Inv   Invocation
-	Cap   RowCap
+	Inv Invocation
+	Cap RowCap
 }
 
 // Probe is one tier: what to run, how its output becomes the body, and how much

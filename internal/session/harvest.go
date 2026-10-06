@@ -138,10 +138,20 @@ func (h *harvestState) snapshot() (string, string, bool) {
 	return h.out.String(), h.errS.String(), h.truncated
 }
 
-// harvest waits for the call to end or for the context to end it. On a cut it
-// stops the source first and waits for it within the grace period; both paths
-// carry back the output read so far.
+// harvest waits for the call to end or for the context to end it, collecting the
+// two streams into the result. harvestEach is the same wait with the standard
+// output handed out line by line instead (the collector's result stream is read
+// as it arrives), so a channel has one implementation of both endings.
 func harvest(ctx context.Context, src source, cap model.RowCap) model.RunResult {
+	return harvestEach(ctx, src, cap, nil)
+}
+
+// harvestEach is harvest for a caller that consumes the body while it arrives: a
+// non-nil each takes every stdout line as it is read (the lines are then not
+// repeated in the result), and the row cap, the byte valve, the deadline and the
+// cancel keep working on the same source. Stderr is collected as always — it is
+// where a call's own diagnostics travel, not its body.
+func harvestEach(ctx context.Context, src source, cap model.RowCap, each func(string)) model.RunResult {
 	// Each reader owns one builder through the locked state, so a snapshot is
 	// safe at any point; the line-by-line path needs no extra ordering.
 	var state harvestState
@@ -174,7 +184,7 @@ func harvest(ctx context.Context, src source, cap model.RowCap) model.RunResult 
 	go func() {
 		defer readers.Done()
 		err := fault.Catch("harvest stdout reader", func() error {
-			readStdout(src, stopCh, &state, cap, byteLimit, stopSource)
+			readStdout(src, stopCh, &state, cap, byteLimit, stopSource, each)
 			return nil
 		})
 		if err != nil {
@@ -217,12 +227,12 @@ func harvest(ctx context.Context, src source, cap model.RowCap) model.RunResult 
 	}
 }
 
-// readStdout is the stdout reader: it collects lines into the state and decides
-// the two deliberate stops. The row cap probes one line past the limit to learn
-// whether there is more, and the byte valve stops a runaway body before memory
-// fills; both are this tier's answer, so they stop the source "deliberately"
-// rather than as a cut.
-func readStdout(src source, stopCh <-chan struct{}, state *harvestState, cap model.RowCap, byteLimit int64, stop func(deliberate bool)) {
+// readStdout is the stdout reader: it hands each line to the sink or collects it
+// into the state, and decides the two deliberate stops. The row cap probes one
+// line past the limit to learn whether there is more, and the byte valve stops a
+// runaway body before memory fills; both are this tier's answer, so they stop the
+// source "deliberately" rather than as a cut.
+func readStdout(src source, stopCh <-chan struct{}, state *harvestState, cap model.RowCap, byteLimit int64, stop func(deliberate bool), each func(string)) {
 	var lines, buffered int64
 	for {
 		select {
@@ -231,7 +241,16 @@ func readStdout(src source, stopCh <-chan struct{}, state *harvestState, cap mod
 		default:
 		}
 		chunk, ok := src.readLine()
-		state.addOut(chunk)
+		if each != nil {
+			// The sink sees every line the source produced, in order, before the
+			// next read: a reader that is drawing panels cannot fall behind the
+			// stream, and the bytes are not kept twice.
+			if chunk != "" {
+				each(chunk)
+			}
+		} else {
+			state.addOut(chunk)
+		}
 		if chunk != "" {
 			lines++
 			buffered += int64(len(chunk))

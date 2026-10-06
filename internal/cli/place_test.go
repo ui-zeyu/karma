@@ -12,6 +12,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"karma/internal/model"
@@ -22,7 +23,11 @@ import (
 // account's home, the hash of a file that is there, and records what it was
 // asked to do. The packer probe answers "none", so the program travels whole and
 // the test can hash exactly what was uploaded.
+//
+// The lock is for the runs that go through the whole command line: the fact layer
+// asks its probes from several goroutines at once.
 type placedSession struct {
+	mu      sync.Mutex
 	files   map[string]string // path -> md5, the files that are already there
 	refuse  map[string]bool   // directories whose preparation fails
 	noHash  bool              // the target has no md5sum (busybox's either)
@@ -40,6 +45,8 @@ func (s *placedSession) Describe() string       { return "ssh ops@target" }
 func (s *placedSession) Close() error           { return nil }
 
 func (s *placedSession) Run(_ context.Context, call model.Call) model.RunResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	command := session.RenderShell(call.Inv)
 	s.ran = append(s.ran, command)
 	switch {
@@ -74,6 +81,8 @@ func (s *placedSession) Run(_ context.Context, call model.Call) model.RunResult 
 }
 
 func (s *placedSession) Upload(_ context.Context, path string, content []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.uploads = append(s.uploads, path)
 	sum := md5.Sum(content)
 	s.files[path] = hex.EncodeToString(sum[:])

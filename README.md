@@ -59,6 +59,12 @@ md5 equals the build's, and a copy that does not match is replaced rather than r
 in the account's own directory first (`$HOME/.karma/karma`) and then in `/tmp/karma/karma`;
 `--find DIR` looks in that directory first, and `--place DIR` pins where the copy lives.
 
+The run itself is one call: the operator asks the collector for the selection it made, with the same
+concurrency and per-check budget, and reads its results as they arrive — one line per check, in the
+order the checks finish — so the panels are drawn while the run happens, and the operator's
+own deadline covers the whole collection. Collection happens there and presentation happens here:
+the catalog, the rules, the severity floors and the terminal are this end's.
+
 The program placed on the target is the artifact built for *its* platform, not the operator's: a
 release's artifacts sit beside the binary (`dist/karma-linux-amd64`, `dist/karma-linux-arm64`), so an
 operator on macOS audits a Linux host with `dist/karma` and the artifact next to it. A target karma

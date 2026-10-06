@@ -83,16 +83,13 @@ type LostChannel interface {
 	Lost() bool
 }
 
-// Delegator is the capability of a remote session that collects through a karma
-// binary placed on the target: UseCollector names it, and every call that names
-// a catalog tier after that is one probe of that binary — run there, in process
-// — instead of the invocation run here. Collector is empty until one is named,
-// and a session that is not given one runs the invocation itself.
-//
-// It is a capability rather than a method on Session because placement happens
-// after the connection exists (the target has to answer uname first) and because
-// a channel that cannot carry an upload never has one.
-type Delegator interface {
-	UseCollector(path string)
-	Collector() string
+// Streamer is a channel that hands one call's standard output back line by line
+// while it runs: the collector's result stream is read as it arrives, so the
+// operator draws a panel when its check finishes rather than when the whole run
+// ends. The returned result says how the call itself ended — a cut keeps the
+// stderr and the verdict, and the lines that travelled are the caller's, not
+// repeated in it. A channel that does not implement it can still run the call and
+// hand the body back at once.
+type Streamer interface {
+	Stream(ctx context.Context, call model.Call, each func(string)) model.RunResult
 }

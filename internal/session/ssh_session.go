@@ -26,9 +26,6 @@ type SSHSession struct {
 	agent  io.Closer
 	target string // the destination as the report header names it, empty in a bare test session
 	lost   atomic.Bool
-	// collector is the karma binary placed on the target, empty when this channel
-	// runs the tiers itself. UseCollector sets it before the walk starts.
-	collector string
 }
 
 // Name is the channel display name.
@@ -45,15 +42,6 @@ func (s *SSHSession) Describe() string {
 // Channel is which side of the wire karma runs on: the target is remote.
 func (s *SSHSession) Channel() model.Channel { return model.ChanSSH }
 
-// UseCollector names the karma binary placed on the target: every later call is
-// one probe of that binary instead of the invocation run here. It is set once,
-// before the walk starts, which is why the field needs no lock.
-func (s *SSHSession) UseCollector(path string) { s.collector = path }
-
-// Collector is the placed binary's path, empty when the channel runs the tiers
-// itself.
-func (s *SSHSession) Collector() string { return s.collector }
-
 // Lost reports whether the connection is gone — closed, or the server stopped
 // answering. A channel the server refused leaves the connection alive and fails
 // one tier instead, so a host that limits concurrent sessions does not end the
@@ -65,7 +53,16 @@ func (s *SSHSession) Lost() bool { return s.lost.Load() }
 // the session and handing it the command — go through setup, which is what puts
 // them inside the call's deadline.
 func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	text, ok := commandText(s.collector, call)
+	return s.run(ctx, call, nil)
+}
+
+// Stream is Run with the standard output handed out line by line while it runs.
+func (s *SSHSession) Stream(ctx context.Context, call model.Call, each func(string)) model.RunResult {
+	return s.run(ctx, call, each)
+}
+
+func (s *SSHSession) run(ctx context.Context, call model.Call, each func(string)) model.RunResult {
+	text, ok := shellText(call.Inv)
 	if !ok {
 		return noShellFor(call.Inv)
 	}
@@ -90,11 +87,11 @@ func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
 	// bytes, stderr switches to U+FFFD after draining. stop closes the channel
 	// directly: a hung channel that never sees EOF is finished off by harvest's
 	// grace period.
-	return harvest(ctx, &sshCall{
+	return harvestEach(ctx, &sshCall{
 		sess:   sess,
 		stdout: bufio.NewReader(stdout),
 		stderr: bufio.NewReader(stderrPipe),
-	}, call.Cap)
+	}, call.Cap, each)
 }
 
 // setupResult reads a setup that did not finish. The call's deadline and the

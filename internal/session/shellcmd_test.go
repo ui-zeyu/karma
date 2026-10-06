@@ -37,55 +37,34 @@ func TestRenderShell(t *testing.T) {
 	}
 }
 
-// A call on a channel that collected through a placed collector is one probe of
-// that binary: the tier runs on the target, in process, and answers with its own
-// streams and status — whatever the tier's invocation is, a body karma carries
-// included.
-func TestCommandTextAsksTheCollectorForOneProbe(t *testing.T) {
-	call := model.Call{
-		Check: "listen",
-		Probe: "ss",
-		Inv:   model.Native{Body: func(context.Context) (string, error) { return "x", nil }},
+// Every call is rendered from its own invocation: a collector's whole-run call is
+// a plain command line, so nothing in the renderer has to know what a call is for.
+func TestShellTextRendersEveryInvocationKind(t *testing.T) {
+	cases := []struct {
+		inv  model.Invocation
+		want string
+	}{
+		{model.NewCommand("uname", "-r"), "uname -r"},
+		{model.Shell{Script: "cat /etc/os-release"}, "cat /etc/os-release"},
 	}
-	got, ok := commandText("/root/.karma/karma", call)
-	if !ok {
-		t.Fatal("a delegated tier has a command")
-	}
-	if want := "/root/.karma/karma local probe listen ss"; got != want {
-		t.Fatalf("commandText = %q, want %q", got, want)
-	}
-	// Without a collector the invocation is what runs, the way it always has.
-	if got, ok := commandText("", model.Call{Inv: model.NewCommand("ss", "-tunap")}); !ok || got != "ss -tunap" {
-		t.Fatalf("commandText without a collector = %q, %v", got, ok)
+	for _, tc := range cases {
+		if got, ok := shellText(tc.inv); !ok || got != tc.want {
+			t.Errorf("shellText(%T) = %q, %v; want %q", tc.inv, got, ok, tc.want)
+		}
 	}
 }
 
-// A Native body has no shell text: with no collector on the target there is
-// nothing for a remote channel to run, which is a call the channel answers
-// unavailable rather than a command string.
-func TestCommandTextHasNoTextForANativeWithoutACollector(t *testing.T) {
-	call := model.Call{
-		Check: "lsmod", Probe: "lsmod",
-		Inv: model.Native{Body: func(context.Context) (string, error) { return "x", nil }},
-	}
-	if got, ok := commandText("", call); ok {
+// A Native body has no shell text: a remote channel has nothing to run for it
+// here — a Linux target collects through the collector its channel placed, and
+// that call is a plain command — so an unrenderable call is answered unavailable
+// rather than with a command string.
+func TestANativeBodyHasNoShellText(t *testing.T) {
+	call := model.Call{Inv: model.Native{Body: func(context.Context) (string, error) { return "x", nil }}}
+	if got, ok := shellText(call.Inv); ok {
 		t.Fatalf("a Native body has no shell rendering, got %q", got)
 	}
 	res := noShellFor(call.Inv)
 	if res.Verdict != model.VerdictUnavailable || res.ExitCode != 127 {
 		t.Fatalf("an unrenderable call reads as unavailable/127, got %+v", res)
-	}
-}
-
-// A call that names no catalog tier is not delegated: the fact layer's probes and
-// the placement's own small commands run their invocation, collector or not.
-func TestCommandTextLeavesUnnamedCallsAlone(t *testing.T) {
-	call := model.Call{Inv: model.Shell{Script: "uname -r"}}
-	if got, ok := commandText("/root/.karma/karma", call); !ok || got != "uname -r" {
-		t.Fatalf("commandText delegated a call with no tier: %q", got)
-	}
-	half := model.Call{Check: "listen", Inv: model.Shell{Script: "uname -r"}}
-	if got, ok := commandText("/root/.karma/karma", half); !ok || got != "uname -r" {
-		t.Fatalf("commandText delegated a call with no probe: %q", got)
 	}
 }

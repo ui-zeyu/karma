@@ -185,7 +185,7 @@ func runCheck(ctx context.Context, sess session.Session, check *model.Check, opt
 		if ctx.Err() != nil {
 			break
 		}
-		members := stepMembers(ctx, sess, check, step)
+		members := stepMembers(ctx, sess, step)
 		joined, label := joinStep(members)
 		switch {
 		case joined.Verdict.Settled():
@@ -216,17 +216,12 @@ func runCheck(ctx context.Context, sess session.Session, check *model.Check, opt
 // stepMembers runs every probe of one step. Whether the target has the tier's
 // tool is the tier's own answer when it runs — ErrTierUnavailable in a body, a
 // 127 from a missing binary — which is what the chain above reads.
-func stepMembers(ctx context.Context, sess session.Session, check *model.Check, step model.Step) []answeredTier {
+func stepMembers(ctx context.Context, sess session.Session, step model.Step) []answeredTier {
 	members := make([]answeredTier, 0, len(step))
 	for _, probe := range step {
 		members = append(members, answeredTier{
-			probe: probe,
-			// The check and the probe name the tier for a channel that collects
-			// through a placed collector; a channel that runs the tier itself
-			// reads Inv.
-			result: sess.Run(ctx, model.Call{
-				Check: check.ID, Probe: probe.Label, Inv: probe.Inv, Cap: probe.Cap,
-			}),
+			probe:  probe,
+			result: sess.Run(ctx, model.Call{Inv: probe.Inv, Cap: probe.Cap}),
 		})
 		if members[len(members)-1].result.Verdict.Cut() {
 			// The channel — or the walk's budget — is gone: the members after

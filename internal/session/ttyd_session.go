@@ -54,9 +54,6 @@ type TTYDSession struct {
 	header   http.Header
 	client   *http.Client
 	lost     atomic.Bool
-	// collector is the karma binary placed on the target, empty when this channel
-	// types the tiers itself. UseCollector sets it before the walk starts.
-	collector string
 }
 
 // Name is the channel display name.
@@ -75,15 +72,6 @@ func (s *TTYDSession) Describe() string {
 // Channel is which side of the wire karma runs on: the target is remote.
 func (s *TTYDSession) Channel() model.Channel { return model.ChanTTYD }
 
-// UseCollector names the karma binary placed on the target: every later call is
-// one probe of that binary instead of the invocation typed here. It is set once,
-// before the walk starts.
-func (s *TTYDSession) UseCollector(path string) { s.collector = path }
-
-// Collector is the placed binary's path, empty when the channel runs the tiers
-// itself.
-func (s *TTYDSession) Collector() string { return s.collector }
-
 // Lost reports whether the endpoint can no longer be dialled — the server or
 // the network to it died. Latched on the first failed dial that was not this
 // run's own cancellation, since every later call would fail the same way.
@@ -94,7 +82,16 @@ func (s *TTYDSession) Close() error { return nil }
 
 // Run types one collection line into a fresh terminal and harvests the answer.
 func (s *TTYDSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	text, ok := commandText(s.collector, call)
+	return s.run(ctx, call, nil)
+}
+
+// Stream is Run with the standard output handed out line by line while it runs.
+func (s *TTYDSession) Stream(ctx context.Context, call model.Call, each func(string)) model.RunResult {
+	return s.run(ctx, call, each)
+}
+
+func (s *TTYDSession) run(ctx context.Context, call model.Call, each func(string)) model.RunResult {
+	text, ok := shellText(call.Inv)
 	if !ok {
 		return noShellFor(call.Inv)
 	}
@@ -109,7 +106,7 @@ func (s *TTYDSession) Run(ctx context.Context, call model.Call) model.RunResult 
 		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
 	terminal := &ttydCall{conn: conn, spawned: make(chan struct{})}
-	return terminal.collect(ctx, text, call.Cap)
+	return terminal.collectEach(ctx, text, call.Cap, each)
 }
 
 // connect dials the endpoint and sends the JSON handshake. ttyd spawns the
@@ -256,7 +253,7 @@ func (c *ttydCall) markSpawned() {
 // the terminal's process on the target. The wait for the terminal to spawn and
 // the pause before typing belong to the call's deadline like everything else —
 // they are the channel's own setup.
-func (c *ttydCall) collect(ctx context.Context, script string, cap model.RowCap) model.RunResult {
+func (c *ttydCall) collectEach(ctx context.Context, script string, cap model.RowCap, each func(string)) model.RunResult {
 	marker := markerSalt()
 	encoded := base64.StdEncoding.EncodeToString([]byte(ttydPayload(script, marker)))
 	line := "printf %s " + encoded + " | base64 -d | /bin/sh"
@@ -290,7 +287,7 @@ func (c *ttydCall) collect(ctx context.Context, script string, cap model.RowCap)
 		}
 		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
-	return harvest(ctx, stream, cap)
+	return harvestEach(ctx, stream, cap, each)
 }
 
 // sleepCtx is one of the channel's own pacing waits, ended early by the call's

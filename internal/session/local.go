@@ -53,10 +53,30 @@ func (LocalSession) Channel() model.Channel { return model.ChanLocal }
 // the chain in the runner falls to the next tier, which is what happens on every
 // other channel too.
 func (s LocalSession) Run(ctx context.Context, call model.Call) model.RunResult {
+	return s.run(ctx, call, nil)
+}
+
+// Stream is Run with the standard output handed out line by line while it runs.
+func (s LocalSession) Stream(ctx context.Context, call model.Call, each func(string)) model.RunResult {
+	return s.run(ctx, call, each)
+}
+
+func (s LocalSession) run(ctx context.Context, call model.Call, each func(string)) model.RunResult {
 	if native, ok := call.Inv.(model.Native); ok {
-		return runNative(ctx, native.Body, call.Cap)
+		// A body runs in this process, so it has no stream to read line by line:
+		// its text is the whole answer either way.
+		result := runNative(ctx, native.Body, call.Cap)
+		if each != nil {
+			for line := range strings.SplitSeq(result.Stdout, "\n") {
+				if line != "" {
+					each(line + "\n")
+				}
+			}
+			result.Stdout = ""
+		}
+		return result
 	}
-	return runLocal(ctx, ArgvFor(call.Inv), call.Cap)
+	return runLocalEach(ctx, ArgvFor(call.Inv), call.Cap, each)
 }
 
 // Close releases the local channel's resources: there are none.
@@ -83,7 +103,7 @@ func (c *localCall) exitCode() int {
 	return c.cmd.ProcessState.ExitCode()
 }
 
-func runLocal(ctx context.Context, argv []string, cap model.RowCap) model.RunResult {
+func runLocalEach(ctx context.Context, argv []string, cap model.RowCap, each func(string)) model.RunResult {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -100,12 +120,12 @@ func runLocal(ctx context.Context, argv []string, cap model.RowCap) model.RunRes
 		// the next tier and the panel names it in the skipped chain.
 		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: err.Error(), ExitCode: 127}
 	}
-	return harvest(ctx, &localCall{
+	return harvestEach(ctx, &localCall{
 		cmd:     cmd,
 		stdout:  bufio.NewReader(stdout),
 		stderr:  bufio.NewReader(stderrPipe),
 		process: process,
-	}, cap)
+	}, cap, each)
 }
 
 // validText replaces bad bytes with U+FFFD: stray output from the target must not blow up the whole check.

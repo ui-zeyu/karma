@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -358,31 +359,29 @@ func TestTTYDUploadRefusedByReadonlyServer(t *testing.T) {
 	}
 }
 
-// A ttyd run that has been given a placed collector types one probe of that
-// binary instead of the invocation: the terminal receives the same command the
-// ssh channel sends, so the target's own karma answers the tier.
-func TestTTYDRunTypesTheCollectorProbe(t *testing.T) {
+// A ttyd stream types one line and hands its output back line by line: the
+// collector's whole run arrives this way, so the operator can draw each result as
+// it is printed rather than when the command ends.
+func TestTTYDStreamHandsBackTheLines(t *testing.T) {
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	call := model.Call{
-		Check: "listen",
-		Probe: "ss",
-		Inv:   model.Shell{Script: "echo from-the-invocation"},
-	}
-	result := sess.Run(ctx, call)
-	if !strings.Contains(result.Stdout, "from-the-invocation") {
-		t.Fatalf("without a collector the invocation is typed: %q", result.Stdout)
-	}
-	// /bin/echo stands in for the placed collector: what comes back is the
-	// command line it was handed.
 	ttyd, ok := sess.(*TTYDSession)
 	if !ok {
 		t.Fatalf("the ttyd transport should open a ttyd session, got %T", sess)
 	}
-	ttyd.UseCollector("/bin/echo")
-	result = sess.Run(ctx, call)
-	if got := strings.TrimSpace(result.Stdout); got != "local probe listen ss" {
-		t.Fatalf("the collector probe should be typed, got %q", got)
+
+	var lines []string
+	call := model.Call{Inv: model.Shell{Script: `printf '%s\n' one two three`}}
+	result := ttyd.Stream(ctx, call, func(line string) { lines = append(lines, strings.TrimSpace(line)) })
+	if result.ExitCode != 0 {
+		t.Fatalf("the streamed call failed: %+v", result)
+	}
+	if want := []string{"one", "two", "three"}; !slices.Equal(lines, want) {
+		t.Fatalf("the stream carried %v, want %v", lines, want)
+	}
+	// The lines travelled, so they are not repeated as a body.
+	if result.Stdout != "" {
+		t.Fatalf("a streamed body should not be collected again: %q", result.Stdout)
 	}
 }
