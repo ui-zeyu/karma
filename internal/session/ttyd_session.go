@@ -13,7 +13,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -130,7 +129,7 @@ const (
 // script reports each step with a marker instead.
 func (s *TTYDSession) Upload(ctx context.Context, path string, content []byte) error {
 	encoded := base64.StdEncoding.EncodeToString(content)
-	token := randomToken()
+	token := markerSalt()
 	ready := "__KRM_" + token + "_READY__"
 	done := "__KRM_" + token + "_DONE__"
 	failed := "__KRM_" + token + "_FAIL__"
@@ -347,7 +346,7 @@ func (s *TTYDSession) probe() error {
 	defer conn.CloseNow()
 	call := &ttydCall{conn: conn, spawned: make(chan struct{})}
 
-	marker := "__KRM_PROBE_" + randomToken() + "__"
+	marker := "__KRM_PROBE_" + markerSalt() + "__"
 	encoded := base64.StdEncoding.EncodeToString([]byte(marker + "\n"))
 
 	type reply struct{ echo, payload bool }
@@ -438,7 +437,7 @@ func (c *ttydCall) markSpawned() {
 // timeout machinery: stop is the connection's death, which is also what ends
 // the terminal's process on the target.
 func (c *ttydCall) collect(ctx context.Context, script string, timeout time.Duration, lineLimit int) model.RunResult {
-	marker := randomToken()
+	marker := markerSalt()
 	encoded := base64.StdEncoding.EncodeToString([]byte(ttydPayload(script, marker)))
 	line := "printf %s " + encoded + " | base64 -d | /bin/sh"
 
@@ -645,15 +644,10 @@ func ttydPayload(script, marker string) string {
 	}, "\n")
 }
 
-// randomToken is the per-call marker salt: hex, so no shell or printf
-// metacharacter can appear in it.
-func randomToken() string {
-	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "0000000000000000"
-	}
-	return hex.EncodeToString(raw[:])
-}
+// markerSalt is the per-call marker salt: crypto/rand.Text's base32 alphabet
+// carries no character a shell, printf or the marker match reads, and its 128
+// bits keep two runs' markers apart.
+func markerSalt() string { return rand.Text() }
 
 // insecureTLS accepts any server certificate: the ws:// form already carries
 // everything in the clear, this only says so for wss.

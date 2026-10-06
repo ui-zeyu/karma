@@ -113,12 +113,17 @@ func TestSplitTTYDRC(t *testing.T) {
 	}
 }
 
-func TestTTYDMarkerIsRandom(t *testing.T) {
+// The per-call marker salt must be unique across calls and hold no character a
+// shell, printf or the marker match reads: crypto/rand.Text's alphabet is
+// upper-case letters and digits.
+func TestTTYDMarkerSaltIsUniqueAndShellSafe(t *testing.T) {
 	seen := make(map[string]bool)
 	for range 100 {
-		token := randomToken()
-		if len(token) != 16 {
-			t.Fatalf("marker: %q", token)
+		token := markerSalt()
+		if token == "" || strings.ContainsFunc(token, func(r rune) bool {
+			return !('A' <= r && r <= 'Z') && !('0' <= r && r <= '9')
+		}) {
+			t.Fatalf("marker salt: %q", token)
 		}
 		if seen[token] {
 			t.Fatalf("two markers collided: %s", token)
@@ -128,8 +133,8 @@ func TestTTYDMarkerIsRandom(t *testing.T) {
 }
 
 // The probe's evidence classes must tell an echo from the payload: the marker
-// as a substring of the encoded text (it can happen, hex inside base64) must
-// never read as the payload having come back.
+// as a substring of the encoded text (it can happen, letters inside base64)
+// must never read as the payload having come back.
 func TestTTYDProbeMarkerVersusEcho(t *testing.T) {
 	marker := []byte("__KRM_PROBE_deadbeef__")
 	echo := []byte(base64.StdEncoding.EncodeToString(append(marker, '\n')))

@@ -137,8 +137,10 @@ func ListingSections(dirs []string, head int) string {
 
 // WordList wraps the word list: globs must stay unescaped, and continuations use backslashes.
 func WordList(paths []string) string {
-	rows := lo.Map(lo.Chunk(paths, wordsPerLine), func(row []string, _ int) string {
-		return strings.Join(row, " ")
-	})
-	return strings.Join(rows, " \\\n         ")
+	rows := slices.Collect(slices.Chunk(paths, wordsPerLine))
+	lines := make([]string, len(rows))
+	for i, row := range rows {
+		lines[i] = strings.Join(row, " ")
+	}
+	return strings.Join(lines, " \\\n         ")
 }

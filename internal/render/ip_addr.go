@@ -16,14 +16,15 @@ var brStateStyles = map[string]style{
 func styleIPAddr(line string) []Span {
 	// ip -br addr rows are colored by column: interface blue, state by meaning,
 	// the addresses themselves at the default color
-	matched := findSubindex(brAddrRow, line)
-	if matched == nil {
+	matched, ok := matchLine(brAddrRow, line)
+	if !ok {
 		return nil
 	}
-	spans := []Span{{Start: matched["iface"][0], End: matched["iface"][1], Style: style{fg: "4"}}}
-	state := line[matched["state"][0]:matched["state"][1]]
-	if st, ok := brStateStyles[state]; ok {
-		spans = append(spans, Span{Start: matched["state"][0], End: matched["state"][1], Style: st})
+	ifaceStart, ifaceEnd, _ := matched.span("iface")
+	stateStart, stateEnd, _ := matched.span("state")
+	spans := []Span{{Start: ifaceStart, End: ifaceEnd, Style: style{fg: "4"}}}
+	if st, ok := brStateStyles[line[stateStart:stateEnd]]; ok {
+		spans = append(spans, Span{Start: stateStart, End: stateEnd, Style: st})
 	}
 	return spans
 }

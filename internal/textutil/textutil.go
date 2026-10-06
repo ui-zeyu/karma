@@ -1,11 +1,13 @@
-// Package textutil handles target-machine text line by line: splitting and iterating.
-// Compatible with \r\n and \r (the target's mixed output may be CRLF); empty text has
-// no lines. Shared by reading, clustering and fact parsing.
+// Package textutil handles target-machine text: the line splitting and iteration,
+// and the C strings the kernel's own structs carry. Compatible with \r\n and \r (the
+// target's mixed output may be CRLF); empty text has no lines. Shared by reading,
+// clustering and fact parsing.
 package textutil
 
 import (
 	"iter"
 	"slices"
+	"strings"
 )
 
 // Lines iterates text by line: \n, \r and \r\n are all line boundaries; a trailing
@@ -44,4 +46,19 @@ func Lines(text string) iter.Seq[string] {
 // CollectLines is the collecting version of Lines.
 func CollectLines(text string) []string {
 	return slices.Collect(Lines(text))
+}
+
+// CString reads the NUL-terminated string a fixed-size C field holds: uname(2)'s
+// utsname spells its fields int8 on some architectures and byte on others, so the
+// reader is generic over the two, and it stops at the terminator rather than at the
+// field's end. The trailing blanks some kernels pad a field with are trimmed.
+func CString[T ~int8 | ~byte](field []T) string {
+	var b strings.Builder
+	for _, c := range field {
+		if c == 0 {
+			break
+		}
+		b.WriteByte(byte(c))
+	}
+	return strings.TrimSpace(b.String())
 }

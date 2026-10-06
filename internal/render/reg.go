@@ -22,16 +22,19 @@ func styleReg(line string) []Span {
 	if regContin.MatchString(line) {
 		return []Span{{Start: 0, End: len(line), Style: dimStyle}}
 	}
-	matched := findSubindex(regValueRow, line)
-	if matched == nil {
+	matched, ok := matchLine(regValueRow, line)
+	if !ok {
 		return nil
 	}
+	nameStart, nameEnd, _ := matched.span("name")
+	typeStart, typeEnd, _ := matched.span("type")
+	dataStart, dataEnd, _ := matched.span("data")
 	spans := []Span{
-		{Start: matched["name"][0], End: matched["name"][1], Style: style{fg: "4"}},
-		{Start: matched["type"][0], End: matched["type"][1], Style: keywordColor},
+		{Start: nameStart, End: nameEnd, Style: style{fg: "4"}},
+		{Start: typeStart, End: typeEnd, Style: keywordColor},
 	}
-	if regHexData.MatchString(line[matched["data"][0]:matched["data"][1]]) {
-		spans = append(spans, Span{Start: matched["data"][0], End: matched["data"][1], Style: dimStyle})
+	if regHexData.MatchString(line[dataStart:dataEnd]) {
+		spans = append(spans, Span{Start: dataStart, End: dataEnd, Style: dimStyle})
 	}
 	return spans
 }

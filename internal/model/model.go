@@ -323,16 +323,8 @@ type HostFacts struct {
 // IsRoot reports whether the uid is 0.
 func (f HostFacts) IsRoot() bool { return f.UID == 0 }
 
-// HasAll reports whether the capability probe found every wanted binary. An
-// empty list is trivially available.
-func (f HostFacts) HasAll(wanted []string) bool {
-	for _, name := range wanted {
-		if !f.AvailableBins[name] {
-			return false
-		}
-	}
-	return true
-}
+// Has reports whether the capability probe found one binary.
+func (f HostFacts) Has(name string) bool { return f.AvailableBins[name] }
 
 // Rule is one highlight rule: text matching pattern is painted.
 // Exclude is the line-level exclusion — RE2 has no lookaround, so "does not
@@ -536,15 +528,15 @@ func (p Probe) InvocationFor(ch Channel) Invocation {
 	return p.Inv
 }
 
-// RequiredBins is the binary names this tier requires: the Command's argv[0].
-// Scripts and in-process tiers decide availability themselves at run time (a
-// guard in the script, ErrTierUnavailable in the function). The returned
-// slice is new, so the caller's appends never write through Argv.
-func (p Probe) RequiredBins() []string {
+// RequiredBin is the one binary this tier requires, empty when it requires none:
+// the Command's argv[0]. Scripts and in-process tiers decide availability
+// themselves at run time (a guard in the script, ErrTierUnavailable in the
+// function).
+func (p Probe) RequiredBin() string {
 	if cmd, ok := p.Inv.(Command); ok && len(cmd.Argv) > 0 {
-		return []string{cmd.Argv[0]}
+		return cmd.Argv[0]
 	}
-	return nil
+	return ""
 }
 
 // Check is one check: its fallback chain, its already-composed filters and

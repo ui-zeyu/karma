@@ -47,21 +47,48 @@ const nonlocalPath = `(?i)(?:ftp://|\\\\[A-Za-z0-9_.-]+\\)`
 
 var guidOnly = regexp.MustCompile(`^\{[0-9A-Fa-f-]{36}\}$`)
 
-// shellbagNormalize parses BagMRU values by shell item structure into a browsing timeline: the key
-// path (the index chain after BagMRU) is the parent chain, used to join full paths. Each line is
-// `time  path`, where time is the access time (last opened via Explorer), falling back to the
-// modification time, sorted descending. Unrecognized entries fall back to sliding-window string
-// extraction so names are not lost; if all else fails, fall back to string extraction of the whole body.
+// shellbagNormalize parses BagMRU values into a browsing timeline: the key path
+// (the index chain after BagMRU) is the parent chain the full paths are joined
+// from, and each row is `time  path`, the access time first with the modification
+// time as the fallback, newest first. Values whose shell item could not be read
+// contribute their own UTF-16 strings, and a body that yields nothing
+// structurally is read as plain strings. An empty result is nil: the check stays
+// silent.
 func shellbagNormalize(_ string, body string) *model.Shaped {
 	blocks := regout.RegBlocks(body)
-	type node struct {
-		path []string
-		item shellItem
+	nodes, loose := shellbagNodes(blocks)
+	seen := map[string]bool{}
+	lines := append(shellbagFolders(nodes, seen), shellbagLoose(loose, seen)...)
+	if len(lines) == 0 {
+		if lines = shellbagFromBody(blocks, seen); len(lines) == 0 {
+			return nil
+		}
 	}
-	var nodes []node
+	return &model.Shaped{Text: shellbagTimeline(lines)}
+}
+
+// shellbagNode is one BagMRU value: the index chain that reaches it — the key
+// path after BagMRU plus the value's own name — and the shell item it decoded to.
+type shellbagNode struct {
+	path []string
+	item shellItem
+}
+
+// shellbagLine is one row of the timeline: a folder and the time it was opened,
+// zero when the item carried no time.
+type shellbagLine struct {
+	when time.Time
+	text string
+}
+
+// shellbagNodes decodes every BagMRU value: an index-named REG_BINARY value is one
+// shell item, and a value whose item is unrecognized also contributes the strings
+// its own bytes carry.
+func shellbagNodes(blocks []regout.Block) ([]shellbagNode, []string) {
+	var nodes []shellbagNode
 	var loose []string
 	for _, block := range blocks {
-		comps := bagMRUPath(block.Key)
+		chain := bagMRUPath(block.Key)
 		for _, value := range regout.ParseRegValues(block.Body) {
 			if value.Type != "REG_BINARY" {
 				continue
@@ -75,83 +102,99 @@ func shellbagNormalize(_ string, body string) *model.Shaped {
 				loose = append(loose, UTF16Strings(data, 2)...)
 				item.name = value.Name
 			}
-			nodes = append(nodes, node{path: append(slices.Clone(comps), value.Name), item: item})
+			nodes = append(nodes, shellbagNode{path: append(slices.Clone(chain), value.Name), item: item})
 		}
 	}
+	return nodes, loose
+}
 
-	byPath := make(map[string]shellItem, len(nodes))
-	for _, n := range nodes {
-		byPath[strings.Join(n.path, "\\")] = n.item
+// shellbagFolders joins each entry's chain into a full path. An ancestor is named
+// by the item decoded at its own chain, and one the chain does not carry keeps its
+// index. An entry named by a bare GUID is a placeholder in the chain rather than a
+// place someone browsed, so it contributes no row of its own.
+func shellbagFolders(nodes []shellbagNode, seen map[string]bool) []shellbagLine {
+	names := make(map[string]string, len(nodes))
+	for _, node := range nodes {
+		names[shellbagKey(node.path)] = node.item.name
 	}
-	type line struct {
-		when time.Time
-		text string
-	}
-	var lines []line
-	seen := map[string]bool{}
-	for _, n := range nodes {
-		if n.item.name == "" || n.item.kind == "unknown" {
+	var lines []shellbagLine
+	for _, node := range nodes {
+		if node.item.name == "" || node.item.kind == "unknown" || strings.HasPrefix(node.item.name, "{") {
 			continue
 		}
-		// Leaf entries with unlisted GUIDs only serve as path-chain placeholders, not standalone spammy lines
-		if strings.HasPrefix(n.item.name, "{") {
-			continue
-		}
-		parts := make([]string, 0, len(n.path))
-		for i := range n.path {
-			part := byPath[strings.Join(n.path[:i+1], "\\")].name
+		parts := make([]string, 0, len(node.path))
+		for depth := range node.path {
+			part := names[shellbagKey(node.path[:depth+1])]
 			if part == "" {
-				part = n.path[i]
+				part = node.path[depth]
 			}
 			parts = append(parts, part)
 		}
-		text := strings.Join(parts, "\\")
+		text := strings.Join(parts, `\`)
 		if seen[text] {
 			continue
 		}
 		seen[text] = true
-		when := n.item.atime
+		when := node.item.atime
 		if when.IsZero() {
-			when = n.item.mtime
+			when = node.item.mtime
 		}
-		lines = append(lines, line{when: when, text: text})
+		lines = append(lines, shellbagLine{when: when, text: text})
 	}
+	return lines
+}
+
+// shellbagLoose adds what an unreadable value carried, first occurrence only and
+// never a bare GUID.
+func shellbagLoose(loose []string, seen map[string]bool) []shellbagLine {
+	var lines []shellbagLine
 	for _, text := range lo.Uniq(loose) {
 		if guidOnly.MatchString(text) || seen[text] {
 			continue
 		}
 		seen[text] = true
-		lines = append(lines, line{text: text})
+		lines = append(lines, shellbagLine{text: text})
 	}
-	if len(lines) == 0 {
-		// Structural parsing yielded nothing: fall back to the old sliding-window string extraction
-		var texts []string
-		for _, block := range blocks {
-			for _, value := range regout.ParseRegValues(block.Body) {
-				if value.Type == "REG_BINARY" {
-					texts = append(texts, UTF16Strings(regout.HexBytes(value.Data), 2)...)
-				}
+	return lines
+}
+
+// shellbagFromBody is the last resort: every binary value of the whole body read
+// as strings, which is all that is left when no value carries an index name.
+func shellbagFromBody(blocks []regout.Block, seen map[string]bool) []shellbagLine {
+	var texts []string
+	for _, block := range blocks {
+		for _, value := range regout.ParseRegValues(block.Body) {
+			if value.Type == "REG_BINARY" {
+				texts = append(texts, UTF16Strings(regout.HexBytes(value.Data), 2)...)
 			}
 		}
-		lines = lo.FilterMap(lo.Uniq(texts), func(text string, _ int) (line, bool) {
-			return line{text: text}, !guidOnly.MatchString(text) && !seen[text]
-		})
-		if len(lines) == 0 {
-			return nil
-		}
 	}
-	// Descending time, zero values sink, ties by text: a zero-time Unix seconds value is a tiny negative
-	// number that naturally sinks in descending order; entry times have second precision, so Unix comparison loses nothing
-	slices.SortStableFunc(lines, func(a, b line) int {
+	return lo.FilterMap(lo.Uniq(texts), func(text string, _ int) (shellbagLine, bool) {
+		return shellbagLine{text: text}, !guidOnly.MatchString(text) && !seen[text]
+	})
+}
+
+// shellbagKey is one index chain as a map key: the components backslash-joined,
+// which is also how the timeline joins a path.
+func shellbagKey(path []string) string { return strings.Join(path, `\`) }
+
+// shellbagTimeline renders the rows newest first, ties by text. A zero time's Unix
+// seconds are a large negative number, so an entry with no time sinks to the end
+// of a descending sort; entry times have second precision, so comparing them as
+// Unix seconds loses nothing.
+func shellbagTimeline(lines []shellbagLine) string {
+	slices.SortStableFunc(lines, func(a, b shellbagLine) int {
 		return cmp.Or(cmp.Compare(b.when.Unix(), a.when.Unix()), strings.Compare(a.text, b.text))
 	})
-	out := lo.Map(lines, func(l line, _ int) string {
-		if l.when.IsZero() {
-			return l.text
+	rows := make([]string, len(lines))
+	for i, line := range lines {
+		if line.when.IsZero() {
+			rows[i] = line.text
+			continue
 		}
-		return l.when.Format("2006-01-02 15:04:05") + "  " + l.text
-	})
-	return &model.Shaped{Text: strings.Join(out, "\n")}
+		rows[i] = line.when.Format("2006-01-02 15:04:05") + "  " + line.text
+	}
+	return strings.Join(rows, "\n")
 }
 
 // bagMRUPath: components after BagMRU in a key path form the index chain; BagMRU itself gives an empty chain.

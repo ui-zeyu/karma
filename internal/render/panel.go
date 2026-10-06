@@ -1,0 +1,362 @@
+// One check's panel: the display budget, the source titles, the row planning
+// and the span painting. The rail block itself is in render.go.
+
+package render
+
+import (
+	"cmp"
+	"fmt"
+	"path"
+	"regexp"
+	"slices"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/samber/lo"
+
+	"karma/internal/model"
+	"karma/internal/textutil"
+)
+
+// Comment lines are not filtered (important information may hide in them) and
+// are painted muted instead.
+var commentLine = regexp.MustCompile(`^[ \t]*#`)
+
+// panelRenderer is the rendering entry point; being a variable gives the
+// fallback chain a panic source it can control.
+var panelRenderer = checkPanel
+
+// checkPanel is one check's display panel. With a body it is a rail panel;
+// without a body but with a note (timeout/failure) it is a thin grey rail
+// panel. A collected check without signals and a check that was never
+// collected both return an empty string, and the caller stays silent: the
+// report only presents evidence, and a missing command belongs to the target's
+// environment and does not enter the report.
+func checkPanel(result *model.CheckResult, maxLines, term int) string {
+	rows := bodyRows(result, maxLines, term)
+	rows = append(rows, stderrRows(result.Stderr)...)
+	if len(rows) > 0 {
+		return checkBlock(topSeverity(result.Document), checkHead(result, term), rows, term)
+	}
+	if result.Outcome == model.Skipped {
+		return ""
+	}
+	if result.Note != "" {
+		return thinRailPanel(result, result.Note, maxLines, term)
+	}
+	return ""
+}
+
+// thinRailPanel is the quiet grey rail: the check id as the band label on the
+// left, one red note on the right, raw text underneath — the shape shared by a
+// failed check and a failed render.
+func thinRailPanel(result *model.CheckResult, note string, maxLines, term int) string {
+	head := bandHead(subBandFill, subBandStyle.Render(strings.ToUpper(result.Check.ID)), note,
+		style{fg: "9", bold: true, bg: subBandColor}, railInner(term))
+	return checkBlock(model.Info, head, plainRows(result.Raw, result.Stderr, maxLines), term)
+}
+
+// checkHead is the panel's title band: the check id as the level-two heading
+// label (uppercase, the same step as the listing's aspect bands), metadata on
+// the right.
+func checkHead(result *model.CheckResult, term int) []string {
+	return bandHead(subBandFill, subBandStyle.Render(strings.ToUpper(result.Check.ID)), metaParts(result),
+		style{fg: bandMetaColor, bg: subBandColor}, railInner(term))
+}
+
+// renderPanel renders one check panel, falling back step by step on a
+// rendering panic: first to fallbackPanel's grey rail with the raw text, and if
+// even that cannot be drawn, failed=true with empty text so the caller prints
+// plain text.
+func renderPanel(result *model.CheckResult, maxLines, term int) (text string, failed bool) {
+	defer func() {
+		if recover() != nil {
+			text, failed = fallbackPanel(result, maxLines, term), true
+		}
+	}()
+	return panelRenderer(result, maxLines, term), false
+}
+
+// fallbackPanel is the fallback panel: check id, failure note, and raw text
+// (plain, wrapped to the budget) on a thin grey rail. If it panics in turn it
+// returns an empty string.
+func fallbackPanel(result *model.CheckResult, maxLines, term int) (text string) {
+	defer func() {
+		if recover() != nil {
+			text = ""
+		}
+	}()
+	return thinRailPanel(result, "render failed, showing raw output", maxLines, term)
+}
+
+// plainRows are raw rows: the final fallback for a failed render, folded to the
+// budget.
+func plainRows(raw, stderr string, limit int) []string {
+	limit = max(limit, 1)
+	var rows []string
+	if raw != "" {
+		body := textutil.CollectLines(strings.Trim(raw, "\r\n"))
+		cut := min(len(body), limit)
+		rows = append(rows, body[:cut]...)
+		if cut < len(body) {
+			rows = append(rows, fmt.Sprintf("… %d lines omitted", len(body)-cut))
+		}
+	}
+	for _, line := range textutil.CollectLines(strings.TrimSpace(stderr)) {
+		if line != "" {
+			rows = append(rows, line)
+		}
+	}
+	return rows
+}
+
+// sectionSeverity is one section's highest hit severity, counting hits on the
+// section title; Info when there is no signal.
+func sectionSeverity(section model.Section) model.Severity {
+	severity := model.Info
+	for _, match := range section.TitleMatches {
+		if match.Severity.IsSignal() && match.Severity < severity {
+			severity = match.Severity
+		}
+	}
+	for _, line := range section.Lines {
+		if line.Severity.IsSignal() && line.Severity < severity {
+			severity = line.Severity
+		}
+	}
+	return severity
+}
+
+// topSeverity is the whole panel's highest hit severity; Info when there is no
+// hit.
+func topSeverity(document model.Document) model.Severity {
+	severity := model.Info
+	for _, section := range document.Sections {
+		if section := sectionSeverity(section); section.IsSignal() && section < severity {
+			severity = section
+		}
+	}
+	return severity
+}
+
+// metaParts is the metadata on the right of the panel's first line: the probe
+// chain when a fallback happened, the number of filtered lines, and the
+// truncation mark.
+func metaParts(result *model.CheckResult) string {
+	var parts []string
+	if len(result.SkippedLabels) > 0 {
+		chain := slices.Concat(result.SkippedLabels, []string{result.ProbeLabel})
+		parts = append(parts, strings.Join(chain, " → "))
+	}
+	if filtered := lo.SumBy(result.Document.Filtered, func(fc model.FilterCount) int { return fc.Count }); filtered > 0 {
+		parts = append(parts, fmt.Sprintf("filtered %d", filtered))
+	}
+	if result.Document.Truncated {
+		parts = append(parts, "truncated")
+	}
+	return strings.Join(parts, " · ")
+}
+
+// stderrRows appends the stderr of a non-zero exit after the body, in the
+// default color and exempt from the rules.
+func stderrRows(stderr string) []string {
+	trimmed := strings.TrimSpace(stderr)
+	if trimmed == "" {
+		return nil
+	}
+	return textutil.CollectLines(trimmed)
+}
+
+// bodyRows is the panel body: source title rows plus raw rows, with one blank
+// line between sources.
+// --max-lines is the whole check's budget, shared across sources, counting
+// quiet rows only; finding rows and their context are always printed, omitted
+// rows collapse into a count, and once the budget is gone, sources without a
+// hit are dropped entirely. term is the terminal width; body rows are laid out
+// to the text width inside the rail.
+func bodyRows(result *model.CheckResult, maxLines, term int) []string {
+	width := textWidth(term)
+	base := newLineStyler(result.Check.Syntax)
+	var rows []string
+	budget := maxLines
+	for _, section := range result.Document.Sections {
+		// A section override builds its own instance: cross-line state (table
+		// anchors) must not leak across sections or shapes.
+		lineStyler := base
+		if syntax := sectionSyntax(result.Check, section.Title); syntax != result.Check.Syntax {
+			lineStyler = newLineStyler(syntax)
+		}
+		planned, used := plan(section.Lines, budget)
+		// A section the reading layer kept for its title alone — every row was
+		// filtered or below the floor — is still a finding: the title is what
+		// the rule matched. Skipping it here would print nothing for it.
+		if planned == nil && len(section.TitleMatches) == 0 {
+			continue
+		}
+		budget -= used
+		if len(rows) > 0 {
+			rows = append(rows, "")
+		}
+		if section.Title != "" {
+			rows = append(rows, sourceTitle(section, width)...)
+		}
+		rows = append(rows, plannedRows(section.Lines, planned, lineStyler, width)...)
+	}
+	return rows
+}
+
+// sectionSyntax resolves one section's syntax: the first SectionSyntax entry
+// whose title glob matches wins, other sections keep the check's syntax.
+func sectionSyntax(check *model.Check, title string) model.Syntax {
+	for _, override := range check.SectionSyntax {
+		if ok, _ := path.Match(override.Title, title); ok {
+			return override.Syntax
+		}
+	}
+	return check.Syntax
+}
+
+// sourceTitle is a source title row: bold plain (default color), hit spans in
+// their severity color, the reason ⟨…⟩ at the end, moved to its own line
+// aligned with the body when it does not fit.
+func sourceTitle(section model.Section, width int) []string {
+	spans := []Span{{Start: 0, End: len(section.Title), Style: style{bold: true}}}
+	spans = append(spans, hitSpans(section.TitleMatches)...)
+	return withReason(paintLine(section.Title, spans), section.TitleMatches, width)
+}
+
+// plannedRows emits rows as planned: visible rows render the body, omitted rows
+// collapse into one counted gap.
+func plannedRows(lines []model.Line, sequence []linePlan, lineStyler LineStyler, width int) []string {
+	var rows []string
+	for _, item := range sequence {
+		if item.visible {
+			rows = append(rows, lineRows(lines[item.index], lineStyler, width)...)
+			continue
+		}
+		rows = append(rows, style{faint: true, italic: true}.seq().Render(
+			fmt.Sprintf("… %d lines", item.count)))
+	}
+	return rows
+}
+
+// plan decides which rows are printed. It returns the (visible, row index or
+// omitted count) sequence and the quiet-row budget spent.
+//
+// Finding rows and the row on either side are always printed and do not spend
+// budget; the rest is taken in text order from the top until the budget runs
+// out. Consecutive omitted rows collapse into one counted gap. It returns nil
+// when no row is kept.
+func plan(lines []model.Line, budget int) ([]linePlan, int) {
+	keep := make([]bool, len(lines))
+	kept := 0
+	for index, line := range lines {
+		if line.Severity.IsSignal() {
+			for _, around := range [3]int{index - 1, index, index + 1} {
+				if 0 <= around && around < len(lines) && !keep[around] {
+					keep[around] = true
+					kept++
+				}
+			}
+		}
+	}
+	used := 0
+	for index := range lines {
+		if keep[index] || used >= budget {
+			continue
+		}
+		keep[index] = true
+		kept++
+		used++
+	}
+	if kept == 0 {
+		return nil, 0
+	}
+	var sequence []linePlan
+	index := 0
+	for index < len(lines) {
+		if keep[index] {
+			sequence = append(sequence, linePlan{visible: true, index: index})
+			index++
+			continue
+		}
+		start := index
+		for index < len(lines) && !keep[index] {
+			index++
+		}
+		sequence = append(sequence, linePlan{visible: false, count: index - start})
+	}
+	return sequence, used
+}
+
+type linePlan struct {
+	visible bool
+	index   int
+	count   int
+}
+
+// lineRows is one body row: findings show up as painted spans and a trailing
+// reason, with no bullet.
+func lineRows(line model.Line, lineStyler LineStyler, width int) []string {
+	return withReason(lineText(line, lineStyler), line.Matches, width)
+}
+
+// lineText renders one line: syntax coloring goes down first and hit spans
+// cover it; comments are not filtered (important information may hide in them)
+// but are painted muted to set them apart.
+func lineText(line model.Line, lineStyler LineStyler) string {
+	var spans []Span
+	if lineStyler != nil {
+		spans = append(spans, lineStyler(line.Text)...)
+	}
+	hits := hitSpans(line.Matches)
+	spans = append(spans, hits...)
+	if len(hits) == 0 && commentLine.MatchString(line.Text) {
+		spans = append(spans, Span{Start: 0, End: len(line.Text), Style: mutedStyle})
+	}
+	return paintLine(line.Text, spans)
+}
+
+// hitSpans paints a line's signal matches, most severe last. Spans stack in
+// order, so where two rules cover the same text the more severe one wins — the
+// span the trailing reason names, rather than whichever rule happened to be
+// declared later.
+func hitSpans(matches []model.Match) []Span {
+	signals := lo.Filter(matches, func(match model.Match, _ int) bool {
+		return match.Severity.IsSignal()
+	})
+	slices.SortStableFunc(signals, func(a, b model.Match) int {
+		return cmp.Compare(b.Severity, a.Severity)
+	})
+	return lo.Map(signals, func(match model.Match, _ int) Span {
+		return Span{Start: match.Start, End: match.End, Style: severityStyle(match.Severity)}
+	})
+}
+
+// withReason appends the reason ⟨…⟩ of the highest hit severity at the end of
+// the row; when it does not fit it goes on its own line aligned with the body.
+func withReason(row string, matches []model.Match, width int) []string {
+	var top model.Match
+	signals := 0
+	for _, match := range matches {
+		if !match.Severity.IsSignal() {
+			continue
+		}
+		if signals == 0 || match.Severity < top.Severity {
+			top = match
+		}
+		signals++
+	}
+	if signals == 0 {
+		return []string{row}
+	}
+	reason := "⟨" + top.Message + "⟩"
+	if signals > 1 {
+		reason += fmt.Sprintf(" +%d", signals-1)
+	}
+	reasonSt := style{faint: true}.seq().Render(reason)
+	if lipgloss.Width(row)+2+lipgloss.Width(reason) <= width {
+		return []string{row + "  " + reasonSt}
+	}
+	return []string{row, reasonSt}
+}

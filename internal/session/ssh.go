@@ -3,16 +3,13 @@
 // Host key verification: default no -- allow everything (including recorded but
 // changed keys, to fit contest targets reinstalled repeatedly); accept-new
 // accepts new hosts and rejects recorded but changed keys (matching OpenSSH
-// semantics); yes strictly verifies known_hosts.
+// semantics); yes strictly verifies known_hosts. Both consulting modes read the
+// records through x/crypto's knownhosts, which owns the file format: hashed
+// host names, wildcard and negated patterns, @cert-authority and @revoked.
 
 package session
 
 import (
-	"bufio"
-	"bytes"
-	"crypto/hmac"
-	"crypto/sha1"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -279,20 +276,17 @@ func (t *SSHTransport) hostKeyCallback() (ssh.HostKeyCallback, error) {
 	case HostKeyNo:
 		return ssh.InsecureIgnoreHostKey(), nil
 	case HostKeyYes:
-		return knownhosts.New(knownHostsPaths()...)
+		return knownHostsCallback(knownHostsPaths())
 	default:
-		return acceptNew(loadKnownHostEntries(knownHostsPaths())), nil
+		verify, err := knownHostsCallback(knownHostsPaths())
+		if err != nil {
+			return nil, err
+		}
+		return acceptNewCheck(verify), nil
 	}
 }
 
 // --- known_hosts: accept-new must decide "recorded or not, key matches or not" itself ---
-
-// knownHostEntry is one parsed known_hosts line: its host patterns (which may be
-// negated with a leading `!`) and the keys recorded for it by key type.
-type knownHostEntry struct {
-	patterns []string
-	keys     map[string][]ssh.PublicKey // type name -> all records of that type
-}
 
 // knownHostsPaths are the files OpenSSH reads, in its order.
 func knownHostsPaths() []string {
@@ -300,117 +294,39 @@ func knownHostsPaths() []string {
 	return []string{filepath.Join(home, ".ssh", "known_hosts"), "/etc/ssh/ssh_known_hosts"}
 }
 
-// loadKnownHostEntries parses every readable known_hosts file into an entry
-// table; a missing file contributes nothing and leaves the table empty.
-func loadKnownHostEntries(paths []string) []knownHostEntry {
-	var entries []knownHostEntry
+// knownHostsCallback builds the library's verifier over the files that exist: it
+// reads the records itself, including the hashed host names, the wildcard and
+// negated patterns, and the @cert-authority and @revoked markers. A missing
+// file is skipped because knownhosts.New fails on one, and a machine with no
+// known_hosts at all is a machine where every host is new.
+func knownHostsCallback(paths []string) (ssh.HostKeyCallback, error) {
+	var files []string
 	for _, path := range paths {
-		file, err := os.Open(path)
-		if err != nil {
-			continue
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			files = append(files, path)
 		}
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			if entry, ok := parseKnownHostLine(scanner.Text()); ok {
-				entries = append(entries, entry)
-			}
-		}
-		file.Close()
 	}
-	return entries
+	if len(files) == 0 {
+		empty := &knownhosts.KeyError{}
+		return func(string, net.Addr, ssh.PublicKey) error { return empty }, nil
+	}
+	return knownhosts.New(files...)
 }
 
-// parseKnownHostLine parses one known_hosts line (@cert/@revoked marker lines are
-// skipped; hashed host names are parsed by the library into a pattern list).
-func parseKnownHostLine(line string) (knownHostEntry, bool) {
-	marker, patterns, key, _, _, err := ssh.ParseKnownHosts([]byte(line))
-	if err != nil || marker != "" || len(patterns) == 0 {
-		return knownHostEntry{}, false
-	}
-	entry := knownHostEntry{patterns: patterns, keys: map[string][]ssh.PublicKey{}}
-	entry.keys[key.Type()] = append(entry.keys[key.Type()], key)
-	return entry, true
-}
-
-// acceptNew allows a new host, rejects a changed key, and allows a recorded key.
-func acceptNew(entries []knownHostEntry) ssh.HostKeyCallback {
-	return func(host string, _ net.Addr, key ssh.PublicKey) error {
-		names := hostNamesFor(host)
-		var recorded []ssh.PublicKey
-		for _, entry := range entries {
-			if !entry.matchesAny(names) {
-				continue
-			}
-			recorded = append(recorded, entry.keys[key.Type()]...)
-		}
-		if len(recorded) == 0 {
-			// No record: accept the new key
+// acceptNewCheck is OpenSSH's StrictHostKeyChecking=accept-new over the
+// library's verifier: a recorded key that matches is accepted, a host with no
+// record is new (the library says so with a KeyError whose Want is empty), and a
+// record that does not match, or a key the file marks revoked, is refused.
+func acceptNewCheck(verify ssh.HostKeyCallback) ssh.HostKeyCallback {
+	return func(host string, remote net.Addr, key ssh.PublicKey) error {
+		err := verify(host, remote, key)
+		if err == nil {
 			return nil
 		}
-		if lo.SomeBy(recorded, func(existing ssh.PublicKey) bool {
-			return bytes.Equal(existing.Marshal(), key.Marshal())
-		}) {
+		var unknown *knownhosts.KeyError
+		if errors.As(err, &unknown) && len(unknown.Want) == 0 {
 			return nil
 		}
-		// Recorded but different key: reject (possible man-in-the-middle or reinstall)
-		return fmt.Errorf("host key for %s has changed in known_hosts", host)
+		return err
 	}
-}
-
-func hostNamesFor(hostPort string) []string {
-	host, port, err := net.SplitHostPort(hostPort)
-	if err != nil {
-		return []string{hostPort}
-	}
-	names := []string{hostPort, host}
-	if port != "22" {
-		names = append(names, "["+host+"]:"+port)
-	}
-	return names
-}
-
-// matchesAny reports whether the entry applies to the target host: OpenSSH
-// semantics -- an entry applies when a positive pattern matches and no negated
-// pattern matches. Negated patterns (`!host`) take precedence over positive ones.
-func (e knownHostEntry) matchesAny(names []string) bool {
-	matched := false
-	for _, pattern := range e.patterns {
-		negated := strings.HasPrefix(pattern, "!")
-		if negated {
-			pattern = pattern[1:]
-		}
-		for _, name := range names {
-			if !matchKnownHostPattern(pattern, name) {
-				continue
-			}
-			if negated {
-				return false
-			}
-			matched = true
-		}
-	}
-	return matched
-}
-
-// matchKnownHostPattern supports |1|hashed and wildcards; everything else is compared literally.
-func matchKnownHostPattern(pattern, name string) bool {
-	if strings.HasPrefix(pattern, "|1|") {
-		parts := strings.Split(pattern, "|")
-		if len(parts) != 4 {
-			return false
-		}
-		salt, err1 := base64.StdEncoding.DecodeString(parts[2])
-		want, err2 := base64.StdEncoding.DecodeString(parts[3])
-		if err1 != nil || err2 != nil {
-			return false
-		}
-		mac := hmac.New(sha1.New, salt)
-		mac.Write([]byte(name))
-		return hmac.Equal(mac.Sum(nil), want)
-	}
-	if strings.ContainsAny(pattern, "*?!") {
-		ok, err := filepath.Match(pattern, name)
-		return err == nil && ok
-	}
-	return pattern == name
 }

@@ -24,7 +24,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"runtime"
@@ -55,7 +54,7 @@ func runBootstrap(ctx context.Context, transport session.Transport) error {
 	if err := checkTargetPlatform(ctx, sess); err != nil {
 		return err
 	}
-	dir := "/tmp/karma-" + randomSuffix()
+	dir := "/tmp/karma-" + rand.Text()
 	remote := dir + "/karma"
 	shipment, err := planTransfer(ctx, sess, remote)
 	if err != nil {
@@ -232,14 +231,4 @@ func unamePlatform(system, machine string) (string, string, error) {
 		return "", "", fmt.Errorf("unsupported target machine %q", machine)
 	}
 	return goos, goarch, nil
-}
-
-// randomSuffix names the upload directory: a fresh path per run, so a binary
-// left from an earlier bootstrap is never overwritten.
-func randomSuffix() string {
-	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "0000000000000000"
-	}
-	return hex.EncodeToString(raw[:])
 }

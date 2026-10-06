@@ -31,7 +31,9 @@ var months = [...]string{
 
 // permString renders a mode in find %M shape: one type character and three
 // rwx triples, with s/S/t/T in the execute positions for the special bits
-// (uppercase when the execute bit itself is clear).
+// (uppercase when the execute bit itself is clear). os.FileMode.String() is not
+// this shape: it spells a symlink L, a device D plus its own type character, a
+// socket S, and lifts setuid/setgid/sticky to leading flag characters.
 func permString(mode os.FileMode) string {
 	kind := byte('-')
 	switch {

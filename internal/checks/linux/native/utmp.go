@@ -470,7 +470,7 @@ func passwdUsers() ([]passwdUser, error) {
 // parsePasswdUsers decodes the passwd table into lastlog's row set.
 func parsePasswdUsers(data string) []passwdUser {
 	var users []passwdUser
-	for _, line := range strings.Split(data, "\n") {
+	for line := range strings.SplitSeq(data, "\n") {
 		f := strings.Split(line, ":")
 		if len(f) < 7 {
 			continue

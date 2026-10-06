@@ -201,7 +201,7 @@ func unownedOwned(ctx context.Context, roots []string) ([]string, bool) {
 // row without one is already a path.
 func ownedRows(out string) []string {
 	var paths []string
-	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(out, "\n"), "\n") {
 		if cut := strings.LastIndex(line, ": "); cut >= 0 {
 			line = line[cut+2:]
 		}

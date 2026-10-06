@@ -6,9 +6,9 @@
 package facts
 
 import (
-	"strings"
-
 	"golang.org/x/sys/unix"
+
+	"karma/internal/textutil"
 )
 
 func localKernel() string {
@@ -16,18 +16,5 @@ func localKernel() string {
 	if err := unix.Uname(&uts); err != nil {
 		return ""
 	}
-	return charsToString(uts.Release[:])
-}
-
-// charsToString reads a Utsname release field (int8 on some platforms, byte
-// on others) into a Go string.
-func charsToString[T ~int8 | ~byte](field []T) string {
-	bytes := make([]byte, 0, len(field))
-	for _, c := range field {
-		if c == 0 {
-			break
-		}
-		bytes = append(bytes, byte(c))
-	}
-	return strings.TrimSpace(string(bytes))
+	return textutil.CString(uts.Release[:])
 }

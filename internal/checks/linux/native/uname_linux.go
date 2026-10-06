@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"karma/internal/textutil"
 )
 
 // unameAll composes `uname -a`: kernel name, node, release, version, machine,
@@ -21,22 +23,9 @@ func unameAll() (string, bool) {
 		return "", false
 	}
 	fields := []string{
-		utsField(uts.Sysname[:]), utsField(uts.Nodename[:]),
-		utsField(uts.Release[:]), utsField(uts.Version[:]),
-		utsField(uts.Machine[:]), "GNU/Linux",
+		textutil.CString(uts.Sysname[:]), textutil.CString(uts.Nodename[:]),
+		textutil.CString(uts.Release[:]), textutil.CString(uts.Version[:]),
+		textutil.CString(uts.Machine[:]), "GNU/Linux",
 	}
 	return strings.Join(fields, " ") + "\n", true
-}
-
-// utsField reads one utsname field (int8 on some architectures, byte on
-// others) up to its terminator.
-func utsField[T ~int8 | ~byte](field []T) string {
-	var b strings.Builder
-	for _, c := range field {
-		if c == 0 {
-			break
-		}
-		b.WriteByte(byte(c))
-	}
-	return strings.TrimSpace(b.String())
 }

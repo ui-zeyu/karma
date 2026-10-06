@@ -111,7 +111,7 @@ func procPIDs() []string {
 // hit is an empty string rather than one empty line.
 func filteredLines(data string, keep func(line string) bool) string {
 	var b strings.Builder
-	for _, line := range strings.Split(data, "\n") {
+	for line := range strings.SplitSeq(data, "\n") {
 		if keep(line) {
 			b.WriteString(line)
 			b.WriteByte('\n')

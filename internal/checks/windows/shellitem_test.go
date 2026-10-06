@@ -218,3 +218,18 @@ func TestShellbagEmptyReturnsNil(t *testing.T) {
 		t.Errorf("empty input should return nil, got %+v", shaped)
 	}
 }
+
+// The third phase: nothing structural to read at all — every value name is
+// non-numeric, so no shell item is built and no path chain exists — still yields
+// what the whole body's binary values carry as UTF-16 text.
+func TestShellbagWholeBodyFallback(t *testing.T) {
+	key := `HKCU\Software\Classes\...\BagMRU`
+	body := key + "\n" + hexValues(
+		[2]string{"MRUListEx", "\x00\x00\x00\x00\xff\xff\xff\xff"},
+		[2]string{"Comment", string(utf16ZBytes(`D:\stolen\vault`))},
+	)
+	shaped := shellbagNormalize("", body)
+	if shaped == nil || shaped.Text != `D:\stolen\vault` {
+		t.Fatalf("the whole-body fallback should extract the path, got %+v", shaped)
+	}
+}

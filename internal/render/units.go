@@ -34,18 +34,22 @@ var sysvServiceStyles = map[string]style{
 // single span in its state color, the name in the first table-column color —
 // the same color the systemd table gives its UNIT column.
 func sysvServiceSpans(line string) ([]Span, bool) {
-	groups := findSubindex(sysvServiceLine, line)
-	marker, ok := groups["marker"]
+	matched, ok := matchLine(sysvServiceLine, line)
 	if !ok {
 		return nil, false
 	}
-	state, ok := sysvServiceStyles[line[groups["sign"][0]:groups["sign"][1]]]
+	markerStart, markerEnd, ok := matched.span("marker")
 	if !ok {
 		return nil, false
 	}
-	spans := []Span{{Start: marker[0], End: marker[1], Style: state}}
-	if name, ok := groups["name"]; ok {
-		spans = append(spans, Span{Start: name[0], End: name[1], Style: tableColumnStyles[0]})
+	signStart, signEnd, _ := matched.span("sign")
+	state, ok := sysvServiceStyles[line[signStart:signEnd]]
+	if !ok {
+		return nil, false
+	}
+	spans := []Span{{Start: markerStart, End: markerEnd, Style: state}}
+	if nameStart, nameEnd, ok := matched.span("name"); ok {
+		spans = append(spans, Span{Start: nameStart, End: nameEnd, Style: tableColumnStyles[0]})
 	}
 	return spans, true
 }

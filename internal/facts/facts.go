@@ -182,9 +182,9 @@ func gather(ctx context.Context, jobs map[string]func(context.Context) model.Run
 
 // probeBins unions, sorts and dedupes the probe list; caller-supplied check dependencies come first, this package's own after.
 func probeBins(bins, extra []string) []string {
-	names := lo.Uniq(slices.Concat(bins, extra))
+	names := slices.Concat(bins, extra)
 	slices.Sort(names)
-	return names
+	return slices.Compact(names)
 }
 
 // binProbe: dash's command -v only recognizes the first name, so probe one by one for portability.

@@ -32,26 +32,31 @@ var (
 )
 
 func stylePkgHistory(line string) []Span {
-	if groups := findSubindex(dpkgLogLine, line); groups != nil {
+	if matched, ok := matchLine(dpkgLogLine, line); ok {
+		dateStart, _, _ := matched.span("date")
+		_, timeEnd, _ := matched.span("time")
+		actionStart, actionEnd, _ := matched.span("action")
+		packageStart, packageEnd, _ := matched.span("package")
 		spans := []Span{
-			{Start: groups["date"][0], End: groups["time"][1], Style: mutedStyle},
-			{Start: groups["action"][0], End: groups["action"][1], Style: historyActionStyle},
-			{Start: groups["package"][0], End: groups["package"][1], Style: historySubjectStyle},
+			{Start: dateStart, End: timeEnd, Style: mutedStyle},
+			{Start: actionStart, End: actionEnd, Style: historyActionStyle},
+			{Start: packageStart, End: packageEnd, Style: historySubjectStyle},
 		}
 		for _, name := range []string{"arch", "versions"} {
-			if group, ok := groups[name]; ok {
-				spans = append(spans, Span{Start: group[0], End: group[1], Style: historyTailStyle})
+			if start, end, ok := matched.span(name); ok {
+				spans = append(spans, Span{Start: start, End: end, Style: historyTailStyle})
 			}
 		}
 		return spans
 	}
-	if groups := findSubindex(aptHistoryLine, line); groups != nil {
-		key, value := groups["key"], groups["value"]
+	if matched, ok := matchLine(aptHistoryLine, line); ok {
+		keyStart, keyEnd, _ := matched.span("key")
+		valueStart, valueEnd, _ := matched.span("value")
 		// The key and its colon are the label; the date beside "Start-Date" is
 		// the value and keeps the body's own color.
-		spans := []Span{{Start: key[0], End: key[1] + 1, Style: mutedStyle}}
-		if line[key[0]:key[1]] == "Commandline" {
-			spans = append(spans, commandLineSpans(line, value)...)
+		spans := []Span{{Start: keyStart, End: keyEnd + 1, Style: mutedStyle}}
+		if line[keyStart:keyEnd] == "Commandline" {
+			spans = append(spans, commandLineSpans(line, [2]int{valueStart, valueEnd})...)
 		}
 		return spans
 	}

@@ -138,7 +138,7 @@ func hiddenModulesFromSymbols(modulesPath, symbolsPath string) func(context.Cont
 // loadedModuleNames is /proc/modules' first column as a set.
 func loadedModuleNames(body string) map[string]bool {
 	loaded := map[string]bool{}
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		name, _, _ := strings.Cut(line, " ")
 		if name != "" {
 			loaded[name] = true
@@ -154,7 +154,7 @@ func loadedModuleNames(body string) map[string]bool {
 // difference against /proc/modules stays a hidden-module signal.
 func symbolModuleNames(body string) map[string]int {
 	counts := map[string]int{}
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if !strings.HasSuffix(line, "]") {
 			continue
 		}
@@ -279,7 +279,7 @@ func Lsmod(ctx context.Context) (string, error) {
 func lsmodRows(data string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%-19s %8s  %s\n", "Module", "Size", "Used by")
-	for _, line := range strings.Split(data, "\n") {
+	for line := range strings.SplitSeq(data, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 3 {
 			continue

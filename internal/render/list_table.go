@@ -44,25 +44,25 @@ type listGroup struct {
 
 // RenderListTable draws the catalog (both platforms merged, told apart by the
 // platform band). The width comes from the caller (terminal width or a fallback).
-func RenderListTable(w io.Writer, selected []*model.Check, width int) {
+func RenderListTable(w io.Writer, selected []*model.Check, term int) {
 	if len(selected) == 0 {
 		return
 	}
-	idW, titleW, chainW := listLayout(selected, width)
+	idW, titleW, chainW := listLayout(selected, term)
 	groups := groupChecks(selected)
 	for index, group := range groups {
 		if index == 0 || groups[index-1].platform != group.platform {
 			if index > 0 {
 				fmt.Fprintln(w)
 			}
-			fmt.Fprintln(w, headingBand(string(group.platform), width))
+			fmt.Fprintln(w, headingBand(string(group.platform), term))
 		}
 		rows := make([]string, 0, len(group.checks))
 		for _, check := range group.checks {
 			rows = append(rows, listRow(check, idW, titleW, chainW))
 		}
-		head := []string{fillBand(" "+strings.ToUpper(string(group.aspect)), railInner(width), subBandStyle)}
-		fmt.Fprintln(w, checkBlock(model.Info, head, rows, width))
+		head := []string{fillBand(" "+strings.ToUpper(string(group.aspect)), railInner(term), subBandStyle)}
+		fmt.Fprintln(w, checkBlock(model.Info, head, rows, term))
 	}
 }
 
@@ -70,8 +70,8 @@ func RenderListTable(w io.Writer, selected []*model.Check, width int) {
 // width (it is the selector vocabulary), the title takes two fifths, and the
 // chain gets the rest. A line too narrow for both drops the chain, which is
 // metadata; nothing ever exceeds the line.
-func listLayout(selected []*model.Check, width int) (idW, titleW, chainW int) {
-	line := textWidth(width)
+func listLayout(selected []*model.Check, term int) (idW, titleW, chainW int) {
+	line := textWidth(term)
 	idW, chainNat := listColumnWidths(selected)
 	rest := line - (idW + listGap)
 	titleW = min(max(line*2/listTitleShare, listTitleFloor), rest)

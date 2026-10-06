@@ -37,8 +37,8 @@ func TestLsLRowParsersAgree(t *testing.T) {
 		if !ok {
 			t.Fatalf("the split must read every collected row shape: %q", row)
 		}
-		matched := findSubindex(lsLine, row)
-		if matched == nil {
+		matched, ok := matchLine(lsLine, row)
+		if !ok {
 			t.Fatalf("the ls-l lexer must read every collected row shape: %q", row)
 		}
 		for _, column := range []struct {
@@ -49,15 +49,16 @@ func TestLsLRowParsersAgree(t *testing.T) {
 			{"size", fields[4]},
 			{"name", fields[8]},
 		} {
-			if got := row[matched[column.group][0]:matched[column.group][1]]; got != column.field {
+			if start, end, _ := matched.span(column.group); row[start:end] != column.field {
 				t.Errorf("%q: the lexer's %s column is %q, the split's is %q",
-					row, column.group, got, column.field)
+					row, column.group, row[start:end], column.field)
 			}
 		}
 		// The lexer's date column is the split's month, day and clock together;
 		// column padding differs between the two producers, so the words are what
 		// is compared.
-		date := row[matched["date"][0]:matched["date"][1]]
+		dateStart, dateEnd, _ := matched.span("date")
+		date := row[dateStart:dateEnd]
 		if got, want := strings.Fields(date), fields[5:8]; !slices.Equal(got, want) {
 			t.Errorf("%q: the lexer's date is %q, the split's is %q", row, got, want)
 		}

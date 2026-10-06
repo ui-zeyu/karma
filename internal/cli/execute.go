@@ -102,7 +102,7 @@ func catalogBins(selected []*model.Check) []string {
 	names := map[string]bool{}
 	for _, check := range selected {
 		for _, probe := range check.Probes {
-			for _, name := range probe.RequiredBins() {
+			if name := probe.RequiredBin(); name != "" {
 				names[name] = true
 			}
 		}

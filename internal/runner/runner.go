@@ -129,7 +129,7 @@ func runCheck(ctx context.Context, sess session.Session, facts model.HostFacts, 
 		if inv == nil {
 			continue // this tier exists on the other channel only
 		}
-		if !facts.HasAll(probe.RequiredBins()) {
+		if name := probe.RequiredBin(); name != "" && !facts.Has(name) {
 			unavailable = true
 			skipped = append(skipped, probe.Label)
 			continue

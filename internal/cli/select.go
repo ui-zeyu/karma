@@ -6,6 +6,7 @@ package cli
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -17,10 +18,11 @@ import (
 // SelectorTokens expands one command-line word into individual selector words,
 // with commas and spaces equivalent.
 func SelectorTokens(raw []string) []string {
-	words := lo.FlatMap(raw, func(item string, _ int) []string {
-		return strings.Fields(strings.ReplaceAll(item, ",", " "))
-	})
-	return lo.Compact(words)
+	var words []string
+	for _, item := range raw {
+		words = append(words, strings.Fields(strings.ReplaceAll(item, ",", " "))...)
+	}
+	return words
 }
 
 // SelectChecks returns the selected checks in catalog order; a platform name
@@ -94,7 +96,7 @@ func resolveWords(tokens []string, catalog []*model.Check, what string) (resolve
 	knownIDs := lo.SliceToMap(catalog, func(c *model.Check) (string, bool) { return c.ID, true })
 	catalogAspects := lo.SliceToMap(catalog, func(c *model.Check) (model.Aspect, bool) { return c.Aspect, true })
 	catalogPlatforms := lo.SliceToMap(catalog, func(c *model.Check) (model.Platform, bool) { return c.Platform, true })
-	names := slices.Concat(model.PlatformNames(), model.AspectNames(), lo.Keys(knownIDs))
+	names := slices.Concat(model.PlatformNames(), model.AspectNames(), slices.Collect(maps.Keys(knownIDs)))
 	slices.Sort(names)
 
 	words := resolved{

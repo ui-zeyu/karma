@@ -107,7 +107,7 @@ func authorizedKeyFileSpecs(sshdConfigPaths []string) []string {
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(body), "\n") {
+		for line := range strings.SplitSeq(string(body), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 && fields[0] == "AuthorizedKeysFile" {
 				specs = append(specs, fields[1:]...)

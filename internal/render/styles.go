@@ -24,21 +24,29 @@ import (
 
 func compile(expr string) *regexp.Regexp { return regexp.MustCompile(expr) }
 
-// findSubindex returns the byte spans of the named groups; a group that did not
-// match is skipped.
-func findSubindex(re *regexp.Regexp, line string) map[string][2]int {
-	idx := re.FindStringSubmatchIndex(line)
-	if idx == nil {
-		return nil
+// lineMatch is one line matched against a lexer's regexp. A lexer runs once per
+// body row, so a named group is read back by name against the regexp's own name
+// slice rather than through a map built for every row.
+type lineMatch struct {
+	re    *regexp.Regexp
+	index []int
+}
+
+// matchLine matches one line against a lexer's regexp; ok is false when the
+// regexp does not match it.
+func matchLine(re *regexp.Regexp, line string) (lineMatch, bool) {
+	index := re.FindStringSubmatchIndex(line)
+	return lineMatch{re: re, index: index}, index != nil
+}
+
+// span returns the byte span of one named group; ok is false when the group did
+// not take part in the match, which paints nothing either way.
+func (m lineMatch) span(name string) (start, end int, ok bool) {
+	group := m.re.SubexpIndex(name)
+	if group < 0 || m.index[2*group] < 0 {
+		return 0, 0, false
 	}
-	out := map[string][2]int{}
-	for i, name := range re.SubexpNames() {
-		if name == "" || idx[2*i] < 0 {
-			continue
-		}
-		out[name] = [2]int{idx[2*i], idx[2*i+1]}
-	}
-	return out
+	return m.index[2*group], m.index[2*group+1], true
 }
 
 // style is the smallest description of one painting; it turns into lipgloss
@@ -286,7 +294,8 @@ func paintLine(text string, spans []Span) string {
 	if len(spans) == 0 {
 		return text
 	}
-	cuts := []int{0, len(text)}
+	cuts := make([]int, 0, 2+2*len(spans))
+	cuts = append(cuts, 0, len(text))
 	for _, span := range spans {
 		start, end := max(span.Start, 0), min(span.End, len(text))
 		if end > start { // a malformed span paints nothing, as before

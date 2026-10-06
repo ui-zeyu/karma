@@ -24,7 +24,7 @@ type mountRow struct {
 // as \040-style octal; the escapes are undone so rules match real paths.
 func parseMounts(data string) []mountRow {
 	var rows []mountRow
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 4 {
 			continue

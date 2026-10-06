@@ -3,10 +3,7 @@ package session
 import (
 	"bytes"
 	"crypto/ed25519"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha1"
-	"encoding/base64"
 	"errors"
 	"net"
 	"os"
@@ -19,6 +16,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // Auth failure has no typed error, so recognition can only fall to the x/crypto
@@ -41,29 +39,6 @@ func TestIsAuthFailure(t *testing.T) {
 	}
 }
 
-// accept-new's entry-applies semantics match OpenSSH: a positive pattern matches and no negated pattern matches.
-func TestKnownHostNegatedPatterns(t *testing.T) {
-	const key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEmpEMShviM+e4iAPoXY+2kHG7sRu8U/7mJtl04nLtxg"
-	entry, ok := parseKnownHostLine("*.example.com,!bad.example.com " + key)
-	if !ok {
-		t.Fatal("the fixture line should parse into an entry")
-	}
-	if !entry.matchesAny([]string{"good.example.com"}) {
-		t.Fatal("a host matched by a positive pattern should apply")
-	}
-	if entry.matchesAny([]string{"bad.example.com"}) {
-		t.Fatal("a host matched by a negated pattern should not apply")
-	}
-
-	reversed, ok := parseKnownHostLine("!bad.example.com,*.example.com " + key)
-	if !ok {
-		t.Fatal("the fixture line should parse into an entry")
-	}
-	if reversed.matchesAny([]string{"bad.example.com"}) {
-		t.Fatal("a negated pattern written first also applies")
-	}
-}
-
 // testPublicKey builds a deterministic ed25519 key, so a fixture known_hosts
 // line can be written out and compared against the same key.
 func testPublicKey(t *testing.T, seed byte) ssh.PublicKey {
@@ -81,44 +56,41 @@ func knownHostsLine(patterns string, key ssh.PublicKey) string {
 	return patterns + " " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
 }
 
-// hashedHost is the |1|salt|hmac form OpenSSH writes with HashKnownHosts on.
-func hashedHost(t *testing.T, host string) string {
+// knownHostsFile writes a fixture file and returns its path.
+func knownHostsFile(t *testing.T, lines ...string) string {
 	t.Helper()
-	salt := []byte("karma-test-salt")
-	mac := hmac.New(sha1.New, salt)
-	mac.Write([]byte(host))
-	return "|1|" + base64.StdEncoding.EncodeToString(salt) + "|" +
-		base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // accept-new is the default mode's verdict, and it decides whether a changed
-// host key is refused: the file is read like OpenSSH reads it, a recorded key
-// is accepted, a different key for a recorded host is refused, an unrecorded
-// host is new, and a hashed record is consulted. Marker lines (@cert-authority)
-// are not records.
+// host key is refused: a recorded key is accepted, a different key for a
+// recorded host is refused, an unrecorded host is new, a hashed record is
+// consulted, and a revoked record is refused. The file format itself — hashed
+// host names, wildcard and negated patterns, the markers — belongs to
+// x/crypto/ssh/knownhosts, which the verifier hands the file to.
 func TestKnownHostsAcceptNewDecides(t *testing.T) {
 	recorded := testPublicKey(t, 1)
-	other := testPublicKey(t, 3)
 	changed := testPublicKey(t, 2)
+	revoked := testPublicKey(t, 3)
 
-	path := filepath.Join(t.TempDir(), "known_hosts")
-	content := strings.Join([]string{
+	path := knownHostsFile(t,
 		"# a comment",
-		knownHostsLine("@cert-authority ca.example", other),
 		knownHostsLine("recorded.example", recorded),
-		knownHostsLine(hashedHost(t, "hashed.example"), recorded),
-		"a line that is not a record",
-		"broken.example ssh-ed25519 not-base64",
+		knownHostsLine("[port.example]:2222", recorded),
+		knownHostsLine(knownhosts.HashHostname("hashed.example"), recorded),
+		knownHostsLine("*.wild.example,!bad.wild.example", recorded),
+		"@revoked revoked.example "+strings.TrimSpace(string(ssh.MarshalAuthorizedKey(revoked))),
 		"",
-	}, "\n")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	)
+	verify, err := knownHostsCallback([]string{path, filepath.Join(t.TempDir(), "absent")})
+	if err != nil {
 		t.Fatal(err)
 	}
-	entries := loadKnownHostEntries([]string{path, filepath.Join(t.TempDir(), "absent")})
-	if len(entries) != 2 {
-		t.Fatalf("comments, marker lines and malformed records are not entries: %+v", entries)
-	}
-	callback := acceptNew(entries)
+	callback := acceptNewCheck(verify)
 	cases := []struct {
 		name    string
 		host    string
@@ -127,14 +99,20 @@ func TestKnownHostsAcceptNewDecides(t *testing.T) {
 	}{
 		{"the recorded key is accepted", "recorded.example:22", recorded, false},
 		{"a changed key is refused", "recorded.example:22", changed, true},
-		{"the port does not hide a record", "recorded.example:2200", changed, true},
+		{"a bare host record covers the default port only", "recorded.example:2200", changed, false},
+		{"a bracketed record is consulted on its own port", "port.example:2222", recorded, false},
+		{"a changed key under a bracketed record is refused", "port.example:2222", changed, true},
 		{"an unrecorded host is new", "new.example:22", changed, false},
 		{"a hashed record still matches", "hashed.example:22", recorded, false},
 		{"a changed key under a hashed record is refused", "hashed.example:22", changed, true},
-		{"a marker line is not a record", "ca.example:22", changed, false},
+		{"a wildcard record matches", "web.wild.example:22", recorded, false},
+		{"a negated pattern keeps the record from applying", "bad.wild.example:22", changed, false},
+		{"a revoked key is refused", "revoked.example:22", revoked, true},
 	}
 	for _, c := range cases {
-		err := callback(c.host, nil, c.key)
+		// The library reads the peer address as well as the host name, the way
+		// the ssh client hands both to a callback.
+		err := callback(c.host, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}, c.key)
 		switch {
 		case c.wantErr && err == nil:
 			t.Errorf("%s: %s should be refused", c.name, c.host)
@@ -144,28 +122,20 @@ func TestKnownHostsAcceptNewDecides(t *testing.T) {
 	}
 }
 
-// The names a known_hosts pattern is matched against follow OpenSSH: the
-// host:port form, the bare host, and the bracketed form for a non-default port.
-func TestHostNamesFor(t *testing.T) {
-	cases := []struct {
-		host string
-		want []string
-	}{
-		{"host.example:22", []string{"host.example:22", "host.example"}},
-		{"host.example:2222", []string{"host.example:2222", "host.example", "[host.example]:2222"}},
-		{"host.example", []string{"host.example"}},
+// A record the library cannot read stops the mode that consults the file: a
+// record karma cannot parse is one whose verdict it cannot trust, and the error
+// names the file and the line. `no` never opens the file at all.
+func TestKnownHostsMalformedRecordIsRefused(t *testing.T) {
+	recorded := testPublicKey(t, 1)
+	path := knownHostsFile(t,
+		knownHostsLine("recorded.example", recorded),
+		"broken.example ssh-ed25519 not-base64",
+	)
+	if _, err := knownHostsCallback([]string{path}); err == nil {
+		t.Fatal("a known_hosts file with an unreadable record should stop the verifier")
 	}
-	for _, c := range cases {
-		got := hostNamesFor(c.host)
-		if len(got) != len(c.want) {
-			t.Errorf("hostNamesFor(%q) = %q, want %q", c.host, got, c.want)
-			continue
-		}
-		for i := range c.want {
-			if got[i] != c.want[i] {
-				t.Errorf("hostNamesFor(%q) = %q, want %q", c.host, got, c.want)
-			}
-		}
+	if _, err := knownHostsCallback(nil); err != nil {
+		t.Fatalf("no known_hosts at all is a machine where every host is new: %v", err)
 	}
 }
 

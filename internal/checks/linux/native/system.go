@@ -101,7 +101,7 @@ func logindUserCount() (int, bool) {
 // session. A file without a CLASS line (or one whose class is a manager
 // session) counts as no.
 func sessionIsUser(data []byte) bool {
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if class, found := strings.CutPrefix(line, "CLASS="); found {
 			return strings.HasPrefix(class, "user")
 		}

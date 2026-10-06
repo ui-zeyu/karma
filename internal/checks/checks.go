@@ -66,5 +66,5 @@ func HuntCheckFor(platform model.Platform, dirs []string) (*model.Check, error) 
 		}
 		return catalog.hunt(dirs), nil
 	}
-	return nil, fmt.Errorf("mtime clustering is a Linux check; %s targets are not supported", platform)
+	return nil, fmt.Errorf("%s targets have no directory tree to cluster; mtime needs a platform whose catalog walks one", platform)
 }
