@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -79,9 +81,22 @@ func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) er
 	if err != nil {
 		return err
 	}
+	cancelled := make(chan struct{})
+	var stopWatch sync.Once
+	defer stopWatch.Do(func() { close(cancelled) })
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = sess.Close()
+		case <-cancelled:
+		}
+	}()
+	var stalled atomic.Bool
 	written := make(chan error, 1)
 	go func() {
-		_, err := stdin.Write(content)
+		err := writeUpload(stdin, content, &stalled, func() { _ = sess.Close() })
+		// Closing the pipe is what tells the target's cat that the file is
+		// complete: without it the remote side waits for more bytes.
 		if closeErr := stdin.Close(); err == nil {
 			err = closeErr
 		}
@@ -98,25 +113,50 @@ func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) er
 	if err := sess.Start(RenderShell(model.Shell{Script: command})); err != nil {
 		return err
 	}
-	cancelled := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = sess.Close()
-		case <-cancelled:
-		}
-	}()
 	writeErr := <-written
 	waitErr := sess.Wait()
-	close(cancelled)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if writeErr != nil {
+		if stalled.Load() {
+			return fmt.Errorf("no progress for %s: the target stopped reading", uploadStall)
+		}
 		return writeErr
 	}
 	if waitErr != nil {
 		return fmt.Errorf("upload refused by the target: %w", waitErr)
+	}
+	return nil
+}
+
+// uploadChunk and uploadStall pace one upload: the ssh transport has no
+// deadline of its own (the context the command line carries only sees SIGINT),
+// so a target that stops draining the channel would block a Write forever. The
+// idle timer is reset after every chunk, and the chunk is small enough that it
+// measures a stop rather than a slow link.
+const (
+	uploadChunk = 64 << 10
+)
+
+// uploadStall is the idle bound; a variable so tests can shorten it.
+var uploadStall = 60 * time.Second
+
+// writeUpload writes one payload in chunks, arming abort when a chunk has not
+// been handed over within uploadStall. stalled reports whether that happened,
+// so the caller can name the reason.
+func writeUpload(w io.Writer, content []byte, stalled *atomic.Bool, abort func()) error {
+	timer := time.AfterFunc(uploadStall, func() {
+		stalled.Store(true)
+		abort()
+	})
+	defer timer.Stop()
+	for offset := 0; offset < len(content); offset += uploadChunk {
+		end := min(offset+uploadChunk, len(content))
+		if _, err := w.Write(content[offset:end]); err != nil {
+			return err
+		}
+		timer.Reset(uploadStall)
 	}
 	return nil
 }

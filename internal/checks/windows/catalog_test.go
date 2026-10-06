@@ -89,6 +89,13 @@ func TestSystemCheckRules(t *testing.T) {
 		{"winlogon", `    LoadAppInit_DLLs    REG_DWORD    0x0`, "appinit-load"},
 		{"svc-dll", `WSearch  C:\Windows\System32\WindowsSearch.dll`, "svcdll-outside-system"},
 		{"svc-dll", `W32Time  %SystemRoot%\system32\w32time.dll`, "svcdll-outside-system"},
+		// Windows ships DLLs under the whole C:\Windows tree, not only System32:
+		// the .NET frameworks and the driver store hold svchost DLLs too
+		{"svc-dll", `NetSetup  C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WMINet_Utils.dll`, "svcdll-outside-system"},
+		{"svc-dll", `NcaSvc  C:\Windows\System32\drivers\nca.dll`, "svcdll-outside-system"},
+		// C:\Windows\Temp is Windows' own tree and stays out of this rule: the
+		// loud rule (svcdll-temp) owns that case
+		{"svc-dll", `Evil  C:\Windows\Temp\evil.dll`, "svcdll-outside-system"},
 	}
 	for _, tc := range quiet {
 		if slices.Contains(testkit.HitIDs(t, tc.text, testkit.CheckByID(t, All, tc.check)), tc.rule) {

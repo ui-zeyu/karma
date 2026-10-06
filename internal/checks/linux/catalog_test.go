@@ -27,6 +27,13 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"accounts", `backdoor:x:0:0::/:/bin/sh`, "acct-other-uid0"},
 		{"accounts", `toor:x:0:1000::/:/bin/bash`, "acct-other-uid0"},
 		{"accounts", `backdoor:x:0:0::/:/usr/sbin/nologin`, "acct-other-uid0"},
+		// a line that is not a record of the table it sits in: the stray line a
+		// hand edit leaves behind (seen on a live host: a bare "3" at the end of
+		// /etc/passwd), and a field appended to a real record
+		{"accounts", `3`, "acct-malformed-record"},
+		{"accounts", `root:x:0:0:root:/root:/bin/bash:extra`, "acct-malformed-record"},
+		{"shadow", `3`, "shadow-malformed-record"},
+		{"groups", `audit:x:27:alice:extra`, "group-malformed-record"},
 		{"accounts", `mysql:x:997:997::/var/lib/mysql:/bin/bash`, "acct-login-shell"},
 		{"shadow", `root::18900:0:99999:7:::`, "shadow-empty-root"},
 		{"shadow", `svc::18900:0:99999:7:::`, "shadow-empty"},
@@ -153,6 +160,19 @@ func TestLinuxRuleExclusions(t *testing.T) {
 		quiet string
 	}{
 		{"accounts", `root:x:0:0:root:/root:/bin/bash`, "acct-other-uid0"},
+		// the well-formed records of each table, the `== path` section titles
+		// (which meet the rules too), a comment, the NIS compat markers and a
+		// blank line are all not malformed
+		{"accounts", `root:x:0:0:root:/root:/bin/bash`, "acct-malformed-record"},
+		{"accounts", `sshd:x:105:65534::/run/sshd:/usr/sbin/nologin`, "acct-malformed-record"},
+		{"accounts", `/etc/passwd`, "acct-malformed-record"},
+		{"accounts", `+::::::`, "acct-malformed-record"},
+		{"accounts", `# a comment:with:colons`, "acct-malformed-record"},
+		{"shadow", `root:$6$salt$hash:18900:0:99999:7:::`, "shadow-malformed-record"},
+		{"shadow", `/etc/shadow-`, "shadow-malformed-record"},
+		{"groups", `sudo:x:27:alice`, "group-malformed-record"},
+		{"groups", `audit:!::`, "group-malformed-record"},
+		{"groups", `-::`, "group-malformed-record"},
 		{"shadow", `root:!:18900:0:99999:7:::`, "shadow-empty-root"},
 		{"sshd-config", `PermitRootLogin no`, "sshd-permit-root-login"},
 		{"hosts-file", `127.0.0.1 localhost`, "hosts-nonlocal"},
@@ -255,6 +275,7 @@ func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
 		rule  string
 		want  string
 	}{
+		{"accounts", `3`, "acct-malformed-record", `3`},
 		{"cron", `10 * * * * root /etc/.help.sh`, "hidden-nonhome-path", "/etc/.help.sh"},
 		{"cron", `*/5 * * * * /tmp/.x`, "hidden-tmp-path", "/tmp/.x"},
 		{"hosts-file", `172.17.0.6 cace4a393ea9`, "hosts-nonlocal", "172.17.0.6 cace4a393ea9"},

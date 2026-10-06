@@ -414,8 +414,8 @@ type ttydCall struct {
 	spawned chan struct{}
 }
 
-// markSpawned records that an initial frame arrived: the terminal's process
-// exists and input will reach it.
+// markSpawned closes spawned once, from whichever goroutine sees the first
+// initial frame first: the frame pump and the collector both watch for it.
 func (c *ttydCall) markSpawned() {
 	select {
 	case <-c.spawned:

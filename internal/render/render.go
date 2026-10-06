@@ -51,27 +51,31 @@ var commentLine = regexp.MustCompile(`^[ \t]*#`)
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // RenderHeader draws the report header as the report's first rail panel: the
-// karma band over the host facts, the severity legend on the last row. It is
+// KARMA masthead — the level-one band, the build's version as its metadata —
+// over the target's identity and system lines and the severity legend. It is
 // not a check, so the rail stays muted and the body carries no reason. floor is
 // the run's severity floor, which the legend states: a level it excludes is
 // muted, and the floor is named after it.
-func RenderHeader(w io.Writer, sessionName string, facts model.HostFacts, width int, floor model.SeverityFloor) {
-	var pieces []string
-	pieces = append(pieces, style{bold: true}.seq().Render(facts.Hostname))
+func RenderHeader(w io.Writer, sessionName string, facts model.HostFacts, width int, floor model.SeverityFloor, version string) {
+	var identity []string
+	identity = append(identity, style{bold: true}.seq().Render(facts.Hostname))
 	if facts.User != "" {
-		pieces = append(pieces, style{bold: true}.seq().Render(facts.User))
-	}
-	if facts.IsRoot() {
-		pieces = append(pieces, style{bold: true}.seq().Render("root"))
+		identity = append(identity, facts.User)
+	} else if facts.IsRoot() {
+		identity = append(identity, "root")
 	} else if facts.UID >= 0 {
-		pieces = append(pieces, fmt.Sprintf("uid %d", facts.UID))
+		identity = append(identity, fmt.Sprintf("uid %d", facts.UID))
 	}
+	// The channel the report came through belongs with the target it names: the
+	// two lines then read as "who this is" and "what it runs".
+	identity = append(identity, sessionName)
 	body := []string{
-		strings.Join(pieces, " · "),
-		fmt.Sprintf("%s · %s · %s", cmp.Or(facts.OsPretty, "unknown distro"), facts.Kernel, sessionName),
+		strings.Join(identity, " · "),
+		fmt.Sprintf("%s · %s", cmp.Or(facts.OsPretty, "unknown distro"), facts.Kernel),
 		legend(floor),
 	}
-	fmt.Fprintln(w, checkBlock(model.Info, bandHead(subBandStyle.Render("KARMA"), "", style{}, width), body, width))
+	head := bandHead(bandFill, bandStyle.Render("KARMA"), version, style{fg: bannerMetaColor}, width)
+	fmt.Fprintln(w, checkBlock(model.Info, head, body, width))
 	fmt.Fprintln(w)
 }
 
@@ -246,7 +250,7 @@ func checkPanel(result *model.CheckResult, maxLines, width int) string {
 // left, one red note on the right, raw text underneath — the shape shared by a
 // failed check and a failed render.
 func thinRailPanel(result *model.CheckResult, note string, maxLines, width int) string {
-	head := bandHead(subBandStyle.Render(strings.ToUpper(result.Check.ID)), note,
+	head := bandHead(subBandFill, subBandStyle.Render(strings.ToUpper(result.Check.ID)), note,
 		style{fg: "9", bold: true, bg: subBandColor}, width)
 	return checkBlock(model.Info, head, plainRows(result.Raw, result.Stderr, maxLines), width)
 }
@@ -255,41 +259,42 @@ func thinRailPanel(result *model.CheckResult, note string, maxLines, width int) 
 // label (uppercase, the same step as the listing's aspect bands), metadata on
 // the right.
 func checkHead(result *model.CheckResult, width int) []string {
-	return bandHead(subBandStyle.Render(strings.ToUpper(result.Check.ID)), metaParts(result),
+	return bandHead(subBandFill, subBandStyle.Render(strings.ToUpper(result.Check.ID)), metaParts(result),
 		style{fg: subBandMetaColor, bg: subBandColor}, width)
 }
 
-// bandHead lays a panel head on the level-two band: the label on the left,
+// bandHead lays a panel head on a heading band: the label on the left,
 // metadata on the right, every cell painted onto the band so the strip reads
 // solid from the rail to the right edge (a Width pad would stay unpainted —
-// see fillBand). Metadata that does not fit beside the label drops to its own
+// see fillBand). fill paints the band's padding and says which heading level
+// the band is; metadata that does not fit beside the label drops to its own
 // band row, aligned with the label.
-func bandHead(label, meta string, metaStyle style, term int) []string {
+func bandHead(fill lipgloss.Style, label, meta string, metaStyle style, term int) []string {
 	text := headTextWidth(term)
-	labelCell := subBandFill.Render(strings.Repeat(" ", headPad) + label)
+	labelCell := fill.Render(strings.Repeat(" ", headPad) + label)
 	if meta == "" {
-		return []string{filledRow(labelCell, term)}
+		return []string{filledRow(fill, labelCell, term)}
 	}
 	if lipgloss.Width(label)+2+lipgloss.Width(meta) <= text {
 		gap := text - lipgloss.Width(label) - lipgloss.Width(meta)
-		row := labelCell + subBandFill.Render(strings.Repeat(" ", gap)) +
+		row := labelCell + fill.Render(strings.Repeat(" ", gap)) +
 			metaStyle.seq().Render(meta)
-		return []string{filledRow(row, term)}
+		return []string{filledRow(fill, row, term)}
 	}
-	rows := []string{filledRow(labelCell, term)}
+	rows := []string{filledRow(fill, labelCell, term)}
 	for _, line := range strings.Split(boundRow(meta, text), "\n") {
-		rows = append(rows, filledRow(
-			subBandFill.Render(strings.Repeat(" ", headPad))+metaStyle.seq().Render(line), term))
+		rows = append(rows, filledRow(fill,
+			fill.Render(strings.Repeat(" ", headPad))+metaStyle.seq().Render(line), term))
 	}
 	return rows
 }
 
 // filledRow pads a band row out to the panel's inner width with painted
 // spaces, so the band runs edge to edge under the rail.
-func filledRow(row string, term int) string {
+func filledRow(fill lipgloss.Style, row string, term int) string {
 	pad := railInner(term) - lipgloss.Width(row)
 	if pad > 0 {
-		row += subBandFill.Render(strings.Repeat(" ", pad))
+		row += fill.Render(strings.Repeat(" ", pad))
 	}
 	return row
 }

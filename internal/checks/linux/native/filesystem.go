@@ -5,6 +5,7 @@ package native
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -127,7 +128,20 @@ func sharedPrivWalk(ctx context.Context, fsTypes []string) privWalk {
 	if store == nil {
 		return scan()
 	}
-	return runstate.Memo(store, privWalkKey{}, scan)
+	walk := runstate.Memo(store, privWalkKey{}, scan)
+	if walkCut(walk.err) && ctx.Err() == nil {
+		// Another check's deadline cut the shared walk while this one still has
+		// time: read our own rather than inherit the fragment, the rule
+		// procSnapshot applies to its own shared read.
+		return scan()
+	}
+	return walk
+}
+
+// walkCut reports whether a walk ended on a context rather than on a host
+// surface it looked for.
+func walkCut(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // ModeBitScan is the privilege-bit tier: the shared walk's list for one bit,

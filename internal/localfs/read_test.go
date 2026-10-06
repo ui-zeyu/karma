@@ -5,9 +5,12 @@ package localfs
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"karma/internal/script"
 )
 
 func TestReadSectionsSkipsMissingAndTails(t *testing.T) {
@@ -41,5 +44,49 @@ func TestCatReadsTheFileAsItIs(t *testing.T) {
 	}
 	if _, err := Cat(filepath.Join(t.TempDir(), "gone")); err == nil {
 		t.Fatal("a missing file should surface its error")
+	}
+}
+
+// The section loop runs twice — this package's in-process read and the
+// collection script's `for f in ...; do [ -f "$f" ] && { echo "== $f"; cat; }`
+// — and the two are the same tier of dozens of checks. One directory of
+// fixtures, read both ways, must produce the same bytes.
+func TestReadSectionsMatchesTheShellLoop(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh, skipping the script comparison")
+	}
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	write("a.txt", "alpha\n")
+	write("b.txt", "")
+	write("c.txt", "x\ny\n")
+	nested := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write("sub/d.txt", "deep\n")
+
+	// A literal path that is gone, a literal that is a directory (the [ -f ]
+	// guard drops both), a repeated path, and a glob behind it.
+	patterns := []string{
+		filepath.Join(dir, "a.txt"),
+		filepath.Join(dir, "gone.txt"),
+		nested,
+		dir + "/*.txt",
+	}
+	command := exec.Command("sh", "-c", script.ReadFiles(patterns, `cat "$f"`, true))
+	out, err := command.Output()
+	if err != nil {
+		t.Fatalf("the collection loop failed: %v\n%s", err, out)
+	}
+	got, want := ReadSections(patterns, nil), string(out)
+	if got != want {
+		t.Fatalf("the two section loops disagree:\nin-process %q\nshell      %q", got, want)
 	}
 }

@@ -3,6 +3,7 @@
 package linux
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -104,6 +105,18 @@ var pamDirs = []string{
 	"/usr/lib/security",
 }
 
+// malformedRecordPattern matches a line that is not a record of a
+// colon-separated table with the given number of fields: a line holding no
+// separator at all, or one carrying more of them than the table has fields.
+// Neither shape comes out of the account tools, so the line was written by
+// hand — a stray line, an appended field. A comment or an NIS marker (#, +, -)
+// starts no record, a line starting with / is a path (the `== path` section
+// title these checks are built from), and a blank-first-character line belongs
+// to the blank filter.
+func malformedRecordPattern(fields int) string {
+	return `^\s*[^#/:+\s-][^:\n]*$` + fmt.Sprintf(`|^[^#/\n][^:\n]*(?::[^:\n]*){%d,}$`, fields)
+}
+
 // IdentityChecks covers identity.
 var IdentityChecks = []*model.Check{
 	// Raw files only: NSS (getent) is deliberately bypassed — it is the
@@ -121,6 +134,8 @@ var IdentityChecks = []*model.Check{
 					`:(?:/usr/sbin/nologin|/sbin/nologin|/bin/false|/usr/bin/false)$`, model.FilterDrop),
 			},
 			Rules: []model.Rule{
+				model.NewRule("acct-malformed-record", malformedRecordPattern(7), model.High,
+					"malformed /etc/passwd record (not seven colon-separated fields)"),
 				model.NewRule("acct-root-uid0", `^root:[^:]*:0:`, model.Benign, "the root account itself"),
 				// RE2 has no lookahead: "UID 0 that isn't root" becomes an exclusion.
 				// Only the UID is tested — a backdoor account can carry any GID.
@@ -149,6 +164,8 @@ var IdentityChecks = []*model.Check{
 				model.NewFilter("shadow-locked", `^[^:\n]+:[!*]+:`, model.FilterDrop),
 			},
 			Rules: []model.Rule{
+				model.NewRule("shadow-malformed-record", malformedRecordPattern(9), model.High,
+					"malformed /etc/shadow record (not nine colon-separated fields)"),
 				model.NewRule("shadow-empty-root", `^root::`, model.Critical, "empty root password"),
 				model.NewRule("shadow-empty", `^[^:\n]+::`, model.High,
 					"empty-password account").WithExclude(`^root:`),
@@ -170,6 +187,8 @@ var IdentityChecks = []*model.Check{
 				model.NewFilter("group-empty", `^[^:\n]+:[!*x]+:[^:]*:$`, model.FilterDrop),
 			},
 			Rules: []model.Rule{
+				model.NewRule("group-malformed-record", malformedRecordPattern(4), model.High,
+					"malformed /etc/group record (not four colon-separated fields)"),
 				model.NewRule("group-privileged",
 					`^(?:sudo|wheel|admin|staff|root|docker|lxd|disk|shadow|adm):[^:]*:[^:]*:.+`,
 					model.Medium, "member of a privileged group"),

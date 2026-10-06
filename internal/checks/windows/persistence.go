@@ -101,8 +101,9 @@ var (
 )
 
 // serviceDllScript lists the DLL each svchost service loads: a ServiceDll outside
-// the system directories (or in a user-writable one) is the svchost DLL-hijack
-// shape.
+// the tree Windows ships (System32, SysWOW64, drivers, WinSxS, the .NET
+// frameworks) is the svchost DLL-hijack shape, and one under a user-writable
+// directory is the loud case.
 const serviceDllScript = `Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services' -ErrorAction SilentlyContinue | ForEach-Object { $d = (Get-ItemProperty ($_.PSPath + '\Parameters') -ErrorAction SilentlyContinue).ServiceDll; if ($d) { $_.PSChildName + '  ' + $d } }`
 
 var (
@@ -112,7 +113,7 @@ var (
 	serviceDllOutsideRule = model.NewRule("svcdll-outside-system", `(?i)\s[A-Za-z]:.*\.dll\s*$`, model.Medium,
 		"svchost DLL outside system dirs").
 		// reg.exe prints the unexpanded REG_EXPAND_SZ, PowerShell the expanded one
-		WithExclude(`(?i)\s(?:C:\\Windows|%SystemRoot%)\\(?:System32|SysWOW64)\\`)
+		WithExclude(`(?i)\s(?:C:\\Windows|%SystemRoot%)\\`)
 )
 
 // PersistenceChecks is the persistence aspect.

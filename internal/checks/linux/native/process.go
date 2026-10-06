@@ -17,6 +17,7 @@ import (
 
 	"karma/internal/localfs"
 	"karma/internal/model"
+	"karma/internal/script"
 )
 
 // ProcCaps mirrors sessionCapsScript: the host's own container markers
@@ -107,13 +108,14 @@ func DeletedExe(ctx context.Context) (string, error) {
 }
 
 // printDeletedLink appends one row when the kernel marked the link target
-// deleted — the same mark lsof reports.
+// deleted — the same mark lsof reports, in the shape the other two tiers print.
 func printDeletedLink(b *strings.Builder, link string) {
 	target, err := os.Readlink(link)
 	if err != nil || !strings.HasSuffix(target, " (deleted)") {
 		return
 	}
-	fmt.Fprintf(b, "%s -> %s\n", strings.TrimPrefix(link, "/proc/"), target)
+	b.WriteString(script.DeletedLinkRow(link, target))
+	b.WriteByte('\n')
 }
 
 // CwdTmp mirrors cwdTmpScript: every process whose working directory sits inside
@@ -228,7 +230,15 @@ func Miner(scan MinerScan) func(context.Context) (string, error) {
 			b.WriteByte('\n')
 		}
 		b.WriteString("== drop paths\n")
+		// The script tier hands the same list to `LC_ALL=C ls -l`, which sorts
+		// its arguments; the in-process rows are sorted the same way.
+		var present []string
 		for _, path := range scan.DropPaths {
+			if _, err := os.Stat(path); err == nil {
+				present = append(present, path)
+			}
+		}
+		for _, path := range script.LsSorted(present) {
 			if info, err := os.Stat(path); err == nil {
 				b.WriteString(localfs.LsBody(info, path, names))
 				b.WriteByte('\n')
@@ -251,7 +261,7 @@ func Miner(scan MinerScan) func(context.Context) (string, error) {
 				return b.String(), err
 			}
 		}
-		for _, hit := range hits {
+		for _, hit := range script.LsSorted(hits) {
 			if info, err := os.Stat(hit); err == nil {
 				b.WriteString(localfs.LsBody(info, hit, names))
 				b.WriteByte('\n')

@@ -10,9 +10,10 @@ import (
 	"karma/internal/model"
 )
 
-// The report header is the report's first rail panel: the karma band over the
-// host facts, the system line and the severity legend below, everything inside
-// the line width and wearing the same rail as a check panel.
+// The report header is the report's first rail panel: the KARMA masthead — the
+// level-one band, carrying the build's version — over the target's identity,
+// its system line and the severity legend, everything inside the line width and
+// wearing the same rail as a check panel.
 func TestRenderHeader(t *testing.T) {
 	facts := model.HostFacts{
 		Hostname: "web-01",
@@ -22,10 +23,13 @@ func TestRenderHeader(t *testing.T) {
 		UID:      0,
 	}
 	var out bytes.Buffer
-	RenderHeader(&out, "ssh", facts, 100, model.FloorAll)
+	RenderHeader(&out, "ssh", facts, 100, model.FloorAll, "9.9.9")
 	text := out.String()
 	body := plain(text)
-	for _, want := range []string{"web-01", `CORP\alice`, "root", "Ubuntu 22.04", "5.15.0-91-generic", "ssh", "critical", "high", "medium", "low"} {
+	for _, want := range []string{
+		"web-01", `CORP\alice`, "Ubuntu 22.04", "5.15.0-91-generic", "ssh", "9.9.9",
+		"critical", "high", "medium", "low",
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("header should carry %q:\n%s", want, body)
 		}

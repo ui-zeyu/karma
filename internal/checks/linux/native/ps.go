@@ -481,17 +481,15 @@ func PsEf(ctx context.Context) (string, error) {
 }
 
 // nativePsSort renders an aux table sorted by a column, ps --sort's shape; the
-// machine facts arrive once so the comparator does no file I/O. The shared
-// snapshot is copied before sorting: other checks read the same view.
+// machine facts arrive once, with the key computed once per row.
 func nativePsSort(ctx context.Context,
-	by func(a, b procEntry, uptime float64, memTotal int64) int) (string, error) {
+	key func(e procEntry, uptime float64, memTotal int64) float64) (string, error) {
 	snap := procSnapshot(ctx)
 	if !snap.ok {
 		return "", model.ErrTierUnavailable
 	}
-	entries := slices.Clone(snap.entries)
-	slices.SortStableFunc(entries, func(a, b procEntry) int {
-		return by(a, b, snap.uptime, snap.memTotal)
+	entries := sortedByKey(snap.entries, func(e procEntry) float64 {
+		return key(e, snap.uptime, snap.memTotal)
 	})
 	now := time.Now()
 	var b strings.Builder
@@ -505,15 +503,15 @@ func nativePsSort(ctx context.Context,
 
 // PsCPU is `ps aux --sort=-%cpu`.
 func PsCPU(ctx context.Context) (string, error) {
-	return nativePsSort(ctx, func(a, b procEntry, uptime float64, _ int64) int {
-		return cmp.Compare(b.cpuPercent(uptime), a.cpuPercent(uptime))
+	return nativePsSort(ctx, func(e procEntry, uptime float64, _ int64) float64 {
+		return e.cpuPercent(uptime)
 	})
 }
 
 // PsMem is `ps aux --sort=-%mem`.
 func PsMem(ctx context.Context) (string, error) {
-	return nativePsSort(ctx, func(a, b procEntry, _ float64, _ int64) int {
-		return cmp.Compare(b.rss, a.rss)
+	return nativePsSort(ctx, func(e procEntry, _ float64, _ int64) float64 {
+		return float64(e.rss)
 	})
 }
 
@@ -524,15 +522,12 @@ func Top(ctx context.Context) (string, error) {
 	if !snap.ok {
 		return "", model.ErrTierUnavailable
 	}
-	entries := slices.Clone(snap.entries)
-	slices.SortStableFunc(entries, func(a, b procEntry) int {
-		return cmp.Compare(b.cpuPercent(snap.uptime), a.cpuPercent(snap.uptime))
-	})
+	entries := sortedByKey(snap.entries, func(e procEntry) float64 { return e.cpuPercent(snap.uptime) })
 	var b strings.Builder
 	fmt.Fprintf(&b, "top - %s\n", uptimeBannerBody())
 	fmt.Fprintf(&b, "Tasks: %3d total, %3d running, %3d sleeping, %3d stopped, %3d zombie\n",
-		len(entries), countState(entries, 'R'), countState(entries, 'S'),
-		countState(entries, 'T'), countState(entries, 'Z'))
+		len(entries), countState(entries, "R"), countState(entries, sleepStates),
+		countState(entries, "Tt"), countState(entries, "Z"))
 	b.WriteString(cpuSummaryLine())
 	b.WriteString(memSummaryLine(snap.memTotal))
 	b.WriteString("\n    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND\n")
@@ -546,15 +541,43 @@ func Top(ctx context.Context) (string, error) {
 	return b.String(), snap.cutReason(ctx)
 }
 
-// countState counts processes in one run state.
-func countState(entries []procEntry, state byte) int {
+// sleepStates is what procps folds into top's "sleeping" count: the
+// interruptible sleep plus the states it tallies as "other" — idle kernel
+// threads (I), parked (P) and dying (X). The plain S count alone drops every
+// idle thread, which is about half of /proc on a stock kernel.
+const sleepStates = "SIPX"
+
+// countState counts processes whose run state is one of the given letters.
+func countState(entries []procEntry, states string) int {
 	n := 0
 	for _, e := range entries {
-		if e.state == state {
+		if strings.ContainsRune(states, rune(e.state)) {
 			n++
 		}
 	}
 	return n
+}
+
+// sortableEntry is one row with its sort key, computed once: a comparator that
+// derives the key itself would recompute it twice per comparison.
+type sortableEntry struct {
+	entry procEntry
+	key   float64
+}
+
+// sortedByKey returns the entries in descending key order. The input is not
+// written to: the snapshot's entries are shared with every other check.
+func sortedByKey(entries []procEntry, key func(procEntry) float64) []procEntry {
+	rows := make([]sortableEntry, len(entries))
+	for index, entry := range entries {
+		rows[index] = sortableEntry{entry: entry, key: key(entry)}
+	}
+	slices.SortStableFunc(rows, func(a, b sortableEntry) int { return cmp.Compare(b.key, a.key) })
+	sorted := make([]procEntry, len(rows))
+	for index, row := range rows {
+		sorted[index] = row.entry
+	}
+	return sorted
 }
 
 // topTimeFormat is TIME+'s mm:ss.cc.
@@ -564,7 +587,9 @@ func topTimeFormat(secs float64) string {
 }
 
 // cpuSummaryLine renders the %Cpu(s) line from /proc/stat's cumulative
-// counters — since-boot shares, which is also what top's first pass shows.
+// counters: since-boot average shares. top's own first frame is not that
+// number — it compares against a reading taken at startup, so its first pass
+// prints a near-zero delta (0.0 us … 100.0 id) however busy the host is.
 func cpuSummaryLine() string {
 	stat, err := procFS().Stat()
 	if err != nil {

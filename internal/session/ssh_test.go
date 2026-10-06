@@ -13,7 +13,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -255,3 +257,55 @@ func TestPublicKeyAuthReportsUnlockableKey(t *testing.T) {
 		t.Fatalf("a key that needs a passphrase should point at --password: %v", err)
 	}
 }
+
+// A target that stops draining the channel blocks a Write forever, and the
+// command line's context only sees SIGINT: the idle bound is what ends such a
+// transfer with something the operator can read.
+func TestWriteUploadBoundsAStall(t *testing.T) {
+	previous := uploadStall
+	uploadStall = 20 * time.Millisecond
+	defer func() { uploadStall = previous }()
+
+	release := make(chan struct{})
+	var stalled atomic.Bool
+	err := writeUpload(blockingWriter{release}, make([]byte, uploadChunk), &stalled,
+		func() { close(release) })
+	if err == nil {
+		t.Fatal("a write that never returns should end on the idle bound")
+	}
+	if !stalled.Load() {
+		t.Fatal("the bound should be reported as the reason")
+	}
+}
+
+// The bound measures the gap between chunks, so a slow link that keeps making
+// progress finishes.
+func TestWriteUploadProgressResetsTheBound(t *testing.T) {
+	previous := uploadStall
+	uploadStall = 100 * time.Millisecond
+	defer func() { uploadStall = previous }()
+
+	var stalled atomic.Bool
+	slow := writerFunc(func(p []byte) (int, error) {
+		time.Sleep(20 * time.Millisecond)
+		return len(p), nil
+	})
+	if err := writeUpload(slow, make([]byte, 3*uploadChunk), &stalled, func() {}); err != nil {
+		t.Fatalf("a moving transfer should not be a stall: %v", err)
+	}
+	if stalled.Load() {
+		t.Fatal("a moving transfer is not a stall")
+	}
+}
+
+// blockingWriter never completes until release is closed.
+type blockingWriter struct{ release chan struct{} }
+
+func (w blockingWriter) Write([]byte) (int, error) {
+	<-w.release
+	return 0, errors.New("channel closed")
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

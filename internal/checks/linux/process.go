@@ -13,6 +13,7 @@ import (
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
+	"karma/internal/script"
 )
 
 // tmpGlobs is tmpDirs as the shell case pattern the cwd walk matches: every temp
@@ -36,7 +37,7 @@ done
 const deletedLinksScript = `
 for l in /proc/[0-9]*/exe /proc/[0-9]*/cwd /proc/[0-9]*/fd/*; do
   t=$(readlink "$l" 2>/dev/null) || continue
-  case "$t" in *\(deleted\)) printf '%s -> %s\n' "${l#/proc/}" "$t";; esac
+  case "$t" in *\(deleted\)) printf '%s -> %s\n' "${l#` + script.ProcPrefix + `}" "$t";; esac
 done
 `
 
@@ -52,9 +53,12 @@ const lsofScript = `lsof -wn +L1 2>/dev/null`
 // shell walk below covers, doing every lstat in-process instead of one readlink
 // fork per link. -lname matches the kernel's "(deleted)" link-target suffix.
 // -lname/-printf are GNU extensions: a find without them fails the probe and
-// the chain falls through to the walk.
-const findDeletedScript = `find /proc/[0-9]*/fd /proc/[0-9]*/exe /proc/[0-9]*/cwd` +
-	` -maxdepth 1 -lname '*(deleted)' -printf '%p -> %l\n' 2>/dev/null`
+// the chain falls through to the walk. The operands are the walk's own order
+// (exe, cwd, fd) and ProcPathStrip cuts the /proc prefix, so the rows match the
+// other two tiers; within one @pid/fd directory find prints readdir order,
+// where the walk sorts by name.
+const findDeletedScript = `find /proc/[0-9]*/exe /proc/[0-9]*/cwd /proc/[0-9]*/fd` +
+	` -maxdepth 1 -lname '*(deleted)' -printf '%p -> %l\n' 2>/dev/null | ` + script.ProcPathStrip
 
 // hiddenProcsScript lists pids from /proc and from ps, and the set difference is
 // the processes "present in proc but not reported by ps". Plain POSIX composition

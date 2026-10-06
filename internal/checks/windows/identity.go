@@ -14,8 +14,16 @@ const localUsersScript = `Get-LocalUser -ErrorAction SilentlyContinue | Sort-Obj
 // a classic hiding trick.
 const hiddenUserRule = `(?i)^\S*\$\s+enabled`
 
-// The Administrators group is fetched by well-known SID, immune to localized group names.
-const adminGroupScript = `$g = Get-LocalGroup -SID 'S-1-5-32-544' -ErrorAction SilentlyContinue; if ($g) { Get-LocalGroupMember -Group $g -ErrorAction SilentlyContinue | ForEach-Object { $_.Name + '  ' + $_.PrincipalSource } }`
+// The Administrators group is read by well-known SID, immune to localized group
+// names, and the machine's own account is dropped: on a domain-joined host the
+// computer account (DOMAIN\PC$) is a member by default, and it is the host
+// itself rather than a hidden account. An enabled $ account is the finding this
+// check exists for, and one that is not this machine still lights the rule.
+const adminGroupScript = `$g = Get-LocalGroup -SID 'S-1-5-32-544' -ErrorAction SilentlyContinue
+if ($g) {
+  $machine = $env:COMPUTERNAME + '$'
+  Get-LocalGroupMember -Group $g -ErrorAction SilentlyContinue | Where-Object { $_.Name.Split('\')[-1] -ne $machine } | ForEach-Object { $_.Name + '  ' + $_.PrincipalSource }
+}`
 
 const adminDollarRule = `(?i)^\S*\$\s`
 

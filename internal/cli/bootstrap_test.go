@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"context"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -189,5 +190,113 @@ func TestPlanTransferFollowsTheTargetsDecompressor(t *testing.T) {
 		if len(sess.ran) != 1 || !strings.Contains(sess.ran[0], "command -v gzip") {
 			t.Errorf("%s: the probe ran %q, want one probe command", c.answer, sess.ran)
 		}
+	}
+}
+
+// theTargetAndThisBuild is a target that is not this binary's platform: the
+// machine name is chosen from this build, so the mismatch holds on any host.
+func theTargetAndThisBuild() string {
+	if runtime.GOARCH == "amd64" {
+		return "Linux aarch64"
+	}
+	return "Linux x86_64"
+}
+
+// commandSession answers each command by the first of the given patterns it
+// contains, and records what the mode ran.
+type commandSession struct {
+	answers []struct {
+		match  string
+		result model.RunResult
+	}
+	ran []string
+}
+
+func (s *commandSession) Name() string           { return "command" }
+func (s *commandSession) Channel() model.Channel { return model.ChanSSH }
+func (s *commandSession) Close() error           { return nil }
+
+func (s *commandSession) Run(_ context.Context, inv model.Invocation, _ time.Duration, _ int) model.RunResult {
+	command := session.RenderShell(inv)
+	s.ran = append(s.ran, command)
+	for _, answer := range s.answers {
+		if strings.Contains(command, answer.match) {
+			return answer.result
+		}
+	}
+	return model.RunResult{ExitCode: 0}
+}
+
+// A target of another architecture cannot run this binary, and the mistake is
+// cheaper to catch here than as a failed exec on the host.
+func TestCheckTargetPlatformRefusesAMismatch(t *testing.T) {
+	sess := &commandSession{answers: []struct {
+		match  string
+		result model.RunResult
+	}{{match: "uname -s -m", result: model.RunResult{Stdout: theTargetAndThisBuild() + "\n", ExitCode: 0}}}}
+	err := checkTargetPlatform(context.Background(), sess)
+	if err == nil {
+		t.Fatal("a cross-arch target was accepted")
+	}
+	if !strings.Contains(err.Error(), "GOOS=") || !strings.Contains(err.Error(), "bootstrap that build") {
+		t.Fatalf("the refusal should say how to build for the target: %v", err)
+	}
+}
+
+// A target whose uname says nothing (a stripped container) is refused with what
+// it did say, rather than uploaded to and failed on.
+func TestCheckTargetPlatformNeedsBothFields(t *testing.T) {
+	sess := &commandSession{answers: []struct {
+		match  string
+		result model.RunResult
+	}{{match: "uname -s -m", result: model.RunResult{Stdout: "Linux\n", ExitCode: 0}}}}
+	if err := checkTargetPlatform(context.Background(), sess); err == nil {
+		t.Fatal("a target with no machine name was accepted")
+	}
+}
+
+// The compressor's checksum is the first verification: a transfer the target
+// could not unpack stops here, with the target's own words.
+func TestUnpackUploadReportsAFailedDecompressor(t *testing.T) {
+	sess := &commandSession{answers: []struct {
+		match  string
+		result model.RunResult
+	}{{match: "gzip -d -f", result: model.RunResult{
+		Stderr: "gzip: stdin: not in gzip format", ExitCode: 1}}}}
+	err := unpackUpload(context.Background(), sess, "/tmp/karma-x/karma", "gzip -d -f /tmp/karma-x/karma.gz")
+	if err == nil || !strings.Contains(err.Error(), "not in gzip format") {
+		t.Fatalf("a failed unpack should carry the target's words: %v", err)
+	}
+}
+
+// The version line is the second verification: a file that runs but is not this
+// build (a stale copy, a wrapper) is refused.
+func TestUnpackUploadRefusesAnotherBuild(t *testing.T) {
+	previous := buildVersion
+	buildVersion = "9.9.9"
+	defer func() { buildVersion = previous }()
+	sess := &commandSession{answers: []struct {
+		match  string
+		result model.RunResult
+	}{{match: "version", result: model.RunResult{Stdout: "karma 0.1.0\n", ExitCode: 0}}}}
+	err := unpackUpload(context.Background(), sess, "/tmp/karma-x/karma", "")
+	if err == nil {
+		t.Fatal("a binary that answered another version was accepted")
+	}
+	if !strings.Contains(err.Error(), "karma 9.9.9") || !strings.Contains(err.Error(), "karma 0.1.0") {
+		t.Fatalf("the refusal should name both versions: %v", err)
+	}
+}
+
+// A failing small command reports the target's stderr, and falls back to the
+// exit status when the channel carried no text.
+func TestCommandFailurePrefersTheTargetsWords(t *testing.T) {
+	withText := commandFailure(model.RunResult{Stderr: " cat: /tmp/x: No such file \n", ExitCode: 1})
+	if withText != "cat: /tmp/x: No such file" {
+		t.Fatalf("commandFailure = %q", withText)
+	}
+	withoutText := commandFailure(model.RunResult{ExitCode: 7})
+	if !strings.Contains(withoutText, "7") {
+		t.Fatalf("a silent failure should report the exit status: %q", withoutText)
 	}
 }

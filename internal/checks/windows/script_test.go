@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"karma/internal/model"
+	"karma/internal/testkit"
 )
 
 // psScripts collects every probe script in the catalog that is fed into powershell
@@ -96,4 +97,22 @@ func TestUTF16Strings(t *testing.T) {
 			t.Fatalf("got %q", got)
 		}
 	})
+}
+
+// The Administrators group carries the machine's own account on a
+// domain-joined host (DOMAIN\PC$): it is the host itself, so the probe drops it
+// before the rule can call it a hidden account. The filter belongs in the
+// script because only the script knows this machine's name.
+func TestAdminGroupDropsTheMachineAccount(t *testing.T) {
+	probe := testkit.CheckByID(t, All, "admin-group").Probes[0]
+	argv, ok := probe.Inv.(model.Command)
+	if !ok {
+		t.Fatalf("admin-group should be a PowerShell probe: %+v", probe.Inv)
+	}
+	script := argv.Argv[len(argv.Argv)-1]
+	for _, want := range []string{"$env:COMPUTERNAME + '$'", "Where-Object"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the script should drop %s: %q", want, script)
+		}
+	}
 }

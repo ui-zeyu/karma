@@ -10,12 +10,28 @@ package script
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/samber/lo"
 )
 
 const wordsPerLine = 4 // word-list wrap width: matches the line-continuation style of existing scripts
+
+// ProcPrefix is what every /proc link path starts with and no tier prints.
+const ProcPrefix = "/proc/"
+
+// ProcPathStrip is the shell side of DeletedLinkRow's cut: find's %p spells the
+// full link path, and the row starts after /proc.
+const ProcPathStrip = "sed 's|^" + ProcPrefix + "||'"
+
+// DeletedLinkRow renders one row of the deleted-file check: the link path with
+// the /proc prefix cut, then the target the kernel annotated. The in-process
+// walk and the shell loop print this row, and the find tier reaches it through
+// ProcPathStrip, so the three tiers of the check agree.
+func DeletedLinkRow(link, target string) string {
+	return strings.TrimPrefix(link, ProcPrefix) + " -> " + target
+}
 
 // LSBodyPrintf is the ls -l row shape: permissions links owner group size date
 // clock path. A symlink row appends its target with no arrow (find's %l prints
@@ -59,6 +75,16 @@ func Quote(word string) string {
 		return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
 	}
 	return word
+}
+
+// LsSorted sorts paths the way the collection's `LC_ALL=C ls -l` prints its
+// arguments: by the argument string, byte for byte. A tier that renders the
+// same list in process (the miner's drop paths and temp-name hits) sorts with
+// this, so both channels show one order.
+func LsSorted(paths []string) []string {
+	sorted := slices.Clone(paths)
+	slices.Sort(sorted)
+	return sorted
 }
 
 // ReadFiles generates a per-file read for loop: one section per file (`== path`

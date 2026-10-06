@@ -91,11 +91,11 @@ var (
 	listIDColor = lipgloss.Color("4")
 
 	// Heading bands: a neutral dark background with white text, keeping clear
-	// of the severity colors. Level one (the report's aspect banner and the
-	// listing's platform band) is bold white on dark grey; level two (the
-	// listing's aspect band and the report's check-title band) steps down to a
-	// lighter grey with regular light-grey text, so the heading tree's two
-	// levels read apart at a glance.
+	// of the severity colors. Level one (the report's masthead and aspect
+	// banners, and the listing's platform bands) is bold white on dark grey;
+	// level two (the listing's aspect band and the report's check-title band)
+	// steps down to a lighter grey with regular light-grey text, so the heading
+	// tree's two levels read apart at a glance.
 	bannerColor      = lipgloss.Color("236")
 	bannerTextColor  = lipgloss.Color("15")
 	subBandColor     = lipgloss.Color("238")
@@ -103,18 +103,24 @@ var (
 	// subBandMetaColor is the metadata on the report's check-title band: a
 	// step dimmer than the label, still legible on the band's grey.
 	subBandMetaColor = lipgloss.Color("246")
+	// bannerMetaColor is the same relationship on a level-one band (the
+	// masthead's version).
+	bannerMetaColor = lipgloss.Color("252")
 )
 
-// bandStyle is the level-one heading band: the report's aspect banners and the
-// listing's platform bands. subBandStyle is the level-two band behind the
-// listing's aspect headings and the report's check titles — the same two
-// steps in both views. subBandFill paints the check-title band's padding (the
-// band's grey alone), so the strip reads solid from the rail to the right edge.
+// bandStyle is the level-one heading band: the report's masthead and its aspect
+// banners, and the listing's platform bands. subBandStyle is the level-two band
+// behind the listing's aspect headings and the report's check titles — the same
+// two steps in both views. bandFill and subBandFill paint a band's padding (the
+// band's own grey alone), so the strip reads solid from the rail to the right
+// edge. bannerMetaColor is a band's right-hand metadata: a step dimmer than the
+// band's text, still legible on it.
 var (
 	bandStyle = lipgloss.NewStyle().Bold(true).
 			Background(bannerColor).Foreground(bannerTextColor)
 	subBandStyle = lipgloss.NewStyle().
 			Background(subBandColor).Foreground(subBandTextColor)
+	bandFill    = lipgloss.NewStyle().Background(bannerColor)
 	subBandFill = lipgloss.NewStyle().Background(subBandColor)
 )
 
