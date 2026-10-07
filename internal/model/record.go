@@ -1,11 +1,9 @@
 // Records: a body that arrives as fields rather than as text.
 //
-// A collection that reads a kernel interface already holds every value it
-// prints — pid, user, state, command line — and the text it used to format them
-// into was read back by the rules and by the panel's lexers. A record carries
-// the fields themselves: the reading layer hands them to the rules, and the
-// form a check declares lays them out. Nothing formats fields into text to
-// parse them back out.
+// A record carries the values the collection already holds — pid, user, state,
+// command line — with none of the layout. The reading layer hands them to the
+// rules, and the form a check declares lays them out. Nothing formats fields
+// into text to parse them back out.
 
 package model
 

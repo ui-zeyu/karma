@@ -48,9 +48,9 @@ type Section struct {
 }
 
 // Parse cuts text into sections, lazily: one Section at a time, so a reader holds
-// no more than the section it is shaping. The line splitting is textutil.Lines'
-// (a lone CR breaks a line as well, and a trailing empty line is not a line),
-// which is what every reader of collected text used before this package.
+// no more than the section it is shaping. The line splitting is textutil.Lines,
+// so a lone CR breaks a line and a trailing empty line is not a line, the same
+// way every other reader of collected text splits.
 func Parse(text string) iter.Seq[Section] {
 	return func(yield func(Section) bool) {
 		var current Section

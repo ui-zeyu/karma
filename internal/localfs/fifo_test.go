@@ -108,8 +108,7 @@ func TestCatReadsThroughASymlink(t *testing.T) {
 
 // A FIFO inside a scanned tree is not read: the walk's own type filter and the
 // non-blocking open both say so, which is what grep -r does (it reads regular
-// files). Completing is half the assertion — the read of a planted FIFO used to
-// park in open(2).
+// files). The walk must finish; a planted FIFO must not park it in open(2).
 func TestGrepWalkSkipsAFifo(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("needle\n"), 0o644); err != nil {

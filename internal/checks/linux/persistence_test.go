@@ -1,7 +1,8 @@
 // The boot-script tier (rc.local, init.sh) reads a plain list of files, which is
 // also its whole surface: a path dropped from the list stops appearing in the
-// report with nothing else changing. One test runs the tier over a fixture on both
-// sources, and one pins the catalog's own list.
+// report with nothing else changing. One test runs the in-process read over a
+// fixture and checks the sh spelling names the same paths. One pins the
+// catalog's own list.
 
 package linux
 
@@ -38,9 +39,8 @@ func bootScriptFixture(t *testing.T) []string {
 	return []string{filepath.Join(dir, "absent"), rcLocal, initSh}
 }
 
-// The tier the boot-script check is built from, run over a fixture: the
-// in-process read, and the sh source's loop over the same list with the same
-// one section per existing path.
+// The tier the boot-script check is built from, over a fixture: the in-process
+// read, one section per existing path, and the sh spelling naming the same paths.
 func TestReadFilesTierReadsEveryPath(t *testing.T) {
 	paths := bootScriptFixture(t)
 	steps := readFilesCheck(paths...)

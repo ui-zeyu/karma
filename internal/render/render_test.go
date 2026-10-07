@@ -210,9 +210,7 @@ func TestCheckPanelQuietRailAndSkippedLine(t *testing.T) {
 
 // A section the reading layer kept for its title alone — a rule matched the
 // `== path` header and every body row was filtered or below the floor — is
-// still a finding: the panel prints the title and its reason rather than
-// nothing at all. The reader keeps that section (it stays when its title
-// matched), and the panel used to drop it because no row was planned.
+// still a finding: the panel prints the title and its reason.
 func TestTitleOnlySectionIsShown(t *testing.T) {
 	result := &model.CheckResult{
 		Check:   &model.Check{ID: "hidden", Aspect: model.AspectFilesystem},

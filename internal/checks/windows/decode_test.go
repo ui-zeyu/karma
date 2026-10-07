@@ -183,8 +183,8 @@ func TestRunMRUOrder(t *testing.T) {
 	}
 }
 
-// Under structural parsing, entries with unlisted GUIDs only serve as path-chain placeholders; an
-// all-GUID tree stays silent (GUID strings no longer spam like in the sliding-window era).
+// Under structural parsing, entries with unlisted GUIDs only serve as path-chain
+// placeholders. An all-GUID tree stays silent.
 func TestShellbagDedupDropsGUID(t *testing.T) {
 	key := `HKCU\Software\Classes\...\BagMRU`
 	item := append([]byte{0x14, 0x00, 0x1f, 0x00},

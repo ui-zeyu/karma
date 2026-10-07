@@ -141,8 +141,8 @@ type scriptRead struct {
 	err error
 }
 
-// fieldFailure reads a Fields body's own error the way a text body's is read
-// (finishNative): an interface this host lacks leaves the tier unavailable —
+// fieldFailure reads a Fields body's own error the way textResult reads a text
+// body's: an interface this host lacks leaves the tier unavailable —
 // which is how a body that knows it cannot run here hands the walk on — while
 // anything else is the tier's failure. A body that stopped at the deadline has
 // no partial records to keep: its signature answers with a set or an error.

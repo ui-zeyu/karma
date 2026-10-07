@@ -1,8 +1,7 @@
-// A call's budget reaches the channel's own setup, not only the harvest: the ssh
-// library's session open and exec request take no context, so a server (or a
-// stateful firewall) that takes the connection and then stops answering used to
-// hang the run until SIGKILL — past the deadline the operator set, and past
-// Ctrl-C, because no part of the call was watching the context yet.
+// A call's budget reaches the channel's own setup, not only the harvest. The
+// ssh library's session open and exec request take no context, so they run
+// under session.setup: a server that accepts and then stops answering ends
+// with the deadline, and the transport is latched lost.
 
 package session
 

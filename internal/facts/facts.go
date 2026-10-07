@@ -4,8 +4,8 @@
 // its own small command and never reads a capability answer.
 //
 // Linux and Windows each get one collection with aligned shapes: both fan out
-// concurrently, and one failed path does not affect the remaining facts. Both probing
-// and collection use the current logged-in user.
+// concurrently, one failed path does not affect the remaining facts, and both
+// run as the logged-in user.
 package facts
 
 import (
@@ -251,7 +251,6 @@ func labeledLines(stdout string) map[string]string {
 		}
 		title := strings.TrimSpace(sec.Title)
 		if title == "" {
-			// A bare marker names no fact: the old walk skipped it the same way.
 			continue
 		}
 		for _, line := range sec.Lines {

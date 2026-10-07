@@ -1,9 +1,6 @@
-// A call's budget reaches the ttyd channel's own setup too: the wait for the
-// terminal to spawn and the pause before the line is typed are this channel's
-// steps, and they used to sit outside the deadline the operator set. A --timeout
-// of 300ms against a server that accepts the websocket and never spawns a
-// terminal then took ttydSpawnWait + ttydTypeaheadDelay (2.15s) before the
-// harvest's own timer even started.
+// A call's budget reaches the ttyd channel's own setup: the wait for the
+// terminal to spawn and the pause before the line is typed. A server that
+// accepts the websocket and never spawns must end with that budget.
 
 package session
 

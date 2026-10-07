@@ -61,9 +61,8 @@ func TestChecksForUnknownPlatformPanics(t *testing.T) {
 // unique within one chain (the fallback note joins `skipped → current`, and a
 // repeated label would present two indistinguishable tiers), and rule and filter
 // ids are unique within a check (a repeated filter id would fold two filters'
-// hidden-line counts into one). A tier's row cap is one value (model.RowCap), so
-// the "shape or scan, never both" pair that used to need a rule here cannot be
-// written down at all.
+// hidden-line counts into one). A tier's row cap is one value (model.RowCap):
+// Shape or Scan, never a pair of fields to keep apart.
 func TestCatalogInvariants(t *testing.T) {
 	for _, catalog := range [][]*model.Check{checks.ChecksFor(model.Linux), checks.ChecksFor(model.Windows)} {
 		ids := map[string]bool{}

@@ -56,8 +56,8 @@ the target: each check's own pinned command runs over the connection — a `cat`
 one `find -printf` per directory, `LC_ALL=C ps -efww` into the fields the native read states — and the
 text comes back to be read here. So the collection is one call per tier over a channel the operator
 already has, nothing has to be executable or writable on the target, and no host tool stands between
-karma and the evidence longer than the command itself. The panels of a remote run are those commands'
-own output read by the same rules, filters and lexers as always.
+karma and the evidence longer than the command itself. A remote panel is that command's answer, read
+by the same rules and filters as the native source.
 
 The reading happens here and the evidence comes from there: the catalog, the rules, the severity
 floors and the terminal are this end's, and the target only answers. Where the local channel runs
@@ -108,9 +108,9 @@ question. It filters the reading and nothing else.
 
 `--json` prints the run as a result stream instead of the report: one JSON object per check, written
 as that check finishes, carrying the check id, how its walk ended (`collected`, `skipped`, `failed`),
-the tier that answered, the chain it passed, that tier's raw text and standard error, and whether a
-row cap stopped it. Nothing in a line has been read or shaped, so the floors and the lexers above are
-the reader's business, which makes it a scripting surface (`karma local --json df mounts | jq`).
+the tier that answered, the chain it passed, that tier's raw text or its fields, its standard error,
+and whether a row cap stopped it. Nothing in a line has been read or shaped, so the floors and the
+lexers above are the reader's business (`karma local --json df mounts | jq`).
 
 **One source per channel.** The local channel reads with karma's own bodies, in process; `ssh` and
 `ttyd` read the target's shell. That is one decision rather than an option, because an in-process body
@@ -148,7 +148,8 @@ blank space, and the rows of an `ls -l` listing line up column by column.
 Below the hit colors sits syntax coloring — bash and PowerShell through chroma, and built-in shapes
 for `ls -l`, `env`, `dmesg`, tables, trees (one hue per nesting level), `passwd`, listen tables, `ip`
 addresses and routes, and so on.
-Color is dropped when the output is not a terminal, and `NO_COLOR`/`CLICOLOR` are honored.
+Color follows `NO_COLOR`, `CLICOLOR` and `CLICOLOR_FORCE`. A non-empty `NO_COLOR` wins, and a
+non-terminal is plain unless color is forced.
 
 The command line's own screens are that first panel too: `--help` opens with the command's band
 carrying the author on its right edge, the build's version on the rail's first line, and the
@@ -161,7 +162,7 @@ intact.
 ## Catalog
 
 Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log`
-`kernel` `package` (76 checks). Windows aspects: `system` `identity` `process` `network`
+`kernel` `package` (77 checks). Windows aspects: `system` `identity` `process` `network`
 `persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (43 checks).
 `karma list` prints them as a heading tree, every row carrying the check id, its title and its probe
 chain; column widths are measured over the whole selection, so the groups line up.
@@ -193,5 +194,5 @@ Two properties hold the design together. Release binaries are statically linked
 `syslog(2)`, `sock_diag`/`rtnetlink`, utmp/wtmp records, `lstat` and `debug/elf` — so neither
 `LD_PRELOAD` nor a replaced host tool can change what karma reads. And a tier is one source's
 reading: `model.Native` and `model.Fields` run where karma itself stands, and every remote reading is
-the target's own tool answering a pinned command. One text shape, so the same rules, filters and
-lexers read it either way.
+the target's own tool answering a pinned command. Both readings produce the same records or the same
+text, so the same rules and filters read either.
