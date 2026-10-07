@@ -19,7 +19,7 @@ func TestLiveObserverReportsDamageAndKeepsTheOrderMoving(t *testing.T) {
 	var buf bytes.Buffer
 	first := &model.Check{ID: "listen", Aspect: model.AspectNetwork}
 	second := &model.Check{ID: "users", Aspect: model.AspectIdentity}
-	observer := NewLiveObserver(&buf, []*model.Check{first, second}, 40, 48, false)
+	observer := NewLiveObserver(&buf, []*model.Check{first, second}, 40, 48, false, false)
 	observer.Start()
 	// The result of "listen" never arrives: the callback that would have carried
 	// it is the one that broke.
@@ -47,7 +47,7 @@ func TestLiveObserverReportsDamageAndKeepsTheOrderMoving(t *testing.T) {
 func TestLiveObserverSurvivesAPanickingPanel(t *testing.T) {
 	var buf bytes.Buffer
 	check := &model.Check{ID: "listen", Aspect: model.AspectNetwork}
-	observer := NewLiveObserver(&buf, []*model.Check{check}, 40, 48, false)
+	observer := NewLiveObserver(&buf, []*model.Check{check}, 40, 48, false, false)
 	original := panelRenderer
 	panelRenderer = func(*model.CheckResult, int, int, bool) string { panic("layout blew up") }
 	t.Cleanup(func() { panelRenderer = original })

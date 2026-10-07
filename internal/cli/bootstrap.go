@@ -26,6 +26,7 @@ import (
 	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -50,7 +51,7 @@ func bootCall(ctx context.Context, sess session.Session, inv model.Invocation) m
 }
 
 // runBootstrap places this binary on the target and prints where it landed.
-func runBootstrap(ctx context.Context, transport session.Transport) error {
+func runBootstrap(ctx context.Context, w io.Writer, transport session.Transport) error {
 	sess, err := transport.Open(ctx)
 	if err != nil {
 		return err
@@ -61,11 +62,11 @@ func runBootstrap(ctx context.Context, transport session.Transport) error {
 		return err
 	}
 	if reused {
-		fmt.Printf("karma %s is already at %s (md5 verified)\n", buildVersion, path)
+		fmt.Fprintf(w, "karma %s is already at %s (md5 verified)\n", buildVersion, path)
 	} else {
-		fmt.Printf("karma %s placed at %s\n", buildVersion, path)
+		fmt.Fprintf(w, "karma %s placed at %s\n", buildVersion, path)
 	}
-	fmt.Printf("run it on the target yourself, for example: %s local\n", path)
+	fmt.Fprintf(w, "run it on the target yourself, for example: %s local\n", path)
 	return nil
 }
 

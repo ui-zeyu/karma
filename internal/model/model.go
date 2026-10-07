@@ -470,13 +470,13 @@ type HostFacts struct {
 	// Collection identity (USERDOMAIN\user on Windows; empty on Linux because
 	// the report header already carries the uid)
 	User string
-	// ProbeCut marks the capability probe — the fact layer's own "which tools
-	// can this target answer with" search — cut short by its deadline. A name it
-	// did not reach reads as absent, so the fact layer takes a path it would not
-	// have taken (on Windows, the registry instead of PowerShell), and the run
-	// owes the operator that explanation. No check's walk depends on it: a tier
-	// whose tool is missing says so itself when it runs, and the chain falls
-	// through then.
+	// ProbeCut marks the Windows capability probe — the two-step decision
+	// between PowerShell and the registry — cut short by its deadline: a
+	// PowerShell the probe did not reach reads as absent, so the fact layer
+	// took the registry path and the run owes the operator that explanation.
+	// No check's walk depends on it: a tier whose tool is missing says so
+	// itself when it runs, and the chain falls through then. Linux states no
+	// probe at all.
 	ProbeCut bool
 }
 

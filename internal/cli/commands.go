@@ -127,7 +127,7 @@ func runBootstrapMode(cmd *cobra.Command, transport session.Transport, extra []s
 		return usagef(cmd, "bootstrap only uploads the binary; run it on the target yourself (unexpected: %s)",
 			strings.Join(extra, " "))
 	}
-	return runBootstrap(cmd.Context(), transport)
+	return runBootstrap(cmd.Context(), cmd.OutOrStdout(), transport)
 }
 
 // runMtimeMode is the mtime form's entry from either channel: dirs are the words

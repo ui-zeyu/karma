@@ -12,16 +12,28 @@
 package render
 
 import (
+	"io"
 	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"karma/internal/fault"
 	"karma/internal/form"
 	"karma/internal/model"
 )
+
+// StreamColored reports whether the report's writer takes color: the stream's
+// own environment answer (NO_COLOR off, CLICOLOR_FORCE on), the same detection
+// the command-line skeleton's styles bind to. The chrome — bands, rails, the
+// legend — colors through the renderer's own profile, which reads the same
+// environment, so a report is colored or plain as a whole: a forced-color pipe
+// colors its tables too, and a muted terminal mutes its bands too.
+func StreamColored(w io.Writer) bool {
+	return termenv.NewOutput(w).EnvColorProfile() != termenv.Ascii
+}
 
 // --- regex helpers ---
 

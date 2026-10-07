@@ -29,6 +29,12 @@ type LiveObserver struct {
 	maxLines int
 	term     int
 	tty      bool
+	// color is whether the writer's stream takes color (StreamColored): the
+	// forms paint their bodies by it, and the chrome answers the same
+	// environment through the renderer's own profile, so one decision colors
+	// the report. The spinner and the line eraser stay on tty alone — they are
+	// cursor control, not color, and a dumb terminal still draws them.
+	color bool
 
 	order    map[*model.Check]int
 	events   chan observerEvent
@@ -66,8 +72,10 @@ const (
 const progressInterval = 100 * time.Millisecond
 
 // NewLiveObserver builds the observer. With tty false no progress line is
-// drawn and panels are emitted in order.
-func NewLiveObserver(w io.Writer, checks []*model.Check, maxLines, term int, tty bool) *LiveObserver {
+// drawn and panels are emitted in order; color is StreamColored's answer for
+// the writer, which keeps the form-drawn bodies and the chrome on one
+// decision.
+func NewLiveObserver(w io.Writer, checks []*model.Check, maxLines, term int, tty, color bool) *LiveObserver {
 	order := make(map[*model.Check]int, len(checks))
 	for index, check := range checks {
 		order[check] = index
@@ -77,6 +85,7 @@ func NewLiveObserver(w io.Writer, checks []*model.Check, maxLines, term int, tty
 		maxLines: maxLines,
 		term:     term,
 		tty:      tty,
+		color:    color,
 		order:    order,
 		events:   make(chan observerEvent, 2*len(checks)+1),
 		stop:     make(chan struct{}),
@@ -208,7 +217,7 @@ func (o *LiveObserver) flush() {
 	}
 }
 func (o *LiveObserver) emit(result *model.CheckResult) {
-	text, failed := renderPanel(result, o.maxLines, o.term, o.tty)
+	text, failed := renderPanel(result, o.maxLines, o.term, o.color)
 	if text == "" && !failed { // no signal: stay silent
 		return
 	}

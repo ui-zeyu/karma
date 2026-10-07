@@ -64,13 +64,9 @@ func Analyze(text string, rules []model.Matcher, filters []model.LineFilter, sca
 			number++
 			rec := piece.recordAt(index, line, &textLine)
 			matches := append(judgeRecord(rec, rules), piece.notes[index]...)
-			severity := lineSeverity(matches)
-			if !floor.Keeps(severity) {
-				filtered = filtered.add(belowFloor)
-				continue
-			}
-			if id, hidden := hideReason(rec, matches, keepFilters, dropFilters); hidden {
-				filtered = filtered.add(id)
+			severity, hid := gate(rec, matches, floor, keepFilters, dropFilters)
+			if hid != "" {
+				filtered = filtered.add(hid)
 				continue
 			}
 			kept = append(kept, model.Line{
@@ -114,6 +110,23 @@ func capBytes(text string, limit int) (string, bool) {
 		cut = cut[:len(cut)-1]
 	}
 	return cut, true
+}
+
+// gate is one record's way through the reading's two gates — the severity
+// floor first, then the line filters — returning its severity and the id of
+// whichever gate hid it. The order is the reading's own rule, walked by the
+// text path and the records path alike: a keep filter does not rescue a row
+// below the floor, and a drop filter does not hide a row above it.
+func gate(rec *model.Record, matches []model.Match, floor model.SeverityFloor,
+	keepFilters, dropFilters []model.LineFilter) (model.Severity, string) {
+	severity := lineSeverity(matches)
+	if !floor.Keeps(severity) {
+		return severity, belowFloor
+	}
+	if id, hidden := hideReason(rec, matches, keepFilters, dropFilters); hidden {
+		return severity, id
+	}
+	return severity, ""
 }
 
 // hideReason returns the filter id that hides the record; a visible record
@@ -297,13 +310,9 @@ func AnalyzeRecords(set *model.RecordSet, rules []model.Matcher, filters []model
 		rec := &set.Rows[index]
 		line := rec.LineText()
 		matches := judgeRecord(rec, rules)
-		severity := lineSeverity(matches)
-		if !floor.Keeps(severity) {
-			filtered = filtered.add(belowFloor)
-			continue
-		}
-		if id, hidden := hideReason(rec, matches, keepFilters, dropFilters); hidden {
-			filtered = filtered.add(id)
+		severity, hid := gate(rec, matches, floor, keepFilters, dropFilters)
+		if hid != "" {
+			filtered = filtered.add(hid)
 			continue
 		}
 		kept = append(kept, model.Line{

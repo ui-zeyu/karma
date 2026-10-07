@@ -203,7 +203,7 @@ func bodyRows(result *model.CheckResult, maxLines, term int, color bool) []strin
 		if section.Title != "" {
 			rows = append(rows, sectionTitle(section, width)...)
 		}
-		if block, ok := formBlock(result.Check.Form, section, planned, width); ok {
+		if block, ok := formBlock(result.Check.Form, section, planned); ok {
 			rows = append(rows, result.Check.Form.Render(block, model.RenderOptions{Width: width, Color: color})...)
 			continue
 		}
@@ -217,7 +217,7 @@ func bodyRows(result *model.CheckResult, maxLines, term int, color bool) []strin
 // display budget hid rows. ok is false when this section is not all records —
 // a form-less check, or a body the shaper declined — and the caller then draws
 // the section as text.
-func formBlock(form model.Form, section model.Section, planned []linePlan, width int) (model.Block, bool) {
+func formBlock(form model.Form, section model.Section, planned []linePlan) (model.Block, bool) {
 	if form == nil || len(section.Columns) == 0 {
 		return model.Block{}, false
 	}
@@ -384,7 +384,7 @@ func hitSpans(text string, matches []model.Match) []paintSpan {
 // withReason appends the reason ⟨…⟩ of the highest hit severity at the end of
 // the row; when it does not fit it goes on its own line aligned with the body.
 func withReason(row string, matches []model.Match, width int) []string {
-	reason := reasonText(matches)
+	reason := form.ReasonFor(matches)
 	if reason == "" {
 		return []string{row}
 	}
@@ -394,9 +394,3 @@ func withReason(row string, matches []model.Match, width int) []string {
 	}
 	return []string{row, reasonSt}
 }
-
-// reasonText is what the reading layer says about a finding: the most severe
-// hit's message in angle brackets, and the count of the hits beside it. A row
-// with no finding says nothing, which is also what keeps the reason off a quiet
-// row's line.
-func reasonText(matches []model.Match) string { return form.ReasonFor(matches) }

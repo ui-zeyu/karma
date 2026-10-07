@@ -489,7 +489,7 @@ func TestPanelRenderPanicFallsBackToPlainBlock(t *testing.T) {
 func TestProgressDoesNotStickToPanels(t *testing.T) {
 	var buf lockedBuffer
 	check := &model.Check{ID: "listen", Aspect: model.AspectNetwork}
-	obs := NewLiveObserver(&buf, []*model.Check{check}, 40, 48, true)
+	obs := NewLiveObserver(&buf, []*model.Check{check}, 40, 48, true, true)
 	obs.Start()
 	obs.CheckStarted(check)
 	time.Sleep(150 * time.Millisecond)

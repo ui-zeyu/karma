@@ -120,7 +120,7 @@ func execute(ctx context.Context, w, warn io.Writer, transport session.Transport
 			Selectors: SelectorTokens(options.Selectors),
 			Floor:     options.MinSeverity,
 		}, width)
-		live := render.NewLiveObserver(w, selected, options.MaxLines, width, isTerminal(w))
+		live := render.NewLiveObserver(w, selected, options.MaxLines, width, isTerminal(w), render.StreamColored(w))
 		live.Start()
 		defer live.Close()
 		observer = live

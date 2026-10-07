@@ -35,8 +35,9 @@ func HomeTree(title, body string) *model.Shaped {
 		}
 		// The row's path field is the whole path with the symlink's target
 		// after it; the tree position is the path alone, and the label keeps
-		// the target the row carried. match[2] is the link count, the one
-		// field tree's flags do not print.
+		// the target the row carried. The regex leaves find's link count — the
+		// one field tree's flags do not print — uncaptured, so the label drops
+		// it by construction.
 		display := match[8]
 		path, _, _ := strings.Cut(display, " -> ")
 		label := fmt.Sprintf("[%s %s %s %s %s %s %s]  %s",

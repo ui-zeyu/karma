@@ -64,8 +64,6 @@ func TestCollectLinux(t *testing.T) {
 		switch v := inv.(type) {
 		case model.Shell:
 			switch {
-			case strings.Contains(v.Script, "for name in"):
-				return model.RunResult{Stdout: "/usr/bin/hostname\n/usr/bin/uname\n/usr/bin/id\n", Verdict: model.VerdictAnswered}
 			case strings.Contains(v.Script, "hostname"):
 				return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "web-01\n"}
 			case strings.Contains(v.Script, "os-release"):
@@ -89,19 +87,10 @@ func TestCollectLinux(t *testing.T) {
 	if got.OsPretty != "Ubuntu 22.04.3 LTS" || got.UID != 0 || !got.IsRoot() {
 		t.Fatalf("wrong host facts: %+v", got)
 	}
-	// The capability probe searches exactly this package's own names, one PATH
-	// search per name in a for loop: a check's tiers are not part of it, so no
-	// name a catalog carries can appear here.
-	if !strings.Contains(fake.joinedCalls(), "for name in") {
-		t.Fatalf("capability probe should be a for loop: %q", fake.joinedCalls())
-	}
-	for _, name := range []string{"'hostname'", "'id'", "'uname'"} {
-		if !strings.Contains(fake.joinedCalls(), name) {
-			t.Errorf("the probe should search %s: %q", name, fake.joinedCalls())
-		}
-	}
-	if strings.Contains(fake.joinedCalls(), "'find'") {
-		t.Errorf("the probe should search only this package's names: %q", fake.joinedCalls())
+	// Linux reads no capability answer: each fact is its own call, and a tool
+	// that is missing says so through that call alone.
+	if calls := fake.joinedCalls(); strings.Contains(calls, "command -v") || strings.Contains(calls, "for name in") {
+		t.Fatalf("the Linux facts should carry no capability probe: %q", calls)
 	}
 }
 

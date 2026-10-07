@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-// Fact collection ships two dash scripts: syntax is now checked with sh -n, pinned as a test instead of a manual step.
+// Fact collection ships one dash script: syntax is checked with sh -n, pinned as a test instead of a manual step.
 func TestFactShellScriptsParse(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh, skipping script syntax check")
 	}
-	for _, script := range []string{hostnameScript, binProbe([]string{"find", "docker"})} {
+	for _, script := range []string{hostnameScript} {
 		cmd := exec.Command("sh", "-n")
 		cmd.Stdin = strings.NewReader(script)
 		if out, err := cmd.CombinedOutput(); err != nil {

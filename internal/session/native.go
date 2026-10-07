@@ -31,10 +31,35 @@ import (
 // context) has to hand back its partial answer before the caller abandons it.
 const bodyGrace = 250 * time.Millisecond
 
-// nativeResult is one finished in-process body.
-type nativeResult struct {
-	text string
-	err  error
+// boundedCall runs one in-process body under the call's deadline. The body runs
+// on its own goroutine behind the fault boundary, so one broken tier fails
+// alone; the caller stops waiting when the deadline ends, because a body parked
+// in a syscall — a FIFO planted at a path it reads, a wedged mount, a blocked
+// device read — observes no context and no signal can end it: after bodyGrace
+// the call is reported as the cut and the goroutine is left where it is, holding
+// nothing the report needs. A body that does respect the context gets the grace
+// to hand back the partial text it had already read.
+func boundedCall(ctx context.Context, body func(context.Context) model.RunResult) model.RunResult {
+	// Buffered: an abandoned body must never block on its own send.
+	done := make(chan model.RunResult, 1)
+	go func() {
+		result, damage := fault.Result("in-process tier", func() model.RunResult { return body(ctx) })
+		if damage != nil {
+			result = model.RunResult{Verdict: model.VerdictFailed, Stderr: damage.Error(), ExitCode: 1}
+		}
+		done <- result
+	}()
+	select {
+	case result := <-done:
+		return result
+	case <-ctx.Done():
+		select {
+		case result := <-done:
+			return result
+		case <-time.After(bodyGrace):
+			return model.RunResult{Verdict: cutVerdict(ctx), ExitCode: -1}
+		}
+	}
 }
 
 func runNative(ctx context.Context, fn func(context.Context) (string, error), cap model.RowCap) model.RunResult {
@@ -44,35 +69,36 @@ func runNative(ctx context.Context, fn func(context.Context) (string, error), ca
 		// the runner falls through.
 		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
 	}
-	// Buffered: an abandoned body must never block on its own send.
-	done := make(chan nativeResult, 1)
-	go func() {
-		// A body parses whatever the target holds, and this goroutine is
-		// outside the runner's own boundary: a panic here goes through fault,
-		// so one broken tier fails alone instead of ending the report.
-		result, err := fault.Result("in-process tier", func() nativeResult {
-			text, err := fn(ctx)
-			return nativeResult{text: text, err: err}
-		})
-		if err != nil {
-			result = nativeResult{err: err}
-		}
-		done <- result
-	}()
-	select {
-	case result := <-done:
-		return finishNative(result, cap)
-	case <-ctx.Done():
-		select {
-		case result := <-done:
-			return finishNative(result, cap)
-		case <-time.After(bodyGrace):
-		}
-		// The body is behind a syscall that ignores the context. Report the cut
-		// and leave the goroutine where it is: it holds nothing the report
-		// needs, and the process exits without waiting for it.
-		return model.RunResult{Verdict: cutVerdict(ctx), ExitCode: -1}
+	result := boundedCall(ctx, func(ctx context.Context) model.RunResult { return textResult(fn(ctx)) })
+	if result.Verdict != model.VerdictAnswered {
+		return result
 	}
+	text, truncated := capLines(result.Stdout, cap.Rows)
+	if int64(len(text)) > maxHarvestBytes {
+		text = text[:maxHarvestBytes]
+		truncated = true
+	}
+	result.Stdout, result.Truncated = validText(text), truncated
+	return result
+}
+
+// textResult is one finished text body's result: the endings a channel reads
+// from its own processes, stated at the boundary where the body's context is
+// the call's — a deadline or the operator's cancellation keeps the partial text
+// the body had produced.
+func textResult(text string, err error) model.RunResult {
+	switch {
+	case err == nil:
+	case errors.Is(err, model.ErrTierUnavailable):
+		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: err.Error(), ExitCode: 127}
+	case errors.Is(err, context.DeadlineExceeded):
+		return model.RunResult{Verdict: model.VerdictTimedOut, Stdout: validText(text), ExitCode: -1}
+	case errors.Is(err, context.Canceled):
+		return model.RunResult{Verdict: model.VerdictInterrupted, Stdout: validText(text), ExitCode: -1}
+	default:
+		return model.RunResult{Verdict: model.VerdictFailed, Stderr: err.Error(), ExitCode: 1}
+	}
+	return model.RunResult{Verdict: model.VerdictAnswered, Stdout: validText(text)}
 }
 
 // runFields runs a Fields tier's body: the same boundary as runNative (a panic
@@ -83,31 +109,13 @@ func runFields(ctx context.Context, read func(context.Context) (*model.RecordSet
 	if read == nil {
 		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
 	}
-	done := make(chan model.RunResult, 1)
-	go func() {
-		result, err := fault.Result("in-process tier", func() model.RunResult {
-			set, err := read(ctx)
-			if err != nil {
-				return fieldFailure(err)
-			}
-			return model.RunResult{Verdict: model.VerdictAnswered, Records: set}
-		})
+	return finishFields(boundedCall(ctx, func(ctx context.Context) model.RunResult {
+		set, err := read(ctx)
 		if err != nil {
-			result = model.RunResult{Verdict: model.VerdictFailed, Stderr: err.Error(), ExitCode: 1}
+			return fieldFailure(err)
 		}
-		done <- result
-	}()
-	select {
-	case result := <-done:
-		return finishFields(result, cap)
-	case <-ctx.Done():
-		select {
-		case result := <-done:
-			return finishFields(result, cap)
-		case <-time.After(bodyGrace):
-		}
-		return model.RunResult{Verdict: cutVerdict(ctx), ExitCode: -1}
-	}
+		return model.RunResult{Verdict: model.VerdictAnswered, Records: set}
+	}), cap)
 }
 
 // finishFields is the Fields tier's verdict mapping: the same endings as a text
@@ -186,31 +194,6 @@ func finishScript(result model.RunResult, script model.Script, cap model.RowCap)
 	parsed.Records = read.set
 	parsed.Stdout = ""
 	return finishFields(parsed, cap)
-}
-
-// finishNative turns one finished body into the tier's result. The body's
-// context is the call's own, so a context error it reports is either this
-// call's deadline or the operator's cancellation — the same two endings every
-// other tier reports, read from the same place.
-func finishNative(result nativeResult, cap model.RowCap) model.RunResult {
-	switch {
-	case result.err == nil:
-	case errors.Is(result.err, model.ErrTierUnavailable):
-		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: result.err.Error(), ExitCode: 127}
-	case errors.Is(result.err, context.DeadlineExceeded):
-		return model.RunResult{Verdict: model.VerdictTimedOut, Stdout: validText(result.text), ExitCode: -1}
-	case errors.Is(result.err, context.Canceled):
-		return model.RunResult{Verdict: model.VerdictInterrupted, Stdout: validText(result.text), ExitCode: -1}
-	default:
-		return model.RunResult{Verdict: model.VerdictFailed, Stderr: result.err.Error(), ExitCode: 1}
-	}
-
-	text, truncated := capLines(result.text, cap.Rows)
-	if int64(len(text)) > maxHarvestBytes {
-		text = text[:maxHarvestBytes]
-		truncated = true
-	}
-	return model.RunResult{Verdict: model.VerdictAnswered, Stdout: validText(text), Truncated: truncated}
 }
 
 // capLines keeps the first limit lines of a body and reports whether more

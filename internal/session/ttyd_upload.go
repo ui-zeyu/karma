@@ -232,10 +232,3 @@ func (c *ttydCall) typeBody(ctx context.Context, encoded string) error {
 	}
 	return nil
 }
-
-// probe verifies the channel end to end on one throwaway connection: type one
-// base64 round trip and watch it come back. Rejected credentials fail the
-// dial; an echo without the payload means the target's base64 is missing; and
-// silence means the server drops client input (readonly, or ttyd's command is
-// not a shell). The title frame carries ttyd's command line, so the error can
-// say what the terminal runs.

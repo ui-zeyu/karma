@@ -1,4 +1,7 @@
-// Package facts collects opening facts: capability probe + host info, one round trip.
+// Package facts collects opening facts: host info in one round trip. The
+// Windows collection is two-step — a PowerShell capability probe decides
+// between one PS cold start and the registry — while Linux asks each fact as
+// its own small command and never reads a capability answer.
 //
 // Linux and Windows each get one collection with aligned shapes: both fan out
 // concurrently, and one failed path does not affect the remaining facts. Both probing
@@ -26,12 +29,6 @@ import (
 	"karma/internal/session"
 	"karma/internal/textutil"
 )
-
-// linuxFactBins are the binaries this package's own Linux commands need, and
-// the whole list the capability probe searches: the facts are collected in one
-// round trip, so the probe is this layer's business. A check's tiers are not
-// part of it — a tier whose tool is missing answers so itself when it runs.
-var linuxFactBins = []string{"hostname", "uname", "id"}
 
 // windowsFactBins are the binaries this package's own Windows commands need.
 // PowerShell's presence decides how the facts are collected (one PS cold start,
@@ -87,13 +84,12 @@ func CollectFor(ctx context.Context, platform model.Platform, sess session.Sessi
 	}
 }
 
-// Collect concurrently gathers binary presence and host facts (Linux directory).
+// Collect concurrently gathers the Linux host facts over the session. Each
+// fact is one small command under its own budget, and a tool that is missing
+// says so through its own call: nothing here reads a capability answer, so
+// there is no probe to cut.
 func Collect(ctx context.Context, sess session.Session) model.HostFacts {
-	names := probeBins(linuxFactBins)
 	results := gather(ctx, map[string]func(context.Context) model.RunResult{
-		"bins": func(ctx context.Context) model.RunResult {
-			return runShell(ctx, sess, binProbe(names), factProbeBudget)
-		},
 		"hostname": func(ctx context.Context) model.RunResult { return runShell(ctx, sess, hostnameScript, factBudget) },
 		"kernel": func(ctx context.Context) model.RunResult {
 			return call(ctx, sess, model.NewCommand("uname", "-r"), factBudget)
@@ -110,7 +106,6 @@ func Collect(ctx context.Context, sess session.Session) model.HostFacts {
 		Kernel:   firstLine(results["kernel"].Stdout, ""),
 		OsPretty: prettyName(results["os"].Stdout),
 		UID:      parseUID(results["uid"].Stdout),
-		ProbeCut: results["bins"].Verdict == model.VerdictTimedOut,
 	}
 }
 
@@ -220,12 +215,6 @@ func probeBins(names []string) []string {
 	sorted := slices.Clone(names)
 	slices.Sort(sorted)
 	return slices.Compact(sorted)
-}
-
-// binProbe: dash's command -v only recognizes the first name, so probe one by one for portability.
-func binProbe(names []string) string {
-	words := lo.Map(names, func(name string, _ int) string { return "'" + name + "'" })
-	return "for name in " + strings.Join(words, " ") + "; do command -v \"$name\" 2>/dev/null || true; done"
 }
 
 // probeScript is the PowerShell capability probe: Get-Command names each one, and those present report in.
