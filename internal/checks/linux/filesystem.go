@@ -326,7 +326,9 @@ var FilesystemChecks = []*model.Check{
 		},
 		define.CheckOpt{
 			// A target that has tree installed already drew a tree, and that body
-			// passes through; the walk's listing rows are drawn here.
+			// passes through; the walk's listing rows are drawn here. Either way
+			// the tree lexer colors the branches by nesting level.
+			Syntax:    model.SyntaxTree,
 			Normalize: shape.HomeTree,
 			Rules:     []model.Matcher{sshMaterialRule, tunnelToolRule, define.KeywordRule},
 		}),

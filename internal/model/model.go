@@ -76,6 +76,7 @@ const (
 	SyntaxLsmod      Syntax = "lsmod"
 	SyntaxIPAddr     Syntax = "ip-addr"
 	SyntaxTable      Syntax = "table"
+	SyntaxTree       Syntax = "tree"
 	SyntaxTop        Syntax = "top"
 	SyntaxDf         Syntax = "df"
 	SyntaxLastlog    Syntax = "lastlog"

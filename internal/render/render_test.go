@@ -14,7 +14,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"karma/internal/form"
 	"karma/internal/model"
+	"karma/internal/shape"
 )
 
 var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -1177,5 +1179,79 @@ func TestFstabColumns(t *testing.T) {
 				t.Fatalf("options should stay default: %+v", span)
 			}
 		}
+	}
+}
+
+// The tree lexer colors a drawn lead by nesting: each bar the hue of the level
+// it descends from, the branch glyph the node's own, and tree's own closing
+// count muted; everything else — a root's label, a line no tree drew — stays
+// plain. Both drawers feed it, so the records tree and the shaped tree color
+// alike.
+func TestTreeStylerColorsTheLeadByLevel(t *testing.T) {
+	rec := func(pid, ppid, command string) model.BlockItem {
+		return model.BlockItem{Rec: &model.Record{Fields: []model.Field{
+			{Name: "PID", Value: pid}, {Name: "PPID", Value: ppid}, {Name: "COMMAND", Value: command},
+		}}}
+	}
+	nest := form.Tree{ID: "PID", Parent: "PPID", Label: []string{"PID", "COMMAND"}}.Render(model.Block{
+		Header: []string{"PID", "PPID", "COMMAND"},
+		Items: []model.BlockItem{
+			rec("1", "0", "/sbin/init"),
+			rec("948", "1", "sshd"),
+			rec("2210", "948", "bash"),
+		},
+	}, model.RenderOptions{Width: 80})
+	if spans := styleTree(nest[0]); spans != nil {
+		t.Errorf("a root's own line has no branch to color: %v", spans)
+	}
+	first := paintSpan{Start: 0, End: len("└── "), Style: styleOf(form.LevelPaint(1))}
+	if spans := styleTree(nest[1]); len(spans) != 1 || spans[0] != first {
+		t.Errorf("a first-level glyph takes the cycle's first tint: %v", spans)
+	}
+	// A gap segment paints nothing, so the second-level glyph starts four bytes late.
+	under := paintSpan{Start: len("    "), End: len("    ") + len("└── "), Style: styleOf(form.LevelPaint(2))}
+	if spans := styleTree(nest[2]); len(spans) != 1 || spans[0] != under {
+		t.Errorf("the glyph under a closed branch takes its own level's hue: %v", spans)
+	}
+
+	drawn := shape.HomeTree("", "drwxr-x--- 5 lab lab 4096 Jul 29 17:40 /home\n"+
+		"drwxr-x--- 5 lab lab 4096 Jul 29 17:40 /home/lab\n"+
+		"-rw------- 1 lab lab 1929 Jul 29 17:49 /home/lab/.bash_history\n"+
+		"drwx------ 2 lab lab 4096 Jul 29 13:41 /home/lab/.ssh\n"+
+		"-rw------- 1 lab lab 99 Jul 29 13:41 /home/lab/.ssh/authorized_keys\n"+
+		"drwxr-xr-x 2 lab lab 4096 Jan 06 16:23 /home/other user\n")
+	if drawn == nil {
+		t.Fatal("the listing rows should be drawn as a tree")
+	}
+	// /home/lab is a mid child of /home, so its own row carries a bar and a
+	// glyph of adjacent levels; the file under the closed .ssh branch carries a
+	// bar, a gap, then its glyph.
+	sibling := "│   ├── [-rw------- lab lab 1929 Jul 29 17:49]  /home/lab/.bash_history"
+	adjacent := []paintSpan{
+		{Start: 0, End: len("│   "), Style: styleOf(form.LevelPaint(1))},
+		{Start: len("│   "), End: len("│   ") + len("├── "), Style: styleOf(form.LevelPaint(2))},
+	}
+	if spans := styleTree(sibling); len(spans) != 2 || spans[0] != adjacent[0] || spans[1] != adjacent[1] {
+		t.Errorf("a bar keeps its level's hue and the glyph takes the node's: %v", spans)
+	}
+	deep := "│       └── [-rw------- lab lab 99 Jul 29 13:41]  /home/lab/.ssh/authorized_keys"
+	third := []paintSpan{
+		{Start: 0, End: len("│   "), Style: styleOf(form.LevelPaint(1))},
+		{Start: len("│   ") + len("    "), End: len("│   ") + len("    ") + len("└── "), Style: styleOf(form.LevelPaint(3))},
+	}
+	if spans := styleTree(deep); len(spans) != 2 || spans[0] != third[0] || spans[1] != third[1] {
+		t.Errorf("a gap paints nothing and the third level's glyph takes its hue: %v", spans)
+	}
+	count := "3 directories, 2 files"
+	for _, line := range []string{sibling, deep, count} {
+		if !strings.Contains(drawn.Text, line) {
+			t.Fatalf("the shaped tree should contain %q:\n%s", line, drawn.Text)
+		}
+	}
+	if spans := styleTree(count); len(spans) != 1 || spans[0].Style != mutedStyle {
+		t.Errorf("tree's own closing count should be muted: %v", spans)
+	}
+	if spans := styleTree("|-- ascii branches a non-UTF-8 locale prints"); spans != nil {
+		t.Errorf("a line no tree of ours drew stays plain: %v", spans)
 	}
 }

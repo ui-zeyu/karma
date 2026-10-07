@@ -104,15 +104,27 @@ func SeverityBorder(severity model.Severity) lipgloss.Color {
 	return hue.Border
 }
 
-// Tints is how many colors the column cycle holds.
+// Tints is how many colors the structural cycle holds.
 const Tints = 5
 
-// columnPaints is the column cycle: the blue family first, then the dark
-// family. Five tints take a table's columns apart without taking a severity
-// color, so a hit inside a cell still reads as a hit.
-var columnPaints = [...]Paint{
+// tintPaints is the structural hue cycle: the blue family first, then the dark
+// family. Five tints take a table's columns and a tree's nesting levels apart
+// without taking a severity color, so a hit inside a cell or on a node still
+// reads as a hit.
+var tintPaints = [...]Paint{
 	{FG: "4"}, {FG: "3"}, {FG: "5"}, {FG: "2"}, {FG: "6"},
 }
 
 // ColumnPaint is the tint of the index-th column of the cycle.
-func ColumnPaint(index int) Paint { return columnPaints[index%len(columnPaints)] }
+func ColumnPaint(index int) Paint { return tintPaints[index%Tints] }
+
+// LevelPaint is the tint of a tree's level-th nesting under its root — the
+// first branch is level 1, and a lead's bars carry the hue of the level each
+// one descends from. The cycle repeats past its end, and level 0, a root's own
+// line, carries no branch and stays muted.
+func LevelPaint(level int) Paint {
+	if level < 1 {
+		return MutedPaint()
+	}
+	return tintPaints[(level-1)%Tints]
+}

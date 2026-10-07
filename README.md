@@ -146,7 +146,8 @@ blank space, and the rows of an `ls -l` listing line up column by column.
 | low | bright cyan thick rail |
 
 Below the hit colors sits syntax coloring — bash and PowerShell through chroma, and built-in shapes
-for `ls -l`, `env`, `dmesg`, tables, `passwd`, listen tables, `ip` addresses and routes, and so on.
+for `ls -l`, `env`, `dmesg`, tables, trees (one hue per nesting level), `passwd`, listen tables, `ip`
+addresses and routes, and so on.
 Color is dropped when the output is not a terminal, and `NO_COLOR`/`CLICOLOR` are honored.
 
 The command line's own screens are that first panel too: `--help` opens with the command's band

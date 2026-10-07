@@ -104,8 +104,8 @@ func TestTreeHangsTheReasonUnderTheBranch(t *testing.T) {
 	child.Matches = []model.Match{hit("tmp-path", model.Medium, "temp path", 3, 0, 6)}
 	parent := node("948", "1", "/usr/sbin/sshd -D")
 	lines = processTree.Render(treeBlock(parent, child), model.RenderOptions{Width: 80, Color: true})
-	if len(lines) != 3 || !strings.Contains(lines[1], MutedPaint().Style().Render("└── ")) {
-		t.Fatalf("the child hangs from its parent with a muted lead: %q", lines)
+	if len(lines) != 3 || !strings.Contains(lines[1], LevelPaint(1).Style().Render("└── ")) {
+		t.Fatalf("the child hangs from its parent with its level's hue on the lead: %q", lines)
 	}
 	if want := "    " + DimPaint().Style().Render("⟨temp path⟩"); lines[2] != want {
 		t.Errorf("the reason should hang under the branch at the label's edge: %q", lines[2])
@@ -162,5 +162,35 @@ func TestTreeKeepsTheCallersNote(t *testing.T) {
 	), model.RenderOptions{Width: 80})
 	if len(lines) != 2 || lines[1] != "… 12 lines" {
 		t.Fatalf("the note should follow the nest: %q", lines)
+	}
+}
+
+// The lead carries the level's hue: each bar the hue of the level it descends
+// from, the glyph the node's own — the same cycle a table's columns read, so a
+// nest and a grid speak one color language. A gap segment stays plain, and the
+// label is left for the hits.
+func TestTreePaintsTheLeadByLevel(t *testing.T) {
+	lines := processTree.Render(treeBlock(
+		node("1", "0", "/sbin/init"),
+		node("948", "1", "/usr/sbin/sshd -D"),
+		node("2210", "948", "-bash"),
+		node("999", "1", "cron"),
+	), model.RenderOptions{Width: 80, Color: true})
+	// Roots first, siblings in pid order: the root, 948 (mid), its child, 999.
+	if len(lines) != 4 {
+		t.Fatalf("tree lines = %d: %q", len(lines), lines)
+	}
+	if lines[0] != "1 /sbin/init" {
+		t.Fatalf("a root's own line carries no branch and stays plain: %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], LevelPaint(1).Style().Render("├── ")) {
+		t.Errorf("a first-level glyph should take the cycle's first tint: %q", lines[1])
+	}
+	want := LevelPaint(1).Style().Render("│   ") + LevelPaint(2).Style().Render("└── ")
+	if !strings.HasPrefix(lines[2], want) {
+		t.Errorf("a bar keeps its level's hue and the glyph takes the node's: %q", lines[2])
+	}
+	if !strings.HasPrefix(lines[3], LevelPaint(1).Style().Render("└── ")) {
+		t.Errorf("the closing sibling takes the first level's hue: %q", lines[3])
 	}
 }

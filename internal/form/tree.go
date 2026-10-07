@@ -152,7 +152,7 @@ func (t Tree) row(item model.BlockItem, lead string, opts model.RenderOptions) [
 	indent := strings.Repeat(" ", displayWidth(lead))
 	paintedLead := lead
 	if opts.Color && lead != "" {
-		paintedLead = MutedPaint().Style().Render(lead)
+		paintedLead = paintLead(lead)
 	}
 	labelWidth := max(opts.Width-displayWidth(lead), 1)
 	var rows []string
@@ -171,6 +171,30 @@ func (t Tree) row(item model.BlockItem, lead string, opts model.RenderOptions) [
 		rows = append(rows, indent+reason)
 	}
 	return rows
+}
+
+// paintLead colors a branch lead by nesting: each bar takes the hue of the
+// level it descends from, and the branch glyph the node's own level, so a deep
+// nest reads by its skeleton the way a table reads by its columns. A gap
+// segment stays plain — it is four blanks nothing else would see.
+func paintLead(lead string) string {
+	var b strings.Builder
+	at, level := 0, 1
+	for at < len(lead) {
+		switch {
+		case strings.HasPrefix(lead[at:], branchBar):
+			b.WriteString(LevelPaint(level).Style().Render(lead[at : at+len(branchBar)]))
+			at += len(branchBar)
+		case strings.HasPrefix(lead[at:], branchGap):
+			b.WriteString(lead[at : at+len(branchGap)])
+			at += len(branchGap)
+		default:
+			b.WriteString(LevelPaint(level).Style().Render(lead[at:]))
+			return b.String()
+		}
+		level++
+	}
+	return b.String()
 }
 
 // label is one node's text and the hits that paint it, in the text's own

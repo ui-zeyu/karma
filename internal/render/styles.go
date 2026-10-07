@@ -231,6 +231,7 @@ var syntaxStylers = map[model.Syntax]func() lineStyler{
 	model.SyntaxLsmod:      func() lineStyler { return styleLsmod },
 	model.SyntaxIPAddr:     func() lineStyler { return styleIPAddr },
 	model.SyntaxTable:      func() lineStyler { return newTableStyler(nil, true).style },
+	model.SyntaxTree:       func() lineStyler { return styleTree },
 	// Cycle off: top -b's summary lines (banner, Tasks, %Cpu, MiB Mem) are
 	// prose, not columns. The process table anchors on its all-caps header;
 	// everything before it stays plain.
