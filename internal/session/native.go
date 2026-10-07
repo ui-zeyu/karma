@@ -159,6 +159,17 @@ func fieldFailure(err error) model.RunResult {
 	}
 }
 
+// scriptCall is the shell harvest of a Script tier. A parser turns that text
+// into records, and a header line is not a record, so the row cap waits until
+// the records exist; the harvest's byte valve still bounds the text. A tier
+// with no parser is its own text, and the cap stays on the harvest.
+func scriptCall(script model.Script, cap model.RowCap) model.Call {
+	if script.Parse != nil {
+		cap = model.RowCap{}
+	}
+	return model.Call{Inv: model.Shell{Script: script.Run}, Cap: cap}
+}
+
 // finishScript reads a Script tier's captured text as the records its parser
 // states: the parse is the tier's body, with the same endings a Fields body
 // reports. A call that did not settle keeps its own verdict; a cut parses what

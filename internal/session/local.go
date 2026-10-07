@@ -67,9 +67,7 @@ func (s LocalSession) run(ctx context.Context, call model.Call) model.RunResult 
 		return runNative(ctx, native.Body, call.Cap)
 	}
 	if script, ok := call.Inv.(model.Script); ok {
-		// The pinned command runs like a Shell here; the parser reads its
-		// text as the tier's records, with the cap applied to the records.
-		text := s.run(ctx, model.Call{Inv: model.Shell{Script: script.Run}, Cap: call.Cap})
+		text := s.run(ctx, scriptCall(script, call.Cap))
 		return finishScript(text, script, call.Cap)
 	}
 	return runLocal(ctx, ArgvFor(call.Inv), call.Cap)

@@ -49,8 +49,7 @@ func TestRunScriptAnswersWithRecords(t *testing.T) {
 	}
 }
 
-// A cap bounds the records, the way it bounds a Fields tier's: the walk stops
-// at the line count and the parse keeps what arrived.
+// A cap bounds the records after the parse, the way it bounds a Fields tier's.
 func TestRunScriptCapBoundsTheRecords(t *testing.T) {
 	script := model.Script{Run: `printf 'a b\nc d\ne f\n'`, Parse: wordsParser}
 	result := runCall(context.Background(), LocalSession{}, script, 10*time.Second, model.Scan(2))
@@ -59,6 +58,31 @@ func TestRunScriptCapBoundsTheRecords(t *testing.T) {
 	}
 	if len(result.Records.Rows) != 2 {
 		t.Fatalf("rows = %d, want the cap's two", len(result.Records.Rows))
+	}
+}
+
+// headedParser reads the same two-word rows as wordsParser, after one header
+// line. The header is how a tool's table (ps aux) spends a text line that is
+// not a record.
+func headedParser(stdout string) (*model.RecordSet, error) {
+	head, rest, ok := strings.Cut(strings.TrimSpace(stdout), "\n")
+	if !ok || head != "HEADER" {
+		return nil, errors.New("missing header")
+	}
+	return wordsParser(rest)
+}
+
+// The row cap counts records, so the tool's header does not consume one of
+// them. A shape cap is the tier's own answer: the panel is not told the body
+// was cut.
+func TestRunScriptCapCountsRecordsPastTheHeader(t *testing.T) {
+	script := model.Script{Run: `printf 'HEADER\na b\nc d\ne f\n'`, Parse: headedParser}
+	result := runCall(context.Background(), LocalSession{}, script, 10*time.Second, model.Shape(2))
+	if result.Verdict != model.VerdictAnswered || result.Truncated {
+		t.Fatalf("a shape cap is the whole answer: %+v", result)
+	}
+	if result.Records == nil || len(result.Records.Rows) != 2 {
+		t.Fatalf("rows = %+v, want the cap's two records past the header", result.Records)
 	}
 }
 
