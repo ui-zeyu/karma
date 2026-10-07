@@ -31,11 +31,11 @@ func TestProcessTierReportsACutWalk(t *testing.T) {
 			ok: true,
 		}
 	})
-	set, err := PsAux(ctx)
+	set, err := PsEf(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cut walk should be reported, got %v", err)
 	}
-	if got, _ := set.Rows[0].Value("COMMAND"); got != "half" {
+	if got, _ := set.Rows[0].Value("CMD"); got != "half" {
 		t.Fatalf("the rows already read should stay: %+v", set.Rows)
 	}
 }
@@ -60,7 +60,7 @@ func TestProcessTiersReadTheSharedSnapshot(t *testing.T) {
 		}
 	})
 
-	aux, err := PsAux(ctx)
+	aux, err := PsEf(ctx)
 	if err != nil {
 		t.Fatalf("ps tier: %v", err)
 	}
@@ -69,21 +69,23 @@ func TestProcessTiersReadTheSharedSnapshot(t *testing.T) {
 	}
 	for _, want := range []string{"quiet --arg", "busy"} {
 		if !slices.ContainsFunc(aux.Rows, func(rec model.Record) bool {
-			value, _ := rec.Value("COMMAND")
+			value, _ := rec.Value("CMD")
 			return value == want
 		}) {
 			t.Fatalf("the ps tier should carry %q: %+v", want, aux.Rows)
 		}
 	}
-	// The table is flat and in pid order, the way `ps auxww` prints it; the
-	// hierarchy is the tree tier's business.
-	if first, _ := aux.Rows[0].Value("COMMAND"); first != "quiet --arg" {
+	// The table is flat and in pid order, the way `ps -ef` prints it; the
+	// hierarchy is the tree form's business.
+	if first, _ := aux.Rows[0].Value("CMD"); first != "quiet --arg" {
 		t.Fatalf("the ps tier should read the snapshot in pid order: %+v", aux.Rows)
 	}
 	if strings.Contains(model.RecordsText(aux.Rows), `\_`) {
 		t.Fatalf("the ps tier should carry no ladder: %q", model.RecordsText(aux.Rows))
 	}
-	tree, err := Pstree(ctx)
+	// The same records answer the tree check: the parent link travels with
+	// every row, and nothing here spells a ladder.
+	tree, err := PsEf(ctx)
 	if err != nil || len(tree.Rows) != 2 {
 		t.Fatalf("pstree tier = %+v, %v", tree, err)
 	}
@@ -200,6 +202,21 @@ func TestStartClockSpelling(t *testing.T) {
 	if got := old.startClock(boot, now); got != boot.Add(60*time.Second).Format("Jan02") {
 		t.Errorf("old start = %q, want %q", got, boot.Add(60*time.Second).Format("Jan02"))
 	}
+	// The boundary is the calendar day: a boot 20 hours ago is yesterday, and
+	// ps prints the date for every process of that boot (the lab's case).
+	yesterday := now.Add(-20 * time.Hour)
+	if got := (procEntry{}).startClock(yesterday, now); got != yesterday.Format("Jan02") {
+		t.Errorf("a start yesterday, 20h ago = %q, want the date %q", got, yesterday.Format("Jan02"))
+	}
+	// A start later today is still the clock, and a clock that moved backwards
+	// reads as an old start.
+	today := now.Add(-6 * time.Hour)
+	if got := (procEntry{}).startClock(today, now); got != today.Format("15:04") {
+		t.Errorf("a start earlier today = %q, want %q", got, today.Format("15:04"))
+	}
+	if got := (procEntry{}).startClock(now.Add(time.Hour), now); got != now.Add(time.Hour).Format("Jan02") {
+		t.Errorf("a future start = %q, want the date", got)
+	}
 }
 
 func TestPsAuxRowShape(t *testing.T) {
@@ -233,7 +250,7 @@ func TestPsAuxRowShape(t *testing.T) {
 // A tier answers with the fields themselves: the names, the column order and
 // the values are what the reading layer judges and the form draws, with no text
 // form in between.
-func TestPsAuxBodyCarriesItsRecords(t *testing.T) {
+func TestPsEfBodyCarriesItsRecords(t *testing.T) {
 	ctx := runstate.WithStore(t.Context())
 	runstate.Memo(ctx, runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
 		return processSnapshot{
@@ -243,28 +260,65 @@ func TestPsAuxBodyCarriesItsRecords(t *testing.T) {
 			boot: time.Unix(1_700_000_000, 0), uptime: 3600, memTotal: 1 << 30, ok: true, complete: true,
 		}
 	})
-	set, err := PsAux(ctx)
+	set, err := PsEf(ctx)
 	if err != nil {
 		t.Fatalf("ps tier: %v", err)
 	}
-	if len(set.Header) != len(PsAuxColumns) || set.Header[0] != "USER" {
-		t.Fatalf("header = %v, want the aux columns", set.Header)
+	if len(set.Header) != len(PsEfColumns) || set.Header[0] != "UID" {
+		t.Fatalf("header = %v, want the System V columns", set.Header)
 	}
 	if len(set.Rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(set.Rows))
 	}
-	if got, _ := set.Rows[0].Value("COMMAND"); got != "/sbin/init" {
-		t.Errorf("COMMAND = %q, want /sbin/init", got)
+	if got, _ := set.Rows[0].Value("CMD"); got != "/sbin/init" {
+		t.Errorf("CMD = %q, want /sbin/init", got)
 	}
 	if text := model.RecordsText(set.Rows); !strings.Contains(text, "/sbin/init") {
 		t.Errorf("the readable rendering should carry the row: %q", text)
 	}
 }
 
-// The tree tier hands over the nodes and their links, and nothing that looks
-// like a drawing: the nesting is the tree form's, so nothing here spells a
-// ladder or a depth.
-func TestPstreeReadsTheNodesAndTheirLinks(t *testing.T) {
+// `ps -ef`'s TIME cell is hours:minutes:seconds, each two cells wide — the
+// spelling the sh source's parser reads and the native read has to match.
+func TestPsEfRowShape(t *testing.T) {
+	now := time.Date(2026, 10, 5, 15, 0, 0, 0, time.UTC)
+	boot := now.Add(-24 * time.Hour)
+	e := procEntry{
+		pid: 2210, ppid: 948, user: "root", comm: "bash", args: "bash -i",
+		utime: 6 * clkTck, stime: 3 * clkTck, starttime: 23 * 3600 * clkTck,
+		ttyNr: (136 << 8), numThreads: 1,
+	}
+	rec := model.Record{Fields: fields(PsEfColumns, psEfValues(e, boot, now, 24*3600))}
+	for name, want := range map[string]string{
+		"UID": "root", "PID": "2210", "PPID": "948", "TTY": "pts/0",
+		"STIME": "14:00", "TIME": "00:00:09", "CMD": "bash -i",
+	} {
+		got, ok := rec.Value(name)
+		if !ok || got != want {
+			t.Errorf("%s = %q (present %v), want %q", name, got, ok, want)
+		}
+	}
+	// The same row as the target's own ps prints it: the two must read back
+	// identically, and this is the shape a parser fixture copies.
+	if got := strings.Join(fieldsValues(rec), " "); got != "root 2210 948 0 14:00 pts/0 00:00:09 bash -i" {
+		t.Errorf("row = %q", got)
+	}
+}
+
+// fieldsValues is one record's values in column order, for the row-shape
+// assertions above.
+func fieldsValues(rec model.Record) []string {
+	values := make([]string, 0, len(rec.Fields))
+	for _, field := range rec.Fields {
+		values = append(values, field.Value)
+	}
+	return values
+}
+
+// The tree check reads the same tier: the nodes and their links travel, and
+// nothing that looks like a drawing — the nesting is the tree form's, so nothing
+// here spells a ladder or a depth.
+func TestPsEfCarriesTheParentLinks(t *testing.T) {
 	ctx := runstate.WithStore(t.Context())
 	runstate.Memo(ctx, runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
 		return processSnapshot{
@@ -276,20 +330,22 @@ func TestPstreeReadsTheNodesAndTheirLinks(t *testing.T) {
 			boot: time.Unix(1_700_000_000, 0), uptime: 3600, memTotal: 1 << 30, ok: true, complete: true,
 		}
 	})
-	set, err := Pstree(ctx)
+	set, err := PsEf(ctx)
 	if err != nil {
 		t.Fatalf("pstree tier: %v", err)
 	}
-	if !slices.Equal(set.Header, PsTreeColumns) {
-		t.Fatalf("header = %v, want the tree columns", set.Header)
+	if !slices.Equal(set.Header, PsEfColumns) {
+		t.Fatalf("header = %v, want the System V columns", set.Header)
 	}
-	want := []string{"1 0 root /sbin/init", "948 1 root /usr/sbin/sshd -D", "2210 948 lab -bash"}
+	want := []string{"1 0", "948 1", "2210 948"}
 	if len(set.Rows) != len(want) {
 		t.Fatalf("rows = %d, want %d: %+v", len(set.Rows), len(want), set.Rows)
 	}
-	for index, want := range want {
-		if got := set.Rows[index].LineText(); got != want {
-			t.Errorf("row %d = %q, want %q", index, got, want)
+	for index, pair := range want {
+		pid, _ := set.Rows[index].Value("PID")
+		parent, _ := set.Rows[index].Value("PPID")
+		if pid+" "+parent != pair {
+			t.Errorf("row %d link = %s %s, want %s", index, pid, parent, pair)
 		}
 	}
 	if strings.Contains(model.RecordsText(set.Rows), `\_`) {

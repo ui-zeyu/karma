@@ -98,13 +98,16 @@ func execute(ctx context.Context, w, warn io.Writer, transport session.Transport
 	// target: one copy per run, reused when one is already there and proved to
 	// be this build. A channel that cannot carry an upload — or a target that is
 	// not Linux, where karma has no in-process bodies — runs the tiers itself.
+	// An sh-source run places nothing: it drives the target's own shell.
 	var collectorPath string
-	if _, ok := sess.(session.Uploader); ok && transport.Platform() == model.Linux {
-		path, _, err := placeCollector(ctx, sess, placeOptions{find: options.FindDir, place: options.PlaceDir})
-		if err != nil {
-			return failf(ExitEnvironment, "%v", err)
+	if options.Source == model.SourceNative {
+		if _, ok := sess.(session.Uploader); ok && transport.Platform() == model.Linux {
+			path, _, err := placeCollector(ctx, sess, placeOptions{find: options.FindDir, place: options.PlaceDir})
+			if err != nil {
+				return failf(ExitEnvironment, "%v", err)
+			}
+			collectorPath = path
 		}
-		collectorPath = path
 	}
 
 	factsValue := facts.CollectFor(ctx, transport.Platform(), sess)
@@ -134,6 +137,7 @@ func execute(ctx context.Context, w, warn io.Writer, transport session.Transport
 			Total:     len(target),
 			Selectors: SelectorTokens(options.Selectors),
 			Floor:     options.MinSeverity,
+			Source:    options.Source,
 		}, width)
 		live := render.NewLiveObserver(w, selected, options.MaxLines, width, isTerminal(w))
 		live.Start()

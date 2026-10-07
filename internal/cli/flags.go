@@ -37,6 +37,10 @@ func runFlags(flags *pflag.FlagSet) {
 	flags.String("min-severity", "all",
 		"show only rows at or above this severity and count the rest as filtered: "+
 			"all|"+strings.Join(model.SeverityNames(), "|"))
+	flags.String("source", "native",
+		"which side reads the evidence: native runs karma's own bodies on the target "+
+			"(the local channel, or the collector a remote one places there), sh places nothing "+
+			"and drives the target's /bin/sh, reading its pinned commands into the same records")
 	flags.Bool("json", false,
 		"print one JSON object per check (the collector's protocol) instead of drawing the report: "+
 			"each line carries the tier's raw text and how its walk ended, and nothing has been read or shaped")
@@ -57,6 +61,10 @@ func runOptions(flags *pflag.FlagSet, selectorArgs []string) (model.RunOptions, 
 	seconds := floatFlag(flags, "timeout")
 	maxLines := intFlag(flags, "max-lines")
 	floor, ok := model.ParseSeverityFloor(stringFlag(flags, "min-severity"))
+	source, err := model.ParseSource(stringFlag(flags, "source"))
+	if err != nil {
+		return model.RunOptions{}, err
+	}
 	switch {
 	case concurrency < 1:
 		return model.RunOptions{}, fmt.Errorf("--concurrency must be >= 1")
@@ -74,6 +82,7 @@ func runOptions(flags *pflag.FlagSet, selectorArgs []string) (model.RunOptions, 
 		Timeout:     time.Duration(seconds * float64(time.Second)),
 		MaxLines:    maxLines,
 		MinSeverity: floor,
+		Source:      source,
 		FindDir:     stringFlag(flags, "find"),
 		PlaceDir:    stringFlag(flags, "place"),
 		JSON:        boolFlag(flags, "json"),

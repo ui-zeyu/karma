@@ -91,6 +91,12 @@ func (s *TTYDSession) Stream(ctx context.Context, call model.Call, each func(str
 }
 
 func (s *TTYDSession) run(ctx context.Context, call model.Call, each func(string)) model.RunResult {
+	if script, ok := call.Inv.(model.Script); ok {
+		// The pinned command is typed into the terminal like a Shell, and
+		// the parser reads the harvested text here as the tier's records.
+		text := s.run(ctx, model.Call{Inv: model.Shell{Script: script.Run}, Cap: call.Cap}, nil)
+		return finishScript(text, script, call.Cap)
+	}
 	text, ok := shellText(call.Inv)
 	if !ok {
 		return noShellFor(call.Inv)

@@ -7,6 +7,7 @@ package model
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"slices"
 	"time"
@@ -323,6 +324,60 @@ type Fields struct {
 }
 
 func (Fields) isInvocation() {}
+
+// Script is a tier of the sh source: a command whose pinned wording is the
+// schema (LC_ALL=C, the exact flags), run wherever the session points, and a
+// parser that reads the captured text into the same records the native source
+// states for the check. The parse is karma's own code, so the tool's layout
+// freedom — column widths, alignment, the locale's month names — ends at the
+// parser; text the parser does not recognize is the tier's failure, which
+// declines rather than guesses.
+type Script struct {
+	Run   string
+	Parse func(stdout string) (*RecordSet, error)
+}
+
+func (Script) isInvocation() {}
+
+// Source is which side of the wire reads the evidence. The native source (the
+// default, and the zero value of an unset flag) runs karma's own bodies where
+// the target is — the local channel, or the collector a remote channel places
+// there. The sh source places nothing: the run drives the target's /bin/sh
+// through the channel, runs the command tiers over it, and reads a Script
+// tier's pinned command into the same records. A run states one source and
+// walks only its own tiers (the invocation kind states which side a tier
+// belongs to); the two never chain, because a report stands on one source.
+type Source string
+
+const (
+	SourceNative Source = "" // unset is the native source
+	SourceSh     Source = "sh"
+)
+
+// ParseSource reads the --source word.
+func ParseSource(word string) (Source, error) {
+	switch word {
+	case "", "native":
+		return SourceNative, nil
+	case "sh":
+		return SourceSh, nil
+	}
+	return SourceNative, fmt.Errorf("source must be native|sh (got: %s)", word)
+}
+
+// Runs reports whether a run in this source walks a tier of this invocation:
+// in-process bodies exist only where karma itself runs, a Script tier only in
+// the sh source, and a command runs wherever the session points.
+func (s Source) Runs(inv Invocation) bool {
+	switch inv.(type) {
+	case Fields, Native:
+		return s == SourceNative
+	case Script:
+		return s == SourceSh
+	default:
+		return true
+	}
+}
 
 // ErrTierUnavailable marks a Native body that cannot run in this environment
 // (wrong platform, no /proc): the session reports it like a missing binary
@@ -730,6 +785,37 @@ type SectionSyntax struct {
 	Syntax Syntax
 }
 
+// StepsFor is one source's walk of the check: the probes that source runs, in
+// declaration order, with the steps it emptied dropped. A check can hold both
+// sources' tiers side by side; the walk never mixes them.
+func (c *Check) StepsFor(source Source) []Step {
+	steps := make([]Step, 0, len(c.Steps))
+	for _, step := range c.Steps {
+		members := make(Step, 0, len(step))
+		for _, probe := range step {
+			if source.Runs(probe.Inv) {
+				members = append(members, probe)
+			}
+		}
+		if len(members) > 0 {
+			steps = append(steps, members)
+		}
+	}
+	return steps
+}
+
+// TierLabels names every tier the check declares, in walk order — what a run
+// that walked none of them says it skipped.
+func (c *Check) TierLabels() []string {
+	var labels []string
+	for _, step := range c.Steps {
+		for _, probe := range step {
+			labels = append(labels, probe.Label)
+		}
+	}
+	return labels
+}
+
 // CheckResult is the outcome of one check. Outcome and Note together say what
 // happened to the walk; document decides visibility on its own, so the
 // presentation layer reads the outcome only to tell a skipped check from a
@@ -773,6 +859,11 @@ type RunOptions struct {
 	Concurrency int
 	Timeout     time.Duration
 	MaxLines    int
+	// Source is which side of the wire reads the evidence (Source's doc). The
+	// native source is the zero value, and a delegated remote run is always
+	// native — the collector is karma on the target — so the word never
+	// travels to it.
+	Source Source
 	// MinSeverity is how much of the reading each check keeps: rows below the
 	// floor are counted like filtered lines and left out of its document, so a
 	// triage run can drop everything under one level. It filters what is shown

@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -566,4 +567,92 @@ func (o *collectObserver) byID(id string) (*model.CheckResult, bool) {
 	defer o.mu.Unlock()
 	result, ok := o.results[id]
 	return result, ok
+}
+
+// kindSession records which invocation kinds reached it: a run's walk of one
+// source is what the test reads back. Every call answers with one record, so a
+// tier that ran at all counts as the check's answer.
+type kindSession struct {
+	mu    sync.Mutex
+	kinds []string
+}
+
+func (s *kindSession) Name() string           { return "kind" }
+func (s *kindSession) Channel() model.Channel { return model.ChanSSH }
+func (s *kindSession) Describe() string       { return "kind" }
+func (s *kindSession) Close() error           { return nil }
+
+func (s *kindSession) Run(_ context.Context, call model.Call) model.RunResult {
+	s.mu.Lock()
+	s.kinds = append(s.kinds, fmt.Sprintf("%T", call.Inv))
+	s.mu.Unlock()
+	return model.RunResult{
+		Verdict: model.VerdictAnswered,
+		Records: &model.RecordSet{Header: []string{"A"}, Rows: []model.Record{{}}},
+	}
+}
+
+func (s *kindSession) seen() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.kinds)
+}
+
+// A check that declares both sources' tiers is walked once: the run's source
+// names the side, and the other side's tiers are not tried, not even as a
+// fallback. A check with no tier of this source is skipped whole.
+func TestTheWalkRunsOneSourceOnly(t *testing.T) {
+	newCheck := func() *model.Check {
+		return &model.Check{ID: "both", Aspect: model.AspectProcess, Steps: []model.Step{
+			{{Label: "native", Inv: model.Fields{Read: func(context.Context) (*model.RecordSet, error) {
+				return &model.RecordSet{}, nil
+			}}}},
+			{{Label: "sh", Inv: model.Script{Run: "ps -ef", Parse: func(string) (*model.RecordSet, error) {
+				return &model.RecordSet{}, nil
+			}}}},
+		}}
+	}
+	for _, c := range []struct {
+		name   string
+		source model.Source
+		want   string
+	}{
+		{"native source", model.SourceNative, "model.Fields"},
+		{"sh source", model.SourceSh, "model.Script"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sess := &kindSession{}
+			results := &collectObserver{}
+			summary := RunCatalog(context.Background(), sess, []*model.Check{newCheck()},
+				model.RunOptions{Concurrency: 1, Source: c.source}, results)
+			if summary.Results != 1 {
+				t.Fatalf("the check should produce a result: %+v", summary)
+			}
+			if got := sess.seen(); !slices.Equal(got, []string{c.want}) {
+				t.Fatalf("walked %v, want only %s", got, c.want)
+			}
+			if result, ok := results.byID("both"); !ok || result.Outcome != model.Collected {
+				t.Fatalf("the walk should answer: %+v", result)
+			}
+		})
+	}
+
+	// The same check with only the native tiers, walked in the sh source: no
+	// call reaches the channel, and the panel says what it skipped.
+	sess := &kindSession{}
+	results := &collectObserver{}
+	nativeOnly := newCheck()
+	nativeOnly.Steps = nativeOnly.Steps[:1]
+	RunCatalog(context.Background(), sess, []*model.Check{nativeOnly},
+		model.RunOptions{Concurrency: 1, Source: model.SourceSh}, results)
+	if seen := sess.seen(); len(seen) != 0 {
+		t.Fatalf("an sh run should make no call for a native-only check: %v", seen)
+	}
+	result, ok := results.byID("both")
+	if !ok || result.Outcome != model.Skipped {
+		t.Fatalf("a check with no tier of this source is skipped: %+v", result)
+	}
+	if !slices.Equal(result.SkippedLabels, []string{"native"}) {
+		t.Fatalf("the skip should name the tier: %v", result.SkippedLabels)
+	}
 }

@@ -116,6 +116,14 @@ whether a row cap stopped it. Nothing in a line has been read or shaped, so the 
 lexers above are the reader's business — this is the stream a remote collection reads, and it is also
 a scripting surface for a local one (`karma local --json df mounts | jq`).
 
+`--source` names which side of the wire reads the evidence. `native` (the default) runs karma's own
+bodies where the target is: the local host in process, or — on ssh and ttyd — the collector karma
+places there. `sh` places nothing: the run drives the target's own `/bin/sh` over the channel, and
+each check that declares a shell tier reads its pinned command (`LC_ALL=C ps -efww`, say) into the
+same fields the native read states, so a host that cannot hold a binary still answers. A run stands
+on one source: a check with no tier on the chosen side is skipped, and its panel names the tiers it
+skipped. The header names the source when it is not `native`.
+
 Exit codes: 0 a run that finished, 1 a built-in reader that could not read an operand, 2 a run that
 could not happen (a failed connection, or a channel that died mid-run), 70 karma's own damage — an
 internal error ended the run, so the report is incomplete, and the message names the boundary that

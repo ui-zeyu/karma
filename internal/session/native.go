@@ -19,6 +19,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"karma/internal/fault"
@@ -124,6 +125,43 @@ func finishFields(result model.RunResult, cap model.RowCap) model.RunResult {
 		result.Truncated = false
 	}
 	return result
+}
+
+// scriptRead is a parser's two answers, carried through one panic boundary.
+type scriptRead struct {
+	set *model.RecordSet
+	err error
+}
+
+// finishScript reads a Script tier's captured text as the records its parser
+// states: the parse is the tier's body, with the same endings a Fields body
+// reports. A call that did not settle keeps its own verdict; a cut parses what
+// arrived and keeps the cut. Text the parser does not recognize — or a parse
+// that panicked — fails the tier, which declines rather than guessing.
+func finishScript(result model.RunResult, script model.Script, cap model.RowCap) model.RunResult {
+	if !result.Verdict.Settled() || strings.TrimSpace(result.Stdout) == "" {
+		return result
+	}
+	read, panicErr := fault.Result("script parse", func() scriptRead {
+		set, err := script.Parse(result.Stdout)
+		return scriptRead{set: set, err: err}
+	})
+	switch {
+	case panicErr != nil:
+		return model.RunResult{Verdict: model.VerdictFailed, Stderr: panicErr.Error(), ExitCode: 1}
+	case read.err != nil:
+		return model.RunResult{Verdict: model.VerdictFailed, Stderr: read.err.Error(), ExitCode: 1}
+	case read.set == nil:
+		return model.RunResult{
+			Verdict:  model.VerdictFailed,
+			Stderr:   "the parser recognized none of the tier's text",
+			ExitCode: 1,
+		}
+	}
+	parsed := result
+	parsed.Records = read.set
+	parsed.Stdout = ""
+	return finishFields(parsed, cap)
 }
 
 // finishNative turns one finished body into the tier's result. The body's

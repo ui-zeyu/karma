@@ -20,10 +20,10 @@ var psServiceAccounts = []string{"www-data", "wwwrun", "apache", "nginx", "nobod
 
 var psInterpreter = regexp.MustCompile(`\b(?:(?:ba|z|da|k)?sh|python[0-9.]*|perl|ruby|nc|socat)\b`)
 
-// psTable is the /proc snapshot's shape: a table, with the numeric columns
+// psTable is the process listing's shape: a table, with the numeric columns
 // right-aligned the way ps prints them. The declaration is keyed by column name
-// because the tiers print different columns (auxww's eleven, System V's eight)
-// and both read right against one table.
+// because the checks that read it print different columns — ps -ef's eight,
+// top's aux rows of eleven — and all of them read right against one table.
 var psTable = form.Table{
 	Align: map[string]form.Alignment{
 		"PID": form.Right, "%CPU": form.Right, "%MEM": form.Right, "VSZ": form.Right,
@@ -102,7 +102,7 @@ const (
 // node draws the process's identity and its command line. The account travels
 // with every record for the rules to read; the tree's own line does not carry
 // it, so a rule that names it paints the node whole.
-var pstreeTree = form.Tree{ID: "PID", Parent: "PPID", Label: []string{"PID", "COMMAND"}}
+var pstreeTree = form.Tree{ID: "PID", Parent: "PPID", Label: []string{"PID", "CMD"}}
 
 // processRules judge one row of a process listing. The table and the tree read
 // the same fields — the account and the command line — so one list serves both,
@@ -139,20 +139,24 @@ var processRules = []model.Matcher{
 
 // ProcessChecks covers processes.
 var ProcessChecks = []*model.Check{
-	// Two probes read the same /proc snapshot: auxww's eleven columns, and
-	// System V's eight as the fallback. Both state their fields, so no tier
-	// here hands the panel text to read back. The table is flat — one row per
-	// process — because the hierarchy is the pstree check's business.
+	// One command, two sources: the native tier states `ps -ef`'s System V
+	// fields from /proc, and the sh tier runs the target's own ps and parses
+	// the same schema out of it. A run walks one of them (the source it was
+	// asked for), never both. The table is flat — one row per process —
+	// because the hierarchy is the pstree check's business.
 	define.LinuxCheck("ps", "Process table", model.AspectProcess,
 		[]model.Step{
-			{{Label: "ps", Inv: model.Fields{Read: native.PsAux}}},
-			{{Label: "ps-ef", Inv: model.Fields{Read: native.PsEf}}},
+			{{Label: "ps", Inv: model.Fields{Read: native.PsEf}}},
+			{{Label: "ps-ef", Inv: psEfScript}},
 		},
 		define.CheckOpt{Form: psTable, Rules: processRules}),
-	// The same snapshot, drawn as the tree the ppid links make of it: the tier
-	// hands the parent link over and the form nests the nodes.
+	// The same records, drawn as the tree the ppid links make of them: either
+	// source hands the parent link over and the form nests the nodes.
 	define.LinuxCheck("pstree", "Process tree", model.AspectProcess,
-		[]model.Step{{{Label: "pstree", Inv: model.Fields{Read: native.Pstree}}}},
+		[]model.Step{
+			{{Label: "pstree", Inv: model.Fields{Read: native.PsEf}}},
+			{{Label: "pstree-ef", Inv: psEfScript}},
+		},
 		define.CheckOpt{Form: pstreeTree, Rules: processRules}),
 	define.LinuxCheck("top", "Resource usage snapshot", model.AspectProcess,
 		[]model.Step{

@@ -1,6 +1,7 @@
-// The ps-shaped tiers: the auxww table, the System V table, and the two sorted
-// views. The /proc read behind them is proctable.go; top and pstree have their
-// own files.
+// The ps-shaped tiers: the System V table `ps -ef` prints — the ps and pstree
+// checks' schema, read from /proc here and from the target's own ps by the sh
+// source's parser — plus the two sorted auxww views behind top. The /proc read
+// behind them is proctable.go.
 //
 // Every tier here renders the in-process listing, so no userspace interposition
 // (an LD_PRELOAD hook in a wrapped ps, a PATH shadow) can reshape the evidence on
@@ -48,14 +49,23 @@ func ttyName(nr int) string {
 	}
 }
 
-// startClock renders ps's START column: wall clock within the last day, the
-// date ("Oct05") before that.
+// startClock renders ps's START/STIME cell: the clock for a process started
+// today, the date ("Oct05") for an earlier day. The boundary is the local
+// calendar day, not a 24-hour window: a host booted yesterday evening prints the
+// date for every process of that boot, which is what the lab's own ps does.
 func (e procEntry) startClock(boot time.Time, now time.Time) string {
 	if boot.IsZero() {
 		return "?"
 	}
 	start := boot.Add(time.Duration(e.starttime) * time.Second / clkTck)
-	if start.After(now.Add(-24*time.Hour)) && !start.After(now) {
+	if start.After(now) {
+		// A process that starts after the clock says now is a clock that
+		// moved: ps reads it as an old start and prints the date.
+		return start.Format("Jan02")
+	}
+	startYear, startMonth, startDay := start.Date()
+	nowYear, nowMonth, nowDay := now.Date()
+	if startYear == nowYear && startMonth == nowMonth && startDay == nowDay {
 		return start.Format("15:04")
 	}
 	return start.Format("Jan02")
@@ -65,6 +75,13 @@ func (e procEntry) startClock(boot time.Time, now time.Time) string {
 func psTimeFormat(secs float64) string {
 	total := int(secs + 0.5)
 	return fmt.Sprintf("%d:%02d", total/60, total%60)
+}
+
+// psEfTimeFormat is `ps -ef`'s TIME cell: hours, minutes and seconds, each two
+// cells wide (aux's spelling above is that table's own column).
+func psEfTimeFormat(secs float64) string {
+	total := int(secs + 0.5)
+	return fmt.Sprintf("%02d:%02d:%02d", total/3600, total/60%60, total%60)
 }
 
 // psStatString is the STAT column: state plus the modifiers ps shows, in
@@ -111,8 +128,11 @@ var PsAuxColumns = []string{
 	"USER", "PID", "%CPU", "%MEM", "VSZ", "RSS", "TTY", "STAT", "START", "TIME", "COMMAND",
 }
 
-// psEfColumns is the System V table's columns.
-var psEfColumns = []string{"UID", "PID", "PPID", "C", "STIME", "TTY", "TIME", "CMD"}
+// PsEfColumns is the System V table's columns — the schema `ps -ef` prints and
+// the native read states, whichever source answers: the check's table
+// declaration is keyed by these names, and the sh source's parser reads its
+// pinned command back into exactly these.
+var PsEfColumns = []string{"UID", "PID", "PPID", "C", "STIME", "TTY", "TIME", "CMD"}
 
 // fields names a row's values in column order, so the values and the header
 // they travel with cannot drift apart.
@@ -158,7 +178,7 @@ func psEfValues(e procEntry, boot time.Time, now time.Time, uptime float64) []st
 	return []string{
 		psUserCell(e.user), strconv.Itoa(e.pid), strconv.Itoa(e.ppid),
 		strconv.Itoa(int(e.cpuPercent(uptime) + 0.5)),
-		e.startClock(boot, now), ttyName(e.ttyNr), psTimeFormat(e.cpuSeconds()), e.args,
+		e.startClock(boot, now), ttyName(e.ttyNr), psEfTimeFormat(e.cpuSeconds()), e.args,
 	}
 }
 
@@ -167,33 +187,23 @@ func psEfRecords(snap processSnapshot, now time.Time) []model.Record {
 	records := make([]model.Record, 0, len(snap.entries))
 	for _, entry := range snap.entries {
 		records = append(records, model.Record{
-			Fields: fields(psEfColumns, psEfValues(entry, snap.boot, now, snap.uptime)),
+			Fields: fields(PsEfColumns, psEfValues(entry, snap.boot, now, snap.uptime)),
 		})
 	}
 	return records
 }
 
-// PsAux reads the auxww table: the same rows `ps auxww` prints — one row per
-// process in pid order, the command line as the kernel spells it — handed over
-// as the fields they are.
-func PsAux(ctx context.Context) (*model.RecordSet, error) {
-	snap := procSnapshot(ctx)
-	if !snap.ok {
-		return nil, model.ErrTierUnavailable
-	}
-	if err := snap.cutReason(ctx); err != nil {
-		return &model.RecordSet{Header: PsAuxColumns, Rows: psAuxRecords(snap, time.Now())}, err
-	}
-	return &model.RecordSet{Header: PsAuxColumns, Rows: psAuxRecords(snap, time.Now())}, nil
-}
-
-// PsEf reads the System V table.
+// PsEf reads the System V table: the same rows `ps -ef` prints — the account,
+// the two links, the cpu tick, the clocks, the terminal, the accumulated time
+// and the command line as the kernel spells it — handed over as the fields they
+// are. It is the schema the sh source's parser reads back out of the target's
+// own `ps -ef`.
 func PsEf(ctx context.Context) (*model.RecordSet, error) {
 	snap := procSnapshot(ctx)
 	if !snap.ok {
 		return nil, model.ErrTierUnavailable
 	}
-	set := &model.RecordSet{Header: psEfColumns, Rows: psEfRecords(snap, time.Now())}
+	set := &model.RecordSet{Header: PsEfColumns, Rows: psEfRecords(snap, time.Now())}
 	return set, snap.cutReason(ctx)
 }
 

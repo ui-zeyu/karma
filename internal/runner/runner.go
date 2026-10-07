@@ -176,12 +176,23 @@ func runCheck(ctx context.Context, sess session.Session, check *model.Check, opt
 	ctx, cancel := session.Within(ctx, budget)
 	defer cancel()
 
+	// The run walks one source's tiers: a check can hold both sources' tiers
+	// side by side, and a check with none of this source's is skipped whole.
+	steps := check.StepsFor(options.Source)
+	if len(steps) == 0 {
+		return &model.CheckResult{
+			Check:         check,
+			Outcome:       model.Skipped,
+			SkippedLabels: check.TierLabels(),
+		}
+	}
+
 	var (
 		unavailable bool
 		skipped     []string
 		failure     *probeFailure
 	)
-	for _, step := range check.Steps {
+	for _, step := range steps {
 		if ctx.Err() != nil {
 			break
 		}

@@ -19,21 +19,22 @@ import (
 
 // psPanel is the ps check's result over the given rows; each row is written as
 // the values of the columns it overrides, so a fixture states only what its
-// case is about.
+// case is about. The columns are the tier's own schema: `ps -ef`'s System V
+// eight, which both sources state.
 func psPanel(t *testing.T, rows ...map[string]string) *model.CheckResult {
 	t.Helper()
 	check := psCheck(t)
-	set := model.RecordSet{Header: native.PsAuxColumns}
+	set := model.RecordSet{Header: native.PsEfColumns}
 	for _, overrides := range rows {
 		values := map[string]string{
-			"USER": "root", "PID": "1", "%CPU": "0.0", "%MEM": "0.1", "VSZ": "22452", "RSS": "9120",
-			"TTY": "?", "STAT": "Ss", "START": "Sep30", "TIME": "0:03", "COMMAND": "/sbin/init",
+			"UID": "root", "PID": "1", "PPID": "0", "C": "0", "STIME": "Sep30", "TTY": "?",
+			"TIME": "00:00:03", "CMD": "/sbin/init",
 		}
 		for name, value := range overrides {
 			values[name] = value
 		}
 		record := model.Record{}
-		for _, name := range native.PsAuxColumns {
+		for _, name := range native.PsEfColumns {
 			record.Fields = append(record.Fields, model.Field{Name: name, Value: values[name]})
 		}
 		set.Rows = append(set.Rows, record)
@@ -70,13 +71,14 @@ func checkByID(t *testing.T, id string) *model.Check {
 func pstreePanel(t *testing.T, procs ...[3]string) *model.CheckResult {
 	t.Helper()
 	check := checkByID(t, "pstree")
-	set := model.RecordSet{Header: native.PsTreeColumns}
+	set := model.RecordSet{Header: native.PsEfColumns}
 	for _, proc := range procs {
 		values := map[string]string{
-			"PID": proc[0], "PPID": proc[1], "USER": "root", "COMMAND": proc[2],
+			"UID": "root", "PID": proc[0], "PPID": proc[1], "C": "0", "STIME": "Sep30",
+			"TTY": "?", "TIME": "00:00:00", "CMD": proc[2],
 		}
 		record := model.Record{}
-		for _, name := range native.PsTreeColumns {
+		for _, name := range native.PsEfColumns {
 			record.Fields = append(record.Fields, model.Field{Name: name, Value: values[name]})
 		}
 		set.Rows = append(set.Rows, record)
@@ -138,27 +140,28 @@ func TestPstreePanelPaintsTheNodeThatMatched(t *testing.T) {
 // process, the numeric columns ending at their column's right edge, and the
 // command line taking whatever the panel has left.
 func TestProcessPanelIsATable(t *testing.T) {
-	result := psPanel(t, nil, map[string]string{"USER": "www-data", "PID": "2210", "COMMAND": "/bin/sh"})
+	result := psPanel(t, nil, map[string]string{"UID": "www-data", "PID": "2210", "C": "3", "CMD": "/bin/sh"})
 	panel := plain(checkPanel(result, 400, 100, true))
 
-	head := rowCarrying(panel, "USER")
+	head := rowCarrying(panel, "UID")
 	if head == "" {
 		t.Fatalf("the panel should carry the table's head:\n%s", panel)
 	}
-	// The head is the record set's own column order.
-	previous := -1
-	for _, name := range native.PsAuxColumns {
-		at := strings.Index(head, name)
-		if at <= previous {
-			t.Errorf("the head should carry the columns in order: %q", head)
+	// The head is the record set's own column order (each name searched for
+	// past the one before it: TIME sits inside STIME).
+	previous := 0
+	for _, name := range native.PsEfColumns {
+		at := strings.Index(head[previous:], name)
+		if at < 0 {
+			t.Errorf("the head should carry %s in order: %q", name, head)
 			break
 		}
-		previous = at
+		previous += at
 	}
 	// Every row's values are on the panel, and the numeric columns end at their
 	// own right edge.
 	busy := rowCarrying(panel, "2210")
-	for _, want := range []string{"www-data", "2210", "Ss", "/bin/sh"} {
+	for _, want := range []string{"www-data", "2210", "00:00:03", "/bin/sh"} {
 		if !strings.Contains(busy, want) {
 			t.Errorf("the row should carry %q: %q", want, busy)
 		}
@@ -166,16 +169,13 @@ func TestProcessPanelIsATable(t *testing.T) {
 	if at := strings.Index(busy, "2210"); at+len("2210") != strings.Index(head, "PID")+len("PID") {
 		t.Errorf("PID should be right-aligned under its heading:\n%q\n%q", head, busy)
 	}
-	if at := strings.Index(busy, "0.0"); at+len("0.0") != strings.Index(head, "%CPU")+len("%CPU") {
-		t.Errorf("the percentages should be right-aligned too:\n%q\n%q", head, busy)
-	}
 }
 
 // A rule that names two fields paints both of them and only them: the account
 // cell at one end, the interpreter word the pattern matched at the other, the
 // columns between them and the command line's own arguments untouched.
 func TestProcessPanelPaintsTheFieldsTheRuleNamed(t *testing.T) {
-	result := psPanel(t, map[string]string{"USER": "www-data", "PID": "2210", "COMMAND": "/bin/sh -c id"})
+	result := psPanel(t, map[string]string{"UID": "www-data", "PID": "2210", "CMD": "/bin/sh -c id"})
 	painted := checkPanel(result, 400, 100, true)
 	if !strings.Contains(painted, "⟨service account running a shell/interpreter") {
 		t.Errorf("the row should carry its reason:\n%s", plain(painted))
@@ -216,9 +216,9 @@ func TestProcessPanelPaintsTheFieldsTheRuleNamed(t *testing.T) {
 // headings are painted by the panel's own pass, which is where the same flag
 // reaches next.)
 func TestProcessTableIsPlainOffATerminal(t *testing.T) {
-	result := psPanel(t, map[string]string{"PID": "2210", "COMMAND": "/bin/sh -c id"})
+	result := psPanel(t, map[string]string{"PID": "2210", "CMD": "/bin/sh -c id"})
 	panel := checkPanel(result, 400, 100, false)
-	for _, want := range []string{"USER", "2210", "/bin/sh -c id"} {
+	for _, want := range []string{"UID", "2210", "/bin/sh -c id"} {
 		row := rowWith(panel, want)
 		if row == "" {
 			t.Fatalf("the plain table should still carry %q:\n%s", want, panel)
@@ -238,7 +238,7 @@ func TestProcessTableIsPlainOffATerminal(t *testing.T) {
 // wraps: nothing is cut anywhere — the table grows down instead.
 func TestProcessTableWrapsOnANarrowPanel(t *testing.T) {
 	long := strings.Repeat("/very/long/path", 12)
-	result := psPanel(t, map[string]string{"COMMAND": long})
+	result := psPanel(t, map[string]string{"CMD": long})
 	const width = 60
 	panel := checkPanel(result, 400, width, true)
 	body := plain(panel)
@@ -257,7 +257,7 @@ func TestProcessTableWrapsOnANarrowPanel(t *testing.T) {
 // value spans as many lines as its column is narrow for.
 func TestProcessTableWrapsToThePanel(t *testing.T) {
 	long := strings.Repeat("/very/long/path", 12)
-	result := psPanel(t, map[string]string{"COMMAND": long})
+	result := psPanel(t, map[string]string{"CMD": long})
 	const width = 100
 	panel := checkPanel(result, 400, width, true)
 	body := plain(panel)

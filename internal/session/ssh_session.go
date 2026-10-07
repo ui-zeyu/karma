@@ -62,6 +62,12 @@ func (s *SSHSession) Stream(ctx context.Context, call model.Call, each func(stri
 }
 
 func (s *SSHSession) run(ctx context.Context, call model.Call, each func(string)) model.RunResult {
+	if script, ok := call.Inv.(model.Script); ok {
+		// The pinned command runs over the channel like a Shell, and the
+		// parser reads its text here as the tier's records.
+		text := s.run(ctx, model.Call{Inv: model.Shell{Script: script.Run}, Cap: call.Cap}, nil)
+		return finishScript(text, script, call.Cap)
+	}
 	text, ok := shellText(call.Inv)
 	if !ok {
 		return noShellFor(call.Inv)
