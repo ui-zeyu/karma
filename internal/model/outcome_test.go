@@ -1,5 +1,5 @@
-// The outcome vocabulary is one table: the collector protocol writes a name from
-// it and reads it back against a catalog, so an outcome cannot be spelled twice.
+// The outcome vocabulary is one table: the result stream writes a name from it,
+// so an outcome cannot be spelled twice.
 
 package model
 

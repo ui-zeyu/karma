@@ -53,19 +53,14 @@ func (s *SSHSession) Lost() bool { return s.lost.Load() }
 // the session and handing it the command — go through setup, which is what puts
 // them inside the call's deadline.
 func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return s.run(ctx, call, nil)
+	return s.run(ctx, call)
 }
 
-// Stream is Run with the standard output handed out line by line while it runs.
-func (s *SSHSession) Stream(ctx context.Context, call model.Call, each func(string)) model.RunResult {
-	return s.run(ctx, call, each)
-}
-
-func (s *SSHSession) run(ctx context.Context, call model.Call, each func(string)) model.RunResult {
+func (s *SSHSession) run(ctx context.Context, call model.Call) model.RunResult {
 	if script, ok := call.Inv.(model.Script); ok {
 		// The pinned command runs over the channel like a Shell, and the
 		// parser reads its text here as the tier's records.
-		text := s.run(ctx, model.Call{Inv: model.Shell{Script: script.Run}, Cap: call.Cap}, nil)
+		text := s.run(ctx, model.Call{Inv: model.Shell{Script: script.Run}, Cap: call.Cap})
 		return finishScript(text, script, call.Cap)
 	}
 	text, ok := shellText(call.Inv)
@@ -93,11 +88,11 @@ func (s *SSHSession) run(ctx context.Context, call model.Call, each func(string)
 	// bytes, stderr switches to U+FFFD after draining. stop closes the channel
 	// directly: a hung channel that never sees EOF is finished off by harvest's
 	// grace period.
-	return harvestEach(ctx, &sshCall{
+	return harvest(ctx, &sshCall{
 		sess:   sess,
 		stdout: bufio.NewReader(stdout),
 		stderr: bufio.NewReader(stderrPipe),
-	}, call.Cap, each)
+	}, call.Cap)
 }
 
 // setupResult reads a setup that did not finish. The call's deadline and the

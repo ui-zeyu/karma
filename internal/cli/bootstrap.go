@@ -1,9 +1,9 @@
 // Bootstrap: put this binary on the target, so the operator can run karma
 // there. The uploaded program reads the kernel's interfaces in process — no
 // shell, no coreutils and no libc in the path — which is what makes it usable
-// on a host where those cannot be trusted, and it is the only way an ssh or
-// ttyd target gets the local channel's checks (userland rootkit detection
-// among them).
+// on a host where those cannot be trusted, and a collection over a channel
+// never does that, so this mode is the only way a remote host gets the native
+// source's reading (userland rootkit detection among them).
 //
 // The transfer rides the channel itself: ssh streams the file over the
 // session's stdin, ttyd types it into the terminal it already has. The bytes
@@ -50,13 +50,13 @@ func bootCall(ctx context.Context, sess session.Session, inv model.Invocation) m
 }
 
 // runBootstrap places this binary on the target and prints where it landed.
-func runBootstrap(ctx context.Context, transport session.Transport, opts placeOptions) error {
+func runBootstrap(ctx context.Context, transport session.Transport) error {
 	sess, err := transport.Open(ctx)
 	if err != nil {
 		return err
 	}
 	defer sess.Close()
-	path, reused, err := placeCollector(ctx, sess, opts)
+	path, reused, err := placeBinary(ctx, sess)
 	if err != nil {
 		return err
 	}

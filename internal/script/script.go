@@ -1,6 +1,7 @@
 // Package script builds the fragments the collection speaks in: the `^== `
 // section header (reader cuts it into Sections, and each source is filtered and
-// counted independently), shell word quoting for the collector's command line,
+// counted independently), shell word quoting for the pinned spellings and the
+// bootstrap command line,
 // the ls -l row shape (LSBodyPrintf, with SplitLsBody and AlignLsBodies in
 // lsbody.go) that the listings print and the reading side reads, the per-file
 // read and per-directory listing loops the sh source runs where karma's own

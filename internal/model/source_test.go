@@ -9,24 +9,21 @@ import (
 	"testing"
 )
 
-func TestSourceParseAndRuns(t *testing.T) {
-	for word, want := range map[string]Source{
-		"":       SourceNative,
-		"native": SourceNative,
-		"sh":     SourceSh,
+func TestChannelNamesItsSource(t *testing.T) {
+	// A channel reads with one source, and it is the channel that says which:
+	// karma's own bodies run only where karma itself runs.
+	for channel, want := range map[Channel]Source{
+		ChanLocal: SourceNative,
+		ChanSSH:   SourceSh,
+		ChanTTYD:  SourceSh,
 	} {
-		got, err := ParseSource(word)
-		if err != nil {
-			t.Fatalf("ParseSource(%q): %v", word, err)
-		}
-		if got != want {
-			t.Errorf("ParseSource(%q) = %q, want %q", word, got, want)
+		if got := channel.Source(); got != want {
+			t.Errorf("%v.Source() = %q, want %q", channel, got, want)
 		}
 	}
-	if _, err := ParseSource("kernel"); err == nil {
-		t.Error("an unknown source word should be refused")
-	}
+}
 
+func TestSourceRuns(t *testing.T) {
 	// The kind states the side: in-process bodies exist where karma runs, a
 	// Script tier is the sh source's, and a command runs wherever the session
 	// points.

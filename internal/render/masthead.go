@@ -37,7 +37,6 @@ type HeaderInfo struct {
 	Total     int       // checks the platform's catalog holds
 	Selectors []string  // the run's selector words, empty for the whole catalog
 	Floor     model.SeverityFloor
-	Source    model.Source // which side read the evidence; native is silent
 }
 
 // RenderHeader draws the report's masthead: the KARMA band — the same
@@ -79,12 +78,6 @@ func mastheadFacts(facts model.HostFacts, info HeaderInfo) []fact {
 		{label: "account", value: accountCell(facts)},
 		{label: "kernel", value: cmp.Or(facts.Kernel, "unknown")},
 		{label: "checks", value: scopeLine(info)},
-	}
-	if info.Source != model.SourceNative {
-		// The native source is the report's default voice and goes unspoken;
-		// an sh-source run says so, because its findings stand on the
-		// target's own tools.
-		rows = append(rows, fact{label: "source", value: string(info.Source)})
 	}
 	return append(rows, fact{label: "severity", chips: legendChips(info.Floor), full: true})
 }

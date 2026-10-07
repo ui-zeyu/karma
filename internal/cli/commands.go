@@ -1,9 +1,8 @@
 // Package cli is the cobra application: local, ssh, ttyd, and list hang off
 // the root command, the mtime and bootstrap modes are written after the channel
 // command (and after the target on ssh and ttyd), and the cat and ls readers
-// hang under local — both present the host's own files
-// answers one catalog tier with the raw bytes a placed collector reports. Every
-// failure is written to stderr with the `karma: ` prefix by reportError.
+// hang under local — both present the host's own files. Every failure is written
+// to stderr with the `karma: ` prefix by reportError.
 package cli
 
 import (
@@ -128,7 +127,7 @@ func runBootstrapMode(cmd *cobra.Command, transport session.Transport, extra []s
 		return usagef(cmd, "bootstrap only uploads the binary; run it on the target yourself (unexpected: %s)",
 			strings.Join(extra, " "))
 	}
-	return runBootstrap(cmd.Context(), transport, placeOptionsFrom(cmd.Flags()))
+	return runBootstrap(cmd.Context(), transport)
 }
 
 // runMtimeMode is the mtime form's entry from either channel: dirs are the words
@@ -189,16 +188,17 @@ func newSSHCmd() *cobra.Command {
 			"ssh://[user@]host[:port] (bracket IPv6 addresses). Aspect names or check ids follow; all of " +
 			"them run when omitted, and a leading ! on a name excludes those checks. " +
 			"Change-time clustering is written karma ssh TARGET mtime DIR.... " +
-			"A collection places this binary on the target and runs its tiers through it — in process, so no " +
-			"shell and no host tool is in the path — and keeps the copy for the next run. " +
-			"karma ssh TARGET bootstrap places it and stops, printing the path.",
+			"A collection reads the target through its own /bin/sh: each check's own pinned command, " +
+			"run over the connection and read here. Nothing is written to the target, and no host tool " +
+			"stands between karma and the evidence longer than the command itself. " +
+			"karma ssh TARGET bootstrap instead places this binary on the target, which is how the " +
+			"target's kernel interfaces are read in process.",
 		Args: atLeastOneArg("ssh needs a target: [user@]host or ssh://[user@]host[:port]"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTargetCommand(cmd, args, "ssh TARGET", buildSSHTransport)
 		},
 	}
 	addRunFlags(cmd)
-	addPlaceFlags(cmd)
 	addSSHFlags(cmd)
 	return cmd
 }
@@ -218,15 +218,16 @@ func newTTYDCmd() *cobra.Command {
 			"Aspect names or check ids follow; all of them run when omitted, and a leading ! " +
 			"on a name excludes those checks. " +
 			"Change-time clustering is written karma ttyd TARGET mtime DIR.... " +
-			"A collection types this binary into the terminal, keeps it there, and runs its tiers through it " +
-			"in process. karma ttyd TARGET bootstrap places it and stops, printing the path.",
+			"A collection types each check's own pinned command into the terminal the server spawns " +
+			"for it and reads the answer back; nothing is written to the target. " +
+			"karma ttyd TARGET bootstrap instead types this binary into the terminal, which is how the " +
+			"target's kernel interfaces are read in process.",
 		Args: atLeastOneArg("ttyd needs a target: ws://host[:port] or host[:port]"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTargetCommand(cmd, args, "ttyd TARGET", buildTTYDTransport)
 		},
 	}
 	addRunFlags(cmd)
-	addPlaceFlags(cmd)
 	addTTYDFlags(cmd)
 	return cmd
 }

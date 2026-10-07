@@ -1,16 +1,15 @@
-// The collector protocol's own tests: the line's shape (the field names are the
-// contract), what a reader refuses, and the round trip that matters — a run's
-// results collected as JSON and read back must be the results, the documents
-// included.
+// The result stream's own tests: the line's shape (the field names are the
+// contract), that a target's text travels as it is, and that a stream which
+// cannot be written says so instead of ending silently.
 
 package collect
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
-	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -22,8 +21,8 @@ import (
 )
 
 // fixtureCatalog is one check per way a walk can end: an answered body with a
-// rule that lights a line, a two-tier fallback, a walk whose only tier the host
-// lacks, and a tier that answers with nothing at all.
+// rule that lights a line, a walk whose only tier the host lacks, a tier that
+// answers with nothing at all, and a tier that answers with fields.
 func fixtureCatalog() []*model.Check {
 	answer := func(text string) model.Native {
 		return model.Native{Body: func(context.Context) (string, error) { return text, nil }}
@@ -36,13 +35,6 @@ func fixtureCatalog() []*model.Check {
 			Rules: []model.Matcher{model.NewRule("two", `two`, model.High, "a two")},
 		},
 		{
-			ID: "fallback", Title: "Fallback", Aspect: model.AspectNetwork, Platform: model.Linux,
-			Steps: []model.Step{
-				{{Label: "ss", Inv: unavailable}},
-				{{Label: "netstat", Inv: answer("== b\nkept\n")}},
-			},
-		},
-		{
 			ID: "absent", Title: "Absent", Aspect: model.AspectKernel, Platform: model.Linux,
 			Steps: []model.Step{{{Label: "gone", Inv: unavailable}}},
 		},
@@ -51,28 +43,13 @@ func fixtureCatalog() []*model.Check {
 			Steps: []model.Step{{{Label: "quiet", Inv: answer("")}}},
 		},
 		{
-			// A tier that reads fields: the records travel as data, and the reading
-			// of a stream is the reading of a local run, field rule and all.
+			// A tier that reads fields: the records travel as data, and the
+			// readable rendering is derived on the far side.
 			ID: "fields", Title: "Fields", Aspect: model.AspectProcess, Platform: model.Linux,
 			Steps: []model.Step{{{Label: "ps", Inv: fieldsTier()}}},
 			Rules: []model.Matcher{
 				model.NewJudged("temp-path", model.Medium, "temp path in the command line",
 					model.FieldHas{Fields: []string{"COMMAND"}, Sub: "/tmp/"}),
-			},
-		},
-		{
-			// The stages a tier's text can pass through on the way to a panel: the
-			// tier's own join (Assemble), its dialect alignment (Adapt) and the
-			// check's normalization. A reader of the stream has to run all three
-			// itself, which is what this check is here to prove.
-			ID: "joined", Title: "Joined", Aspect: model.AspectKernel, Platform: model.Linux,
-			Steps: []model.Step{{{Label: "diff", Inv: answer("A one\nS two size 1\n"), Assemble: func(stream string) string {
-				return "joined\n" + strings.ReplaceAll(strings.TrimSuffix(stream, "\n"), "\n", "\njoined\n")
-			}, Adapt: func(title, body string) *model.Shaped {
-				return &model.Shaped{Text: strings.ToUpper(body)}
-			}}}},
-			Normalize: func(title, body string) *model.Shaped {
-				return &model.Shaped{Text: body + "shaped\n"}
 			},
 		},
 	}
@@ -97,26 +74,7 @@ func fieldsTier() model.Fields {
 	}}
 }
 
-// capturing is the observer that keeps the results a run produced, in the order
-// the checks finished.
-type capturing struct {
-	mu      sync.Mutex
-	results []*model.CheckResult
-}
-
-func (o *capturing) CheckStarted(*model.Check) {}
-
-func (o *capturing) CheckFinished(_ *model.Check, result *model.CheckResult) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.results = append(o.results, result)
-}
-
-func (o *capturing) Damaged(*model.Check, error) {}
-
-// runOnce runs one catalog once, with the observer given. Both halves of the
-// round trip use the same catalog value, so a result's Check pointer is the same
-// one on both sides and the comparison is about the result, not the fixture.
+// runOnce runs one catalog once, with the observer given.
 func runOnce(t *testing.T, catalog []*model.Check, observer runner.Observer) {
 	t.Helper()
 	options := model.RunOptions{Concurrency: 4, Timeout: 5 * time.Second}
@@ -147,6 +105,35 @@ func TestTheStreamNamesEveryFieldOfAResult(t *testing.T) {
 	}
 }
 
+// A tier that read fields states them as data, once: the readable lines are
+// derived on the far side rather than sent beside them.
+func TestAFieldsTierTravelsAsData(t *testing.T) {
+	var stream bytes.Buffer
+	runOnce(t, fixtureCatalog(), NewWriter(&stream))
+	var found bool
+	for _, raw := range strings.Split(strings.TrimSpace(stream.String()), "\n") {
+		var result Result
+		if err := json.Unmarshal([]byte(raw), &result); err != nil {
+			t.Fatalf("the stream withholds a line: %v", err)
+		}
+		if result.Check != "fields" {
+			continue
+		}
+		found = true
+		if result.Raw != "" {
+			t.Errorf("fields should not also travel as text: %q", result.Raw)
+		}
+		if result.Fields == nil ||
+			!slices.Equal(result.Fields.Header, []string{"USER", "PID", "COMMAND"}) ||
+			len(result.Fields.Rows) != 2 {
+			t.Fatalf("the fields did not travel: %+v", result.Fields)
+		}
+	}
+	if !found {
+		t.Fatal("the fields check is missing from the stream")
+	}
+}
+
 // A target's own output travels as it is: the angles and ampersands a shell
 // pipeline prints are not JSON escapes.
 func TestTheLineKeepsTheTextAsItIs(t *testing.T) {
@@ -161,110 +148,6 @@ func TestTheLineKeepsTheTextAsItIs(t *testing.T) {
 	if !strings.Contains(string(line), "&& echo <done>") {
 		t.Errorf("the text should travel unescaped, got %s", line)
 	}
-}
-
-func TestDecodeRejectsALineThatIsNotAnObject(t *testing.T) {
-	for _, line := range []string{"", "not json\n", "[1,2]\n", "{}\n{\"check\":\"x\"}\n"} {
-		if _, err := Decode([]byte(line)); err == nil {
-			t.Errorf("Decode(%q) should fail", line)
-		}
-	}
-}
-
-// The round trip: what a run drew for itself and what the same run's stream
-// reads back into must be the same results, document included — this is the
-// property the whole protocol exists for.
-func TestARunAndItsStreamAgree(t *testing.T) {
-	catalog := fixtureCatalog()
-	direct := &capturing{}
-	runOnce(t, catalog, direct)
-
-	var stream bytes.Buffer
-	runOnce(t, catalog, NewWriter(&stream))
-
-	options := model.RunOptions{Concurrency: 4, Timeout: 5 * time.Second}
-	decoded, err := decodeAll(&stream, catalog, options)
-	if err != nil {
-		t.Fatalf("the stream could not be read back: %v", err)
-	}
-	if len(decoded) != len(direct.results) {
-		t.Fatalf("the stream carried %d results, the run produced %d", len(decoded), len(direct.results))
-	}
-	byID := map[string]*model.CheckResult{}
-	for _, result := range direct.results {
-		byID[result.Check.ID] = result
-	}
-	for _, result := range decoded {
-		want, ok := byID[result.Check.ID]
-		if !ok {
-			t.Fatalf("the stream names a check the run did not produce: %s", result.Check.ID)
-		}
-		if !reflect.DeepEqual(result, want) {
-			t.Errorf("check %s reads back as\n%+v\nwant\n%+v", result.Check.ID, result, want)
-		}
-	}
-}
-
-func decodeAll(r *bytes.Buffer, catalog []*model.Check, options model.RunOptions) ([]*model.CheckResult, error) {
-	var out []*model.CheckResult
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64<<10), 64<<20)
-	for scanner.Scan() {
-		line, err := Decode(scanner.Bytes())
-		if err != nil {
-			return nil, err
-		}
-		result, err := ToCheckResult(catalog, line, options)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, result)
-	}
-	return out, scanner.Err()
-}
-
-func TestToCheckResultRefusesWhatItCannotResolve(t *testing.T) {
-	catalog := fixtureCatalog()
-	options := model.RunOptions{}
-	cases := []struct {
-		name string
-		r    Result
-	}{
-		{"unknown check", Result{Check: "nope", Outcome: model.Collected.String(), Probe: "ss"}},
-		{"unknown outcome", Result{Check: "answered", Outcome: "maybe", Probe: "ss"}},
-		{"unknown tier", Result{Check: "answered", Outcome: model.Collected.String(), Probe: "grep"}},
-	}
-	for _, tc := range cases {
-		if _, err := ToCheckResult(catalog, tc.r, options); err == nil {
-			t.Errorf("%s: ToCheckResult should fail", tc.name)
-		}
-	}
-}
-
-// A skipped check carries the chain it walked and no tier, and reads back as a
-// skipped result: the panel layer prints nothing for it, which is what a check
-// the host cannot answer looks like.
-func TestASkippedCheckTravelsWithoutATier(t *testing.T) {
-	catalog := fixtureCatalog()
-	var stream bytes.Buffer
-	runOnce(t, catalog, NewWriter(&stream))
-	decoded, err := decodeAll(&stream, catalog, model.RunOptions{})
-	if err != nil {
-		t.Fatalf("the stream could not be read back: %v", err)
-	}
-	for _, result := range decoded {
-		if result.Check.ID != "absent" {
-			continue
-		}
-		if result.Outcome != model.Skipped || result.ProbeLabel != "" {
-			t.Fatalf("a walk with no tier for this host: %+v", result)
-		}
-		if !reflect.DeepEqual(result.SkippedLabels, []string{"gone"}) {
-			t.Fatalf("the chain should travel: %v", result.SkippedLabels)
-		}
-		return
-	}
-	t.Fatal("the absent check is missing from the stream")
 }
 
 // A stream whose writer fails stops: the first error is kept and reported, and
@@ -301,8 +184,8 @@ func TestDamagedWritesAFailedResult(t *testing.T) {
 	var stream bytes.Buffer
 	writer := NewWriter(&stream)
 	writer.Damaged(&model.Check{ID: "boom"}, errors.New("presentation: the writer blew up"))
-	line, err := Decode(stream.Bytes())
-	if err != nil {
+	var line Result
+	if err := json.Unmarshal(stream.Bytes(), &line); err != nil {
 		t.Fatalf("the line could not be read: %v", err)
 	}
 	if line.Check != "boom" || line.Outcome != model.Failed.String() ||

@@ -82,14 +82,3 @@ type Uploader interface {
 type LostChannel interface {
 	Lost() bool
 }
-
-// Streamer is a channel that hands one call's standard output back line by line
-// while it runs: the collector's result stream is read as it arrives, so the
-// operator draws a panel when its check finishes rather than when the whole run
-// ends. The returned result says how the call itself ended — a cut keeps the
-// stderr and the verdict, and the lines that travelled are the caller's, not
-// repeated in it. A channel that does not implement it can still run the call and
-// hand the body back at once.
-type Streamer interface {
-	Stream(ctx context.Context, call model.Call, each func(string)) model.RunResult
-}

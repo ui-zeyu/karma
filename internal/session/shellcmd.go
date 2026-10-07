@@ -17,9 +17,8 @@ import (
 )
 
 // shellText is the invocation's shell text. ok is false for an invocation that
-// has none: a Native body runs inside karma's process, so a remote channel has
-// nothing to render for it unless a collector on the target runs it — see
-// commandText.
+// has none: a Native body runs inside karma's process, which no channel from
+// outside can reach — see noShellFor.
 func shellText(inv model.Invocation) (string, bool) {
 	switch v := inv.(type) {
 	case model.Command:
@@ -47,14 +46,14 @@ func mustShellText(inv model.Invocation) string {
 func posixShell(scriptText string) []string { return []string{"/bin/sh", "-c", scriptText} }
 
 // noShellFor is the result a remote channel gives a call it cannot render: a
-// Native body performs its tier inside karma's process, so a channel with no
-// collector on the target has nothing to run for it. Unavailable — the 127 a
-// missing binary gives — so the chain falls to the next tier, which may be a
-// command the target can run itself.
+// Native body performs its tier inside karma's process, which is on the wrong
+// side of the wire for a channel that reaches the target from outside.
+// Unavailable — the 127 a missing binary gives — so the chain falls to the next
+// tier, which may be a command the target can run itself.
 func noShellFor(inv model.Invocation) model.RunResult {
 	return model.RunResult{
 		Verdict:  model.VerdictUnavailable,
-		Stderr:   fmt.Sprintf("no collector on the target runs a %T tier", inv),
+		Stderr:   fmt.Sprintf("a %T tier runs only where karma itself runs", inv),
 		ExitCode: 127,
 	}
 }

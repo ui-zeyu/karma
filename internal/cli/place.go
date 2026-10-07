@@ -1,19 +1,19 @@
-// Placing the collector: where this binary may live on a target, how a copy that
-// is already there is proved to be this build, and how a copy is put there when
-// there is none.
+// Placing this binary on a target: where it may live there, how a copy that is
+// already there is proved to be this build, and how a copy is put there when
+// there is none. The bootstrap mode is the only caller — a collection never moves
+// a file to a target, it reads through the target's own shell.
 //
 // The order is the account's own directory first — exec-able almost everywhere,
 // out of the way of a /tmp cleanup, and the first place an operator looks — then
-// /tmp, which is always writable and often mounted noexec. The operator's own
-// words replace the order: --find names the directory to look in, --place the one
-// to put a copy in.
+// /tmp, which is always writable and often mounted noexec.
 //
 // A copy is reused only when its md5 equals this binary's. The hash is the one
 // check that does not execute the file, so a stale build, a truncated write or
 // someone else's file is replaced by a fresh upload rather than run; on a target
 // with no hash tool at all nothing is reused, and the upload's own verifications
 // (the decompressor's checksum, then the version line) are what prove the copy.
-// Nothing removes the file afterwards: the next run finds it and reuses it.
+// Nothing removes the file afterwards: the next bootstrap finds it and reuses
+// it.
 
 package cli
 
@@ -27,64 +27,36 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
-
-	"github.com/spf13/pflag"
 
 	"karma/internal/model"
 	"karma/internal/script"
 	"karma/internal/session"
 )
 
-// collectorName is the file's name under every candidate directory, so the same
+// placedName is the file's name under every candidate directory, so the same
 // path is looked for and written.
-const collectorName = "karma"
+const placedName = "karma"
 
-// placeOptions is the operator's own words about where a collector lives.
-type placeOptions struct {
-	find  string // the directory to look in; empty uses the default order
-	place string // the directory to put a copy in; empty uses the default order
-}
-
-// placeOptionsFrom reads the two flags. A command line that never registered
-// them reads the zero value, which is the default order.
-func placeOptionsFrom(flags *pflag.FlagSet) placeOptions {
-	return placeOptions{find: stringFlag(flags, "find"), place: stringFlag(flags, "place")}
-}
-
-// collectorDirs returns the order a collector is looked for in and the order it
-// is placed in.
-//
-// --place pins both: the operator has said where the collector lives, so nothing
-// else is looked at and nowhere else is written — a directory that will not take
-// the file is an error naming that directory, not a quiet move to another one.
-// --find is about looking: it leads the default order (the account's own
-// directory, then /tmp), and a miss still places a copy where the default order
-// says.
-func collectorDirs(home string, opts placeOptions) (lookup, place []string) {
-	defaults := make([]string, 0, 2)
+// placeDirs returns the order the binary is looked for in and put in: the
+// account's own directory, then /tmp. A target whose home directory cannot be
+// read has only the second.
+func placeDirs(home string) []string {
+	dirs := make([]string, 0, 2)
 	if home != "" {
-		defaults = append(defaults, filepath.Join(home, ".karma"))
+		dirs = append(dirs, filepath.Join(home, ".karma"))
 	}
-	defaults = append(defaults, filepath.Join("/tmp", collectorName))
-	if opts.place != "" {
-		return []string{opts.place}, []string{opts.place}
-	}
-	if opts.find != "" && !slices.Contains(defaults, opts.find) {
-		return append([]string{opts.find}, defaults...), defaults
-	}
-	return defaults, defaults
+	return append(dirs, filepath.Join("/tmp", placedName))
 }
 
-// placeCollector returns the path of a collector on the target, reusing the copy
-// that is already there and putting one there when there is none. reused says
-// which of the two happened, for the mode that reports it.
+// placeBinary returns the path this binary lives at on the target, reusing the
+// copy that is already there and putting one there when there is none. reused
+// says which of the two happened, for the mode that reports it.
 //
 // The two halves are separate on purpose: every lookup candidate is tried before
-// anything is written, so a target whose collector merely moved (a /tmp that was
+// anything is written, so a target whose copy merely moved (a /tmp that was
 // cleared, a home directory that changed) costs no transfer.
-func placeCollector(ctx context.Context, sess session.Session, opts placeOptions) (path string, reused bool, err error) {
+func placeBinary(ctx context.Context, sess session.Session) (path string, reused bool, err error) {
 	goos, goarch, err := targetPlatform(ctx, sess)
 	if err != nil {
 		return "", false, err
@@ -94,24 +66,24 @@ func placeCollector(ctx context.Context, sess session.Session, opts placeOptions
 		return "", false, err
 	}
 	digest := md5.Sum(program)
-	lookup, place := collectorDirs(targetHome(ctx, sess), opts)
-	for _, dir := range lookup {
-		candidate := filepath.Join(dir, collectorName)
-		if collectorReady(ctx, sess, candidate, digest) {
+	dirs := placeDirs(targetHome(ctx, sess))
+	for _, dir := range dirs {
+		candidate := filepath.Join(dir, placedName)
+		if binaryReady(ctx, sess, candidate, digest) {
 			return candidate, true, nil
 		}
 	}
 	var failures []string
-	for _, dir := range place {
-		candidate := filepath.Join(dir, collectorName)
-		if err := uploadCollector(ctx, sess, dir, candidate, program); err != nil {
+	for _, dir := range dirs {
+		candidate := filepath.Join(dir, placedName)
+		if err := uploadBinary(ctx, sess, dir, candidate, program); err != nil {
 			failures = append(failures, fmt.Sprintf("  %s: %s", dir, err))
 			continue
 		}
 		return candidate, false, nil
 	}
-	return "", false, fmt.Errorf("no directory on the target took the collector:\n%s\n"+
-		"a host karma cannot be placed on is collected by running karma on it itself", strings.Join(failures, "\n"))
+	return "", false, fmt.Errorf("no directory on the target took the copy:\n%s\n"+
+		"a host karma cannot be placed on is still collected over the channel", strings.Join(failures, "\n"))
 }
 
 // targetHome reads the account's home directory. The shell expands it, so karma
@@ -121,11 +93,11 @@ func targetHome(ctx context.Context, sess session.Session) string {
 	return strings.TrimSpace(bootCall(ctx, sess, model.Shell{Script: `printf '%s\n' "$HOME"`}).Stdout)
 }
 
-// collectorReady reports whether the file at path is this build, ready to run.
+// binaryReady reports whether the file at path is this build, ready to run.
 // The hash is asked of the target and compared here, so the file is never
 // executed before it is known: a target with no md5sum (or busybox's) answers
 // nothing, and the copy is replaced instead.
-func collectorReady(ctx context.Context, sess session.Session, path string, digest [md5.Size]byte) bool {
+func binaryReady(ctx context.Context, sess session.Session, path string, digest [md5.Size]byte) bool {
 	result := bootCall(ctx, sess, model.Shell{Script: hashCommand(path)})
 	if result.Verdict != model.VerdictAnswered {
 		return false
@@ -147,11 +119,10 @@ func hashCommand(path string) string {
 	)
 }
 
-// uploadCollector writes the program into dir and proves the write: the
-// directory is the collector's own (mode 700, never through a symlink), the
-// transfer is unpacked by the target, and the version line then says the file is
-// this build and runs.
-func uploadCollector(ctx context.Context, sess session.Session, dir, path string, program []byte) error {
+// uploadBinary writes the program into dir and proves the write: the directory
+// is the copy's own (mode 700, never through a symlink), the transfer is unpacked
+// by the target, and the version line then says the file is this build and runs.
+func uploadBinary(ctx context.Context, sess session.Session, dir, path string, program []byte) error {
 	uploader, ok := sess.(session.Uploader)
 	if !ok {
 		return fmt.Errorf("the %s channel cannot carry a binary upload", sess.Name())
@@ -169,7 +140,7 @@ func uploadCollector(ctx context.Context, sess session.Session, dir, path string
 	return unpackUpload(ctx, sess, path, shipment.unpack)
 }
 
-// prepareDirCommand creates the directory a collector goes into, mode 700, and
+// prepareDirCommand creates the directory the binary goes into, mode 700, and
 // refuses a symlink: a name that is already a link is not a place to write
 // through, and the target user owns the directory a copy lands in.
 func prepareDirCommand(dir string) string {

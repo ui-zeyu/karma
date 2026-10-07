@@ -573,14 +573,21 @@ func (o *collectObserver) byID(id string) (*model.CheckResult, bool) {
 // source is what the test reads back. Every call answers with one record, so a
 // tier that ran at all counts as the check's answer.
 type kindSession struct {
-	mu    sync.Mutex
-	kinds []string
+	mu      sync.Mutex
+	kinds   []string
+	channel model.Channel
 }
 
-func (s *kindSession) Name() string           { return "kind" }
-func (s *kindSession) Channel() model.Channel { return model.ChanSSH }
-func (s *kindSession) Describe() string       { return "kind" }
-func (s *kindSession) Close() error           { return nil }
+func (s *kindSession) Name() string { return "kind" }
+
+func (s *kindSession) Channel() model.Channel {
+	if s.channel == 0 {
+		return model.ChanSSH
+	}
+	return s.channel
+}
+func (s *kindSession) Describe() string { return "kind" }
+func (s *kindSession) Close() error     { return nil }
 
 func (s *kindSession) Run(_ context.Context, call model.Call) model.RunResult {
 	s.mu.Lock()
@@ -598,9 +605,9 @@ func (s *kindSession) seen() []string {
 	return slices.Clone(s.kinds)
 }
 
-// A check that declares both sources' tiers is walked once: the run's source
-// names the side, and the other side's tiers are not tried, not even as a
-// fallback. A check with no tier of this source is skipped whole.
+// A check that declares both sources' tiers is walked once: the channel states
+// the source, and the other side's tiers are not tried, not even as a fallback.
+// A check with no tier of this source is skipped whole.
 func TestTheWalkRunsOneSourceOnly(t *testing.T) {
 	newCheck := func() *model.Check {
 		return &model.Check{ID: "both", Aspect: model.AspectProcess, Steps: []model.Step{
@@ -613,18 +620,18 @@ func TestTheWalkRunsOneSourceOnly(t *testing.T) {
 		}}
 	}
 	for _, c := range []struct {
-		name   string
-		source model.Source
-		want   string
+		name    string
+		channel model.Channel
+		want    string
 	}{
-		{"native source", model.SourceNative, "model.Fields"},
-		{"sh source", model.SourceSh, "model.Script"},
+		{"the local channel reads in process", model.ChanLocal, "model.Fields"},
+		{"a remote channel reads the target's shell", model.ChanSSH, "model.Script"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			sess := &kindSession{}
+			sess := &kindSession{channel: c.channel}
 			results := &collectObserver{}
 			summary := RunCatalog(context.Background(), sess, []*model.Check{newCheck()},
-				model.RunOptions{Concurrency: 1, Source: c.source}, results)
+				model.RunOptions{Concurrency: 1}, results)
 			if summary.Results != 1 {
 				t.Fatalf("the check should produce a result: %+v", summary)
 			}
@@ -637,16 +644,16 @@ func TestTheWalkRunsOneSourceOnly(t *testing.T) {
 		})
 	}
 
-	// The same check with only the native tiers, walked in the sh source: no
-	// call reaches the channel, and the panel says what it skipped.
-	sess := &kindSession{}
+	// The same check with only the native tiers, walked from outside: no call
+	// reaches the channel, and the panel says what it skipped.
+	sess := &kindSession{channel: model.ChanSSH}
 	results := &collectObserver{}
 	nativeOnly := newCheck()
 	nativeOnly.Steps = nativeOnly.Steps[:1]
 	RunCatalog(context.Background(), sess, []*model.Check{nativeOnly},
-		model.RunOptions{Concurrency: 1, Source: model.SourceSh}, results)
+		model.RunOptions{Concurrency: 1}, results)
 	if seen := sess.seen(); len(seen) != 0 {
-		t.Fatalf("an sh run should make no call for a native-only check: %v", seen)
+		t.Fatalf("a remote run should make no call for a native-only check: %v", seen)
 	}
 	result, ok := results.byID("both")
 	if !ok || result.Outcome != model.Skipped {

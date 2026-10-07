@@ -53,41 +53,26 @@ func (LocalSession) Channel() model.Channel { return model.ChanLocal }
 // the chain in the runner falls to the next tier, which is what happens on every
 // other channel too.
 func (s LocalSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return s.run(ctx, call, nil)
+	return s.run(ctx, call)
 }
 
-// Stream is Run with the standard output handed out line by line while it runs.
-func (s LocalSession) Stream(ctx context.Context, call model.Call, each func(string)) model.RunResult {
-	return s.run(ctx, call, each)
-}
-
-func (s LocalSession) run(ctx context.Context, call model.Call, each func(string)) model.RunResult {
+func (s LocalSession) run(ctx context.Context, call model.Call) model.RunResult {
 	if fields, ok := call.Inv.(model.Fields); ok {
 		// A body that reads fields answers with the fields: nothing formats
 		// them into a line for the reading layer to parse back out.
 		return runFields(ctx, fields.Read, call.Cap)
 	}
 	if native, ok := call.Inv.(model.Native); ok {
-		// A body runs in this process, so it has no stream to read line by line:
-		// its text is the whole answer either way.
-		result := runNative(ctx, native.Body, call.Cap)
-		if each != nil {
-			for line := range strings.SplitSeq(result.Stdout, "\n") {
-				if line != "" {
-					each(line + "\n")
-				}
-			}
-			result.Stdout = ""
-		}
-		return result
+		// A body runs in this process and its text is the whole answer.
+		return runNative(ctx, native.Body, call.Cap)
 	}
 	if script, ok := call.Inv.(model.Script); ok {
 		// The pinned command runs like a Shell here; the parser reads its
 		// text as the tier's records, with the cap applied to the records.
-		text := s.run(ctx, model.Call{Inv: model.Shell{Script: script.Run}, Cap: call.Cap}, nil)
+		text := s.run(ctx, model.Call{Inv: model.Shell{Script: script.Run}, Cap: call.Cap})
 		return finishScript(text, script, call.Cap)
 	}
-	return runLocalEach(ctx, ArgvFor(call.Inv), call.Cap, each)
+	return runLocal(ctx, ArgvFor(call.Inv), call.Cap)
 }
 
 // Close releases the local channel's resources: there are none.
@@ -114,7 +99,7 @@ func (c *localCall) exitCode() int {
 	return c.cmd.ProcessState.ExitCode()
 }
 
-func runLocalEach(ctx context.Context, argv []string, cap model.RowCap, each func(string)) model.RunResult {
+func runLocal(ctx context.Context, argv []string, cap model.RowCap) model.RunResult {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -131,12 +116,12 @@ func runLocalEach(ctx context.Context, argv []string, cap model.RowCap, each fun
 		// the next tier and the panel names it in the skipped chain.
 		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: err.Error(), ExitCode: 127}
 	}
-	return harvestEach(ctx, &localCall{
+	return harvest(ctx, &localCall{
 		cmd:     cmd,
 		stdout:  bufio.NewReader(stdout),
 		stderr:  bufio.NewReader(stderrPipe),
 		process: process,
-	}, cap, each)
+	}, cap)
 }
 
 // validText replaces bad bytes with U+FFFD: stray output from the target must not blow up the whole check.

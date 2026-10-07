@@ -97,9 +97,8 @@ func TestRunScriptMissingCommandIsUnavailable(t *testing.T) {
 	}
 }
 
-// A remote channel without a collector cannot run an in-process body: it
-// answers unavailable, which is what falls through on a channel that drives the
-// target's shell instead.
+// A remote channel cannot run an in-process body: it answers unavailable, which
+// is what falls through on a channel that drives the target's shell instead.
 func TestRemoteChannelsRefuseInProcessBodies(t *testing.T) {
 	call := model.Call{Inv: model.Fields{Read: func(context.Context) (*model.RecordSet, error) {
 		return &model.RecordSet{}, nil

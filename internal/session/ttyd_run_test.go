@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -356,32 +355,5 @@ func TestTTYDUploadRefusedByReadonlyServer(t *testing.T) {
 	}
 	if _, statErr := os.Stat(target); statErr == nil {
 		t.Fatal("the file was written although the upload failed")
-	}
-}
-
-// A ttyd stream types one line and hands its output back line by line: the
-// collector's whole run arrives this way, so the operator can draw each result as
-// it is printed rather than when the command ends.
-func TestTTYDStreamHandsBackTheLines(t *testing.T) {
-	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	ttyd, ok := sess.(*TTYDSession)
-	if !ok {
-		t.Fatalf("the ttyd transport should open a ttyd session, got %T", sess)
-	}
-
-	var lines []string
-	call := model.Call{Inv: model.Shell{Script: `printf '%s\n' one two three`}}
-	result := ttyd.Stream(ctx, call, func(line string) { lines = append(lines, strings.TrimSpace(line)) })
-	if result.ExitCode != 0 {
-		t.Fatalf("the streamed call failed: %+v", result)
-	}
-	if want := []string{"one", "two", "three"}; !slices.Equal(lines, want) {
-		t.Fatalf("the stream carried %v, want %v", lines, want)
-	}
-	// The lines travelled, so they are not repeated as a body.
-	if result.Stdout != "" {
-		t.Fatalf("a streamed body should not be collected again: %q", result.Stdout)
 	}
 }

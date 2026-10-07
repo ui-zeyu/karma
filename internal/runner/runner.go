@@ -176,9 +176,10 @@ func runCheck(ctx context.Context, sess session.Session, check *model.Check, opt
 	ctx, cancel := session.Within(ctx, budget)
 	defer cancel()
 
-	// The run walks one source's tiers: a check can hold both sources' tiers
-	// side by side, and a check with none of this source's is skipped whole.
-	steps := check.StepsFor(options.Source)
+	// The run walks one source's tiers — the one this channel reads with — so a
+	// check can hold both sources' tiers side by side, and a check with none of
+	// this source's is skipped whole.
+	steps := check.StepsFor(sess.Channel().Source())
 	if len(steps) == 0 {
 		return &model.CheckResult{
 			Check:         check,
@@ -403,41 +404,6 @@ func evidence(body model.Body) string {
 		return model.RecordsText(body.Records.Rows)
 	}
 	return body.Text
-}
-
-// Reading reads text that did not arrive through this process's own call — the
-// collector protocol hands a collected run's results here, and a remote report
-// is drawn from them — into the document its panel shows. The step is found by
-// the tier's label, so a check whose walk has several tiers reads the one that
-// answered, and ok is false when this catalog has no such tier: a collector of
-// another build is not something to render half of.
-func Reading(check *model.Check, probeLabel string, body model.Body, truncated bool, options model.RunOptions) (model.Document, bool) {
-	step, ok := stepFor(check, probeLabel)
-	if !ok {
-		return model.Document{}, false
-	}
-	return readingOf(check, step, body, truncated, options), true
-}
-
-// stepFor is the step one tier label names: a one-tier step's own label, or the
-// joined "a + b" label a step of several tiers reports (which is what joinStep
-// writes into the result's ProbeLabel).
-func stepFor(check *model.Check, label string) (model.Step, bool) {
-	for _, step := range check.Steps {
-		if stepLabel(step) == label {
-			return step, true
-		}
-	}
-	return nil, false
-}
-
-// stepLabel names a step by the tiers it holds, in declaration order.
-func stepLabel(step model.Step) string {
-	labels := make([]string, 0, len(step))
-	for _, probe := range step {
-		labels = append(labels, probe.Label)
-	}
-	return strings.Join(labels, " + ")
 }
 
 // stepAdapt is the dialect alignment of one step: a step of several probes joined

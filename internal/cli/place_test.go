@@ -1,4 +1,4 @@
-// Placement's own pieces: the order a collector is looked for and put in, the
+// Placement's own pieces: the order the binary is looked for and put in, the
 // md5 that decides whether a copy found on the target may be run, and the
 // fallbacks when a directory will not take one.
 
@@ -123,39 +123,16 @@ func thisBuildDigest(t *testing.T) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func TestCollectorDirsOrdersTheOperatorsWordsFirst(t *testing.T) {
-	lookup, place := collectorDirs("/home/ops", placeOptions{})
-	if len(lookup) != 2 || lookup[0] != "/home/ops/.karma" || lookup[1] != "/tmp/karma" {
-		t.Fatalf("the default order = %v", lookup)
-	}
-	if len(place) != 2 || place[0] != lookup[0] {
-		t.Fatalf("placement follows the same order: %v", place)
-	}
-
-	// --find leads the lookup and leaves the placement to the default order: a
-	// miss still puts a copy where the account's own directory is.
-	lookup, place = collectorDirs("/home/ops", placeOptions{find: "/opt/tools"})
-	if len(lookup) != 3 || lookup[0] != "/opt/tools" || lookup[1] != "/home/ops/.karma" {
-		t.Fatalf("--find leads the lookup: %v", lookup)
-	}
-	if len(place) != 2 || place[0] != "/home/ops/.karma" {
-		t.Fatalf("--find does not move the placement: %v", place)
-	}
-
-	// --place pins both: the operator said where the collector lives, so nothing
-	// else is looked at and nowhere else is written.
-	lookup, place = collectorDirs("/home/ops", placeOptions{place: "/srv/k"})
-	if len(lookup) != 1 || lookup[0] != "/srv/k" {
-		t.Fatalf("--place pins the lookup: %v", lookup)
-	}
-	if len(place) != 1 || place[0] != "/srv/k" {
-		t.Fatalf("--place pins the placement: %v", place)
+func TestCollectorDirsOrdersTheAccountFirst(t *testing.T) {
+	dirs := placeDirs("/home/ops")
+	if len(dirs) != 2 || dirs[0] != "/home/ops/.karma" || dirs[1] != "/tmp/karma" {
+		t.Fatalf("the order = %v", dirs)
 	}
 
 	// An account with no home directory has one candidate fewer, not a guess.
-	lookup, _ = collectorDirs("", placeOptions{})
-	if len(lookup) != 1 || lookup[0] != "/tmp/karma" {
-		t.Fatalf("a target with no home = %v", lookup)
+	dirs = placeDirs("")
+	if len(dirs) != 1 || dirs[0] != "/tmp/karma" {
+		t.Fatalf("a target with no home = %v", dirs)
 	}
 }
 
@@ -165,12 +142,12 @@ func TestPlacementReusesACopyThatMatchesThisBuild(t *testing.T) {
 	sess := newPlacedSession()
 	sess.files["/home/ops/.karma/karma"] = thisBuildDigest(t)
 
-	path, reused, err := placeCollector(context.Background(), sess, placeOptions{})
+	path, reused, err := placeBinary(context.Background(), sess)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if path != "/home/ops/.karma/karma" || !reused {
-		t.Fatalf("placeCollector = %q, %v", path, reused)
+		t.Fatalf("placeBinary = %q, %v", path, reused)
 	}
 	if len(sess.uploads) != 0 {
 		t.Fatalf("a reused copy travels nothing: %v", sess.uploads)
@@ -183,7 +160,7 @@ func TestPlacementReplacesACopyThatIsNotThisBuild(t *testing.T) {
 	sess := newPlacedSession()
 	sess.files["/home/ops/.karma/karma"] = strings.Repeat("0", 32)
 
-	path, reused, err := placeCollector(context.Background(), sess, placeOptions{})
+	path, reused, err := placeBinary(context.Background(), sess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +179,7 @@ func TestPlacementDoesNotReuseWhatItCannotHash(t *testing.T) {
 	sess.files["/home/ops/.karma/karma"] = thisBuildDigest(t)
 	sess.noHash = true
 
-	path, reused, err := placeCollector(context.Background(), sess, placeOptions{})
+	path, reused, err := placeBinary(context.Background(), sess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +193,7 @@ func TestPlacementDoesNotReuseWhatItCannotHash(t *testing.T) {
 
 func TestPlacementPutsTheFirstWorkingDirectoryToUse(t *testing.T) {
 	sess := newPlacedSession()
-	path, reused, err := placeCollector(context.Background(), sess, placeOptions{})
+	path, reused, err := placeBinary(context.Background(), sess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +214,7 @@ func TestPlacementFallsThroughToTmp(t *testing.T) {
 	sess := newPlacedSession()
 	sess.refuse["/home/ops/.karma"] = true
 
-	path, reused, err := placeCollector(context.Background(), sess, placeOptions{})
+	path, reused, err := placeBinary(context.Background(), sess)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,66 +224,24 @@ func TestPlacementFallsThroughToTmp(t *testing.T) {
 }
 
 // Every candidate refusing is one message naming each one and the way out: a
-// host karma cannot be placed on is collected by running karma on it.
+// host karma cannot be placed on is still collected, over the channel.
 func TestPlacementReportsEveryDirectoryThatRefused(t *testing.T) {
 	sess := newPlacedSession()
 	sess.refuse["/home/ops/.karma"] = true
 	sess.refuse["/tmp/karma"] = true
 
-	_, _, err := placeCollector(context.Background(), sess, placeOptions{})
+	_, _, err := placeBinary(context.Background(), sess)
 	if err == nil {
 		t.Fatal("a target that took nothing was accepted")
 	}
-	for _, want := range []string{"/home/ops/.karma", "/tmp/karma", "Permission denied", "running karma on it"} {
+	for _, want := range []string{"/home/ops/.karma", "/tmp/karma", "Permission denied", "over the channel"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the message should carry %q: %v", want, err)
 		}
 	}
 }
 
-// The operator's words replace the order: --find names where to look, --place
-// where to put a copy.
-func TestPlacementHonorsFindAndPlace(t *testing.T) {
-	sess := newPlacedSession()
-	sess.files["/opt/tools/karma"] = thisBuildDigest(t)
-	path, reused, err := placeCollector(context.Background(), sess, placeOptions{find: "/opt/tools"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if path != "/opt/tools/karma" || !reused {
-		t.Fatalf("--find should be looked in first: %q, %v", path, reused)
-	}
-
-	sess = newPlacedSession()
-	path, _, err = placeCollector(context.Background(), sess, placeOptions{place: "/srv/k"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if path != "/srv/k/karma" || len(sess.uploads) != 1 || sess.uploads[0] != "/srv/k/karma" {
-		t.Fatalf("--place should be written to: %q, %v", path, sess.uploads)
-	}
-}
-
-// The two flags are read from the command line the modes share.
-func TestPlaceOptionsComeFromTheFlags(t *testing.T) {
-	cmd := newSSHCmd()
-	if err := cmd.Flags().Set("find", "/opt/tools"); err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Flags().Set("place", "/srv/k"); err != nil {
-		t.Fatal(err)
-	}
-	opts := placeOptionsFrom(cmd.Flags())
-	if opts.find != "/opt/tools" || opts.place != "/srv/k" {
-		t.Fatalf("placeOptions = %+v", opts)
-	}
-	// A command line that never registered them reads the default order.
-	if got := placeOptionsFrom(newLocalCmd().Flags()); got.find != "" || got.place != "" {
-		t.Fatalf("the local channel places nothing: %+v", got)
-	}
-}
-
-// The directory a collector lands in is the collector's own, and a name that is
+// The directory the copy lands in is the copy's own, and a name that is
 // already a link is not a place to write through.
 func TestPrepareDirRefusesASymlinkAndSetsTheMode(t *testing.T) {
 	command := prepareDirCommand("/tmp/karma")

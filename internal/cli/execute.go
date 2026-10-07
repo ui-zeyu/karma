@@ -94,32 +94,15 @@ func execute(ctx context.Context, w, warn io.Writer, transport session.Transport
 	}
 	defer sess.Close()
 
-	// A remote Linux channel collects through the binary it places on the
-	// target: one copy per run, reused when one is already there and proved to
-	// be this build. A channel that cannot carry an upload — or a target that is
-	// not Linux, where karma has no in-process bodies — runs the tiers itself.
-	// An sh-source run places nothing: it drives the target's own shell.
-	var collectorPath string
-	if options.Source == model.SourceNative {
-		if _, ok := sess.(session.Uploader); ok && transport.Platform() == model.Linux {
-			path, _, err := placeCollector(ctx, sess, placeOptions{find: options.FindDir, place: options.PlaceDir})
-			if err != nil {
-				return failf(ExitEnvironment, "%v", err)
-			}
-			collectorPath = path
-		}
-	}
-
 	factsValue := facts.CollectFor(ctx, transport.Platform(), sess)
 	if factsValue.ProbeCut {
 		fmt.Fprintln(warn,
 			"karma: the capability probe timed out: a tool it did not reach reads as absent, so the host facts may be thinner than they look")
 	}
 	// Two ways to hand the operator what the run saw. The report draws each panel
-	// as its check finishes; the collector protocol writes one JSON object per
-	// check instead, which is what a run asks for when it is going to be read by
-	// another karma rather than by a person. The walk, the concurrency and the
-	// budgets are the same either way.
+	// as its check finishes; the result stream writes one JSON object per check
+	// instead, which is the shape a program reads. The walk, the concurrency and
+	// the budgets are the same either way.
 	var (
 		observer runner.Observer
 		stream   *collect.Writer
@@ -137,25 +120,16 @@ func execute(ctx context.Context, w, warn io.Writer, transport session.Transport
 			Total:     len(target),
 			Selectors: SelectorTokens(options.Selectors),
 			Floor:     options.MinSeverity,
-			Source:    options.Source,
 		}, width)
 		live := render.NewLiveObserver(w, selected, options.MaxLines, width, isTerminal(w))
 		live.Start()
 		defer live.Close()
 		observer = live
 	}
-	// A channel that placed a collector collects through it: one call carries the
-	// whole run and the results arrive as its checks finish. Every other channel
-	// walks the checks here.
-	var summary runner.Summary
-	if collectorPath != "" {
-		summary, err = runDelegated(ctx, sess, collectorPath, selected, options, observer, warn)
-		if err != nil {
-			return err
-		}
-	} else {
-		summary = runner.RunCatalog(ctx, sess, selected, options, observer)
-	}
+	// Every channel walks the checks on this side: a local session runs the
+	// native source's bodies in process, and a remote one reads the target
+	// through the sh source's pinned spellings, one call per tier.
+	summary := runner.RunCatalog(ctx, sess, selected, options, observer)
 	// A stream that stopped early is a result the reader is missing, so the run
 	// says so rather than ending as if it had delivered the whole set.
 	if stream != nil && stream.Err() != nil {

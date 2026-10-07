@@ -138,27 +138,6 @@ func TestRunOptions(t *testing.T) {
 		}
 	}
 
-	// The source word names which side of the wire reads the evidence: the
-	// native default, or the sh source that drives the target's own shell.
-	for word, want := range map[string]model.Source{
-		"native": model.SourceNative, "sh": model.SourceSh,
-	} {
-		flags := newRunFlags()
-		flags.Set("source", word)
-		options, err := runOptions(flags, nil)
-		if err != nil {
-			t.Fatalf("source=%s: %v", word, err)
-		}
-		if options.Source != want {
-			t.Fatalf("source=%s mapped to %q, want %q", word, options.Source, want)
-		}
-	}
-	flags := newRunFlags()
-	flags.Set("source", "kernel")
-	if _, err := runOptions(flags, nil); err == nil {
-		t.Fatal("an unknown source word should fail")
-	}
-
 	// The severity floor takes the level vocabulary plus the word that keeps the
 	// whole report; each level name is the floor above it.
 	for word, want := range map[string]model.SeverityFloor{
@@ -181,7 +160,7 @@ func TestRunOptions(t *testing.T) {
 		}
 	}
 
-	flags = newRunFlags()
+	flags := newRunFlags()
 	flags.Set("timeout", "1.5")
 	options, err = runOptions(flags, nil)
 	if err != nil {

@@ -51,25 +51,18 @@ console the operator is looking at. SSH accepts `[user@]host`, `ssh://[user@]hos
 `-i` private key (repeatable), `--password` (also the passphrase of an encrypted key) and
 `-o StrictHostKeyChecking=no|accept-new|yes`.
 
-**A remote collection runs through a collector.** `ssh` and `ttyd` place this binary on the target,
-keep it there, and collect through it: every tier then runs in process on the target, so a remote
-report is the one a local run on that host would have drawn — the shell is not in the path, and the
-kernel is read directly. The copy is reused on later runs and is proved before it is executed (its
-md5 equals the build's, and a copy that does not match is replaced rather than run). It is looked for
-in the account's own directory first (`$HOME/.karma/karma`) and then in `/tmp/karma/karma`;
-`--find DIR` looks in that directory first, and `--place DIR` pins where the copy lives.
+**A remote collection reads the target through its own shell.** `ssh` and `ttyd` write nothing to
+the target: each check's own pinned command runs over the connection — a `cat` loop over a file list,
+one `find -printf` per directory, `LC_ALL=C ps -efww` into the fields the native read states — and the
+text comes back to be read here. So the collection is one call per tier over a channel the operator
+already has, nothing has to be executable or writable on the target, and no host tool stands between
+karma and the evidence longer than the command itself. The panels of a remote run are those commands'
+own output read by the same rules, filters and lexers as always.
 
-The run itself is one call: the operator asks the collector for the selection it made, with the same
-concurrency and per-check budget, and reads its results as they arrive — one line per check, in the
-order the checks finish — so the panels are drawn while the run happens, and the operator's
-own deadline covers the whole collection. Collection happens there and presentation happens here:
-the catalog, the rules, the severity floors and the terminal are this end's.
-
-The program placed on the target is the artifact built for *its* platform, not the operator's: a
-release's artifacts sit beside the binary (`dist/karma-linux-amd64`, `dist/karma-linux-arm64`), so an
-operator on macOS audits a Linux host with `dist/karma` and the artifact next to it. A target karma
-cannot be placed on — no writable and executable directory, no build for its platform — is collected
-by running karma on it itself.
+The reading happens here and the evidence comes from there: the catalog, the rules, the severity
+floors and the terminal are this end's, and the target only answers. Where the local channel runs
+karma's own in-process bodies — reading `/proc`, `sock_diag`, the utmp records — a remote one cannot:
+that code is karma's, and it is not on the target. `bootstrap` is how a remote host gets that reading.
 
 ### Working on a target
 
@@ -77,18 +70,22 @@ by running karma on it itself.
 dist/karma local mtime /var/www              # cluster directory change times; ssh and ttyd take DIR... too
 dist/karma local cat /etc/passwd /etc/shadow # print files, in process
 dist/karma local ls /tmp /var/tmp            # list directories the way the report's rows look
-dist/karma ssh root@10.0.0.8 tainted         # one check, through the collector it places first
+dist/karma ssh root@10.0.0.8 tainted         # one check, read through the target's own shell
 
-dist/karma ssh root@10.0.0.8 bootstrap       # place the collector and print its path, collecting nothing
+dist/karma ssh root@10.0.0.8 bootstrap       # put this binary on the target and print its path
 dist/karma ttyd ws://10.0.0.8:7681 bootstrap
-dist/karma ssh root@10.0.0.8 --place /srv/k bootstrap   # pin where it lives
 ```
 
 `bootstrap` places a compressed copy of the binary on the target, verifies it and prints the path —
-nothing else runs. The copy travels gzip-compressed when the target can unpack it (its own `gzip`, or
-busybox's) and uncompressed when it cannot, so the mode depends on nothing the channel does not
-already use. Run it on the target yourself, for example `$HOME/.karma/karma local`. This is how an
-SSH or ttyd target gets the local channel's in-process checks, such as userland rootkit detection.
+nothing else runs, and no collection ever writes to a target. The copy travels gzip-compressed when
+the target can unpack it (its own `gzip`, or busybox's) and uncompressed when it cannot, so the mode
+depends on nothing the channel does not already use. It lands in the account's own directory first
+(`$HOME/.karma/karma`) and then in `/tmp/karma/karma`, and a copy whose md5 equals the build's is
+reused rather than uploaded again. Run it on the target yourself, for example `$HOME/.karma/karma
+local`: that is how an SSH or ttyd host gets the native source's reading — the in-process checks,
+userland rootkit detection among them. The program placed is the artifact built for *its* platform,
+not the operator's, so a release's artifacts sit beside the binary (`dist/karma-linux-amd64`,
+`dist/karma-linux-arm64`) and an operator on macOS audits a Linux host with `dist/karma`.
 
 `mtime` walks each given directory on its own filesystem, skipping `/proc`, `/sys` and `/dev`. `cat`
 and `ls` read in process rather than through the host's own binaries, so a preload hook on those
@@ -109,22 +106,18 @@ Rows below the floor are left out and counted with the check's own filtered line
 legend says which floor is in force, so a quiet host stays readable and a busy one answers one
 question. It filters the reading and nothing else.
 
-`--json` prints the run as the collector protocol instead of the report: one JSON object per check,
-written as that check finishes, carrying the check id, how its walk ended (`collected`, `skipped`,
-`failed`), the tier that answered, the chain it passed, that tier's raw text and standard error, and
-whether a row cap stopped it. Nothing in a line has been read or shaped, so the floors and the
-lexers above are the reader's business — this is the stream a remote collection reads, and it is also
-a scripting surface for a local one (`karma local --json df mounts | jq`).
+`--json` prints the run as a result stream instead of the report: one JSON object per check, written
+as that check finishes, carrying the check id, how its walk ended (`collected`, `skipped`, `failed`),
+the tier that answered, the chain it passed, that tier's raw text and standard error, and whether a
+row cap stopped it. Nothing in a line has been read or shaped, so the floors and the lexers above are
+the reader's business, which makes it a scripting surface (`karma local --json df mounts | jq`).
 
-`--source` names which side of the wire reads the evidence. `native` (the default) runs karma's own
-bodies where the target is: the local host in process, or — on ssh and ttyd — the collector karma
-places there. `sh` places nothing: the run drives the target's own `/bin/sh` over the channel, and
-every check reads its own pinned spelling there (`LC_ALL=C ps -efww` into the fields the native read
-states, a `cat` loop over a file list, one `find -printf` per directory), so a host that cannot hold
-a binary still answers the whole catalog. A run stands on one source: the two readings stand side by
-side and neither falls back to the other, so a panel is drawn from the source that was asked for. A
-check that declares no reading on the side that was asked for is skipped, and its panel names the
-tiers it skipped. The header names the source when it is not `native`.
+**One source per channel.** The local channel reads with karma's own bodies, in process; `ssh` and
+`ttyd` read the target's shell. That is one decision rather than an option, because an in-process body
+is karma's code and karma is not on the target: a check declares both readings side by side (`ps` read
+from `/proc`, and `LC_ALL=C ps -efww` read from the target), the two never fall back to one another,
+and the channel picks the side. Both readings produce the same layer-1 structure, so the same rules,
+filters and lexers read either, and a report states one source.
 
 Exit codes: 0 a run that finished, 1 a built-in reader that could not read an operand, 2 a run that
 could not happen (a failed connection, or a channel that died mid-run), 70 karma's own damage — an
@@ -198,6 +191,6 @@ Two properties hold the design together. Release binaries are statically linked
 (`CGO_ENABLED=0`), and the tiers read the kernel's own interfaces in process — `/proc`,
 `syslog(2)`, `sock_diag`/`rtnetlink`, utmp/wtmp records, `lstat` and `debug/elf` — so neither
 `LD_PRELOAD` nor a replaced host tool can change what karma reads. And a tier is one body
-(`model.Native`) run wherever karma itself stands on the host: locally, or on the target through the
-collector the remote channels place there. One text shape, so the same rules, filters and lexers read
-it on every channel.
+(`model.Native`) that runs where karma itself stands, and every remote reading is the target's own
+tool answering a pinned command. One text shape, so the same rules, filters and lexers read it on
+every channel.

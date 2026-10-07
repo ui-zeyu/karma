@@ -82,19 +82,14 @@ func (s *TTYDSession) Close() error { return nil }
 
 // Run types one collection line into a fresh terminal and harvests the answer.
 func (s *TTYDSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return s.run(ctx, call, nil)
+	return s.run(ctx, call)
 }
 
-// Stream is Run with the standard output handed out line by line while it runs.
-func (s *TTYDSession) Stream(ctx context.Context, call model.Call, each func(string)) model.RunResult {
-	return s.run(ctx, call, each)
-}
-
-func (s *TTYDSession) run(ctx context.Context, call model.Call, each func(string)) model.RunResult {
+func (s *TTYDSession) run(ctx context.Context, call model.Call) model.RunResult {
 	if script, ok := call.Inv.(model.Script); ok {
 		// The pinned command is typed into the terminal like a Shell, and
 		// the parser reads the harvested text here as the tier's records.
-		text := s.run(ctx, model.Call{Inv: model.Shell{Script: script.Run}, Cap: call.Cap}, nil)
+		text := s.run(ctx, model.Call{Inv: model.Shell{Script: script.Run}, Cap: call.Cap})
 		return finishScript(text, script, call.Cap)
 	}
 	text, ok := shellText(call.Inv)
@@ -112,7 +107,7 @@ func (s *TTYDSession) run(ctx context.Context, call model.Call, each func(string
 		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
 	terminal := &ttydCall{conn: conn, spawned: make(chan struct{})}
-	return terminal.collectEach(ctx, text, call.Cap, each)
+	return terminal.collect(ctx, text, call.Cap)
 }
 
 // connect dials the endpoint and sends the JSON handshake. ttyd spawns the
@@ -245,7 +240,7 @@ type ttydCall struct {
 }
 
 // markSpawned closes spawned once, from whichever goroutine sees the first
-// initial frame first: the frame pump and the collector both watch for it.
+// initial frame first: the frame pump and the call both watch for it.
 func (c *ttydCall) markSpawned() {
 	select {
 	case <-c.spawned:
@@ -259,7 +254,7 @@ func (c *ttydCall) markSpawned() {
 // the terminal's process on the target. The wait for the terminal to spawn and
 // the pause before typing belong to the call's deadline like everything else —
 // they are the channel's own setup.
-func (c *ttydCall) collectEach(ctx context.Context, script string, cap model.RowCap, each func(string)) model.RunResult {
+func (c *ttydCall) collect(ctx context.Context, script string, cap model.RowCap) model.RunResult {
 	marker := markerSalt()
 	encoded := base64.StdEncoding.EncodeToString([]byte(ttydPayload(script, marker)))
 	line := "printf %s " + encoded + " | base64 -d | /bin/sh"
@@ -293,7 +288,7 @@ func (c *ttydCall) collectEach(ctx context.Context, script string, cap model.Row
 		}
 		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
-	return harvestEach(ctx, stream, cap, each)
+	return harvest(ctx, stream, cap)
 }
 
 // sleepCtx is one of the channel's own pacing waits, ended early by the call's

@@ -7,7 +7,6 @@ package model
 import (
 	"context"
 	"errors"
-	"fmt"
 	"regexp"
 	"slices"
 	"time"
@@ -238,9 +237,9 @@ const (
 	Failed
 )
 
-// outcomeNames is the name of each Outcome in declaration order; the collector
-// protocol writes one of them and reads it back, so a result that crossed a
-// process boundary says how its walk ended in one vocabulary.
+// outcomeNames is the name of each Outcome in declaration order; the result
+// stream writes one of them, so a result that crossed a process boundary says
+// how its walk ended in one vocabulary.
 var outcomeNames = []string{"collected", "skipped", "failed"}
 
 // String names the outcome.
@@ -299,10 +298,9 @@ func (Shell) isInvocation() {}
 
 // Native is a tier whose body is karma's own code: the local channel runs it
 // inside the process, which is how a tier reads the kernel's interfaces without
-// a host tool or a shell. Every remote Linux channel collects through a karma
-// binary placed on the target, and that binary — the local channel there —
-// answers with this body too; the collector is asked for the tier by name, so a
-// Native's own invocation is what a channel without a collector runs.
+// a host tool or a shell. A remote channel cannot run it — there is no karma on
+// the target — so such a tier is walked by the native source alone, and a
+// session asked for one answers the way it answers any absent tool.
 //
 // Whether the body can run here is its own answer at run time
 // (ErrTierUnavailable), never a declaration read before the walk.
@@ -315,10 +313,9 @@ func (Native) isInvocation() {}
 // Fields is a tier whose body reads fields rather than a tool's own wording:
 // the local channel runs it in process and the result is the records
 // themselves, so nothing formats them into a line for another layer to parse
-// back out. It is a Native in every other respect — every channel answers with
-// it (a remote one through the placed collector, which carries the fields as
-// data), it reports ErrTierUnavailable the same way, and the walk ranks it like
-// any other tier.
+// back out. It is a Native in every other respect — the local channel answers
+// with it, it reports ErrTierUnavailable the same way, and the walk ranks it
+// like any other tier.
 type Fields struct {
 	Read func(ctx context.Context) (*RecordSet, error)
 }
@@ -349,32 +346,20 @@ func Sh(run string) Script { return Script{Run: run} }
 
 func (Script) isInvocation() {}
 
-// Source is which side of the wire reads the evidence. The native source (the
-// default, and the zero value of an unset flag) runs karma's own bodies where
-// the target is — the local channel, or the collector a remote channel places
-// there. The sh source places nothing: the run drives the target's /bin/sh
-// through the channel and reads each check's pinned spelling into the same
-// layer-1 structure. A run states one source and walks only its own tiers (the
-// invocation kind states which side a tier belongs to); the two never chain,
-// because a report stands on one source and each source keeps its own escape
-// ladder.
+// Source is which side of the wire reads the evidence, and the run's own
+// channel states it (Channel.Source). The native source is where karma itself
+// stands: its own bodies run in process. The sh source reads a target through
+// that target's shell — the run drives /bin/sh over the channel and reads each
+// check's pinned spelling into the same layer-1 structure. A run walks only its
+// own source's tiers (the invocation kind states which side a tier belongs to);
+// the two never chain, because a report stands on one source and each source
+// keeps its own escape ladder.
 type Source string
 
 const (
 	SourceNative Source = "" // unset is the native source
 	SourceSh     Source = "sh"
 )
-
-// ParseSource reads the --source word.
-func ParseSource(word string) (Source, error) {
-	switch word {
-	case "", "native":
-		return SourceNative, nil
-	case "sh":
-		return SourceSh, nil
-	}
-	return SourceNative, fmt.Errorf("source must be native|sh (got: %s)", word)
-}
 
 // Runs reports whether a run in this source walks a tier of this invocation:
 // in-process bodies exist only where karma itself runs, a Script tier only in
@@ -694,6 +679,17 @@ const (
 // local channel is the one where karma itself stands on the collected host.
 func (c Channel) Remote() bool { return c != ChanLocal }
 
+// Source is which side of the wire this channel reads the evidence from: karma
+// runs its own bodies only where karma itself runs, so a remote channel reads
+// the target's own shell. The two are one decision, not two: a run states no
+// source of its own.
+func (c Channel) Source() Source {
+	if c.Remote() {
+		return SourceSh
+	}
+	return SourceNative
+}
+
 // Call is one call to run on the target: what to run, and how much of the
 // output this tier wants. The deadline is not here because it is not a
 // property of one call: it travels in the context, established by the caller
@@ -738,7 +734,7 @@ type Step []Probe
 
 // ProbeFor returns the tier with this label, wherever it sits in the walk. A
 // label is unique inside its check (the catalog test pins that), which is why
-// the collector protocol can address a tier by its check's id and this label.
+// a result can name the tier that answered.
 func (c *Check) ProbeFor(label string) (Probe, bool) {
 	for _, step := range c.Steps {
 		for _, probe := range step {
@@ -851,7 +847,7 @@ type CheckResult struct {
 
 // Body is what a collection read: the text of a tool's own output, or the
 // fields a tier read instead of one. It is the input the reading takes and the
-// shape the collector protocol carries; exactly one field is set.
+// shape the result stream carries; exactly one field is set.
 type Body struct {
 	Text    string
 	Records *RecordSet
@@ -870,24 +866,15 @@ type RunOptions struct {
 	Concurrency int
 	Timeout     time.Duration
 	MaxLines    int
-	// Source is which side of the wire reads the evidence (Source's doc). The
-	// native source is the zero value, and a delegated remote run is always
-	// native — the collector is karma on the target — so the word never
-	// travels to it.
-	Source Source
 	// MinSeverity is how much of the reading each check keeps: rows below the
 	// floor are counted like filtered lines and left out of its document, so a
 	// triage run can drop everything under one level. It filters what is shown
 	// and nothing else: the collection's raw text is what the reading reads.
 	MinSeverity SeverityFloor
-	// FindDir and PlaceDir are where a remote channel looks for the collector it
-	// places on the target and where it puts one, empty for the default order.
-	FindDir  string
-	PlaceDir string
-	// JSON emits the run as the collector protocol — one JSON object per check,
+	// JSON emits the run as the result stream — one JSON object per check,
 	// written when that check finishes — instead of drawing the report. The
-	// objects carry the tiers' raw text and how each walk ended; the reading, the
-	// rules and the presentation stay with whoever reads the stream, so this side
-	// applies MinSeverity and MaxLines to nothing.
+	// objects carry the tiers' raw text and how each walk ended; the reading,
+	// the rules and the presentation stay with whoever reads the stream, so this
+	// side applies MinSeverity and MaxLines to nothing.
 	JSON bool
 }

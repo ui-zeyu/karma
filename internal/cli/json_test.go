@@ -1,11 +1,12 @@
-// The --json run: the collector protocol leaves the process instead of a drawn
-// report, which is what lets one karma read another's results.
+// The --json run: the result stream leaves the process instead of a drawn
+// report, one object per check as it finishes.
 
 package cli
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -63,8 +64,8 @@ func TestJSONRunWritesOneObjectPerCheck(t *testing.T) {
 	}
 	seen := map[string]collect.Result{}
 	for _, line := range lines {
-		result, err := collect.Decode([]byte(line))
-		if err != nil {
+		var result collect.Result
+		if err := json.Unmarshal([]byte(line), &result); err != nil {
 			t.Fatalf("line %q is not one result: %v", line, err)
 		}
 		seen[result.Check] = result

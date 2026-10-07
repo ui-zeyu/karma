@@ -37,8 +37,8 @@ func TestRenderShell(t *testing.T) {
 	}
 }
 
-// Every call is rendered from its own invocation: a collector's whole-run call is
-// a plain command line, so nothing in the renderer has to know what a call is for.
+// Every call is rendered from its own invocation: a tier's command is a plain
+// command line, so nothing in the renderer has to know what a call is for.
 func TestShellTextRendersEveryInvocationKind(t *testing.T) {
 	cases := []struct {
 		inv  model.Invocation
@@ -54,10 +54,9 @@ func TestShellTextRendersEveryInvocationKind(t *testing.T) {
 	}
 }
 
-// A Native body has no shell text: a remote channel has nothing to run for it
-// here — a Linux target collects through the collector its channel placed, and
-// that call is a plain command — so an unrenderable call is answered unavailable
-// rather than with a command string.
+// A Native body has no shell text: a remote channel has nothing to run for it —
+// the body is karma's own code and karma is not on the target — so an
+// unrenderable call is answered unavailable rather than with a command string.
 func TestANativeBodyHasNoShellText(t *testing.T) {
 	call := model.Call{Inv: model.Native{Body: func(context.Context) (string, error) { return "x", nil }}}
 	if got, ok := shellText(call.Inv); ok {
