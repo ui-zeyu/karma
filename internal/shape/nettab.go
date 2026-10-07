@@ -1,9 +1,10 @@
 // Neighbor and route shaping: `ip neigh` and `ip route` write key-value rows
 // whose columns drift with every address, so the panel reads them as the
-// tables they mean. Each shaper knows exactly the words iproute2 writes for
-// its own output — a row carrying anything else (the arp(8) and route(8)
-// fallback probes print their own aligned tables) declines, and that body
-// reaches the panel exactly as the tool wrote it.
+// tables they mean. Each shaper declines a body that is not its own tool's
+// output — the arp(8) and route(8) fallback probes print their own aligned
+// tables — and that body then reaches the panel exactly as the tool wrote it:
+// NeighTable by a closed vocabulary, RouteTable by asking every row to name a
+// column.
 
 package shape
 
@@ -80,22 +81,25 @@ func NeighTable(title, body string) *model.Shaped {
 }
 
 // routeColumns puts each `ip route` key word in its column: destination,
-// gateway, device, protocol, scope, source, metric. A row with any other word
-// (onlink, mtu, a nexthop id) declines the whole body.
+// gateway, device, protocol, scope, source, metric. `from` is iproute2's own
+// spelling of a source hint, where the in-process reader renders the same hint
+// as `src`, so it lands in the same column.
 var routeColumns = map[string]int{
-	"via": 1, "dev": 2, "proto": 3, "scope": 4, "src": 5, "metric": 6,
+	"via": 1, "dev": 2, "proto": 3, "scope": 4, "src": 5, "from": 5, "metric": 6,
 }
-
-// routeTailWords are the two fields iproute2 adds to an IPv6 row and the
-// in-process netlink reader cannot decode (its own comment says so): the
-// default preference and a route lifetime. They carry no verdict and reach the
-// panel from one reader only, so the shaper reads them out of the row rather
-// than into a column of its own — which is what lets a route read the same
-// whichever reader collected it. Both words stay in the collection's raw text.
-var routeTailWords = map[string]bool{"pref": true, "expires": true}
 
 // RouteTable turns `ip route` rows into a column table: destination, gateway,
 // device, protocol, scope, source, metric.
+//
+// Every other word iproute2 prints — a nexthop id, a preference, a lifetime,
+// the metric names, the bare flags, and the ones a newer kernel adds — is read
+// out of the row rather than into a column of its own: the in-process netlink
+// reader decodes none of them, they carry no verdict, and dropping them is what
+// lets a route read the same whichever reader collected it. The words stay in
+// the collection's raw text. A row that names no column is not one of
+// iproute2's, so the whole body declines and reaches the panel as the tool
+// wrote it — which is how route(8)'s and netstat -rn's own tables, where no
+// such word appears, keep their spelling.
 func RouteTable(title, body string) *model.Shaped {
 	table := NewTable("DEST", "VIA", "DEV", "PROTO", "SCOPE", "SRC", "METRIC")
 	for _, line := range lines(body) {
@@ -104,18 +108,23 @@ func RouteTable(title, body string) *model.Shaped {
 			continue
 		}
 		var row [7]string
+		named := false
 		row[0] = fields[0]
 		for i := 1; i < len(fields); {
-			if routeTailWords[fields[i]] && i+1 < len(fields) {
-				i += 2
+			col, known := routeColumns[fields[i]]
+			if !known {
+				i++
 				continue
 			}
-			col, known := routeColumns[fields[i]]
-			if !known || i+1 >= len(fields) {
+			if i+1 >= len(fields) {
 				return nil
 			}
 			row[col] = fields[i+1]
+			named = true
 			i += 2
+		}
+		if !named {
+			return nil
 		}
 		table.Add(row[:]...)
 	}

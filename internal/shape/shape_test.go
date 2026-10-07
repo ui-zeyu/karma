@@ -120,13 +120,17 @@ func TestNeighTableDeclinesUnknownWords(t *testing.T) {
 }
 
 func TestRouteTable(t *testing.T) {
-	// The IPv6 rows carry the two fields iproute2 adds and the in-process
-	// netlink reader does not decode; the shaper reads them out, so the table
-	// a remote host gives is the table a local run gives.
+	// The IPv6 rows carry the fields iproute2 adds and the in-process netlink
+	// reader does not decode — a default preference, a route lifetime, a
+	// nexthop id, a bare flag — and the shaper reads them out, so the table a
+	// remote host gives is the table a local run gives.
 	body := "default via 10.0.0.1 dev eth0 proto dhcp src 10.0.0.5 metric 100\n" +
 		"10.0.0.0/24 dev eth0 proto kernel scope link src 10.0.0.5 metric 100\n" +
 		"::1 dev lo proto kernel metric 256 pref medium\n" +
-		"fdb2:2c26:f4e4::/64 dev eth0 proto ra metric 100 expires 2591685sec pref medium\n"
+		"fdb2:2c26:f4e4::/64 dev eth0 proto ra metric 100 expires 2591685sec pref medium\n" +
+		"default nhid 1360112309 via fe80::ecff:ffff:feff:ffff dev eth0 proto ra metric 100 " +
+		"expires 8960sec pref medium\n" +
+		"10.0.0.0/8 via 10.0.0.1 dev eth0 onlink mtu 1500 from 10.0.0.5 tos 0x10\n"
 	got := RouteTable("", body)
 	if got == nil {
 		t.Fatal("ip route rows should be shaped")
@@ -140,9 +144,25 @@ func TestRouteTable(t *testing.T) {
 		{"10.0.0.0/24", "", "eth0", "kernel", "link", "10.0.0.5", "100"},
 		{"::1", "", "lo", "kernel", "", "", "256"},
 		{"fdb2:2c26:f4e4::/64", "", "eth0", "ra", "", "", "100"},
+		{"default", "fe80::ecff:ffff:feff:ffff", "eth0", "ra", "", "", "100"},
+		{"10.0.0.0/8", "10.0.0.1", "eth0", "", "", "10.0.0.5", ""},
 	})
-	if got := RouteTable("", "default via 1.2.3.4 dev eth0 onlink\n"); got != nil {
-		t.Fatalf("a word outside the vocabulary should decline, shaped %q", got.Text)
+}
+
+func TestRouteTableDeclinesTheFallbackProbes(t *testing.T) {
+	// route(8) and netstat -rn print their own aligned tables: no `ip route`
+	// key word appears in a row, so the shaper hands the body back as the tool
+	// wrote it.
+	for _, body := range []string{
+		"Kernel IP routing table\n" +
+			"Destination     Gateway         Genmask         Flags Metric Ref    Use Iface\n",
+		"0.0.0.0         172.17.239.253  0.0.0.0         UG    100    0        0 eth0\n",
+		"10.1.2.0        172.17.239.253  255.255.255.0   U     100    0        0 eth0\n",
+		"default         172.17.239.253  0.0.0.0         UG    0      0        0 eth0\n",
+	} {
+		if got := RouteTable("", body); got != nil {
+			t.Fatalf("a fallback probe's table should decline, shaped %q", got.Text)
+		}
 	}
 }
 
