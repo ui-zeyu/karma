@@ -12,6 +12,7 @@ import (
 	"karma/internal/define"
 	"karma/internal/localfs"
 	"karma/internal/model"
+	"karma/internal/script"
 )
 
 // openScanLines is the row cap an open scan carries: a listing, a walk or a
@@ -22,21 +23,28 @@ import (
 // it asked for rather than a cut.
 const openScanLines = 200
 
-// filesTier is the read-a-file-list tier: one `== path` section per file,
-// missing files skipped, each body shaped by the shell command's native
-// counterpart (cat reads the file whole, tail keeps the last n lines).
-func filesTier(label string, shellCmd string, transform func(string) string, paths []string) model.Probe {
-	return model.Probe{Label: label, Inv: model.Native{Body: func(context.Context) (string, error) { return localfs.ReadSections(paths, transform), nil }}}
+// filesTier is the read-a-file-list tier pair: one `== path` section per file,
+// missing files skipped. The native source reads the files in process; the sh
+// source runs the same read as a shell loop over the same list, shaped by the
+// shell command's native counterpart (cat reads the file whole, tail keeps the
+// last n lines), so either source hands the reading layer the same sections.
+func filesTier(label string, shellCmd string, transform func(string) string, paths []string) []model.Step {
+	return []model.Step{
+		{{Label: label, Inv: model.Native{Body: func(context.Context) (string, error) {
+			return localfs.ReadSections(paths, transform), nil
+		}}}},
+		{{Label: label + "-sh", Inv: model.Sh(script.ReadFiles(paths, shellCmd, true))}},
+	}
 }
 
 // readFilesCheck is the cat-a-file-list tier pair.
 func readFilesCheck(paths ...string) []model.Step {
-	return []model.Step{{filesTier("cat", `cat "$f"`, nil, paths)}}
+	return filesTier("cat", `cat "$f"`, nil, paths)
 }
 
 // tailFilesCheck reads the tail of every file in the list.
 func tailFilesCheck(n int, paths ...string) []model.Step {
-	return []model.Step{{filesTier("tail", fmt.Sprintf(`tail -n %d "$f"`, n), localfs.TailLines(n), paths)}}
+	return filesTier("tail", fmt.Sprintf(`tail -n %d "$f"`, n), localfs.TailLines(n), paths)
 }
 
 // All is every Linux check; catalog-level validation lives in the checks package.
@@ -64,6 +72,11 @@ var listingNormalize = cluster.ListingNormalize(time.Now)
 // tier, so the check is declared once for both channels.
 func listingCheck(id, title string, aspect model.Aspect, dirs []string, head int, rules []model.Matcher) *model.Check {
 	return define.LinuxCheck(id, title, aspect,
-		[]model.Step{{{Label: "find", Inv: model.Native{Body: localfs.Listing(dirs, head)}}}},
+		[]model.Step{
+			{{Label: "find", Inv: model.Native{Body: localfs.Listing(dirs, head)}}},
+			// The sh source's reading of the same directories: one find -printf
+			// per directory, the same ls -l row shape and the same head.
+			{{Label: "find-sh", Inv: model.Sh(script.ListingSections(dirs, head))}},
+		},
 		define.CheckOpt{Rules: rules, Syntax: model.SyntaxLsL, Normalize: listingNormalize})
 }

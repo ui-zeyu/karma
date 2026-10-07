@@ -6,9 +6,12 @@
 package linux
 
 import (
+	"strings"
+
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
+	"karma/internal/script"
 	"karma/internal/shape"
 )
 
@@ -18,6 +21,14 @@ import (
 // cannot distinguish.
 var procNetPaths = []string{"/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", "/proc/net/udp6"}
 
+// procNetScript is the sh source's reading of those four tables: the same one
+// `== path` section per file, which is what the tier's own adapt reads.
+var procNetScript = script.ReadFiles(procNetPaths, `cat "$f"`, true)
+
+// routeScript is the sh source's route reading: the IPv4 table, then the IPv6
+// one (the in-process tier dumps both families in one pass).
+const routeScript = "ip route; ip -6 route 2>/dev/null"
+
 // firewallFamilies and firewallTables are the surfaces the firewall check
 // covers; `-S` alone only shows the filter table, leaving out nat/mangle/raw and
 // IPv6.
@@ -26,15 +37,35 @@ var (
 	firewallTables   = []string{"filter", "nat", "mangle", "raw"}
 )
 
+// firewallScript is that shape as a shell script: one script lays out every
+// surface and adds the nft ruleset (with the iptables compat layer present, that
+// ruleset is not skipped by the fallback either). The section titles are the
+// ones the in-process body prints.
+var firewallScript = firewallScriptText()
+
+func firewallScriptText() string {
+	var b strings.Builder
+	for _, binary := range firewallFamilies {
+		b.WriteString("for t in " + strings.Join(firewallTables, " ") + "; do\n")
+		b.WriteString("  echo \"== " + binary + " $t\"\n")
+		b.WriteString("  " + binary + " -t \"$t\" -S 2>/dev/null\n")
+		b.WriteString("done\n")
+	}
+	b.WriteString("echo \"== nft\"\nnft list ruleset 2>/dev/null\n")
+	return b.String()
+}
+
 // NetworkChecks covers networking.
 var NetworkChecks = []*model.Check{
 	define.LinuxCheck("listen", "Listening and established connections", model.AspectNetwork,
 		[]model.Step{
 			{{Label: "ss", Inv: model.Native{Body: native.Ss}}},
+			{{Label: "ss-sh", Inv: model.Sh("ss -tunap")}},
 			{{Label: "netstat", Inv: model.NewCommand("netstat", "-tunap")}},
 			{ // The proc-net hex address restore is this probe's own dialect (adapt carries the
 				// section title to tell TCP/UDP); ss and netstat already output the target shape.
 				{Label: "proc-net", Inv: model.Native{Body: native.ProcNet(procNetPaths)}, Adapt: native.ParseProcNet}},
+			{{Label: "proc-net-sh", Inv: model.Sh(procNetScript), Adapt: native.ParseProcNet}},
 		},
 		define.CheckOpt{
 			Syntax: model.SyntaxListen,
@@ -57,13 +88,16 @@ var NetworkChecks = []*model.Check{
 	define.LinuxCheck("addr", "Network addresses", model.AspectNetwork,
 		[]model.Step{
 			{{Label: "ip", Inv: model.Native{Body: native.IPAddr}}},
+			{{Label: "ip-sh", Inv: model.Sh("ip -br addr")}},
 			{{Label: "ifconfig", Inv: model.NewCommand("ifconfig", "-a")}},
 			{{Label: "hostname", Inv: model.Native{Body: native.HostnameIps}}},
+			{{Label: "hostname-sh", Inv: model.Sh("hostname -I")}},
 		},
 		define.CheckOpt{Syntax: model.SyntaxIPAddr}),
 	define.LinuxCheck("arp", "ARP / neighbor table", model.AspectNetwork,
 		[]model.Step{
 			{{Label: "ip", Inv: model.Native{Body: native.IPNeigh}}},
+			{{Label: "ip-sh", Inv: model.Sh("ip neigh")}},
 			{{Label: "arp", Inv: model.NewCommand("arp", "-n")}},
 		},
 		// ip neigh writes key-value rows; the reading layer aligns them into
@@ -78,6 +112,7 @@ var NetworkChecks = []*model.Check{
 	define.LinuxCheck("route", "Routing table", model.AspectNetwork,
 		[]model.Step{
 			{{Label: "ip", Inv: model.Native{Body: native.IPRoute}}},
+			{{Label: "ip-sh", Inv: model.Sh(routeScript)}},
 			{{Label: "route", Inv: model.NewCommand("route", "-n")}},
 			{{Label: "netstat", Inv: model.NewCommand("netstat", "-rn")}},
 		},
@@ -87,6 +122,7 @@ var NetworkChecks = []*model.Check{
 	define.LinuxCheck("firewall", "Firewall rules", model.AspectNetwork,
 		[]model.Step{
 			{{Label: "iptables", Inv: model.Native{Body: native.Firewall(firewallFamilies, firewallTables)}}},
+			{{Label: "iptables-sh", Inv: model.Sh(firewallScript)}},
 			{{Label: "nft", Inv: model.NewCommand("nft", "list", "ruleset")}},
 		},
 		define.CheckOpt{

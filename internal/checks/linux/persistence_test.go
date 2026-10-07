@@ -38,17 +38,27 @@ func bootScriptFixture(t *testing.T) []string {
 	return []string{filepath.Join(dir, "absent"), rcLocal, initSh}
 }
 
-// The tier the boot-script check is built from, run over a fixture: one section
-// per path it was given, and nothing for a path that is not there.
+// The tier the boot-script check is built from, run over a fixture: the
+// in-process read, and the sh source's loop over the same list with the same
+// one section per existing path.
 func TestReadFilesTierReadsEveryPath(t *testing.T) {
 	paths := bootScriptFixture(t)
 	steps := readFilesCheck(paths...)
-	if len(steps) != 1 || len(steps[0]) != 1 {
-		t.Fatalf("the read-files tier is one step of one probe: %v", steps)
+	if len(steps) != 2 || len(steps[0]) != 1 || len(steps[1]) != 1 {
+		t.Fatalf("the read-files tier is two steps of one probe: %v", steps)
 	}
 	native, ok := steps[0][0].Inv.(model.Native)
 	if !ok {
-		t.Fatalf("the tier should carry an in-process body: %+v", steps[0][0].Inv)
+		t.Fatalf("the first step should carry an in-process body: %+v", steps[0][0].Inv)
+	}
+	sh, ok := steps[1][0].Inv.(model.Script)
+	if !ok {
+		t.Fatalf("the second step should carry the sh source's loop: %+v", steps[1][0].Inv)
+	}
+	for _, path := range paths {
+		if !strings.Contains(sh.Run, path) {
+			t.Fatalf("the loop does not read %s: %q", path, sh.Run)
+		}
 	}
 	body, err := native.Body(context.Background())
 	if err != nil {
@@ -68,18 +78,27 @@ func TestReadFilesTierReadsEveryPath(t *testing.T) {
 }
 
 // The boot-script list is the one this test names: the check reads exactly these
-// paths, and dropping one from the list is silent at run time — no fixture and no
-// failing read would notice.
+// paths, in process and through the sh source's loop, and dropping one from the
+// list is silent at run time — no fixture and no failing read would notice.
 func TestBootScriptCheckCoversEveryBootScript(t *testing.T) {
 	check := testkit.CheckByID(t, All, "rc-local")
-	if len(check.Steps) != 1 || len(check.Steps[0]) != 1 {
-		t.Fatalf("the boot-script check is one step of one probe: %v", check.Steps)
+	if len(check.Steps) != 2 || len(check.Steps[0]) != 1 || len(check.Steps[1]) != 1 {
+		t.Fatalf("the boot-script check is two steps of one probe: %v", check.Steps)
 	}
 	if _, ok := check.Steps[0][0].Inv.(model.Native); !ok {
 		t.Fatalf("the boot-script tier should carry an in-process body: %+v", check.Steps[0][0].Inv)
 	}
+	sh, ok := check.Steps[1][0].Inv.(model.Script)
+	if !ok {
+		t.Fatalf("the boot-script check should carry the sh source's loop: %+v", check.Steps[1][0].Inv)
+	}
 	want := []string{"/etc/rc.local", "/etc/rc.d/rc.local", "/etc/init.sh"}
 	if !slices.Equal(bootScriptPaths, want) {
 		t.Errorf("boot-script paths = %v, want %v", bootScriptPaths, want)
+	}
+	for _, path := range want {
+		if !strings.Contains(sh.Run, path) {
+			t.Errorf("the sh loop does not read %s: %q", path, sh.Run)
+		}
 	}
 }

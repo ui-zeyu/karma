@@ -135,6 +135,22 @@ func TestOnlyTheRegistryFallbacksShareAStep(t *testing.T) {
 	}
 }
 
+// Every Linux check declares both sources' readings: the native source's own
+// body (or a command it runs in place), and the sh source's spelling of the same
+// evidence. A check that lost one side would answer nothing on the source that
+// asked for it — silently, since a walk with no tier of that source is Skipped —
+// which is what this pins.
+func TestEveryLinuxCheckAnswersBothSources(t *testing.T) {
+	for _, check := range checks.ChecksFor(model.Linux) {
+		if len(check.StepsFor(model.SourceNative)) == 0 {
+			t.Errorf("%s has no native-source tier", check.ID)
+		}
+		if len(check.StepsFor(model.SourceSh)) == 0 {
+			t.Errorf("%s has no sh-source tier", check.ID)
+		}
+	}
+}
+
 // The walk of two known checks, pinned: the number of steps is what decides which
 // tier answers, so a regrouped catalog must fail here and not silently collect
 // different evidence.
@@ -144,10 +160,10 @@ func TestKnownWalksKeepTheirSteps(t *testing.T) {
 		id       string
 		steps    []int // probes per step, in order
 	}{
-		{model.Linux, "uptime", []int{1, 1}},
-		{model.Linux, "lsmod", []int{1, 1}},
-		{model.Linux, "modules-load", []int{1}},
-		{model.Linux, "accounts", []int{1}},
+		{model.Linux, "uptime", []int{1, 1, 1, 1}},
+		{model.Linux, "lsmod", []int{1, 1, 1, 1}},
+		{model.Linux, "modules-load", []int{1, 1}},
+		{model.Linux, "accounts", []int{1, 1}},
 		{model.Windows, "run-keys", []int{1, 5}},
 	}
 	for _, c := range cases {

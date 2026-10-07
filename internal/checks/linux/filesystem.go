@@ -4,6 +4,7 @@
 package linux
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"karma/internal/define"
 	"karma/internal/localfs"
 	"karma/internal/model"
+	"karma/internal/script"
 	"karma/internal/shape"
 )
 
@@ -36,6 +38,23 @@ var privFsTypes = []string{
 // entry per local-storage mount of the kernel's own mount table, so a bit
 // dropped on a data disk or in a tmpfs /tmp is collected too. A bare path per
 // line is the listing both the walk and its rules read.
+
+// privilegeFind is the sh source's reading of the same mode-bit walk: the
+// kernel's own mount table selects the roots — the root mount first, then one
+// entry per local-storage mount, a device named twice walked once — and the mode
+// bit is spelled out with -perm (a bare -4000 is not a find expression); the
+// listing itself is one bare path per line.
+func privilegeFind(perm string) string {
+	return `awk -v types="` + strings.Join(privFsTypes, " ") + `" '
+  BEGIN { n = split(types, t, " "); for (i = 1; i <= n; i++) allowed[t[i]] = 1 }
+  $2 == "/" { if ($1 ~ /^\/dev\//) seen[$1] = 1; print "/"; next }
+  !allowed[$3] { next }
+  $1 ~ /^\/dev\// { if (seen[$1]++) next }
+  { target = $2; gsub(/\\040/, " ", target); print target }' /proc/self/mounts 2>/dev/null |
+while IFS= read -r root; do
+  find "$root" -xdev -perm ` + perm + ` -type f 2>/dev/null
+done`
+}
 
 // systemProgramDirs is where a setuid/setgid binary is part of a normal install:
 // the bin, sbin, lib, lib64, and libexec trees of /, /usr, and /usr/local. A
@@ -116,6 +135,12 @@ const (
 	webTimeout      = 15 * time.Second
 )
 
+// webScriptFind is that shape as the find command the sh source runs: the same
+// roots, depth, name suffixes and mtime window the in-process walk covers.
+var webScriptFind = fmt.Sprintf("find %s -maxdepth %d -type f \\( %s \\) -mtime -%d 2>/dev/null",
+	strings.Join(webScriptRoots, " "), webScriptDepth, findNameArgs("-name", webScriptSuffixes),
+	int(webScriptWindow.Hours()/24))
+
 // Three webshell signature groups: request superglobals passed straight into an
 // exec/decode/callback function. The same regex feeds both grep -e (target-side
 // line filtering) and the local rules (severity by group); case is opened on both
@@ -144,6 +169,15 @@ var (
 // collects; the rules grade the groups one by one afterwards.
 var webshellRe = regexp.MustCompile(`(?i)(?:` + webshellDirect + `|` + webshellDecode + `|` + webshellCallback + `)`)
 
+// webshellGrep is that shape as the grep the sh source runs: one grep over the
+// same roots, file names, excluded directories and three signature groups, so
+// both sources collect the same lines and the rules grade them alike.
+var webshellGrep = "grep -rInEi" +
+	" --include='" + strings.Join(webshellFiles, "' --include='") + "'" +
+	" --exclude-dir=" + strings.Join(webshellExcludeDirs, " --exclude-dir=") +
+	" -e '" + webshellDirect + "' -e '" + webshellDecode + "' -e '" + webshellCallback + "'" +
+	" " + strings.Join(webshellRoots, " ") + " 2>/dev/null"
+
 // keyDirs: listing collection runs find -printf (epoch first, body in ls -l shape)
 // and clusters locally to mark outlier lines with !/!!; find lists dotfiles
 // naturally, so the hidden subsection is dropped.
@@ -162,6 +196,17 @@ const (
 )
 
 var homeTreeFlags = []string{"-a", "-f", "-p", "-u", "-g", "-s", "-D", "--timefmt", "%Y-%m-%d %H:%M"}
+
+// homeTreeScript is the sh source's tree reading: the same flags and root as the
+// in-process argument vector, rendered as shell words.
+var homeTreeScript = "tree " + script.Join(slices.Concat(homeTreeFlags, []string{homeTreeRoot})) + " 2>/dev/null"
+
+// homeTreeFind is the sh source's fallback for a target without tree: the same
+// root and depth, in the ls -l row shape the reading layer draws as a tree. tree
+// crosses mount points unless -x is given and the check does not pass it, so the
+// fallback crosses too.
+var homeTreeFind = fmt.Sprintf("LC_ALL=C find %s -maxdepth %d -printf '%s' 2>/dev/null",
+	homeTreeRoot, homeTreeDepth, script.LSBodyPrintf)
 
 // mountNoise: snap/container overlay mounts are noise during host incident response.
 const mountNoise = `\b(?:squashfs|overlay)\b|/dev/loop\d+`
@@ -189,7 +234,10 @@ var keyDirRules = []model.Matcher{sshMaterialRule, tunnelToolRule, define.Keywor
 var FilesystemChecks = []*model.Check{
 	// Locally df reads /proc/self/mounts and statfs in-process (native_fs).
 	define.LinuxCheck("df", "Disk usage", model.AspectFilesystem,
-		[]model.Step{{{Label: "df", Inv: model.Native{Body: native.Df}}}},
+		[]model.Step{
+			{{Label: "df", Inv: model.Native{Body: native.Df}}},
+			{{Label: "df-sh", Inv: model.Sh("df -h")}},
+		},
 		define.CheckOpt{Syntax: model.SyntaxDf}),
 	define.LinuxCheck("fstab", "Filesystem mount config (fstab)", model.AspectFilesystem,
 		readFilesCheck("/etc/fstab"),
@@ -199,7 +247,9 @@ var FilesystemChecks = []*model.Check{
 	define.LinuxCheck("mounts", "Mount points", model.AspectFilesystem,
 		[]model.Step{
 			{{Label: "findmnt", Inv: model.Native{Body: native.Findmnt}}},
+			{{Label: "findmnt-sh", Inv: model.Sh("findmnt")}},
 			{{Label: "mount", Inv: model.Native{Body: native.Mount}}},
+			{{Label: "mount-sh", Inv: model.Sh("mount")}},
 		},
 		define.CheckOpt{
 			Filters: []model.LineFilter{
@@ -214,7 +264,10 @@ var FilesystemChecks = []*model.Check{
 	// stand in). Both listings cover the root filesystem and every local-storage
 	// mount — a data disk and a tmpfs /tmp included.
 	define.LinuxCheck("suid", "SUID files", model.AspectFilesystem,
-		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.ModeBitScan(os.ModeSetuid, privFsTypes)}}}},
+		[]model.Step{
+			{{Label: "find", Inv: model.Native{Body: native.ModeBitScan(os.ModeSetuid, privFsTypes)}}},
+			{{Label: "find-sh", Inv: model.Sh(privilegeFind("-4000"))}},
+		},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				model.NewRule("suid-gtfobins", gtfobinsPattern, model.Critical,
@@ -226,7 +279,10 @@ var FilesystemChecks = []*model.Check{
 			Timeout: suidTimeout,
 		}),
 	define.LinuxCheck("sgid", "SGID files", model.AspectFilesystem,
-		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.ModeBitScan(os.ModeSetgid, privFsTypes)}}}},
+		[]model.Step{
+			{{Label: "find", Inv: model.Native{Body: native.ModeBitScan(os.ModeSetgid, privFsTypes)}}},
+			{{Label: "find-sh", Inv: model.Sh(privilegeFind("-2000"))}},
+		},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				model.NewRule("sgid-gtfobins", gtfobinsPattern, model.High,
@@ -239,9 +295,10 @@ var FilesystemChecks = []*model.Check{
 		}),
 	// Capabilities are another escalation path besides SUID: cap_setuid equals SUID
 	define.LinuxCheck("caps", "File capabilities (getcap)", model.AspectFilesystem,
-		[]model.Step{{ // getcap -r / recurses across mounts on its own, so the script tier
-			// needs no root list; the local tier walks the same vocabulary.
-			{Label: "getcap", Inv: model.Native{Body: native.FileCaps(privFsTypes)}, Cap: model.Scan(openScanLines)}}},
+		[]model.Step{ // getcap -r / recurses across mounts on its own, so the sh tier
+			// needs no root list; the in-process tier walks the same vocabulary.
+			{{Label: "getcap", Inv: model.Native{Body: native.FileCaps(privFsTypes)}, Cap: model.Scan(openScanLines)}},
+			{{Label: "getcap-sh", Inv: model.Sh("getcap -r / 2>/dev/null"), Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				// Both rules span the whole `cap_...=value` assignment: the span is
@@ -262,6 +319,10 @@ var FilesystemChecks = []*model.Check{
 	define.LinuxCheck("home-tree", "/home directory tree (four levels deep, including hidden files)", model.AspectFilesystem,
 		[]model.Step{
 			{{Label: "tree", Inv: model.Native{Body: native.HomeTree(homeTreeRoot, homeTreeFlags, homeTreeDepth)}}},
+			{{Label: "tree-sh", Inv: model.Sh(homeTreeScript)}},
+			// The sh source's fallback for a target without tree: the same walk
+			// in the ls -l row shape, which the reading layer draws as a tree.
+			{{Label: "find-sh", Inv: model.Sh(homeTreeFind)}},
 		},
 		define.CheckOpt{
 			// A target that has tree installed already drew a tree, and that body
@@ -270,12 +331,15 @@ var FilesystemChecks = []*model.Check{
 			Rules:     []model.Matcher{sshMaterialRule, tunnelToolRule, define.KeywordRule},
 		}),
 	define.LinuxCheck("web-dirs", "Recently changed scripts in web directories", model.AspectFilesystem,
-		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.RecentFiles(native.RecentScan{
-			Roots:    webScriptRoots,
-			Suffixes: webScriptSuffixes,
-			MaxDepth: webScriptDepth,
-			Window:   webScriptWindow,
-		})}, Cap: model.Scan(openScanLines)}}},
+		[]model.Step{
+			{{Label: "find", Inv: model.Native{Body: native.RecentFiles(native.RecentScan{
+				Roots:    webScriptRoots,
+				Suffixes: webScriptSuffixes,
+				MaxDepth: webScriptDepth,
+				Window:   webScriptWindow,
+			})}, Cap: model.Scan(openScanLines)}},
+			{{Label: "find-sh", Inv: model.Sh(webScriptFind), Cap: model.Scan(openScanLines)}},
+		},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				model.NewRule("web-script", `\.(?:php[3-5]?|phtml|jsp|jspx|sh|py)$`, model.Medium,
@@ -287,11 +351,14 @@ var FilesystemChecks = []*model.Check{
 	// grep and the rules share one signature regex: filter lines on the target, grade
 	// by group locally
 	define.LinuxCheck("webshell-grep", "Webshell content signatures", model.AspectFilesystem,
-		[]model.Step{{{Label: "grep", Inv: model.Native{Body: localfs.Grep(webshellRoots, localfs.GrepScan{
-			Pattern:     webshellRe,
-			Includes:    webshellFiles,
-			ExcludeDirs: webshellExcludeDirs,
-		})}, Cap: model.Scan(openScanLines)}}},
+		[]model.Step{
+			{{Label: "grep", Inv: model.Native{Body: localfs.Grep(webshellRoots, localfs.GrepScan{
+				Pattern:     webshellRe,
+				Includes:    webshellFiles,
+				ExcludeDirs: webshellExcludeDirs,
+			})}, Cap: model.Scan(openScanLines)}},
+			{{Label: "grep-sh", Inv: model.Sh(webshellGrep), Cap: model.Scan(openScanLines)}},
+		},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				model.NewRule("webshell-direct", `(?i)`+webshellDirect, model.Critical,

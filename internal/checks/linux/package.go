@@ -4,12 +4,45 @@
 package linux
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
+	"karma/internal/script"
 	"karma/internal/shape"
+)
+
+const dockerScript = "docker ps -a 2>/dev/null; echo; docker images 2>/dev/null"
+
+// forensicsBlock gathers in-place forensics for one file list: file (type) and
+// ls -l (attributes and mtime) for the files the shell variable names. The
+// section titles are the ones the in-process body prints.
+func forensicsBlock(variable string) string {
+	return fmt.Sprintf(`
+if [ -n "$%[1]s" ]; then
+  if command -v file >/dev/null 2>&1; then
+    echo "== file"
+    file $%[1]s 2>/dev/null
+  fi
+  echo "== ls"
+  LC_ALL=C ls -l $%[1]s 2>/dev/null
+fi
+`, variable)
+}
+
+// verifyScript is the sh source's tier for one verifier: the body both sources
+// render (script.PkgVerifyScript), which names the files that can be a finding
+// and counts the rest per directory. The leading command -v gate keeps a
+// missing package manager from answering: the tier answers 127 instead and the
+// chain falls to the other package manager's tier.
+func verifyScript(command string) string { return script.PkgVerifyScript(command) }
+
+const (
+	pkgVerifyDpkg = "dpkg -V" // wrapped by verifyScript, this is the dpkg probe
+	pkgVerifyRpm  = "rpm -Va"
 )
 
 const pkgVerifyTimeout = 180 * time.Second // a full package verify takes a minute or two on a small VPS, so the timeout is raised here
@@ -37,8 +70,18 @@ var unownedFileRule = model.NewRule("unowned-file", `^/.*\S$`, model.High,
 // drops).
 var pkgHistoryPaths = []string{"/var/log/apt/history.log", "/var/log/dpkg.log"}
 
-// pkgHistoryLines is the window both channels read of either surface.
+// pkgHistoryLines is the window both readings take of either surface.
 const pkgHistoryLines = 300
+
+// pkgHistoryScript is the sh source's reading of the same surfaces: the text
+// logs both families write, then the transaction database the RedHat family
+// answers from instead (the empty branch on the other family is an empty
+// section the reader drops).
+var pkgHistoryScript = script.Lines(
+	script.ReadFiles(pkgHistoryPaths, fmt.Sprintf(`tail -n %d "$f"`, pkgHistoryLines), true),
+	fmt.Sprintf(`echo "== dnf history"; dnf history 2>/dev/null || yum history 2>/dev/null | head -n %d`,
+		pkgHistoryLines),
+)
 
 // pkgHistoryRules is what can be a finding in the history: the keyword rule,
 // which catches a secret written into a package manager's command line. The
@@ -75,13 +118,22 @@ var pkgHistoryKeep = []model.LineFilter{
 
 // authBinPaths are the programs most often replaced in the login auth chain;
 // once pkg-verify points at one, type and mtime close the loop in place. The
-// globs cover both the multiarch and lib64 PAM layouts. The ssh loop and the
+// globs cover both the multiarch and lib64 PAM layouts. The sh loop and the
 // local walk cover the same list.
 var authBinPaths = []string{
 	"/usr/sbin/sshd", "/usr/bin/login", "/usr/bin/su", "/usr/bin/sudo",
 	"/usr/bin/passwd", "/usr/sbin/unix_chkpwd", "/sbin/unix_chkpwd",
 	"/usr/lib*/security/pam_unix.so", "/lib*/security/pam_unix.so",
 }
+
+// authBinScript is the sh source's reading of that list: the readable files,
+// then the same two forensics sections the in-process body renders.
+var authBinScript = `
+list=
+for f in ` + strings.Join(authBinPaths, " ") + `; do
+  [ -f "$f" ] && list="$list $f"
+done
+` + forensicsBlock("list")
 
 var binNotElfRule = model.NewRule("bin-not-elf",
 	`(?i)^.*(?:\bscript\b|\b(?:ASCII|Unicode) text\b)`, model.High,
@@ -129,12 +181,17 @@ var (
 // PackageChecks covers packages.
 var PackageChecks = []*model.Check{
 	define.LinuxCheck("containers", "Containers (Docker)", model.AspectPackage,
-		[]model.Step{{{Label: "docker", Inv: model.Native{Body: native.Docker}}}},
+		[]model.Step{
+			{{Label: "docker", Inv: model.Native{Body: native.Docker}}},
+			{{Label: "docker-sh", Inv: model.Sh(dockerScript)}},
+		},
 		define.CheckOpt{Syntax: model.SyntaxTable, Rules: []model.Matcher{define.KeywordRule}}),
 	define.LinuxCheck("pkg-verify", "Package integrity verification", model.AspectPackage,
 		[]model.Step{
 			{{Label: "dpkg", Inv: model.Native{Body: native.PkgVerify([]string{"dpkg", "-V"})}}},
+			{{Label: "dpkg-sh", Inv: model.Sh(verifyScript(pkgVerifyDpkg))}},
 			{{Label: "rpm", Inv: model.Native{Body: native.PkgVerify([]string{"rpm", "-Va"})}}},
+			{{Label: "rpm-sh", Inv: model.Sh(verifyScript(pkgVerifyRpm))}},
 		},
 		define.CheckOpt{
 			Rules: []model.Matcher{
@@ -151,10 +208,16 @@ var PackageChecks = []*model.Check{
 			Timeout: pkgVerifyTimeout,
 		}),
 	define.LinuxCheck("unowned-files", "Files no package owns (system directories)", model.AspectPackage,
-		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.UnownedFiles(unownedDirs)}, Cap: model.Scan(openScanLines)}}},
+		[]model.Step{
+			{{Label: "find", Inv: model.Native{Body: native.UnownedFiles(unownedDirs)}, Cap: model.Scan(openScanLines)}},
+			{{Label: "find-sh", Inv: model.Sh(script.UnownedScript(unownedDirs)), Cap: model.Scan(openScanLines)}},
+		},
 		define.CheckOpt{Rules: []model.Matcher{unownedFileRule}, Timeout: unownedTimeout}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
-		[]model.Step{{{Label: "log", Inv: model.Native{Body: native.PkgHistory(pkgHistoryPaths, pkgHistoryLines)}}}},
+		[]model.Step{
+			{{Label: "log", Inv: model.Native{Body: native.PkgHistory(pkgHistoryPaths, pkgHistoryLines)}}},
+			{{Label: "log-sh", Inv: model.Sh(pkgHistoryScript)}},
+		},
 		define.CheckOpt{
 			Rules:     pkgHistoryRules,
 			Filters:   pkgHistoryKeep,
@@ -162,7 +225,10 @@ var PackageChecks = []*model.Check{
 			Normalize: shape.AptHistory,
 		}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
-		[]model.Step{{{Label: "file", Inv: model.Native{Body: native.AuthBinaries(authBinPaths)}}}},
+		[]model.Step{
+			{{Label: "file", Inv: model.Native{Body: native.AuthBinaries(authBinPaths)}}},
+			{{Label: "file-sh", Inv: model.Sh(authBinScript)}},
+		},
 		define.CheckOpt{
 			Syntax: model.SyntaxLsL,
 			Rules:  []model.Matcher{binNotElfRule, define.KeywordRule},

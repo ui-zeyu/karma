@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -20,17 +21,28 @@ import (
 	"karma/internal/testkit"
 )
 
-// assembleOf is the whole-body join the catalog hangs on a check's one tier: the
-// tier emits its marked stream and this renders the rows, which is the whole path
-// on every channel — the local one included, since a remote channel collects
-// through a karma binary placed on the target, which runs this same body.
+// assembleOf is the whole-body join the catalog hangs on a check's every tier:
+// each of them emits its marked stream and this one function renders the rows,
+// which is what keeps the two sources' readings of one fact the same rows. A
+// tier without the join would print its raw stream, and two tiers with different
+// joins would let the sources drift apart, so both are pinned here.
 func assembleOf(t *testing.T, id string) model.Transformer {
 	t.Helper()
 	check := testkit.CheckByID(t, All, id)
-	if len(check.Steps) != 1 || len(check.Steps[0]) != 1 || check.Steps[0][0].Assemble == nil {
-		t.Fatalf("check %s should be one tier with an Assemble", id)
+	var assemble model.Transformer
+	for _, step := range check.Steps {
+		if len(step) != 1 || step[0].Assemble == nil {
+			t.Fatalf("check %s should carry its join on every tier", id)
+		}
+		if assemble == nil {
+			assemble = step[0].Assemble
+			continue
+		}
+		if reflect.ValueOf(assemble).Pointer() != reflect.ValueOf(step[0].Assemble).Pointer() {
+			t.Fatalf("check %s hangs two different joins on its tiers", id)
+		}
 	}
-	return check.Steps[0][0].Assemble
+	return assemble
 }
 
 func writeAttr(t *testing.T, path, value string) {

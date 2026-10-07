@@ -88,7 +88,7 @@ func runFields(ctx context.Context, read func(context.Context) (*model.RecordSet
 		result, err := fault.Result("in-process tier", func() model.RunResult {
 			set, err := read(ctx)
 			if err != nil {
-				return model.RunResult{Verdict: model.VerdictFailed, Stderr: err.Error(), ExitCode: 1}
+				return fieldFailure(err)
 			}
 			return model.RunResult{Verdict: model.VerdictAnswered, Records: set}
 		})
@@ -133,13 +133,37 @@ type scriptRead struct {
 	err error
 }
 
+// fieldFailure reads a Fields body's own error the way a text body's is read
+// (finishNative): an interface this host lacks leaves the tier unavailable —
+// which is how a body that knows it cannot run here hands the walk on — while
+// anything else is the tier's failure. A body that stopped at the deadline has
+// no partial records to keep: its signature answers with a set or an error.
+func fieldFailure(err error) model.RunResult {
+	switch {
+	case errors.Is(err, model.ErrTierUnavailable):
+		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: err.Error(), ExitCode: 127}
+	case errors.Is(err, context.DeadlineExceeded):
+		return model.RunResult{Verdict: model.VerdictTimedOut, ExitCode: -1}
+	case errors.Is(err, context.Canceled):
+		return model.RunResult{Verdict: model.VerdictInterrupted, ExitCode: -1}
+	default:
+		return model.RunResult{Verdict: model.VerdictFailed, Stderr: err.Error(), ExitCode: 1}
+	}
+}
+
 // finishScript reads a Script tier's captured text as the records its parser
 // states: the parse is the tier's body, with the same endings a Fields body
 // reports. A call that did not settle keeps its own verdict; a cut parses what
 // arrived and keeps the cut. Text the parser does not recognize — or a parse
 // that panicked — fails the tier, which declines rather than guessing.
+//
+// A tier with no parser is its own text: the channel read it under the tier's
+// cap already, so it is the body as it stands and there is nothing to read back.
 func finishScript(result model.RunResult, script model.Script, cap model.RowCap) model.RunResult {
-	if !result.Verdict.Settled() || strings.TrimSpace(result.Stdout) == "" {
+	if !result.Verdict.Settled() || script.Parse == nil {
+		return result
+	}
+	if strings.TrimSpace(result.Stdout) == "" {
 		return result
 	}
 	read, panicErr := fault.Result("script parse", func() scriptRead {

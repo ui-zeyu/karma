@@ -30,6 +30,9 @@ var modulesLoadPaths = []string{
 	"/usr/local/lib/modules-load.d/*.conf",
 }
 
+// modulesLoadScript is the sh source's reading of the same list.
+var modulesLoadScript = script.ReadFiles(modulesLoadPaths, `cat "$f"`, true)
+
 // rootkitSyms: the symbol families /proc/kallsyms leaks. Two halves: the
 // program names of the public catalog (define.RootkitNames — a kit usually names
 // its functions after itself, so `rkduck_init` and `singularity_hook` carry the
@@ -46,6 +49,10 @@ const rootkitSyms = define.RootkitNames + `|hide_module|module_hidden|hidden_fil
 // kallsymsRe is the family alternation the local walk filters with — the same
 // text the rule grades and the walk reads.
 var kallsymsRe = regexp.MustCompile(rootkitSyms)
+
+// kallsymsScript narrows to the rootkit families before the text leaves the
+// target: the full table is megabytes and its quiet lines carry no evidence.
+const kallsymsScript = "grep -aE '" + rootkitSyms + "' /proc/kallsyms 2>/dev/null"
 
 // moduleDirs lists the out-of-tree drop points directly: distro-owned modules all
 // live under the kernel/ subdirectory (tens of thousands of files), while rootkit
@@ -91,6 +98,12 @@ var hiddenModuleAttrs = []native.ModuleAttr{
 // modules.
 var hiddenModuleViews = native.ModuleDiffViews(hiddenModuleAttrs)
 
+// hiddenModuleScript is the sh source's half of the diff, the marked stream the
+// check's Assemble turns into rows: the three views travel in one script — a
+// tier that stopped after the first would answer for the whole tier (an exit 0
+// with no rows is still an answer) and the chain would never reach the others.
+var hiddenModuleScript = script.HiddenModuleScript(hiddenModuleViews)
+
 // moduleMemoryViews is the module-memory diff's surfaces and allocator lists:
 // one value, so the body and the join cannot read different paths or classify an
 // allocator differently.
@@ -115,7 +128,10 @@ var moduleImagesRe = regexp.MustCompile(`\b(?:` + define.RootkitNames + `)(?:[_-
 // KernelChecks covers the kernel.
 var KernelChecks = []*model.Check{
 	define.LinuxCheck("modules-load", "Boot-loaded modules (/etc/modules, modules-load.d)", model.AspectKernel,
-		[]model.Step{{{Label: "cat", Inv: model.Native{Body: native.ModulesLoad(modulesLoadPaths)}}}},
+		[]model.Step{
+			{{Label: "cat", Inv: model.Native{Body: native.ModulesLoad(modulesLoadPaths)}}},
+			{{Label: "cat-sh", Inv: model.Sh(modulesLoadScript)}},
+		},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				// Exclude a leading /: an == section title is a file path and should not light
@@ -136,6 +152,8 @@ var KernelChecks = []*model.Check{
 		[]model.Step{
 			{{Label: "lsmod", Inv: model.Native{Body: native.Lsmod}}},
 			{{Label: "proc-modules", Inv: model.Native{Body: native.ProcModules}}},
+			{{Label: "lsmod-sh", Inv: model.Sh("lsmod")}},
+			{{Label: "proc-modules-sh", Inv: model.Sh("cat /proc/modules 2>/dev/null")}},
 		},
 		define.CheckOpt{
 			// The Used by tail can contain spaces, which the generic table word-by-word
@@ -182,8 +200,12 @@ var KernelChecks = []*model.Check{
 	// one tier: probes in a chain would let the first one's empty exit-0 diff
 	// answer for the whole check.
 	define.LinuxCheck("modules-hidden", "Hidden module cross-check (sysfs, kallsyms vs /proc/modules)", model.AspectKernel,
-		[]model.Step{{{Label: "diff", Inv: model.Native{Body: native.ModulesHidden(hiddenModuleViews)},
-			Assemble: script.HiddenModuleBody}}},
+		[]model.Step{
+			{{Label: "diff", Inv: model.Native{Body: native.ModulesHidden(hiddenModuleViews)},
+				Assemble: script.HiddenModuleBody}},
+			{{Label: "diff-sh", Inv: model.Sh(hiddenModuleScript),
+				Assemble: script.HiddenModuleBody}},
+		},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				// The span carries the name: the reason is about that module, and the
@@ -216,7 +238,12 @@ var KernelChecks = []*model.Check{
 	// under lockdown, a host whose core cannot be read, or a region with no such
 	// signature adds no row either way.
 	define.LinuxCheck("module-memory", "Module memory (vmalloc regions vs the module list)", model.AspectKernel,
-		[]model.Step{{{Label: "vmap", Inv: model.Native{Body: native.ModuleMemory(moduleMemoryViews, moduleImagesRe)}, Assemble: moduleMemoryBody}}},
+		[]model.Step{
+			{{Label: "vmap", Inv: model.Native{Body: native.ModuleMemory(moduleMemoryViews, moduleImagesRe)}, Assemble: moduleMemoryBody}},
+			// The sh source cannot read the kernel's core (a remote shell has no
+			// way to), so its rows are the pipeline's own; the join is the same.
+			{{Label: "vmap-sh", Inv: model.Sh(script.ModuleMemoryScript(moduleMemoryViews)), Assemble: moduleMemoryBody}},
+		},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				// The row carries the range, the caller and the symbols inside, so
@@ -246,7 +273,10 @@ var KernelChecks = []*model.Check{
 	// full symbol tables of a 7.0 desktop kernel and a 5.15 server kernel it
 	// matched the loaded rootkit's tag and nothing else.
 	define.LinuxCheck("kallsyms", "Kernel symbol table rootkit signatures (/proc/kallsyms)", model.AspectKernel,
-		[]model.Step{{{Label: "grep", Inv: model.Native{Body: native.Kallsyms(kallsymsRe)}, Cap: model.Scan(openScanLines)}}},
+		[]model.Step{
+			{{Label: "grep", Inv: model.Native{Body: native.Kallsyms(kallsymsRe)}, Cap: model.Scan(openScanLines)}},
+			{{Label: "grep-sh", Inv: model.Sh(kallsymsScript), Cap: model.Scan(openScanLines)}},
+		},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				model.NewRule("kallsyms-rootkit", `\b(?:`+rootkitSyms+`)\b`, model.Critical,
@@ -254,7 +284,10 @@ var KernelChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("tainted", "Kernel tainted flags", model.AspectKernel,
-		[]model.Step{{{Label: "tainted", Inv: model.Native{Body: native.Tainted}}}},
+		[]model.Step{
+			{{Label: "tainted", Inv: model.Native{Body: native.Tainted}}},
+			{{Label: "tainted-sh", Inv: model.Sh("cat /proc/sys/kernel/tainted 2>/dev/null")}},
+		},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				// The whole mask is the finding, not its first digit: the span is
@@ -269,7 +302,10 @@ var KernelChecks = []*model.Check{
 	// before the big lsmod table. Locally the ring buffer is read through
 	// syslog(2) in-process (native_dmesg_linux).
 	define.LinuxCheck("dmesg", "Kernel module logs", model.AspectKernel,
-		[]model.Step{{{Label: "dmesg", Inv: model.Native{Body: native.Dmesg}}}},
+		[]model.Step{
+			{{Label: "dmesg", Inv: model.Native{Body: native.Dmesg}}},
+			{{Label: "dmesg-sh", Inv: model.Sh("dmesg")}},
+		},
 		define.CheckOpt{
 			Syntax:  model.SyntaxDmesg,
 			Filters: dmesgKeepFilters,

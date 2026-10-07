@@ -4,6 +4,8 @@ package linux
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
@@ -15,6 +17,20 @@ import (
 // non-zero and the tier falls through to sudo -n -l, which only answers what the
 // current user may run.
 var sudoersPaths = []string{"/etc/sudoers", "/etc/sudo.conf", "/etc/sudoers.d/*"}
+
+// sudoersScript is the sh source's reading of those paths: one `== path` section
+// per readable file, and a non-zero status when none was — which is what hands
+// the walk to sudo -n -l.
+var sudoersScript = `
+ok=1
+for f in ` + strings.Join(sudoersPaths, " ") + `; do
+  [ -f "$f" ] && [ -r "$f" ] || continue
+  echo "== $f"
+  cat "$f"
+  ok=0
+done
+exit "$ok"
+`
 
 // homeGlobs: where user homes live, in the order the walk visits them. A
 // trailing "/*" marks a container whose immediate children are homes; a bare
@@ -31,9 +47,60 @@ var sshdConfigPaths = []string{"/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/*
 // depth the walk of that search passes to find.
 const authorizedKeysDepth = 3
 
+// authorizedKeysScript is the sh source's reading of the same stack: the find
+// under the homes plus the AuthorizedKeysFile directives of the config, read
+// with the target's own tools. Paths named by the directive are read too: %u
+// expands to the user name, %h to the home directory, and a relative path lands
+// in that user's home. Default names find already reports are skipped to avoid
+// duplicate sections.
+//
+// Every path it opens is a regular file, tested before the open: the in-process
+// tier of this check reads the same stack through localfs (which reads a planted
+// FIFO as empty), and a shell arm that opened one would park in open(2) — the
+// walk's deadline would cut the check and spend its budget on a private door.
+var authorizedKeysScript = authorizedKeysScriptAt(sshdConfigPaths, homeGlobs)
+
 // authorizedKeysScriptAt is the same script over given surfaces, which is how a
 // test drives the whole pipeline — the find under the homes, the config stack,
 // the directive expansion — over a fixture.
+func authorizedKeysScriptAt(configPaths, homes []string) string {
+	homeWords := strings.Join(homes, " ")
+	return `
+seen=
+pseen=
+for d in ` + homeWords + `; do
+  [ -d "$d" ] || continue
+  find "$d" -maxdepth ` + strconv.Itoa(authorizedKeysDepth) + ` -name 'authorized_keys*' -type f 2>/dev/null | while read -r f; do
+    echo "== $f"
+    cat "$f" 2>/dev/null
+  done
+done
+for f in ` + strings.Join(configPaths, " ") + `; do
+  [ -f "$f" ] || continue
+  awk '$1 == "AuthorizedKeysFile" { for (i = 2; i <= NF; i++) print $i }' "$f" 2>/dev/null
+done |
+while read -r spec; do
+  case " $seen " in *" $spec "*) continue;; esac
+  seen="$seen $spec"
+  case "$spec" in
+    none|authorized_keys|authorized_keys2|.ssh/authorized_keys|.ssh/authorized_keys2) continue;;
+  esac
+  for d in ` + homeWords + `; do
+    [ -d "$d" ] || continue
+    p=$(printf '%s\n' "$spec" | sed "s/%u/$(basename "$d")/g")
+    p=$(printf '%s\n' "$p" | sed "s|%h|$d|g")
+    p=$(printf '%s\n' "$p" | sed "s/%%/%/g")
+    case "$p" in /*) ;; *) p="$d/$p";; esac
+    case "$p" in */.ssh/authorized_keys|*/.ssh/authorized_keys2) continue;; esac
+    case " $pseen " in *" $p "*) continue;; esac
+    pseen="$pseen $p"
+    [ -f "$p" ] || continue
+    echo "== $p"
+    cat "$p" 2>/dev/null
+  done
+done
+`
+}
 
 var sshClientConfigPaths = []string{
 	"/etc/ssh/ssh_config",
@@ -147,19 +214,27 @@ var IdentityChecks = []*model.Check{
 					"group password set (newgrp escalation)").WithExclude(`^[^:\n]+:[*!x]`),
 			},
 		}),
-	// Locally the utmp/wtmp files are parsed in-process (native_utmp); on ssh
-	// the same labels run the util-linux binaries.
+	// Locally the utmp/wtmp files are parsed in-process (native_utmp); the sh
+	// source's tiers are the util-linux binaries over the same files.
 	define.LinuxCheck("logins", "Current logins", model.AspectIdentity,
 		[]model.Step{
 			{{Label: "w", Inv: model.Native{Body: native.W}}},
 			{{Label: "who", Inv: model.Native{Body: native.Who}}},
+			{{Label: "w-sh", Inv: model.Sh("w")}},
+			{{Label: "who-sh", Inv: model.Sh("who")}},
 		},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("last", "Login history (last)", model.AspectIdentity,
-		[]model.Step{{{Label: "last", Inv: model.Native{Body: native.Last(lastRows)}}}},
+		[]model.Step{
+			{{Label: "last", Inv: model.Native{Body: native.Last(lastRows)}}},
+			{{Label: "last-sh", Inv: model.Sh("last -n " + strconv.Itoa(lastRows))}},
+		},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("lastlog", "Last account login (lastlog)", model.AspectIdentity,
-		[]model.Step{{{Label: "lastlog", Inv: model.Native{Body: native.Lastlog}}}},
+		[]model.Step{
+			{{Label: "lastlog", Inv: model.Native{Body: native.Lastlog}}},
+			{{Label: "lastlog-sh", Inv: model.Sh("lastlog")}},
+		},
 		define.CheckOpt{
 			// The header is mixed case, so the columns are anchored by their own
 			// syntax; the note line ahead of the header stays plain.
@@ -171,6 +246,7 @@ var IdentityChecks = []*model.Check{
 	define.LinuxCheck("sudoers", "Sudo grants", model.AspectIdentity,
 		[]model.Step{
 			{{Label: "cat", Inv: model.Native{Body: native.Sudoers(sudoersPaths)}}},
+			{{Label: "cat-sh", Inv: model.Sh(sudoersScript)}},
 			{{Label: "sudo", Inv: model.NewCommand("sudo", "-n", "-l")}},
 		},
 		define.CheckOpt{
@@ -184,7 +260,10 @@ var IdentityChecks = []*model.Check{
 	listingCheck("pam", "PAM config and module directories", model.AspectIdentity, pamDirs, 100,
 		[]model.Matcher{define.KeywordRule}),
 	define.LinuxCheck("authorized-keys", "SSH authorized keys", model.AspectIdentity,
-		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.AuthorizedKeys(homeGlobs, authorizedKeysDepth, sshdConfigPaths)}}}},
+		[]model.Step{
+			{{Label: "find", Inv: model.Native{Body: native.AuthorizedKeys(homeGlobs, authorizedKeysDepth, sshdConfigPaths)}}},
+			{{Label: "find-sh", Inv: model.Sh(authorizedKeysScript)}},
+		},
 		define.CheckOpt{
 			Syntax: model.SyntaxSSHPubkey,
 			Rules: []model.Matcher{

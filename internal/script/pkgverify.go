@@ -8,7 +8,7 @@
 //
 // Two implementations render that body and must agree word for word: this
 // file's Go side (PkgVerifyBody, the local channel) and the awk pipeline the
-// ssh and ttyd channels run (PkgVerifyScript). PkgVerifyBody documents the
+// sh source runs (PkgVerifyScript). PkgVerifyBody documents the
 // shape; pkgverify_test.go runs both over one fixture and compares.
 
 package script
@@ -30,13 +30,29 @@ type VerifyFacts struct {
 	Missing bool
 }
 
-// PkgVerifyScript is the ssh and ttyd channels' package-verify tier for one
+// PkgVerifyScript is the sh source's package-verify tier for one
 // verifier command (dpkg -V, rpm -Va). It builds the same body PkgVerifyBody
 // renders, from the target's own file(1) and ls -l: the verifier's output
 // tagged V, the types tagged F, the attributes tagged L, all read by one awk
 // pass, so the classification and the grouping need no temporary file. A
 // missing verifier exits 127 and the chain falls to the other package
 // manager's tier; a clean verification is an empty answer.
+func PkgVerifyScript(command string) string {
+	binary, _, _ := strings.Cut(command, " ")
+	return fmt.Sprintf(`command -v %[1]s >/dev/null 2>&1 || exit 127
+verify=$(%[2]s 2>/dev/null)
+[ -n "$verify" ] || exit 0
+paths=$(printf '%%s\n' "$verify" | awk 'NF {print $NF}')
+havefile=0
+command -v file >/dev/null 2>&1 && havefile=1
+{
+  printf '%%s\n' "$verify" | sed 's/^/V /'
+  [ "$havefile" = 1 ] && LC_ALL=C file $paths 2>/dev/null | sed 's/^/F /'
+  LC_ALL=C ls -l $paths 2>/dev/null | sed 's/^/L /'
+} | LC_ALL=C awk -v havefile=$havefile '%[3]s'
+exit 0
+`, binary, command, pkgVerifyAwk())
+}
 
 // pkgVerifyAwk is the one pass that classifies and groups, the mirror of
 // PkgVerifyBody: the thresholds and the section titles come from the constants
@@ -52,6 +68,91 @@ type VerifyFacts struct {
 // localfs.FileRows renders the list it is handed without sorting), while `== ls`
 // is path-sorted by ls itself and by localfs.LsRows. Sorting the file rows here
 // would put the two channels' sections in different orders.
+func pkgVerifyAwk() string {
+	return fmt.Sprintf(`BEGIN { mass = %[1]d; listed = %[2]d }
+{
+  tag = substr($0, 1, 1); rest = substr($0, 3)
+  if (tag == "V") {
+    if (rest == "") next
+    n++
+    vline[n] = rest
+    p = rest; sub(/.* /, "", p)
+    vpath[n] = p
+    vpre[n] = rest; sub(/[^ ]*$/, "", vpre[n])
+    if (vpre[n] ~ / c[ \t]*$/) conf[n] = 1
+    d = p
+    if (!sub("/[^/]*$", "", d)) d = ""
+    vdir[n] = d
+    a = d
+    while (a != "") { tot[a]++; sub("/[^/]*$", "", a) }
+    next
+  }
+  if (tag == "F") {
+    fp = rest; sub(/:[ ]+.*$/, "", fp)
+    if (rest ~ /No such file or directory/) { gone[fp] = 1; next }
+    fn++
+    fpath[fn] = fp
+    fline[fn] = rest; sub(/:[ ]+/, ": ", fline[fn])
+    ftype = substr(rest, length(fp) + 1); sub(/^:[ ]*/, "", ftype)
+    if (ftype ~ /^ELF/ || ftype ~ /(^|[ ,])executable([ ,]|$)/) key[fp] = 1
+    next
+  }
+  if (tag == "L") {
+    ln++
+    lline[ln] = rest
+    nf = split(rest, f, /[ ]+/)
+    p = f[9]; for (i = 10; i <= nf; i++) p = p " " f[i]
+    sub(/ -> .*$/, "", p)
+    lpath[ln] = p
+    if (substr(f[1], 4, 1) ~ /[xsS]/) key[p] = 1
+    next
+  }
+}
+function dirkey(d,   a) {
+  if (d == "") return ""
+  a = d
+  while (a != "") { if (tot[a] > mass) return a; sub("/[^/]*$", "", a) }
+  return d
+}
+END {
+  named = 0; other = 0
+  for (i = 1; i <= n; i++) {
+    if (conf[i] || key[vpath[i]]) { name[i] = 1; named = 1; namedpath[vpath[i]] = 1; continue }
+    other = 1
+    g = dirkey(vdir[i])
+    gkey[i] = g
+    if (g != "") gcount[g]++
+  }
+  if (named) print "%[3]s"
+  for (i = 1; i <= n; i++) if (name[i]) print vline[i] (havefile && gone[vpath[i]] ? " (missing)" : "")
+  # Both sections keep the order their source printed: the F rows the argument
+  # order file(1) reads, the L rows the order ls sorted its arguments into. The
+  # local channel renders them the same way, so nothing is re-ordered here.
+  for (i = 1; i <= fn; i++) if (namedpath[fpath[i]] && !fseen[fpath[i]]) { if (!inf) { print "%[5]s"; inf = 1 }; fseen[fpath[i]] = 1; print fline[i] }
+  for (i = 1; i <= ln; i++) if (namedpath[lpath[i]] && !lseen[lpath[i]]) { if (!inl) { print "%[6]s"; inl = 1 }; lseen[lpath[i]] = 1; print lline[i] }
+  if (!other) exit
+  print "%[4]s"
+  for (i = 1; i <= n; i++) {
+    if (name[i]) continue
+    g = gkey[i]
+    if (g == "" || gcount[g] <= listed) { print vline[i] (havefile && gone[vpath[i]] ? " (missing)" : ""); continue }
+    if (!(g in seen)) { seen[g] = 1; gtot[g] = 0; gpre[g] = vpre[i] }
+    gtot[g]++
+    if (gone[vpath[i]]) gmiss[g]++
+    if (!(g in listed_group)) { listed_group[g] = 1; gorder[++gn] = g }
+  }
+  for (a = 2; a <= gn; a++) { g = gorder[a]; b = a - 1
+    while (b >= 1 && gorder[b] > g) { gorder[b + 1] = gorder[b]; b-- }
+    gorder[b + 1] = g }
+  for (j = 1; j <= gn; j++) {
+    g = gorder[j]
+    if (!havefile) print gpre[g] g "/  " gtot[g] " files"
+    else if (gmiss[g] == gtot[g]) print gpre[g] g "/  " gtot[g] " files missing"
+    else if (gmiss[g] > 0) print gpre[g] g "/  " gtot[g] " files differ, " gmiss[g] " missing"
+    else print gpre[g] g "/  " gtot[g] " files differ"
+  }
+}`, verifyMassFiles, verifyListedFiles, verifyKeyTitle, verifyOtherTitle, verifyFilesSection, verifyLsSection)
+}
 
 // The mass and listing thresholds, and the two section titles. PkgVerifyScript
 // spells the same numbers in its awk program.

@@ -326,16 +326,26 @@ type Fields struct {
 func (Fields) isInvocation() {}
 
 // Script is a tier of the sh source: a command whose pinned wording is the
-// schema (LC_ALL=C, the exact flags), run wherever the session points, and a
-// parser that reads the captured text into the same records the native source
-// states for the check. The parse is karma's own code, so the tool's layout
-// freedom — column widths, alignment, the locale's month names — ends at the
-// parser; text the parser does not recognize is the tier's failure, which
-// declines rather than guesses.
+// reading (LC_ALL=C, the exact flags), run wherever the session points — the
+// target's own /bin/sh through the channel — and, when Parse is set, read back
+// into the same records the native source states for the check. The parse is
+// karma's own code, so the tool's layout freedom — column widths, alignment,
+// the locale's month names — ends at the parser; text the parser does not
+// recognize is the tier's failure, which declines rather than guesses.
+//
+// A nil Parse is a tier whose text is its body: the check's evidence is a file's
+// contents, a listing or a walk rather than a table karma states field by field,
+// and the reading layer reads those lines the way it reads any other body. Both
+// kinds belong to the sh source alone, because the native source reads the same
+// evidence with its own body: the two stand side by side, never in one another's
+// fallback chain.
 type Script struct {
 	Run   string
 	Parse func(stdout string) (*RecordSet, error)
 }
+
+// Sh builds the sh source's tier whose text is the body, from the pinned spelling.
+func Sh(run string) Script { return Script{Run: run} }
 
 func (Script) isInvocation() {}
 
@@ -343,10 +353,11 @@ func (Script) isInvocation() {}
 // default, and the zero value of an unset flag) runs karma's own bodies where
 // the target is — the local channel, or the collector a remote channel places
 // there. The sh source places nothing: the run drives the target's /bin/sh
-// through the channel, runs the command tiers over it, and reads a Script
-// tier's pinned command into the same records. A run states one source and
-// walks only its own tiers (the invocation kind states which side a tier
-// belongs to); the two never chain, because a report stands on one source.
+// through the channel and reads each check's pinned spelling into the same
+// layer-1 structure. A run states one source and walks only its own tiers (the
+// invocation kind states which side a tier belongs to); the two never chain,
+// because a report stands on one source and each source keeps its own escape
+// ladder.
 type Source string
 
 const (

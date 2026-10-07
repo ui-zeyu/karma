@@ -40,7 +40,7 @@ func runFlags(flags *pflag.FlagSet) {
 	flags.String("source", "native",
 		"which side reads the evidence: native runs karma's own bodies on the target "+
 			"(the local channel, or the collector a remote one places there), sh places nothing "+
-			"and drives the target's /bin/sh, reading its pinned commands into the same records")
+			"and drives the target's /bin/sh, reading every check's own pinned spelling")
 	flags.Bool("json", false,
 		"print one JSON object per check (the collector's protocol) instead of drawing the report: "+
 			"each line carries the tier's raw text and how its walk ended, and nothing has been read or shaped")

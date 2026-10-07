@@ -130,4 +130,9 @@ func TestAlignLsBodies(t *testing.T) {
 	if linked[1] != "-rw-r--r-- 1 root root 100 Jan 01 00:00 /tmp/my file.txt" {
 		t.Errorf("a path with spaces changed: %q", linked[1])
 	}
+	// A section can hold a single row, and a symlink row still needs its target
+	// separated there: the cut is the row's shape, not the listing's alignment.
+	if lone := AlignLsBodies(linked[:1]); lone[0] != linked[0] {
+		t.Errorf("a lone symlink row lost its target: %q", lone[0])
+	}
 }

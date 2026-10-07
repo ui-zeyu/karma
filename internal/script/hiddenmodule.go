@@ -12,7 +12,7 @@
 // with its symbol count — and one Go join renders it: HiddenModuleBody, which
 // the check hangs on the tier as its Assemble.
 //
-// Two emitters, one join: this file's shell block (the ssh and ttyd channels)
+// Two emitters, one join: this file's shell block (the sh source)
 // and native.hiddenModuleViewsText (the local channel) produce the stream, and
 // the shape is rendered in one place, so the join cannot drift between the two
 // languages the way it could when the target ran its own awk mirror. The stream
@@ -58,7 +58,7 @@ const (
 	viewKallsyms = "kallsyms"
 )
 
-// HiddenModuleScript is the ssh and ttyd channels' half of the diff: the marked
+// HiddenModuleScript is the sh source's half of the diff: the marked
 // stream the check's Assemble turns into rows. The three views travel in one
 // script — a tier that stopped after the first would answer for the whole tier
 // (an exit 0 with no rows is still an answer) and the chain would never reach
@@ -72,6 +72,29 @@ const (
 // in is megabytes and its quiet lines carry no evidence, so the fold belongs
 // where the data is. Everything above the fold — the verdicts, the order, the
 // rows — is the join's, and the join runs once, in Go.
+func HiddenModuleScript(views ModuleDiffViews) string {
+	var b strings.Builder
+	b.WriteString("mods=" + views.ModulesPath + "\n")
+	b.WriteString("[ -r \"$mods\" ] || exit 1\n")
+	b.WriteString("{\n")
+	b.WriteString("  [ -d " + views.SysfsRoot + " ] && echo \"A " + viewSysfs + " 1\" || echo \"A " + viewSysfs + " 0\"\n")
+	b.WriteString("  [ -r " + views.SymbolsPath + " ] && echo \"A " + viewKallsyms + " 1\" || echo \"A " + viewKallsyms + " 0\"\n")
+	b.WriteString("  for d in " + views.SysfsRoot + "/*; do\n")
+	b.WriteString("    [ -d \"$d/sections\" ] || continue\n")
+	b.WriteString("    n=${d##*/}\n")
+	b.WriteString("    line=\"S $n\"\n")
+	b.WriteString("    for pair in " + strings.Join(views.Attrs, " ") + "; do\n")
+	b.WriteString("      v=\n")
+	b.WriteString("      [ -f \"$d/${pair#*:}\" ] && read -r v < \"$d/${pair#*:}\"\n")
+	b.WriteString("      [ -n \"$v\" ] && line=\"$line ${pair%%:*} $v\"\n")
+	b.WriteString("    done\n")
+	b.WriteString("    echo \"$line\"\n")
+	b.WriteString("  done\n")
+	b.WriteString("  awk '{print \"P \" $1}' \"$mods\" 2>/dev/null\n")
+	b.WriteString("  " + moduleTagAwk(views.SymbolsPath, views.PseudoTags) + "\n")
+	b.WriteString("}\n")
+	return b.String()
+}
 
 // moduleTagAwk emits the K lines: one per module tag in the symbol table, with
 // how many symbols carry it. The pseudo-module tags are dropped here, the way
@@ -79,6 +102,19 @@ const (
 // lines are sorted by tag because awk's array iteration has no order: the stream
 // is evidence, and two channels' — or two runs' — streams are diffed against
 // each other (make parity), so a set must not travel in an arbitrary sequence.
+func moduleTagAwk(symbolsPath string, pseudo []string) string {
+	drops := make([]string, 0, len(pseudo))
+	for _, tag := range pseudo {
+		drops = append(drops, `n != "`+tag+`"`)
+	}
+	keep := "1"
+	if len(drops) > 0 {
+		keep = strings.Join(drops, " && ")
+	}
+	return fmt.Sprintf(`awk '{n=$NF; if (n ~ /^\[/) {gsub(/[][]/,"",n); if (%s) cnt[n]++}} `+
+		`END {for (n in cnt) print "K " n " " cnt[n]}' %s 2>/dev/null | LC_ALL=C sort`,
+		keep, symbolsPath)
+}
 
 // HiddenModuleBody is the join: the marked stream HiddenModuleScript and
 // native.hiddenModuleViewsText emit, rendered as the rows the panel shows. Every

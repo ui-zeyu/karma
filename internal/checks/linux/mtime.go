@@ -21,6 +21,7 @@ import (
 	"karma/internal/cluster"
 	"karma/internal/define"
 	"karma/internal/model"
+	"karma/internal/script"
 	"karma/internal/textutil"
 )
 
@@ -38,9 +39,31 @@ const huntTimeout = 60 * time.Second
 
 // huntPruneDirs: the virtual filesystems a sweep from / must not descend into.
 // They hold no file metadata worth clustering, and walking them floods the
-// stream. The find tier prunes them by path, the local walk decides per
+// stream. The sh find prunes them by path, the in-process walk decides per
 // directory, so both cover the same set.
 var huntPruneDirs = []string{"/proc", "/sys", "/dev"}
+
+// findPrintf: mtime, ctime (epoch seconds), target-local date and time, bytes,
+// path, tab-separated. It is the row cluster.ParseFindRow reads.
+const findPrintf = `%T@\t%C@\t%TY-%Tm-%Td\t%TH:%TM:%TS\t%s\t%p\n`
+
+// huntScript is the sh source's reading of the same directories: one section per
+// directory, an absent or unreadable one yielding an empty body that the
+// normalizer explains. -xdev keeps the walk on the given directory's own
+// filesystem, and the virtual filesystems are pruned by name so a sweep from /
+// stays on the disk — the in-process walk's own decision, spelled for find.
+func huntScript(dirs []string) string {
+	words := make([]string, len(dirs))
+	for index, dir := range dirs {
+		words[index] = script.Quote(dir)
+	}
+	prunes := make([]string, len(huntPruneDirs))
+	for index, dir := range huntPruneDirs {
+		prunes[index] = "-path " + dir
+	}
+	return fmt.Sprintf("for d in %s; do\n  echo \"== $d\"\n  find \"$d\" -xdev \\( %s \\) -prune -o -type f -printf '%s' 2>/dev/null\ndone",
+		strings.Join(words, " "), strings.Join(prunes, " -o "), findPrintf)
+}
 
 // huntNormalize turns one section body (a directory's find output) into a timeline
 // plus outlier/marked lines.
@@ -179,7 +202,10 @@ func timeline(groups [][]*cluster.FindRow) []string {
 // at the end of the catalog for this run.
 func HuntCheck(dirs []string) *model.Check {
 	return define.LinuxCheck(huntID, "Mtime clustering (user-specified directories)", model.AspectFilesystem,
-		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.Hunt(dirs, huntPruneDirs)}}}},
+		[]model.Step{
+			{{Label: "find", Inv: model.Native{Body: native.Hunt(dirs, huntPruneDirs)}}},
+			{{Label: "find-sh", Inv: model.Sh(huntScript(dirs))}},
+		},
 		define.CheckOpt{
 			Normalize: huntNormalize(time.Now),
 			ScanBytes: scanBytes,

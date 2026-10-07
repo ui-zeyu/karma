@@ -83,7 +83,11 @@ func cutField(row string) (field, rest string, ok bool) {
 // links and size right-aligned, owner and group left-aligned. The path is taken
 // as it is — it may hold spaces itself. A row that does not carry the nine
 // columns is passed through, and a single row has nothing to line up with, so a
-// listing of one row is returned unchanged.
+// listing of one row keeps its own spacing.
+//
+// Every row's path is repaired first (linkRow), so a collected symlink row —
+// find's %l prints the target glued to the path — reads like ls -l's wherever it
+// stands, a section of one row included.
 //
 // text/tabwriter is the obvious library here, but it aligns a whole table one
 // way; this row shape wants the numeric columns right-aligned and the rest
@@ -94,6 +98,11 @@ func cutField(row string) (field, rest string, ok bool) {
 // these rows (the listing normalizer's outlier verdicts) measures them on the
 // aligned text.
 func AlignLsBodies(rows []string) []string {
+	repaired := make([]string, len(rows))
+	for index, row := range rows {
+		repaired[index] = linkRow(row)
+	}
+	rows = repaired
 	if len(rows) < 2 {
 		return rows
 	}
@@ -120,26 +129,31 @@ func AlignLsBodies(rows []string) []string {
 		}
 		aligned[index] = fmt.Sprintf(format,
 			fields[0], fields[1], fields[2], fields[3], fields[4],
-			fields[5], fields[6], fields[7], linkPath(fields))
+			fields[5], fields[6], fields[7], fields[LsBodyPath])
 	}
 	return aligned
 }
 
-// linkPath is the path column of one row, with a symlink's target separated
-// the way ls -l writes it. find's %l prints the target with no arrow and
-// glued to the path, so a collected row carries them as one word; the link's
-// size is the target's length, which is what cuts them apart. A path that
-// holds spaces survives, because the cut counts from the end. A row that
-// already carries the arrow — the local channel spells it, and a second pass
-// over an aligned listing — is returned as it is.
-func linkPath(fields []string) string {
+// linkRow is one row with a symlink's target separated the way ls -l writes it.
+// find's %l prints the target with no arrow and glued to the path, so a row the
+// target's own find produced carries them as one word; the link's size is the
+// target's length, which is what cuts them apart. A path that holds spaces
+// survives, because the cut counts from the end. A row that already carries the
+// arrow — the native source's own listing spells it, and a second pass over an
+// aligned listing — or that is not a symlink listing at all is returned as it
+// came.
+func linkRow(row string) string {
+	fields, ok := SplitLsBody(row)
+	if !ok || fields[0] == "" || fields[0][0] != 'l' {
+		return row
+	}
 	path := fields[LsBodyPath]
-	if fields[0] == "" || fields[0][0] != 'l' || strings.Contains(path, " -> ") {
-		return path
+	if strings.Contains(path, " -> ") {
+		return row
 	}
 	size, err := strconv.Atoi(fields[4])
 	if err != nil || size < 1 || size >= len(path) {
-		return path
+		return row
 	}
-	return path[:len(path)-size] + " -> " + path[len(path)-size:]
+	return row[:len(row)-len(path)] + path[:len(path)-size] + " -> " + path[len(path)-size:]
 }
