@@ -23,14 +23,14 @@ const fileHeadBytes = 4096
 
 // FileRows renders the `== file` forensics section: one `path: words` line per
 // existing file, in the order the caller gave — the order the list itself
-// expresses, which is what the shell tier's `file $list` prints (file(1) reads
+// expresses, which is what the sh source's `file $list` prints (file(1) reads
 // its arguments in order) and what the verifier's own output expresses. LsRows
 // sorts, because ls sorts its arguments; this section must not, or the two
-// channels' `== file` sections would list the same rows in different orders.
+// sources' `== file` sections would list the same rows in different orders.
 //
 // A path this process may not read reads "cannot open": file(1) names the reason
 // there ("regular file, no read permission"), which is a recorded difference
-// between the channels' rows for a file the collecting user cannot read.
+// between the sources' rows for a file the collecting user cannot read.
 func FileRows(files []string) string {
 	var b strings.Builder
 	for _, path := range files {
@@ -46,7 +46,7 @@ func FileRows(files []string) string {
 // A path that is not a regular file is named from its mode instead of read (the
 // open is non-blocking, so a planted FIFO cannot hang this): file(1) spells
 // those types from stat alone, and printing them keeps the local section equal
-// to the ssh channel's, where the tool reports the same planted FIFO.
+// to the sh source's, where the tool reports the same planted FIFO.
 func fileTypeWords(path string) string {
 	f, err := openRegular(path)
 	if err != nil {

@@ -20,7 +20,7 @@ import (
 // sock_diag dump for the sockets themselves, then /proc for the owning process.
 // Both address families and both protocols are dumped; a family whose dump is
 // refused is skipped, and only when every dump fails does the tier report
-// itself unavailable so the shell ladder answers.
+// itself unavailable, so the check's next tier answers.
 func Ss(ctx context.Context) (string, error) {
 	sources := []struct {
 		netid string

@@ -4,10 +4,10 @@
 // itself.
 //
 // Fallback covers availability discovered at run time only — a missing binary,
-// a 127, a Native body that cannot run on this host — never which side of the
-// wire karma runs on: every tier exists on every channel, and a remote Linux
-// channel collects through the karma binary it placed on the target, which runs
-// the same bodies the local channel runs.
+// a 127, a body that cannot run on this host — and never the source: the channel
+// states that once (Channel.Source), and the walk below holds only its source's
+// tiers, so the other side's are not tried as a fallback, and neither is the
+// other side's absence a reason to change source.
 //
 // The budget belongs to the walk, not to one tier's call: one deadline covers
 // every step of a check, and the channel's own setup inside it, so the number a

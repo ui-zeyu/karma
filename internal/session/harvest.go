@@ -258,11 +258,11 @@ func readStdout(src source, stopCh <-chan struct{}, state *harvestState, cap mod
 	}
 }
 
-// verdictFor reads one finished process the way every shell tier's chain does:
-// 127 is the missing-command answer the scripts self-guard with (`command -v X
-// || exit 127`), an exit code of 0 or any output on stdout is the tier's answer
-// (an empty answer is an answer), and anything else is a failure whose stderr a
-// panel names.
+// verdictFor reads one finished process the way every command tier's chain
+// does: 127 is the missing-command answer the scripts self-guard with
+// (`command -v X || exit 127`), an exit code of 0 or any output on stdout is the
+// tier's answer (an empty answer is an answer), and anything else is a failure
+// whose stderr a panel names.
 func verdictFor(exitCode int, stdout string) model.Verdict {
 	switch {
 	case exitCode == 127 && strings.TrimSpace(stdout) == "":

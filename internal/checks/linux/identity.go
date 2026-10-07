@@ -54,10 +54,11 @@ const authorizedKeysDepth = 3
 // in that user's home. Default names find already reports are skipped to avoid
 // duplicate sections.
 //
-// Every path it opens is a regular file, tested before the open: the in-process
+// Every path it opens is a regular file, tested before the open: the native
 // tier of this check reads the same stack through localfs (which reads a planted
-// FIFO as empty), and a shell arm that opened one would park in open(2) — the
-// walk's deadline would cut the check and spend its budget on a private door.
+// FIFO as empty), and the sh reading would park in open(2) if it opened one —
+// the walk's deadline would cut the check and spend its budget on a private
+// door.
 var authorizedKeysScript = authorizedKeysScriptAt(sshdConfigPaths, homeGlobs)
 
 // authorizedKeysScriptAt is the same script over given surfaces, which is how a

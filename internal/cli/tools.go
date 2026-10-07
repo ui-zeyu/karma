@@ -74,7 +74,7 @@ func newLsCmd() *cobra.Command {
 			if text != "" {
 				st := stylesFor(w)
 				for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
-					// section headers read like the panels' source titles
+					// section headers read like the panels' section titles
 					if _, ok := section.Title(line); ok {
 						line = st.bold(line)
 					} else {

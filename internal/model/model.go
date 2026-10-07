@@ -84,7 +84,6 @@ const (
 	SyntaxTimers     Syntax = "timers"
 	SyntaxListen     Syntax = "listen"
 	SyntaxNetstat    Syntax = "netstat"
-	SyntaxIPKeyval   Syntax = "ip-keyval"
 	SyntaxPkgHistory Syntax = "pkg-history"
 	SyntaxFstab      Syntax = "fstab"
 	SyntaxReg        Syntax = "reg"
@@ -249,18 +248,6 @@ func (o Outcome) String() string {
 	}
 	return outcomeNames[o]
 }
-
-// ParseOutcome resolves one of the names String writes; ok is false for an
-// unknown name.
-func ParseOutcome(name string) (Outcome, bool) {
-	if index := slices.Index(outcomeNames, name); index >= 0 {
-		return Outcome(index), true
-	}
-	return 0, false
-}
-
-// OutcomeNames returns every outcome name in declaration order.
-func OutcomeNames() []string { return slices.Clone(outcomeNames) }
 
 // FilterMode is the direction of a line filter: Drop removes matching lines,
 // Keep shows only matching lines (allowlist).
@@ -621,7 +608,7 @@ type Normalizer func(title string, body string) *Shaped
 // Transformer is a whole-body shaping step: a tier's raw output in, the body the
 // reading pipeline splits into sections out. It is Probe.Assemble's type, for a
 // tier whose output is a marked record stream rather than the body itself — the
-// join runs once on the Go side for every channel instead of once per language
+// join runs once on the Go side for both sources instead of once per language
 // on the target.
 type Transformer func(text string) string
 
@@ -731,32 +718,6 @@ type Probe struct {
 // alternatives to one another would let the walk stop at the first key that
 // exists and silently drop the rest of the evidence.
 type Step []Probe
-
-// ProbeFor returns the tier with this label, wherever it sits in the walk. A
-// label is unique inside its check (the catalog test pins that), which is why
-// a result can name the tier that answered.
-func (c *Check) ProbeFor(label string) (Probe, bool) {
-	for _, step := range c.Steps {
-		for _, probe := range step {
-			if probe.Label == label {
-				return probe, true
-			}
-		}
-	}
-	return Probe{}, false
-}
-
-// ProbeLabels returns every tier label of the walk in declaration order, for the
-// messages that have to name a check's tiers when one of them is unknown.
-func (c *Check) ProbeLabels() []string {
-	labels := make([]string, 0, len(c.Steps))
-	for _, step := range c.Steps {
-		for _, probe := range step {
-			labels = append(labels, probe.Label)
-		}
-	}
-	return labels
-}
 
 // Check is one check: its fallback walk, its already-composed filters and
 // rules, and an optional body normalizer.

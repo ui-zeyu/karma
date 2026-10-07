@@ -1,7 +1,7 @@
-// Package script builds the fragments the collection speaks in: the `^== `
-// section header (reader cuts it into Sections, and each source is filtered and
-// counted independently), shell word quoting for the pinned spellings and the
-// bootstrap command line,
+// Package script builds the fragments the collection speaks in: the `== `
+// section header the loops below echo (internal/section owns the convention, and
+// the reader cuts on it so every section is filtered and counted on its own),
+// shell word quoting for the pinned spellings and the bootstrap command line,
 // the ls -l row shape (LSBodyPrintf, with SplitLsBody and AlignLsBodies in
 // lsbody.go) that the listings print and the reading side reads, the per-file
 // read and per-directory listing loops the sh source runs where karma's own
@@ -75,7 +75,7 @@ func Quote(word string) string {
 // LsSorted sorts paths the way the collection's `LC_ALL=C ls -l` prints its
 // arguments: by the argument string, byte for byte. A tier that renders the
 // same list in process (the miner's drop paths and temp-name hits) sorts with
-// this, so both channels show one order.
+// this, so both sources show one order.
 func LsSorted(paths []string) []string {
 	sorted := slices.Clone(paths)
 	slices.Sort(sorted)

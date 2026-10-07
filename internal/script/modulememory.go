@@ -32,7 +32,7 @@ import (
 
 // ModuleMemoryViews are the surfaces the module-memory diff reads, plus the two
 // allocator lists that tell a module's own memory from memory a module shares
-// with BPF, kprobes and ftrace. One value feeds both channels.
+// with BPF, kprobes and ftrace. One value feeds both sources.
 type ModuleMemoryViews struct {
 	// VMallocPath is the live vmalloc allocation list (/proc/vmallocinfo,
 	// root-only): each line carries the address range, the size and the caller.
@@ -87,7 +87,7 @@ const (
 // reduces /proc/vmallocinfo to the allocations the kernel's own allocators made,
 // and the symbol pass walks the megabytes of /proc/kallsyms to count the tags
 // inside those regions. The join above them — which region is explained, which
-// row it prints, in what order — runs once, in Go, for both channels.
+// row it prints, in what order — runs once, in Go, for both sources.
 func ModuleMemoryScript(views ModuleMemoryViews) string {
 	var b strings.Builder
 	b.WriteString("vmi=" + views.VMallocPath + "\n")

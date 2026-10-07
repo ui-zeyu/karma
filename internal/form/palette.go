@@ -52,7 +52,7 @@ func MutedPaint() Paint { return Paint{FG: string(MutedColor)} }
 // DimPaint is the faint mark of a note the caller inserted.
 func DimPaint() Paint { return Paint{Faint: true} }
 
-// AccentPaint is the accent a source title or a spinner takes.
+// AccentPaint is the accent a section title or a spinner takes.
 func AccentPaint() Paint { return Paint{FG: "14"} }
 
 // Hue is one severity's color language: the paint of a hit, and the hue of the

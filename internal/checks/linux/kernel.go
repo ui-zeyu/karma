@@ -110,7 +110,7 @@ var hiddenModuleScript = script.HiddenModuleScript(hiddenModuleViews)
 var moduleMemoryViews = native.ModuleMemoryViews()
 
 // moduleMemoryBody is the module-memory tier's join, the tier's Assemble: both
-// channels emit the same marked stream, and this one function renders it, bound
+// sources emit the same marked stream, and this one function renders it, bound
 // to the same views the emitters are built from.
 var moduleMemoryBody = func(text string) string {
 	return script.ModuleMemoryBody(moduleMemoryViews, text)

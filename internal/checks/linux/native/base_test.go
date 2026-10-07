@@ -13,7 +13,7 @@ import (
 	"karma/internal/script"
 )
 
-// verifyFacts is the local half of the classification the shell tier reaches
+// verifyFacts is the local half of the classification the sh source reaches
 // from file(1) and ls -l: an executable (or ELF object) is named on its own, a
 // text file is left to be counted by its directory, and a path that is gone is
 // missing — dpkg's own flag field cannot tell that case apart.

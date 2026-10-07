@@ -1,6 +1,6 @@
 // The package-verify body is one contract with two implementations: the Go
-// renderer the native source uses, and the awk program the sh source
-// channels run. These tests pin the shape, then run the awk over a marked
+// renderer the native source uses, and the awk program the sh source runs.
+// These tests pin the shape, then run the awk over a marked
 // stream built the way the shell builds it and compare the two bodies line for
 // line, so a grouping, threshold or title change cannot land on one side alone.
 

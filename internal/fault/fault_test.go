@@ -41,9 +41,6 @@ func TestCatchTurnsAPanicIntoAValue(t *testing.T) {
 	if !strings.Contains(string(recovered.Stack), "TestCatchTurnsAPanicIntoAValue") {
 		t.Fatal("the panic should carry the stack of the boundary that broke")
 	}
-	if !strings.Contains(recovered.Detail(), recovered.Error()) {
-		t.Fatal("Detail should begin with the message the report shows")
-	}
 }
 
 // Result carries a value out, and the zero value with the panic when the

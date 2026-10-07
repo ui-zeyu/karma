@@ -1,6 +1,8 @@
-// netlink's socket, address, neighbor, and route sources exist on Linux only;
-// on every other platform each tier reports itself unavailable, so the local
-// channel falls back to the host's own ss/ip/arp through the shell ladder.
+// netlink's socket, address, neighbor, and route sources exist on Linux only; on
+// every other platform each tier reports itself unavailable, so the check's
+// ladder falls to the host tool its next tier names (ifconfig, route, netstat,
+// arp) or skips what is left. The sh source's own spellings are not on a local
+// walk: a local run reads with the native source.
 
 //go:build !linux
 

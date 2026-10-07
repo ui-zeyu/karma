@@ -23,7 +23,7 @@ type platformCatalog struct {
 // platform through it and AllChecks concatenates it in declaration order, so a
 // platform is registered once. The catalog's own invariants (unique check ids,
 // unique probe labels within a chain, unique rule and filter ids within a
-// check, a tier that exists on every channel) are locked by the tests; nothing
+// check, a check that answers both sources) are locked by the tests; nothing
 // validates at run time.
 var catalogs = []platformCatalog{
 	{model.Linux, linux.All, linux.HuntCheck},

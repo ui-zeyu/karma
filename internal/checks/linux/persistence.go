@@ -123,7 +123,7 @@ var unitDirs = []string{
 // runtime-generated; the /usr and /lib layer is a sea of official rules and is
 // not scanned), the per-layer listing cap, the cap on the assignment-key hits,
 // and the keys that reference an external program. The ssh grep and the local
-// walk take the same four, so the two channels cover identical rules.
+// walk take the same four, so the two sources cover identical rules.
 var udevDirs = []string{"/etc/udev/rules.d", "/run/udev/rules.d"}
 
 const (

@@ -34,8 +34,9 @@ func OsRelease(ctx context.Context) (string, error) {
 	return text + "\n" + unameText, nil
 }
 
-// ProcUptime reads /proc/uptime directly: the uptime binary stays the
-// first tier on every channel, this is the minimal-system fallback.
+// ProcUptime reads /proc/uptime directly: the banner tier comes first in either
+// source's walk, so this is the minimal-system fallback — the file the banner
+// itself is derived from.
 func ProcUptime(ctx context.Context) (string, error) {
 	data, err := os.ReadFile("/proc/uptime")
 	if err != nil {

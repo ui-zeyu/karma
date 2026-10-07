@@ -1,5 +1,5 @@
 // uname's native tier on the platforms whose uname -a spells its own field
-// set; there the shell tier asks the host's own uname instead.
+// set; there the sh source asks the host's own uname instead.
 
 //go:build !linux
 

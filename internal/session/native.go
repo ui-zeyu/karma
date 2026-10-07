@@ -216,7 +216,7 @@ func finishNative(result nativeResult, cap model.RowCap) model.RunResult {
 // capLines keeps the first limit lines of a body and reports whether more
 // followed. The boundary is the streaming harvest's: one probe past the limit
 // decides, and a trailing newline is not another line. Keeping the two in step
-// is what makes the in-process tier and the subprocess/ssh tiers mark the same
+// is what makes the in-process tier and the channel's own tiers mark the same
 // body truncated, and keep the same text. The arithmetic is textutil.Head's,
 // shared with the tiers that cap a body at a line count.
 func capLines(text string, limit int) (string, bool) {

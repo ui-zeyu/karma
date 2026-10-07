@@ -201,7 +201,7 @@ var minerNameGlobs = []string{
 }
 
 // minerWalkDepth bounds the temp-name walk: the same -maxdepth the ssh script
-// passes to find, so both channels stop at the same level.
+// passes to find, so both sources stop at the same level.
 const minerWalkDepth = 4
 
 // hidden-pids (atrk-style brute force): a rootkit that filters the /proc
@@ -210,7 +210,7 @@ const minerWalkDepth = 4
 // print the same text: one scan context line, then a "hidden" section with
 // one row per confirmed PID, so the rules fire on either tier. The native
 // tier sweeps the whole pid space (pid_max is the kernel's own bound); the
-// shell tier caps at 131072 because its interpreted loop probes at ~10µs per
+// sh tier caps at 131072 because its interpreted loop probes at ~10µs per
 // pid, so a full sweep would outlast the tier's deadline.
 
 // topHead and psSortHead are the row shapes the resource snapshot asks for:

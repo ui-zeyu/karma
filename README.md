@@ -174,9 +174,9 @@ make staticcheck         # when installed
 make dist                # dist/ binaries, with the static-link guard
 ```
 
-A tier has one body, and the tests run it over a fixture with the host tools stubbed where it needs
-them (`internal/checks/linux`, `internal/checks/linux/native`), so a row, a threshold or a section
-title that regresses fails there rather than on a target.
+A tier is one source's reading of the evidence, and the tests run it over a fixture with the host
+tools stubbed where it needs them (`internal/checks/linux`, `internal/checks/linux/native`), so a
+row, a threshold or a section title that regresses fails there rather than on a target.
 
 The code lives in `cmd/karma` and `internal/`: `model` is the domain, `define` builds the catalogs,
 `session` runs the channels, `runner` walks the probes, `reader` reads the collected text into a
@@ -190,7 +190,7 @@ target, kills a process or changes a firewall. What you see is what the current 
 Two properties hold the design together. Release binaries are statically linked
 (`CGO_ENABLED=0`), and the tiers read the kernel's own interfaces in process — `/proc`,
 `syslog(2)`, `sock_diag`/`rtnetlink`, utmp/wtmp records, `lstat` and `debug/elf` — so neither
-`LD_PRELOAD` nor a replaced host tool can change what karma reads. And a tier is one body
-(`model.Native`) that runs where karma itself stands, and every remote reading is the target's own
-tool answering a pinned command. One text shape, so the same rules, filters and lexers read it on
-every channel.
+`LD_PRELOAD` nor a replaced host tool can change what karma reads. And a tier is one source's
+reading: `model.Native` and `model.Fields` run where karma itself stands, and every remote reading is
+the target's own tool answering a pinned command. One text shape, so the same rules, filters and
+lexers read it either way.

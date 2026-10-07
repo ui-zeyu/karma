@@ -1,4 +1,4 @@
-// HiddenModuleBody is the one join of the hidden-module diff: both channels emit
+// HiddenModuleBody is the one join of the hidden-module diff: both sources emit
 // the marked record stream (the target's shell block and the in-process emitter)
 // and the check hangs this function on the tier as its Assemble. These tests pin
 // the row shape and the verdicts over built streams; the emitters themselves are

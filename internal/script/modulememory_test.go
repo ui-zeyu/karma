@@ -1,4 +1,4 @@
-// ModuleMemoryBody is the one join of the module-memory diff: both channels emit
+// ModuleMemoryBody is the one join of the module-memory diff: both sources emit
 // the marked record stream (the target's shell block and the in-process emitter)
 // and the check hangs this function on the tier as its Assemble. These tests pin
 // the rows over built streams; the emitters themselves are compared in the linux

@@ -8,14 +8,13 @@
 // single package's business instead of one recover per call site.
 //
 // The boundary names the piece that broke ("check ssh-authorized-keys", "ttyd
-// frame pump"); the report prints the message, and a saved bundle keeps the
-// stack, which is what makes an internal error actionable after the fact.
+// frame pump"); the report prints the message, and the value keeps the stack it
+// was recovered at, which is what a test or a debugger reads to find the frame.
 package fault
 
 import (
 	"fmt"
 	"runtime/debug"
-	"strings"
 )
 
 // Panic is one recovered panic.
@@ -25,14 +24,15 @@ type Panic struct {
 	// Value is what the panic carried.
 	Value any
 	// Stack is the goroutine's stack at the recover point, innermost frame
-	// first. It is what tells a report reader where in karma the defect is.
+	// first. The report prints the message alone, so this is kept for a test or
+	// a debugger that has to name the frame.
 	Stack []byte
 }
 
-// New captures a recovered panic value as a *Panic. It is for the recover sites
-// that live outside Catch (a deferred recover of the caller's own), so a panic
-// can never be recorded in a shape of its own.
-func New(boundary string, value any) *Panic {
+// newPanic captures a recovered panic value as a *Panic. Catch and Result are
+// the recover sites, and both build their value through here, so a panic is
+// never recorded in a shape of its own.
+func newPanic(boundary string, value any) *Panic {
 	return &Panic{Boundary: boundary, Value: value, Stack: debug.Stack()}
 }
 
@@ -41,22 +41,13 @@ func (p *Panic) Error() string {
 	return fmt.Sprintf("internal error in %s: %v", p.Boundary, p.Value)
 }
 
-// Detail is the full account for a saved bundle: the message, then the stack.
-func (p *Panic) Detail() string {
-	var out strings.Builder
-	out.WriteString(p.Error())
-	out.WriteString("\n")
-	out.Write(p.Stack)
-	return out.String()
-}
-
 // Catch runs one boundary and turns a panic into a *Panic error. The value fn
 // returns comes back unchanged, nil included, so a caller can wrap an existing
 // step without changing what it reports.
 func Catch(boundary string, fn func() error) (err error) {
 	defer func() {
 		if problem := recover(); problem != nil {
-			err = New(boundary, problem)
+			err = newPanic(boundary, problem)
 		}
 	}()
 	return fn()
@@ -68,7 +59,7 @@ func Result[T any](boundary string, fn func() T) (value T, err error) {
 	defer func() {
 		if problem := recover(); problem != nil {
 			var zero T
-			value, err = zero, New(boundary, problem)
+			value, err = zero, newPanic(boundary, problem)
 		}
 	}()
 	return fn(), nil

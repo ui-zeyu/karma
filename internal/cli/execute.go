@@ -55,9 +55,8 @@ func terminalWidth(w io.Writer) int {
 // command-line layer.
 //
 // w carries the report and warn the run's own warnings — a capability probe cut
-// short, an evidence write that failed, the crash record below — so a caller
-// that captured the report can also read why something is missing from it, and
-// neither stream is a hard-coded process handle.
+// short — so a caller that captured the report can also read why something is
+// missing from it, and neither stream is a hard-coded process handle.
 //
 // This is also the run's own damage boundary. Nothing above it recovers: main
 // only turns the returned error into an exit status, so a panic on this path

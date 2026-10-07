@@ -67,7 +67,7 @@ func execHost(ctx context.Context, argv []string, cLocale, quiet bool) hostResul
 }
 
 // haveBinary is a tier's own availability test — the `command -v` guard a
-// shell tier writes: a body that needs a host tool asks for it when it runs
+// shell script writes: a body that needs a host tool asks for it when it runs
 // rather than declaring it up front, and reports ErrTierUnavailable when the
 // host has none.
 func haveBinary(name string) bool {

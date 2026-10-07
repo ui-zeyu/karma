@@ -2,7 +2,7 @@
 // released in catalog order, and aspect banners.
 //
 // Presentation only reads the Document, the outcome, and the structured skip
-// reasons; the budget, source titles, and right-hand annotations are decisions
+// reasons; the budget, section titles, and right-hand annotations are decisions
 // of this layer and are never written back to the document. A finished check
 // is taken into a table first, and only written back once the catalog prefix
 // is complete, so the on-screen order is always the aspect order. Layout is

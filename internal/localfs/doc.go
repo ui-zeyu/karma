@@ -1,12 +1,12 @@
-// Package localfs is the local channel's in-process view of the host's
-// filesystem, standing in for the shell and the host tools the ssh channel
-// runs: pathname expansion and $(uname -r) from the shell, and cat, tail, ls,
-// find, grep and file from the tools.
+// Package localfs is the native source's in-process view of the host's
+// filesystem, standing in for the shell and the host tools the sh source runs:
+// pathname expansion and $(uname -r) from the shell, and cat, tail, ls, find,
+// grep and file from the tools.
 //
 // Every function reproduces its shell counterpart's text exactly — a file read
 // keeps the ReadFiles section shape, a listing keeps the find -printf row shape
 // the ls-l lexer speaks, a content scan keeps grep's `path:line:text` rows — so
-// a check's rules, filters and lexers apply to either channel's output
+// a check's rules, filters and lexers apply to either source's output
 // unchanged. What becomes Go here is the shell-level plumbing: globs, word
 // lists, loops and pipes.
 //

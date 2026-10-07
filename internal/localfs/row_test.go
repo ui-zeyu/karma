@@ -35,7 +35,7 @@ func TestPermString(t *testing.T) {
 }
 
 // find %T@ prints ten decimal places; the cluster parser reads the field as one
-// number either way, but the listing rows have to match the script tier's.
+// number either way, but the listing rows have to match the sh source's.
 func TestEpochFracTenDigits(t *testing.T) {
 	at := time.Unix(1791205135, 277378520)
 	if got := EpochFrac(at); got != "1791205135.2773785200" {

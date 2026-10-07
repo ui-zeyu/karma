@@ -123,7 +123,7 @@ func thisBuildDigest(t *testing.T) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func TestCollectorDirsOrdersTheAccountFirst(t *testing.T) {
+func TestPlaceDirsOrdersTheAccountFirst(t *testing.T) {
 	dirs := placeDirs("/home/ops")
 	if len(dirs) != 2 || dirs[0] != "/home/ops/.karma" || dirs[1] != "/tmp/karma" {
 		t.Fatalf("the order = %v", dirs)

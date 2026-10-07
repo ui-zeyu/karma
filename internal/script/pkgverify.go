@@ -67,7 +67,7 @@ exit 0
 // verifier's own order (file(1) reads its arguments in order, and
 // localfs.FileRows renders the list it is handed without sorting), while `== ls`
 // is path-sorted by ls itself and by localfs.LsRows. Sorting the file rows here
-// would put the two channels' sections in different orders.
+// would put the two sources' sections in different orders.
 func pkgVerifyAwk() string {
 	return fmt.Sprintf(`BEGIN { mass = %[1]d; listed = %[2]d }
 {

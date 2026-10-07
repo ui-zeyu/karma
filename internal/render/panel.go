@@ -1,4 +1,4 @@
-// One check's panel: the display budget, the source titles, the row planning
+// One check's panel: the display budget, the section titles, the row planning
 // and the span painting. The rail block itself is in render.go.
 
 package render
@@ -169,11 +169,11 @@ func stderrRows(stderr string) []string {
 	return textutil.CollectLines(trimmed)
 }
 
-// bodyRows is the panel body: source title rows plus raw rows, with one blank
-// line between sources.
-// --max-lines is the whole check's budget, shared across sources, counting
+// bodyRows is the panel body: section title rows plus raw rows, with one blank
+// line between sections.
+// --max-lines is the whole check's budget, shared across sections, counting
 // quiet rows only; finding rows and their context are always printed, omitted
-// rows collapse into a count, and once the budget is gone, sources without a
+// rows collapse into a count, and once the budget is gone, sections without a
 // hit are dropped entirely. term is the terminal width; body rows are laid out
 // to the text width inside the rail. A section whose body arrived as records is
 // drawn in the shape its check declares; every other section reads as text.
@@ -201,7 +201,7 @@ func bodyRows(result *model.CheckResult, maxLines, term int, color bool) []strin
 			rows = append(rows, "")
 		}
 		if section.Title != "" {
-			rows = append(rows, sourceTitle(section, width)...)
+			rows = append(rows, sectionTitle(section, width)...)
 		}
 		if block, ok := formBlock(result.Check.Form, section, planned, width); ok {
 			rows = append(rows, result.Check.Form.Render(block, model.RenderOptions{Width: width, Color: color})...)
@@ -251,10 +251,10 @@ func sectionSyntax(check *model.Check, title string) model.Syntax {
 	return check.Syntax
 }
 
-// sourceTitle is a source title row: bold plain (default color), hit spans in
+// sectionTitle is a section title row: bold plain (default color), hit spans in
 // their severity color, the reason ⟨…⟩ at the end, moved to its own line
 // aligned with the body when it does not fit.
-func sourceTitle(section model.Section, width int) []string {
+func sectionTitle(section model.Section, width int) []string {
 	spans := []paintSpan{{Start: 0, End: len(section.Title), Style: style{bold: true}}}
 	spans = append(spans, hitSpans(section.Title, section.TitleMatches)...)
 	return withReason(paintLine(section.Title, spans), section.TitleMatches, width)

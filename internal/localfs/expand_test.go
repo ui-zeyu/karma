@@ -11,7 +11,7 @@ import (
 )
 
 // shellGlob must not hand back dot-file names the shell's own glob would skip:
-// /etc/cron.d/* has a .placeholder the script tier never sees.
+// /etc/cron.d/* has a .placeholder the sh source never sees.
 func TestShellGlobSkipsDotFiles(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"job", ".placeholder", ".hidden"} {
@@ -34,7 +34,7 @@ func TestShellGlobSkipsDotFiles(t *testing.T) {
 
 // ExpandFiles keeps the existing regular files, in word-list order with each
 // glob's results sorted; a bare path that is not a regular file is dropped, the
-// way the script tier's `[ -f "$f" ]` guard drops it.
+// way the sh source's `[ -f "$f" ]` guard drops it.
 func TestExpandFilesKeepsRegularFilesOnly(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"a.conf", "b.conf", ".hidden"} {

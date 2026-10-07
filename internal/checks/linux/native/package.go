@@ -43,7 +43,7 @@ func forensics(b *strings.Builder, files []string) {
 	b.WriteString(localfs.LsRows(files))
 }
 
-// verifyFacts classifies one verifier-listed path the way the shell tier's
+// verifyFacts classifies one verifier-listed path the way the sh source's
 // file(1) and ls -l answers do: a path that is gone is missing (dpkg's flag
 // field cannot tell a deleted file from a modified one), an ELF object or an
 // executable is named on its own, anything else is counted by PkgVerifyBody

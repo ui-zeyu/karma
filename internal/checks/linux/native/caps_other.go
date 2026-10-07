@@ -1,6 +1,7 @@
-// File capabilities on the platforms whose syscall layer has no xattr read:
-// the tier reports itself unavailable and the local channel runs the host's
-// getcap, the same ladder every other platform-specific native uses.
+// File capabilities on the platforms whose syscall layer has no xattr read: the
+// tier reports itself unavailable, so the check is skipped there. The sh source's
+// own `getcap -r /` is not on a local walk: a local run reads with the native
+// source.
 
 //go:build !linux
 

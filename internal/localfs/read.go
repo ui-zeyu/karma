@@ -61,7 +61,7 @@ func ReadRegular(path string) ([]byte, error) {
 // Tail is the reader form of `tail -c n`: the file's last n bytes, or the whole
 // file when it is smaller. The read is bounded by n, so a log that has grown
 // for years costs what the window costs — and it starts exactly on the offset
-// tail starts on, partial first line and all, so both channels see the same
+// tail starts on, partial first line and all, so both sources see the same
 // bytes. A path that is not a regular file is not a body and reports an error
 // (the open is non-blocking, so a FIFO cannot hang it).
 func Tail(path string, n int64) ([]byte, error) {
@@ -115,7 +115,7 @@ func ReadSections(patterns []string, transform func(string) string) string {
 	return b.String()
 }
 
-// TailLines keeps the last n lines of a body: the script tier's `tail -n N`,
+// TailLines keeps the last n lines of a body: the sh source's `tail -n N`,
 // byte for byte, so a body whose last line carries no newline keeps none here
 // either (ReadSections supplies the section's terminator). The window is found
 // by scanning back for n line breaks, so a log that has grown for years costs

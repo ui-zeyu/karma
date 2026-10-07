@@ -34,7 +34,7 @@ func TestRunScriptAnswersWithRecords(t *testing.T) {
 	script := model.Script{Run: `printf 'a b\nc d\n'`, Parse: wordsParser}
 	result := runCall(context.Background(), LocalSession{}, script, 10*time.Second, model.RowCap{})
 	if result.Verdict != model.VerdictAnswered {
-		t.Fatalf("the script tier should answer: %+v", result)
+		t.Fatalf("the Script tier should answer: %+v", result)
 	}
 	if result.Records == nil || len(result.Records.Rows) != 2 {
 		t.Fatalf("records = %+v, want two rows", result.Records)

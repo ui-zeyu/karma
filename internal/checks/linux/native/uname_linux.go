@@ -16,7 +16,7 @@ import (
 
 // unameAll composes `uname -a`: kernel name, node, release, version, machine,
 // and the operating-system field coreutils prints on Linux. ok is false when
-// the syscall fails, which the shell tier then answers.
+// the syscall fails, which the sh source then answers.
 func unameAll() (string, bool) {
 	var uts unix.Utsname
 	if err := unix.Uname(&uts); err != nil {

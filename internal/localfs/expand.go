@@ -87,7 +87,7 @@ func matchWord(dir, word string, last, wantDir bool) []string {
 	return out
 }
 
-// ExpandGlobs expands a path word list the way the script tier's shell does:
+// ExpandGlobs expands a path word list the way the sh source's shell does:
 // globs are expanded (sorted, and a dot name only when the pattern spells the
 // dot) while a bare path is taken as it stands, and only the entries keep
 // accepts survive. It is the one spelling of the `for f in …; do [ -f "$f" ]`
@@ -113,7 +113,7 @@ func ExpandFiles(patterns []string) []string {
 	return ExpandGlobs(patterns, func(info os.FileInfo) bool { return info.Mode().IsRegular() })
 }
 
-// ExpandDirs expands a directory word list the way the script tier's shell
+// ExpandDirs expands a directory word list the way the sh source's shell
 // does: $(uname -r) is substituted from the kernel release, a glob is expanded
 // (dot-file names only when the pattern spells the dot) keeping only the
 // directories it names — a plain file in the word list makes find print nothing

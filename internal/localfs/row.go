@@ -223,7 +223,7 @@ func rowBody(row string) string {
 // are the listing tier's shape (script.LSBodyPrintf) — the same rows every
 // other local listing prints — so they differ from GNU ls's column padding, and
 // the date is clock-shaped. ls sorts its arguments itself, and a vanished file
-// costs only its row (ls reports it on stderr, which the script tier drops).
+// costs only its row (ls reports it on stderr, which the sh source drops).
 func LsRows(files []string) string {
 	names := NewNameCache()
 	var b strings.Builder

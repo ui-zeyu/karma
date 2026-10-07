@@ -1,6 +1,6 @@
 // Package facts collects opening facts: capability probe + host info, one round trip.
 //
-// Linux and Windows each get a collector with aligned shapes: both fan out
+// Linux and Windows each get one collection with aligned shapes: both fan out
 // concurrently, and one failed path does not affect the remaining facts. Both probing
 // and collection use the current logged-in user.
 package facts

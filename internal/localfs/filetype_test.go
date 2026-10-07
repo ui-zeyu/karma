@@ -73,7 +73,7 @@ func TestFileTypeWordsFlagsScripts(t *testing.T) {
 	}
 }
 
-// The rows keep the order the caller gave, which is the order the shell tier's
+// The rows keep the order the caller gave, which is the order the sh source's
 // `file $list` prints (file(1) reads its arguments in order): the fixture's
 // second path sorts before its first, so a re-added sort fails here.
 func TestFileRows(t *testing.T) {

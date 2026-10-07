@@ -10,13 +10,13 @@
 // readers call. This package holds what reads a kernel or a host tool.
 //
 // Every body has the shape of model.Native.Body, func(context.Context) (string,
-// error), and returns the text the check's rules, filters and lexers read. One
-// body serves every channel: a remote collection runs this same code through
-// the karma binary the channel placed on the target, so a tier has one
-// implementation rather than one per channel. Where a check and this package
-// would otherwise spell the same paths or patterns twice, the check hands them
-// in — a scan's roots, a hunt's name list, a walk's window — so a rule and the
-// rows it grades cannot drift apart.
+// error), and returns the text the check's rules, filters and lexers read. These
+// bodies are the native source's reading: they run where karma itself stands,
+// which is why the check that declares one declares the sh source's spelling of
+// the same evidence beside it rather than in its fallback chain. Where a check
+// and this package would otherwise spell the same paths or patterns twice, the
+// check hands them in — a scan's roots, a hunt's name list, a walk's window — so
+// a rule and the rows it grades cannot drift apart.
 //
 // The platform-specific reads live in build-tagged files and report
 // model.ErrTierUnavailable where the host lacks the interface (no /proc, no

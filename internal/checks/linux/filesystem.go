@@ -120,7 +120,7 @@ var gtfobinsPattern = `/(?:[\w.]+/)*(?:` + strings.Join(slices.Sorted(slices.Val
 
 // webScriptRoots, webScriptSuffixes, webScriptDepth and webScriptWindow are the
 // web-script check's shape; its find command (ssh) and its in-process walk
-// (local) are built from them, so the two channels cover identical files. The
+// (local) are built from them, so the two sources cover identical files. The
 // walk crosses devices on purpose: a bind-mounted web root — the usual
 // container and compose shape — sits on its own filesystem, and that is exactly
 // where the scripts are; depth and the mtime window bound the work.

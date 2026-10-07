@@ -302,7 +302,7 @@ type row struct {
 // screen, so it stays quiet; non-collection rows pass through as-is.
 //
 // Columns are lined up here, on the whole section, so what the panel shows is
-// what the SSH channel's find rows and the local channel's own rows both become;
+// what the sh source's find rows and the native source's own rows both become;
 // spans are stated over the aligned text, which is the text the reader sees.
 func ListingNormalize(now func() time.Time) model.Normalizer {
 	return func(_ string, text string) *model.Shaped {

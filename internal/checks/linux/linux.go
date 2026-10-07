@@ -68,8 +68,8 @@ var listingNormalize = cluster.ListingNormalize(time.Now)
 
 // listingCheck is a directory-listing check: one section per directory, rows
 // in ls -l shape capped at head, clustered locally to mark outliers. The
-// in-process branch and the find pipeline are two implementations of the one
-// tier, so the check is declared once for both channels.
+// in-process walk and the find pipeline are the two sources' readings of the
+// same directories, so the check declares one tier per source.
 func listingCheck(id, title string, aspect model.Aspect, dirs []string, head int, rules []model.Matcher) *model.Check {
 	return define.LinuxCheck(id, title, aspect,
 		[]model.Step{

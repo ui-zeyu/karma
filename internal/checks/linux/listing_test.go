@@ -1,4 +1,4 @@
-// The listing checks under the reading pipeline: the two channels deliver the
+// The listing checks under the reading pipeline: the two sources deliver the
 // same row shape (find -printf over ssh, readdir + lstat in process) and the
 // listing normalizer lines the columns up before the rules run, so the panel
 // shows one aligned table and a hit's span covers the line it names.

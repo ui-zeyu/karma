@@ -13,10 +13,10 @@ import (
 	"karma/internal/model"
 )
 
-// HiddenPIDs is the local-channel tier of the hidden-pids check: the
-// brute force runs inside karma, so it sweeps the whole pid space where the
-// shell tier must cap its interpreted loop. Requires /proc (present on every
-// Linux); the wrong-platform case lives in pids_other.go.
+// HiddenPIDs is the native tier of the hidden-pids check: the brute force runs
+// inside karma, so it sweeps the whole pid space where the sh tier must cap its
+// interpreted loop. Requires /proc (present on every Linux); the wrong-platform
+// case lives in pids_other.go.
 func HiddenPIDs(ctx context.Context) (string, error) {
 	scan, err := newHiddenPidScan()
 	if err != nil {

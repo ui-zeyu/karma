@@ -120,7 +120,7 @@ func hiddenModuleViewsText(views script.ModuleDiffViews, modules string) string 
 	}
 	// The shell block's K lines are sorted by tag (awk's array iteration has no
 	// order), and this emitter has to match: the stream is evidence, compared
-	// between channels and between runs.
+	// between sources and between runs.
 	if symbolsErr == nil {
 		counts := symbolModuleNames(string(symbols))
 		for _, name := range slices.Sorted(maps.Keys(counts)) {

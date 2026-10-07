@@ -1,6 +1,6 @@
 // df's statfs source. The mount table itself comes from /proc, so the statfs
-// numbers only matter on Linux; elsewhere the tier reports unavailable and the
-// local channel falls back to the host's df.
+// numbers only matter on Linux: elsewhere the tier reports itself unavailable,
+// and the sh source's own `df -h` is not on a local walk.
 
 //go:build linux
 

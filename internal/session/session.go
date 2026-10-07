@@ -23,8 +23,7 @@ import (
 // Session is one established channel. Runner talks to this interface alone, so
 // adding a channel on the same platform means implementing another Session.
 type Session interface {
-	// Name is the channel's short display name ("local", "ssh", "ttyd"); the
-	// saved bundle's manifest records it.
+	// Name is the channel's short display name ("local", "ssh", "ttyd").
 	Name() string
 	// Describe is the channel and what it reaches, as the report header names
 	// it: "local", "ssh root@host:22", "ttyd ws://host:7681/ws". Credentials

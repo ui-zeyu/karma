@@ -106,7 +106,7 @@ var NetworkChecks = []*model.Check{
 		define.CheckOpt{Syntax: model.SyntaxTable, Normalize: shape.NeighTable}),
 	// Both address families: ip route dumps IPv4 alone, and the local tier's
 	// netlink dump covers both, so an IPv6 route — a C2's default route, a
-	// tunnel's — would otherwise show on one channel only. The IPv6 dump runs
+	// tunnel's — would otherwise show on one source only. The IPv6 dump runs
 	// second and its failure is silent: the IPv4 rows are already this tier's
 	// answer, and a kernel without IPv6 leaves them untouched.
 	define.LinuxCheck("route", "Routing table", model.AspectNetwork,

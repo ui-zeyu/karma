@@ -32,7 +32,7 @@ import (
 )
 
 // ModuleDiffViews are the three surfaces the diff reads, plus the attribute
-// list and the symbol tags that are not modules. One value feeds both channels:
+// list and the symbol tags that are not modules. One value feeds both sources:
 // the check builds it once and hands it to the in-process body and to the
 // pipeline, so the two cannot read different paths, attributes or drop lists.
 type ModuleDiffViews struct {
@@ -100,8 +100,8 @@ func HiddenModuleScript(views ModuleDiffViews) string {
 // how many symbols carry it. The pseudo-module tags are dropped here, the way
 // the in-process emitter drops them, so both counts mean the same thing. The
 // lines are sorted by tag because awk's array iteration has no order: the stream
-// is evidence, and two channels' — or two runs' — streams are diffed against
-// each other (make parity), so a set must not travel in an arbitrary sequence.
+// is evidence, and two sources' — or two runs' — streams are diffed against
+// each other, so a set must not travel in an arbitrary sequence.
 func moduleTagAwk(symbolsPath string, pseudo []string) string {
 	drops := make([]string, 0, len(pseudo))
 	for _, tag := range pseudo {

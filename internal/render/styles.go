@@ -243,8 +243,7 @@ var syntaxStylers = map[model.Syntax]func() lineStyler{
 	model.SyntaxListen: func() lineStyler {
 		return newTableStyler([]*regexp.Regexp{compile(`^Netid\s+State\s`), compile(`^Proto\s+Recv-Q\s+Send-Q\s`)}, true).style
 	},
-	model.SyntaxNetstat:  func() lineStyler { return newTableStyler([]*regexp.Regexp{compile(`^\s*Proto\s+Local`)}, true).style },
-	model.SyntaxIPKeyval: func() lineStyler { return newKeyvalStyler().style },
+	model.SyntaxNetstat: func() lineStyler { return newTableStyler([]*regexp.Regexp{compile(`^\s*Proto\s+Local`)}, true).style },
 	model.SyntaxPkgHistory: func() lineStyler {
 		return stylePkgHistory
 	},

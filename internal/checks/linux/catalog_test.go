@@ -89,8 +89,8 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"pkg-verify", `S.5....T.    /usr/bin/curl`, "pkg-changed-file"},
 		{"pkg-verify", `/usr/sbin/sshd: ASCII text`, "bin-not-elf"},
 		// the forensics sections list the files the verifier flagged: an ELF row
-		// and an executable row are the replaced-binary case, in either channel's
-		// row shape (the local tier's single spaces, GNU ls's padding)
+		// and an executable row are the replaced-binary case, in either source's
+		// row shape (the native tier's single spaces, GNU ls's padding)
 		{"pkg-verify", `/bin/ls: ELF 64-bit LSB executable`, "pkg-changed-elf"},
 		{"pkg-verify", `/usr/lib/x/libevil.so: ELF 64-bit LSB shared object`, "pkg-changed-elf"},
 		{"pkg-verify", `-rwxr-xr-x 1 root root 8600 May 18 07:20 /bin/ls`, "pkg-changed-exec"},

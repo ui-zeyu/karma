@@ -1,7 +1,7 @@
 // The boot-script tier (rc.local, init.sh) reads a plain list of files, which is
 // also its whole surface: a path dropped from the list stops appearing in the
 // report with nothing else changing. One test runs the tier over a fixture on both
-// channels, and one pins the catalog's own list.
+// sources, and one pins the catalog's own list.
 
 package linux
 

@@ -320,7 +320,7 @@ func TestCheckPanelBoundsUnbreakableTokens(t *testing.T) {
 	}
 }
 
-func TestTableAndKeyvalStylersStayInsideTheLine(t *testing.T) {
+func TestTableStylerStaysInsideTheLine(t *testing.T) {
 	table := newTableStyler(nil, true)
 	lines := []string{
 		"USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT",
@@ -348,16 +348,6 @@ func TestTableAndKeyvalStylersStayInsideTheLine(t *testing.T) {
 	short := " 10:20:30 up 12:16,  1 user,  load average: 0.00, 0.01, 0.05"
 	if got := table.style(short); len(got) != 1 || got[0].Style != mutedStyle {
 		t.Fatalf("an uptime banner under a day should also be muted whole-line: %+v", got)
-	}
-
-	route := newKeyvalStyler().style("default via 10.0.0.1 dev eth0 proto static")
-	if len(route) == 0 {
-		t.Fatal("a route row should get key/value colors")
-	}
-	for _, span := range route {
-		if span.End > len("default via 10.0.0.1 dev eth0 proto static") {
-			t.Fatalf("route span out of range: %+v", span)
-		}
 	}
 }
 
@@ -612,9 +602,9 @@ func TestSeverityBorderHue(t *testing.T) {
 	}
 }
 
-// Source titles are bold plain text (default color) and hits carry a trailing
-// reason; sources are separated by one blank line.
-func TestBodyRowsSourceBlocks(t *testing.T) {
+// Section titles are bold plain text (default color) and hits carry a trailing
+// reason; sections are separated by one blank line.
+func TestBodyRowsSectionBlocks(t *testing.T) {
 	result := &model.CheckResult{
 		Check:   &model.Check{ID: "cron", Aspect: model.AspectPersistence},
 		Outcome: model.Collected,
@@ -637,27 +627,27 @@ func TestBodyRowsSourceBlocks(t *testing.T) {
 	}
 	rows := bodyRows(result, 400, 100, true)
 	if got := plain(rows[0]); got != "/etc/cron.d/evil  ⟨reboot trigger⟩" {
-		t.Fatalf("the source title should come before the body, with the trailing reason: %q", got)
+		t.Fatalf("the section title should come before the body, with the trailing reason: %q", got)
 	}
 	if !strings.Contains(rows[0], style{bold: true}.seq().Render("/etc/")) {
-		t.Fatalf("the source title should be bold plain text: %q", rows[0])
+		t.Fatalf("the section title should be bold plain text: %q", rows[0])
 	}
 	if strings.Contains(rows[0], mutedStyle.seq().Render("/etc/")) {
-		t.Fatalf("the source title should no longer be muted: %q", rows[0])
+		t.Fatalf("the section title should no longer be muted: %q", rows[0])
 	}
 	if got := plain(rows[1]); got != "@reboot cmd  ⟨reboot trigger⟩" {
-		t.Fatalf("below the source title comes the body row with its reason: %q", got)
+		t.Fatalf("below the section title comes the body row with its reason: %q", got)
 	}
 	if rows[2] != "" {
-		t.Fatalf("sources should be separated by one blank line: %q", plain(rows[2]))
+		t.Fatalf("sections should be separated by one blank line: %q", plain(rows[2]))
 	}
 	if plain(rows[3]) != "/etc/crontab" {
-		t.Fatalf("a quiet source title is plain: %q", plain(rows[3]))
+		t.Fatalf("a quiet section title is plain: %q", plain(rows[3]))
 	}
 }
 
-// The preamble (output before any source header) comes first, separated from
-// the source title by one blank line.
+// The preamble (output before any section header) comes first, separated from
+// the section title by one blank line.
 func TestBodyRowsPreludeComesFirst(t *testing.T) {
 	result := &model.CheckResult{
 		Check:   &model.Check{ID: "mixed", Aspect: model.AspectIdentity},
@@ -672,7 +662,7 @@ func TestBodyRowsPreludeComesFirst(t *testing.T) {
 		t.Fatalf("the preamble should come first: %q", plain(rows[0]))
 	}
 	if rows[1] != "" || plain(rows[2]) != "/etc/passwd" {
-		t.Fatalf("the preamble and the source should be separated by one blank line: %q", plain(strings.Join(rows, "|")))
+		t.Fatalf("the preamble and the section should be separated by one blank line: %q", plain(strings.Join(rows, "|")))
 	}
 }
 
