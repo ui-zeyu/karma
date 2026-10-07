@@ -311,6 +311,19 @@ type Native struct {
 
 func (Native) isInvocation() {}
 
+// Fields is a tier whose body reads fields rather than a tool's own wording:
+// the local channel runs it in process and the result is the records
+// themselves, so nothing formats them into a line for another layer to parse
+// back out. It is a Native in every other respect — every channel answers with
+// it (a remote one through the placed collector, which carries the fields as
+// data), it reports ErrTierUnavailable the same way, and the walk ranks it like
+// any other tier.
+type Fields struct {
+	Read func(ctx context.Context) (*RecordSet, error)
+}
+
+func (Fields) isInvocation() {}
+
 // ErrTierUnavailable marks a Native body that cannot run in this environment
 // (wrong platform, no /proc): the session reports it like a missing binary
 // (exit 127) so the probe chain falls to the next tier.
@@ -374,6 +387,9 @@ func (v Verdict) String() string {
 type RunResult struct {
 	Verdict Verdict
 	Stdout  string
+	// Records is what a Fields tier read, the counterpart of Stdout: a call
+	// answers with one of the two, and the reading layer takes whichever came.
+	Records *RecordSet
 	Stderr  string
 	// ExitCode is the process's status; -1 when the call has none (a cut call,
 	// or a channel that could not say).
@@ -428,12 +444,12 @@ type HostFacts struct {
 // IsRoot reports whether the uid is 0.
 func (f HostFacts) IsRoot() bool { return f.UID == 0 }
 
-// Rule is one highlight rule: text matching pattern is painted.
-// Exclude is the line-level exclusion — RE2 has no lookaround, so "does not
-// match this prefix/shape" lives in this field; a hit requires Pattern to
-// match and the whole line to clear Exclude. Exclusion is line-level because
-// the rules that use it match per-path, line-shaped output: one record per
-// line.
+// Rule is one pattern rule: the pattern runs over every field's value of the
+// record, and a value it matches states the hit where it fell. Exclude is the
+// value-level exclusion — RE2 has no lookaround, so "does not match this
+// prefix/shape" lives in this field; a hit requires Pattern to match and the
+// value it matched to clear Exclude. Exclusion is per value because the rules
+// that use it match per-path output: the path is one field's value.
 type Rule struct {
 	ID       string
 	Pattern  *regexp.Regexp
@@ -441,7 +457,7 @@ type Rule struct {
 	Message  string
 	Exclude  *regexp.Regexp
 	// literals is the prefilter of Pattern (see prefilter.go): the strings a
-	// line must contain for Pattern to match it, empty when none could be
+	// value must contain for Pattern to match it, empty when none could be
 	// proven. It is derived here so no caller can forget it.
 	literals []string
 }
@@ -459,32 +475,17 @@ func NewRule(id, pattern string, severity Severity, message string) Rule {
 	}
 }
 
-// WithExclude attaches a line-level exclusion and returns a copy.
+// WithExclude attaches a value-level exclusion and returns a copy.
 func (r Rule) WithExclude(exclude string) Rule {
 	r.Exclude = regexp.MustCompile(exclude)
 	return r
 }
 
-// Find returns the first matching span; a line hitting the exclusion does not
-// count as a hit, and a line missing the pattern's prefilter literals is not
-// run through the engine at all.
-func (r Rule) Find(line string) (start, end int, ok bool) {
-	if !prefilterMatches(r.literals, line) {
-		return 0, 0, false
-	}
-	loc := r.Pattern.FindStringIndex(line)
-	if loc == nil {
-		return 0, 0, false
-	}
-	if r.Exclude != nil && r.Exclude.MatchString(line) {
-		return 0, 0, false
-	}
-	return loc[0], loc[1], true
-}
-
-// LineFilter is one line filter. Drop: matching lines are not shown; Keep:
-// only matching lines are shown (allowlist). Exclude has the same meaning as
-// on Rule.
+// LineFilter is one record filter. Drop: matching records are not shown; Keep:
+// only matching records are shown (allowlist). The pattern runs over each
+// field's value, any one of them, so a body of text — a one-field record —
+// keeps the line filter it always was. Exclude has the same meaning as on
+// Rule.
 type LineFilter struct {
 	ID      string
 	Pattern *regexp.Regexp
@@ -494,7 +495,7 @@ type LineFilter struct {
 	literals []string
 }
 
-// NewFilter compiles the regex and builds a line filter; a bad regex fails
+// NewFilter compiles the regex and builds a record filter; a bad regex fails
 // during catalog construction.
 func NewFilter(id, pattern string, mode FilterMode) LineFilter {
 	return LineFilter{
@@ -505,35 +506,41 @@ func NewFilter(id, pattern string, mode FilterMode) LineFilter {
 	}
 }
 
-// WithExclude attaches a line-level exclusion and returns a copy.
+// WithExclude attaches a value-level exclusion and returns a copy.
 func (f LineFilter) WithExclude(exclude string) LineFilter {
 	f.Exclude = regexp.MustCompile(exclude)
 	return f
 }
 
-// Match reports whether the line is a hit; a line hitting the exclusion does
-// not count, and a line missing the pattern's prefilter literals is not run
-// through the engine at all.
-func (f LineFilter) Match(line string) bool {
-	if !prefilterMatches(f.literals, line) {
-		return false
+// Match reports whether the record is a hit: a value that clears the
+// prefilter, matches the pattern, and clears the exclusion. A record whose
+// every value misses is not a hit, and a value the exclusion matches does not
+// count for the ones beside it.
+func (f LineFilter) Match(rec *Record) bool {
+	for _, field := range rec.Fields {
+		if !prefilterMatches(f.literals, field.Value) {
+			continue
+		}
+		if !f.Pattern.MatchString(field.Value) {
+			continue
+		}
+		return f.Exclude == nil || !f.Exclude.MatchString(field.Value)
 	}
-	if !f.Pattern.MatchString(line) {
-		return false
-	}
-	return f.Exclude == nil || !f.Exclude.MatchString(line)
+	return false
 }
 
-// Match is one hit position plus its conclusion. Regex hits and conclusions
-// the normalizer states up front (listing outliers) are both Match: span,
+// Match is one hit plus its conclusion. Regex hits and conclusions the
+// normalizer states up front (listing outliers) are both Match: the spans,
 // severity, and reason are fixed where they are produced, and filtering and
 // rendering never read the rule back.
 type Match struct {
 	ID       string
 	Severity Severity
 	Message  string
-	Start    int
-	End      int
+	// Spans is where the hit fell: one span per field it recognized, in that
+	// field's own value. Empty means the hit belongs to the record itself —
+	// the row, the node, the line — and a form paints it whole.
+	Spans []Span
 }
 
 // LineMatch is a span stated by a normalizer: it falls on line Line of the
@@ -544,10 +551,13 @@ type LineMatch struct {
 }
 
 // Shaped is normalized body text plus the spans the normalizer stated up
-// front.
+// front. Records is the same body as fields — one record per line of Text — for
+// a body that arrived encoded (see RecordSet); a normalizer of plain text
+// leaves it nil.
 type Shaped struct {
-	Text  string
-	Notes []LineMatch
+	Text    string
+	Notes   []LineMatch
+	Records *RecordSet
 }
 
 // Normalizer is a pure function over one section body: Probe.Adapt aligns the
@@ -566,19 +576,24 @@ type Transformer func(text string) string
 
 // Line is one line after folding and before filtering. Number is the line
 // number in the whole text; filtered-out lines still consume a number.
+// Record is the line as fields when the body arrived as records, which is what
+// the check's form draws; a line of plain text has none.
 type Line struct {
 	Number   int
 	Text     string
 	Severity Severity
 	Matches  []Match
+	Record   *Record
 }
 
 // Section is one file or one preamble. An empty Title is the body before the
-// first section marker.
+// first section marker. Columns are the section's record columns — the head its
+// form draws — and are empty for a section of plain text.
 type Section struct {
 	Title        string
 	TitleMatches []Match
 	Lines        []Line
+	Columns      []string
 }
 
 // Document is the reading result of one text. Filtered is a sequence of
@@ -690,13 +705,17 @@ type Check struct {
 	Platform Platform // catalog platform: the list group banner and the platform selector
 	Steps    []Step   // the walk: one step per tier or group of tiers that answer together
 	Filters  []LineFilter
-	Rules    []Rule
+	Rules    []Matcher
 	// Timeout is this check's own budget, overriding the run option; 0 means the
 	// run's. It bounds the whole walk (runner.runCheck), not one tier's call.
 	Timeout   time.Duration
 	Syntax    Syntax     // syntax declaration for the presentation layer; empty for none
 	Normalize Normalizer // normalizes the winning body per section; the section title is passed and only dialect alignment (Probe.Adapt) reads it
-	ScanBytes int        // 0 means the default read cap, reader.MaxScanBytes
+	// Form is the shape this check's body is drawn in (a table, a column of
+	// ls -l rows, ...). It is also the tail of the reading: the form projects
+	// the rule hits onto the units it can paint. Nil draws the body as text.
+	Form      Form
+	ScanBytes int // 0 means the default read cap, reader.MaxScanBytes
 	// SectionSyntax overrides Syntax per section: the first entry whose Title
 	// glob (path.Match) matches the section title wins, other sections keep
 	// Syntax. A section usually carries one source's shape, so mixed-output
@@ -723,10 +742,22 @@ type CheckResult struct {
 	ProbeLabel    string
 	Outcome       Outcome
 	SkippedLabels []string
-	Raw           string
-	Stderr        string
-	Note          string
-	Document      Document
+	// Raw is the tier's own text, exactly as collected. A tier that read fields
+	// instead states them in Records, and Raw is the readable rendering of them
+	// (what a fallback panel prints, and what the evidence is).
+	Raw      string
+	Records  *RecordSet
+	Stderr   string
+	Note     string
+	Document Document
+}
+
+// Body is what a collection read: the text of a tool's own output, or the
+// fields a tier read instead of one. It is the input the reading takes and the
+// shape the collector protocol carries; exactly one field is set.
+type Body struct {
+	Text    string
+	Records *RecordSet
 }
 
 // Run defaults, shared by the CLI options and RunOptions.

@@ -158,7 +158,7 @@ var PersistenceChecks = []*model.Check{
 			// pygments has no crontab lexer; the bash lexer approximates the command part well
 			// enough
 			Syntax: model.SyntaxBash,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("cron-reboot", `@reboot\b`, model.High, "cron job run on reboot"),
 				model.NewRule("cron-every-minute", `^\s*\*(?:/1)?\s+\*\s+\*\s+\*\s+\*`, model.Medium,
 					"cron runs every minute (dwell cadence)"),
@@ -189,13 +189,13 @@ var PersistenceChecks = []*model.Check{
 		define.CheckOpt{
 			Syntax:    model.SyntaxLsL,
 			Normalize: listingNormalize,
-			Rules:     []model.Rule{define.KeywordRule},
+			Rules:     []model.Matcher{define.KeywordRule},
 		}),
 	define.LinuxCheck("rc-local", "Boot scripts (rc.local, init.sh)", model.AspectPersistence,
 		readFilesCheck(bootScriptPaths...),
 		define.CheckOpt{
 			Syntax: model.SyntaxBash,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("rc-b64-shell", `\bbase64\b[^|\n]*\|\s*[^|\n]*\b(?:ba|z|da|k)?sh\b`,
 					model.High, "base64 piped to shell (at boot)"),
 				model.NewRule("rc-b64-decode", `\bbase64\s+(?:-[A-Za-z]+\s+)*-d\b`, model.Medium,
@@ -209,15 +209,15 @@ var PersistenceChecks = []*model.Check{
 	// the dropped script itself lands in init.d and the boot-time layer is rcS.d.
 	listingCheck("sysv-init", "SysV init scripts", model.AspectPersistence,
 		[]string{"/etc/init.d/", "/etc/rc.d", "/etc/rcS.d"}, 100,
-		[]model.Rule{define.KeywordRule}),
+		[]model.Matcher{define.KeywordRule}),
 	listingCheck("xinetd", "xinetd service directory", model.AspectPersistence,
-		[]string{"/etc/xinetd.d"}, 100, []model.Rule{define.KeywordRule}),
+		[]string{"/etc/xinetd.d"}, 100, []model.Matcher{define.KeywordRule}),
 	define.LinuxCheck("udev-rules", "udev rules (writable layers)", model.AspectPersistence,
 		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.Udev(udevDirs, udevHead, udevExecMaxHits, udevExecRe)}}}},
 		define.CheckOpt{
 			Syntax:    model.SyntaxLsL,
 			Normalize: listingNormalize,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				// The span carries the key and the value it runs (RUN+="…",
 				// IMPORT{program}="…"): the command is the finding, and the span is
 				// what the panel paints.
@@ -229,7 +229,7 @@ var PersistenceChecks = []*model.Check{
 	define.LinuxCheck("ld-preload", "Dynamic library preload (ld.so.preload)", model.AspectPersistence,
 		[]model.Step{{{Label: "cat", Inv: model.Native{Body: native.LdPreload}}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("preload-entry", `^[^#\n]\S+`, model.Critical, "preloaded shared library configured"),
 			},
 		}),
@@ -239,14 +239,14 @@ var PersistenceChecks = []*model.Check{
 	define.LinuxCheck("ld-conf", "Dynamic library search path (ld.so.conf)", model.AspectPersistence,
 		readFilesCheck("/etc/ld.so.conf", "/etc/ld.so.conf.d/*"),
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("ld-conf-entry", `^[^#\n]\S+`, model.Low, "library search path entry"),
 			},
 		}),
 	define.LinuxCheck("shell-rc", "Shell startup files", model.AspectPersistence,
 		readFilesCheck(shellRcPaths...),
 		define.CheckOpt{
-			Rules:  []model.Rule{aliasShadowRule, historyOffRule, define.KeywordRule},
+			Rules:  []model.Matcher{aliasShadowRule, historyOffRule, define.KeywordRule},
 			Syntax: model.SyntaxBash,
 		}),
 	define.LinuxCheck("skel", "Home directory templates (/etc/skel)", model.AspectPersistence,
@@ -254,11 +254,11 @@ var PersistenceChecks = []*model.Check{
 		define.CheckOpt{
 			Syntax:    model.SyntaxBash,
 			Normalize: listingNormalize,
-			Rules:     []model.Rule{define.KeywordRule},
+			Rules:     []model.Matcher{define.KeywordRule},
 			// the listing section speaks ls -l, the collected files speak shell
 			SectionSyntax: []model.SectionSyntax{{Title: "/etc/skel", Syntax: model.SyntaxLsL}},
 		}),
 	define.LinuxCheck("motd", "motd login banner", model.AspectPersistence,
 		readFilesCheck("/etc/motd", "/etc/update-motd.d/*"),
-		define.CheckOpt{Syntax: model.SyntaxBash, Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Syntax: model.SyntaxBash, Rules: []model.Matcher{define.KeywordRule}}),
 }

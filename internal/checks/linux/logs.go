@@ -178,7 +178,7 @@ var LogsChecks = []*model.Check{
 		define.CheckOpt{
 			Syntax:    model.SyntaxBash,
 			Normalize: collapseRepeats,
-			Rules:     []model.Rule{historyOffRule, historyClearRule, define.KeywordRule},
+			Rules:     []model.Matcher{historyOffRule, historyClearRule, define.KeywordRule},
 		}),
 	define.LinuxCheck("viminfo", "vim command history", model.AspectLog,
 		tailFilesCheck(200, "/root/.viminfo", "/home/*/.viminfo"),
@@ -188,14 +188,14 @@ var LogsChecks = []*model.Check{
 				// starts with ":"
 				model.NewFilter("viminfo-cmdline", `^:`, model.FilterKeep),
 			},
-			Rules: []model.Rule{define.KeywordRule},
+			Rules: []model.Matcher{define.KeywordRule},
 		}),
 	define.LinuxCheck("lastb", "Failed login records", model.AspectLog,
 		[]model.Step{{{Label: "lastb", Inv: model.Native{Body: native.Lastb(lastbRows)}}}},
 		define.CheckOpt{Syntax: model.SyntaxTable}),
 	listingCheck("log-dirs", "Log directory listing (by mtime)", model.AspectLog,
 		[]string{"/var/log", "/var/log/journal"}, 100,
-		[]model.Rule{
+		[]model.Matcher{
 			model.NewRule("logdir-middleware",
 				`\b(?:nginx|apache2?|httpd|mysql|mariadb|mysqld|redis|postgres(?:ql)?`+
 					`|pgsql|mongod(?:b)?|php-fpm|tomcat\d?|elasticsearch|rabbitmq`+
@@ -212,7 +212,7 @@ var LogsChecks = []*model.Check{
 	define.LinuxCheck("access-log", "Web access log summary (clients, minutes, probes)", model.AspectLog,
 		[]model.Step{{{Label: "log", Inv: model.Native{Body: native.AccessLog(accessLogPaths, accessLogKeepRe)}, Cap: model.Scan(accessLogLines)}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				logScanToolRule, logTraversalRule, logExecParamRule, logSensitiveFileRule,
 			},
 			Timeout: accessLogTimeout,

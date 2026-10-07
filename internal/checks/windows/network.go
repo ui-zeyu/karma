@@ -27,7 +27,7 @@ var NetworkChecks = []*model.Check{
 		[]model.Step{{{Label: "netstat", Inv: model.NewCommand("netstat", "-ano")}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxNetstat,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("conn-evil-port", connEvilPort, model.High,
 					"connection to a common remote-control/reverse-shell port"),
 				define.KeywordRule,
@@ -36,7 +36,7 @@ var NetworkChecks = []*model.Check{
 	define.WindowsCheck("portproxy", "Port Forwarding (netsh portproxy)", model.AspectNetwork,
 		[]model.Step{{{Label: "netsh", Inv: model.NewCommand("netsh", "interface", "portproxy", "show", "all")}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("portproxy-forward", portproxyRow, model.High,
 					"port forwarding configured (netsh portproxy tunnel, confirm it is expected)"),
 				define.KeywordRule,
@@ -45,7 +45,7 @@ var NetworkChecks = []*model.Check{
 	define.WindowsCheck("win-hosts", "Hosts File", model.AspectNetwork,
 		[]model.Step{{PSProbe("type", winHostsScript)}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("hosts-map", hostsMapRule, model.Medium,
 					"hosts forces domain resolution (hijack or emulation)"),
 				define.KeywordRule,

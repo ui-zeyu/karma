@@ -26,7 +26,7 @@ func jsonCatalog() []*model.Check {
 			Steps: []model.Step{{{Label: "native", Inv: model.Native{
 				Body: func(context.Context) (string, error) { return "== a\none two\n", nil },
 			}}}},
-			Rules: []model.Rule{model.NewRule("two", `two`, model.High, "a two")},
+			Rules: []model.Matcher{model.NewRule("two", `two`, model.High, "a two")},
 		},
 		{
 			ID: "absent", Title: "Absent", Aspect: model.AspectKernel, Platform: model.Linux,

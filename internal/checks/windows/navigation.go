@@ -218,7 +218,7 @@ var NavigationChecks = []*model.Check{
 			Normalize: func(_ string, body string) *model.Shaped {
 				return &model.Shaped{Text: strings.Join(MRUTerms(body, 2), "\n")}
 			},
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("wordwheel-sensitive", searchSensitive, model.High, "sensitive keyword searched"),
 				define.KeywordRule,
 			},
@@ -227,7 +227,7 @@ var NavigationChecks = []*model.Check{
 		typedpathsKeys,
 		define.CheckOpt{
 			Syntax: model.SyntaxReg,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("typedpaths-nonlocal", nonlocalPath, model.Medium,
 					"FTP or network share path typed in address bar"),
 				define.KeywordRule,
@@ -237,7 +237,7 @@ var NavigationChecks = []*model.Check{
 		shellbagKeys,
 		define.CheckOpt{
 			Normalize: shellbagNormalize,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("shellbags-nonlocal", nonlocalPath, model.Medium, "FTP or network location browsed"),
 			},
 		}),

@@ -10,17 +10,19 @@ import (
 	"slices"
 
 	"github.com/samber/lo"
+
+	"karma/internal/form"
 )
 
-// The five column colors: base blue first, then the dark family used by ls -l;
-// the severity colors are avoided
-var tableColumnStyles = [5]style{
-	{fg: "4"},
-	{fg: "3"},
-	{fg: "5"},
-	{fg: "2"},
-	{fg: "6"},
-}
+// The five column colors: the palette's tint cycle, in the span machinery's own
+// style; the severity colors are avoided
+var tableColumnStyles = func() [form.Tints]style {
+	var cycle [form.Tints]style
+	for index := range cycle {
+		cycle[index] = styleOf(form.ColumnPaint(index))
+	}
+	return cycle
+}()
 
 var (
 	wsColumn    = compile(`\S+`)

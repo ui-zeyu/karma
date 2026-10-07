@@ -263,6 +263,9 @@ func joinStep(members []answeredTier) (model.RunResult, string) {
 	labels := make([]string, 0, len(members))
 	truncated, terminated := false, true
 	for _, member := range members {
+		if member.result.Records != nil && joined.Records == nil {
+			joined.Records = member.result.Records
+		}
 		if member.result.Stdout != "" {
 			if out.Len() > 0 && !terminated {
 				out.WriteByte('\n')
@@ -280,6 +283,13 @@ func joinStep(members []answeredTier) (model.RunResult, string) {
 		labels = append(labels, member.probe.Label)
 	}
 	joined.Stdout, joined.Stderr, joined.Truncated = out.String(), errText.String(), truncated
+	// The joined body is text: a step whose members printed something answered
+	// with that text, and fields a member read are not a body of their own.
+	// (A step of several probes is the registry set, so this is the one-tier
+	// case: one Fields tier, nothing printed, the records are the answer.)
+	if out.Len() > 0 {
+		joined.Records = nil
+	}
 	return joined, strings.Join(labels, " + ")
 }
 
@@ -308,7 +318,8 @@ func finishStep(check *model.Check, step model.Step, joined model.RunResult, lab
 	case model.VerdictFailed:
 		note = failureNote(joined)
 	}
-	reading := readingOf(check, step, joined.Stdout, joined.Truncated, options)
+	body := model.Body{Text: joined.Stdout, Records: joined.Records}
+	reading := readingOf(check, step, body, joined.Truncated, options)
 	// Stderr from a zero exit is incidental noise; only a non-zero exit keeps
 	// it alongside the body
 	stderr := joined.Stderr
@@ -320,9 +331,11 @@ func finishStep(check *model.Check, step model.Step, joined model.RunResult, lab
 		ProbeLabel:    label,
 		Outcome:       model.Collected,
 		SkippedLabels: skipped,
-		// Evidence is what the target actually sent: the raw stdout, before the
-		// reading layer's byte cap, section split, and normalization
-		Raw:      joined.Stdout,
+		// Evidence is what the target actually sent: the raw stdout before the
+		// reading layer's byte cap, section split, and normalization — or, for a
+		// tier that read fields, the readable rendering of those fields.
+		Raw:      evidence(body),
+		Records:  joined.Records,
 		Stderr:   stderr,
 		Note:     note,
 		Document: reading,
@@ -358,11 +371,27 @@ func failureNote(result model.RunResult) string {
 // normalization, then the reading pipeline — and the source-side cut travels
 // into the document, because a panel marks a body a row cap stopped, which is
 // something only the channel knows.
-func readingOf(check *model.Check, step model.Step, raw string, truncated bool, options model.RunOptions) model.Document {
-	reading := reader.Analyze(assembleBody(step, raw), check.Rules, check.Filters,
-		check.ScanBytes, options.MinSeverity, transforms(stepAdapt(step), check)...)
+func readingOf(check *model.Check, step model.Step, body model.Body, truncated bool, options model.RunOptions) model.Document {
+	var reading model.Document
+	if body.Records != nil {
+		// The fields are read as they are: no cap (the collection bounded the
+		// rows), no section split, no shaper — there is no text to shape.
+		reading = reader.AnalyzeRecords(body.Records, check.Rules, check.Filters, options.MinSeverity)
+	} else {
+		reading = reader.Analyze(assembleBody(step, body.Text), check.Rules, check.Filters,
+			check.ScanBytes, options.MinSeverity, transforms(stepAdapt(step), check)...)
+	}
 	reading.Truncated = reading.Truncated || truncated
 	return reading
+}
+
+// evidence is one body as the record of what the target sent: a tool's own text
+// as it stands, or the fields rendered as the lines they read as.
+func evidence(body model.Body) string {
+	if body.Records != nil {
+		return model.RecordsText(body.Records.Rows)
+	}
+	return body.Text
 }
 
 // Reading reads text that did not arrive through this process's own call — the
@@ -371,12 +400,12 @@ func readingOf(check *model.Check, step model.Step, raw string, truncated bool, 
 // the tier's label, so a check whose walk has several tiers reads the one that
 // answered, and ok is false when this catalog has no such tier: a collector of
 // another build is not something to render half of.
-func Reading(check *model.Check, probeLabel, raw string, truncated bool, options model.RunOptions) (model.Document, bool) {
+func Reading(check *model.Check, probeLabel string, body model.Body, truncated bool, options model.RunOptions) (model.Document, bool) {
 	step, ok := stepFor(check, probeLabel)
 	if !ok {
 		return model.Document{}, false
 	}
-	return readingOf(check, step, raw, truncated, options), true
+	return readingOf(check, step, body, truncated, options), true
 }
 
 // stepFor is the step one tier label names: a one-tier step's own label, or the

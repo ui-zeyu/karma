@@ -6,14 +6,21 @@ import (
 	"karma/internal/model"
 )
 
-// ruleByID finds a rule by id across checks; the test fails if it is missing.
+// ruleByID finds a pattern rule by id across checks; the test fails if it is
+// missing. The tests here are about the patterns themselves, so they ask for
+// that implementation of a Matcher by name.
 func ruleByID(t *testing.T, checks []*model.Check, id string) model.Rule {
 	t.Helper()
 	for _, check := range checks {
 		for _, rule := range check.Rules {
-			if rule.ID == id {
-				return rule
+			if rule.Name() != id {
+				continue
 			}
+			pattern, ok := rule.(model.Rule)
+			if !ok {
+				t.Fatalf("rule %s is not a pattern rule (%T)", id, rule)
+			}
+			return pattern
 		}
 	}
 	t.Fatalf("rule %s not in catalog", id)
@@ -45,8 +52,9 @@ func TestEnvPathDot(t *testing.T) {
 		{"PATH=/usr/bin:/bin/", false}, // a trailing slash is not an empty component
 	}
 	for _, c := range cases {
-		if _, _, ok := rule.Find(c.line); ok != c.want {
-			t.Errorf("env-path-dot on %q matched=%v, want %v", c.line, ok, c.want)
+		rec := model.TextRecord(c.line)
+		if got := rule.Judge(&rec) != nil; got != c.want {
+			t.Errorf("env-path-dot on %q matched=%v, want %v", c.line, got, c.want)
 		}
 	}
 }

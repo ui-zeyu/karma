@@ -74,6 +74,58 @@ func runNative(ctx context.Context, fn func(context.Context) (string, error), ca
 	}
 }
 
+// runFields runs a Fields tier's body: the same boundary as runNative (a panic
+// fails one tier, the deadline abandons a body parked in a syscall), with the
+// records themselves as the answer. The row cap applies to the records, so a
+// capped body is capped before anything is rendered from it.
+func runFields(ctx context.Context, read func(context.Context) (*model.RecordSet, error), cap model.RowCap) model.RunResult {
+	if read == nil {
+		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
+	}
+	done := make(chan model.RunResult, 1)
+	go func() {
+		result, err := fault.Result("in-process tier", func() model.RunResult {
+			set, err := read(ctx)
+			if err != nil {
+				return model.RunResult{Verdict: model.VerdictFailed, Stderr: err.Error(), ExitCode: 1}
+			}
+			return model.RunResult{Verdict: model.VerdictAnswered, Records: set}
+		})
+		if err != nil {
+			result = model.RunResult{Verdict: model.VerdictFailed, Stderr: err.Error(), ExitCode: 1}
+		}
+		done <- result
+	}()
+	select {
+	case result := <-done:
+		return finishFields(result, cap)
+	case <-ctx.Done():
+		select {
+		case result := <-done:
+			return finishFields(result, cap)
+		case <-time.After(bodyGrace):
+		}
+		return model.RunResult{Verdict: cutVerdict(ctx), ExitCode: -1}
+	}
+}
+
+// finishFields is the Fields tier's verdict mapping: the same endings as a text
+// body (an unavailable interface falls through, a deadline keeps what was read),
+// read from the same place.
+func finishFields(result model.RunResult, cap model.RowCap) model.RunResult {
+	if result.Records == nil {
+		return result
+	}
+	if cap.Rows > 0 && len(result.Records.Rows) > cap.Rows {
+		result.Records.Rows = result.Records.Rows[:cap.Rows]
+		result.Truncated = true
+	}
+	if cap.Answer {
+		result.Truncated = false
+	}
+	return result
+}
+
 // finishNative turns one finished body into the tier's result. The body's
 // context is the call's own, so a context error it reports is either this
 // call's deadline or the operator's cancellation — the same two endings every

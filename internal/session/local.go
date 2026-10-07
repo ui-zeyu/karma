@@ -62,6 +62,11 @@ func (s LocalSession) Stream(ctx context.Context, call model.Call, each func(str
 }
 
 func (s LocalSession) run(ctx context.Context, call model.Call, each func(string)) model.RunResult {
+	if fields, ok := call.Inv.(model.Fields); ok {
+		// A body that reads fields answers with the fields: nothing formats
+		// them into a line for the reading layer to parse back out.
+		return runFields(ctx, fields.Read, call.Cap)
+	}
 	if native, ok := call.Inv.(model.Native); ok {
 		// A body runs in this process, so it has no stream to read line by line:
 		// its text is the whole answer either way.

@@ -62,7 +62,7 @@ var listingNormalize = cluster.ListingNormalize(time.Now)
 // in ls -l shape capped at head, clustered locally to mark outliers. The
 // in-process branch and the find pipeline are two implementations of the one
 // tier, so the check is declared once for both channels.
-func listingCheck(id, title string, aspect model.Aspect, dirs []string, head int, rules []model.Rule) *model.Check {
+func listingCheck(id, title string, aspect model.Aspect, dirs []string, head int, rules []model.Matcher) *model.Check {
 	return define.LinuxCheck(id, title, aspect,
 		[]model.Step{{{Label: "find", Inv: model.Native{Body: localfs.Listing(dirs, head)}}}},
 		define.CheckOpt{Rules: rules, Syntax: model.SyntaxLsL, Normalize: listingNormalize})

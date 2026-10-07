@@ -4,8 +4,8 @@
 // A remote Linux channel collects through a karma binary placed on the target,
 // and the operator drives that binary with its own selectors, its concurrency
 // and its per-check budget. The answer is a stream of results rather than a
-// report: each line carries the tier's own text and how the walk ended, and
-// nothing shaped for a terminal. The operator renders with its own catalog, its
+// report: each line carries what the tier read — its own text, or the fields it
+// read instead — and how the walk ended, and nothing shaped for a terminal. The operator renders with its own catalog, its
 // own rules and its own terminal — so the report of a remote run is the report a
 // local run on that host would have drawn, with one implementation of the
 // presentation wherever the collection happened.
@@ -50,8 +50,14 @@ type Result struct {
 	// answered, in the order it tried them.
 	Skipped []string `json:"skipped,omitempty"`
 	// Raw is the tier's stdout exactly as collected, before the reading layer
-	// caps or shapes anything.
+	// caps or shapes anything. A tier that read fields states them in Fields
+	// instead, and the reading takes whichever came.
 	Raw string `json:"raw,omitempty"`
+	// Fields is a fields tier's answer: the column names and the rows' values,
+	// as data. It travels as data because that is what it is — the operator lays
+	// the rows out and reads the rules against them — and it is not repeated as
+	// text: the readable rendering is derived from it on the far side.
+	Fields *Fields `json:"fields,omitempty"`
 	// Stderr is what a failing tier wrote, which the panel shows as the note's
 	// detail.
 	Stderr string `json:"stderr,omitempty"`
@@ -62,18 +68,59 @@ type Result struct {
 	Truncated bool `json:"truncated,omitempty"`
 }
 
+// Fields is a record set as the stream carries it: the column names, and one
+// list of values per row. A record's fields are named by the header, so a row
+// carries its values alone and the schema is not repeated on every line.
+type Fields struct {
+	Header []string   `json:"header"`
+	Rows   [][]string `json:"rows"`
+}
+
+// fieldsOf is a record set in the shape the stream speaks.
+func fieldsOf(set *model.RecordSet) *Fields {
+	fields := &Fields{Header: set.Header, Rows: make([][]string, 0, len(set.Rows))}
+	for _, rec := range set.Rows {
+		fields.Rows = append(fields.Rows, rec.Values())
+	}
+	return fields
+}
+
+// records is the set again, its fields named by the header.
+func (f *Fields) records() *model.RecordSet {
+	set := &model.RecordSet{Header: f.Header, Rows: make([]model.Record, 0, len(f.Rows))}
+	for _, values := range f.Rows {
+		record := model.Record{Fields: make([]model.Field, len(values))}
+		for index, value := range values {
+			name := ""
+			if index < len(f.Header) {
+				name = f.Header[index]
+			}
+			record.Fields[index] = model.Field{Name: name, Value: value}
+		}
+		set.Rows = append(set.Rows, record)
+	}
+	return set
+}
+
 // Of is one finished check as it travels.
 func Of(result *model.CheckResult) Result {
-	return Result{
+	out := Result{
 		Check:     result.Check.ID,
 		Outcome:   result.Outcome.String(),
 		Probe:     result.ProbeLabel,
 		Skipped:   result.SkippedLabels,
-		Raw:       result.Raw,
 		Stderr:    result.Stderr,
 		Note:      result.Note,
 		Truncated: result.Document.Truncated,
 	}
+	// A tier's answer is its text or its fields, and the fields are not also
+	// sent as the text they render to: the far side derives that.
+	if result.Records != nil {
+		out.Fields = fieldsOf(result.Records)
+		return out
+	}
+	out.Raw = result.Raw
+	return out
 }
 
 // Line is the result as the one line the stream speaks, newline included. HTML
@@ -125,10 +172,18 @@ func ToCheckResult(catalog []*model.Check, r Result, options model.RunOptions) (
 		Stderr:        r.Stderr,
 		Note:          r.Note,
 	}
+	body := model.Body{Text: r.Raw}
+	if r.Fields != nil {
+		body.Records = r.Fields.records()
+		result.Records = body.Records
+		// Evidence is the fields as the lines they read as: derived here, so a
+		// line never carries the same answer twice.
+		result.Raw = model.RecordsText(body.Records.Rows)
+	}
 	// A skipped check has no tier and no text; every other outcome names the tier
-	// that answered, and its text is read here.
+	// that answered, and its body is read here.
 	if r.Probe != "" {
-		document, ok := runner.Reading(check, r.Probe, r.Raw, r.Truncated, options)
+		document, ok := runner.Reading(check, r.Probe, body, r.Truncated, options)
 		if !ok {
 			return nil, fmt.Errorf("check %s has no tier %q", check.ID, r.Probe)
 		}

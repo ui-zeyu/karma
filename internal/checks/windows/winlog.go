@@ -76,7 +76,7 @@ var WinLogChecks = []*model.Check{
 		[]model.Step{{PSProbe("event", secLogScript)}},
 		define.CheckOpt{
 			Timeout: winlogTimeout,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("log-cleared", logClearedRule, model.Medium,
 					"audit log cleared (anti-forensics)"),
 				define.KeywordRule,
@@ -87,7 +87,7 @@ var WinLogChecks = []*model.Check{
 		define.CheckOpt{
 			Timeout: winlogTimeout,
 			Filters: []model.LineFilter{scriptBlockSelf},
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("scriptblock-payload", historySuspicious, model.High,
 					"script block log with payload execution traits"),
 				define.KeywordRule,

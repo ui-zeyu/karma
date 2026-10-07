@@ -100,8 +100,13 @@ func TestAccessLogGradesRequestLines(t *testing.T) {
 		}
 		var spans []string
 		for _, match := range line.Matches {
-			if match.ID == tc.rule {
-				spans = append(spans, line.Text[match.Start:match.End])
+			if match.ID != tc.rule {
+				continue
+			}
+			// A body of text is a one-field record, so the spans sit in the
+			// line's own coordinates.
+			for _, span := range match.Spans {
+				spans = append(spans, line.Text[span.Start:span.End])
 			}
 		}
 		if !slices.Contains(spans, tc.span) {

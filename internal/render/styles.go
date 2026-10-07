@@ -2,8 +2,9 @@
 // legend source, the span machinery, and the syntax dispatch table.
 //
 // render only does layout (boxes, progress, budget); coloring of text coming
-// from the target all comes from here. Every hit span and the legend share the
-// same severity colors; syntax coloring stays low-saturation to keep clear of
+// from the target all comes from here — and the colors themselves from the form
+// package, which states them once for every renderer. Every hit span and the
+// legend share the same severity colors; syntax coloring stays low-saturation to keep clear of
 // the red/yellow/cyan/green severity semantics. Each highlighting rule lives in
 // its own file (ls.go, table.go, reg.go, …); bash and powershell go through
 // chroma, line-shaped output uses the built-in pseudo-lexers.
@@ -18,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"karma/internal/fault"
+	"karma/internal/form"
 	"karma/internal/model"
 )
 
@@ -81,18 +83,22 @@ func (s style) seq() lipgloss.Style {
 }
 
 var (
-	// MutedColor is the single source of muting: the muted style, the grey rail
-	// of a quiet check and of a skipped block, and the right-hand annotations
-	// share the same grey (a darker grey is invisible in the user's light
-	// theme).
-	MutedColor    = lipgloss.Color("244")
-	criticalStyle = style{fg: "15", bg: "1", bold: true} // bold white on red
-	highStyle     = style{fg: "9", bold: true}           // bold bright_red
-	mediumStyle   = style{fg: "11", bold: true}          // bold bright_yellow
-	lowStyle      = style{fg: "14"}                      // bright_cyan
-	mutedStyle    = style{fg: MutedColor}                // grey50
-	accentStyle   = style{fg: "14"}                      // bright_cyan
-	dimStyle      = style{faint: true}
+	// MutedColor is the palette's grey, stated with the rest of the colors in
+	// the form package: the muted style, the grey rail of a quiet check and of
+	// a skipped block, and the right-hand annotations share the same grey (a
+	// darker grey is invisible in the user's light theme).
+	MutedColor = form.MutedColor
+
+	// The severity colors and the quiet marks, in the span machinery's own
+	// style: form states them once, and the line-span lexers build their styles
+	// from the same values.
+	criticalStyle = styleOf(form.SeverityPaint(model.Critical)) // bold white on red
+	highStyle     = styleOf(form.SeverityPaint(model.High))     // bold bright_red
+	mediumStyle   = styleOf(form.SeverityPaint(model.Medium))   // bold bright_yellow
+	lowStyle      = styleOf(form.SeverityPaint(model.Low))      // bright_cyan
+	mutedStyle    = styleOf(form.MutedPaint())                  // grey50
+	accentStyle   = styleOf(form.AccentPaint())                 // bright_cyan
+	dimStyle      = styleOf(form.DimPaint())
 
 	// listIDColor: the catalog's id column (karma list), plain blue so the
 	// listing's selector vocabulary stands out from the titles without taking
@@ -116,6 +122,17 @@ var (
 	bandMetaColor = lipgloss.Color("246")
 )
 
+// styleOf is one palette paint as the span machinery's own style.
+func styleOf(paint form.Paint) style {
+	return style{
+		fg:     lipgloss.Color(paint.FG),
+		bg:     lipgloss.Color(paint.BG),
+		bold:   paint.Bold,
+		faint:  paint.Faint,
+		italic: paint.Italic,
+	}
+}
+
 // bandStyle is the level-one heading band: the report's masthead and its aspect
 // banners, and the listing's platform bands. subBandStyle is the level-two band
 // behind the listing's aspect headings and the report's check titles — the same
@@ -132,47 +149,21 @@ var (
 	subBandFill = lipgloss.NewStyle().Background(subBandColor)
 )
 
-// severityHue is one signal level's color language: the hit span and the rail
-// hue.
-type severityHue struct {
-	span   style
-	border lipgloss.Color
-}
-
-// severityTheme is the single source of the severity color language, indexed by
-// Severity (Critical..Low). The quiet levels have no entry: benign and no-hit
-// are both quiet lines.
-var severityTheme = [...]severityHue{
-	{criticalStyle, "1"},
-	{highStyle, "9"},
-	{mediumStyle, "11"},
-	{lowStyle, "14"},
-}
-
-// severityHueOf is the one lookup every severity color goes through; a quiet
-// level has no hue, so its paint is the zero value.
-func severityHueOf(severity model.Severity) severityHue {
-	if severity < 0 || int(severity) >= len(severityTheme) {
-		return severityHue{}
-	}
-	return severityTheme[severity]
-}
-
 // severityStyle is shared by hit spans and the legend; it covers the four
 // signal severities only.
-func severityStyle(severity model.Severity) style { return severityHueOf(severity).span }
+func severityStyle(severity model.Severity) style { return styleOf(form.SeverityPaint(severity)) }
 
 // severityBorder is the rail hue. A critical hit span is white on red, so the
 // border takes the red itself.
-func severityBorder(severity model.Severity) lipgloss.Color { return severityHueOf(severity).border }
+func severityBorder(severity model.Severity) lipgloss.Color { return form.SeverityBorder(severity) }
 
 // ErrorColor and HintColor are the hues the command-line skeleton (help and
 // error text) shares with the report: the signal hue of a high hit for a
 // failure line, and of a medium hit for the suggestion that follows it, so a
 // failure and its guidance read in the palette the evidence does.
 var (
-	ErrorColor = severityTheme[model.High].border
-	HintColor  = severityTheme[model.Medium].border
+	ErrorColor = form.SeverityBorder(model.High)
+	HintColor  = form.SeverityBorder(model.Medium)
 )
 
 // Syntax coloring uses low-saturation dark colors and is applied before hit

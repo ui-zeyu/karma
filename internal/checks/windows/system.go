@@ -38,7 +38,7 @@ var SystemChecks = []*model.Check{
 		[]model.Step{{PSProbe("reg", softwareScript)}},
 		define.CheckOpt{
 			Syntax: model.SyntaxPipe,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("software-pentest", softwarePentest, model.High,
 					"password/pentest tool in software inventory"),
 				model.NewRule("software-remote", softwareRemote, model.Medium,
@@ -48,7 +48,7 @@ var SystemChecks = []*model.Check{
 		}),
 	define.WindowsCheck("hotfixes", "Patch List (Get-HotFix)", model.AspectSystem,
 		[]model.Step{{PSProbe("cim", hotfixScript)}},
-		define.CheckOpt{Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Rules: []model.Matcher{define.KeywordRule}}),
 	RegCheck("env-vars", "Environment Variables (System and User)", model.AspectSystem,
 		[]RegKey{
 			{Path: `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, Label: "hklm"},
@@ -56,7 +56,7 @@ var SystemChecks = []*model.Check{
 		},
 		define.CheckOpt{
 			Syntax: model.SyntaxReg,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("env-path-suspicious", envPathSuspicious, model.Medium,
 					"PATH contains temp/public directory (hijack surface)"),
 				define.KeywordRule,
@@ -65,7 +65,7 @@ var SystemChecks = []*model.Check{
 	define.WindowsCheck("shares", "Share List (LanmanServer)", model.AspectSystem,
 		[]model.Step{{PSProbe("reg", sharesScript)}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("custom-share", customShare, model.Medium,
 					"custom share present"),
 				define.KeywordRule,
@@ -79,7 +79,7 @@ var SystemChecks = []*model.Check{
 		},
 		define.CheckOpt{
 			Syntax: model.SyntaxReg,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("rdp-enabled", rdpEnabledRule, model.Medium,
 					"Remote Desktop enabled (brute-force surface)"),
 				model.NewRule("rdp-nla-off", rdpNLAOffRule, model.Medium,

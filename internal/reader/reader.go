@@ -39,7 +39,7 @@ const belowFloor = "below-severity"
 // absent. floor is the run's severity floor: a row below it is counted and
 // left out before the filters are consulted, so a triage run drops it whichever
 // filter would have kept it. model.FloorAll keeps every row.
-func Analyze(text string, rules []model.Rule, filters []model.LineFilter, scanBytes int, floor model.SeverityFloor, transforms ...model.Normalizer) model.Document {
+func Analyze(text string, rules []model.Matcher, filters []model.LineFilter, scanBytes int, floor model.SeverityFloor, transforms ...model.Normalizer) model.Document {
 	capped, truncated := capBytes(text, scanBytes)
 	keepFilters, dropFilters := lo.FilterReject(filters, func(f model.LineFilter, _ int) bool {
 		return f.Mode == model.FilterKeep
@@ -54,17 +54,22 @@ func Analyze(text string, rules []model.Rule, filters []model.LineFilter, scanBy
 		if piece.titleSet {
 			number++
 		}
-		titleMatches := lineMatches(piece.title, rules)
+		title := model.TextRecord(piece.title)
+		titleMatches := judgeRecord(&title, rules)
 		kept := make([]model.Line, 0, len(piece.lines))
+		// One scratch record serves every line of text: a body with no fields of
+		// its own is judged as a series of one-field records.
+		var textLine model.Record
 		for index, line := range piece.lines {
 			number++
-			matches := append(lineMatches(line, rules), piece.notes[index]...)
+			rec := piece.recordAt(index, line, &textLine)
+			matches := append(judgeRecord(rec, rules), piece.notes[index]...)
 			severity := lineSeverity(matches)
 			if !floor.Keeps(severity) {
 				filtered = filtered.add(belowFloor)
 				continue
 			}
-			if id, hidden := hideReason(line, matches, keepFilters, dropFilters); hidden {
+			if id, hidden := hideReason(rec, matches, keepFilters, dropFilters); hidden {
 				filtered = filtered.add(id)
 				continue
 			}
@@ -73,6 +78,7 @@ func Analyze(text string, rules []model.Rule, filters []model.LineFilter, scanBy
 				Text:     line,
 				Severity: severity,
 				Matches:  matches,
+				Record:   piece.structured(index),
 			})
 		}
 		if len(kept) == 0 && len(titleMatches) == 0 {
@@ -82,6 +88,7 @@ func Analyze(text string, rules []model.Rule, filters []model.LineFilter, scanBy
 			Title:        piece.title,
 			TitleMatches: titleMatches,
 			Lines:        kept,
+			Columns:      piece.columns(),
 		})
 	}
 
@@ -109,22 +116,23 @@ func capBytes(text string, limit int) (string, bool) {
 	return cut, true
 }
 
-// hideReason returns the filter id that hides the line; a visible line returns false.
+// hideReason returns the filter id that hides the record; a visible record
+// returns false.
 //
-// Lines hit by a signal stay (signal takes priority); when keep filters exist, lines
-// matching no keep filter are hidden and counted under the first keep filter; drop
-// filters are evaluated in declaration order.
-func hideReason(line string, matches []model.Match, keepFilters, dropFilters []model.LineFilter) (string, bool) {
+// Records hit by a signal stay (signal takes priority); when keep filters
+// exist, records matching no keep filter are hidden and counted under the
+// first keep filter; drop filters are evaluated in declaration order.
+func hideReason(rec *model.Record, matches []model.Match, keepFilters, dropFilters []model.LineFilter) (string, bool) {
 	if lo.SomeBy(matches, func(m model.Match) bool { return m.Severity.IsSignal() }) {
 		return "", false
 	}
 	if len(keepFilters) > 0 {
-		if lo.SomeBy(keepFilters, func(f model.LineFilter) bool { return f.Match(line) }) {
+		if lo.SomeBy(keepFilters, func(f model.LineFilter) bool { return f.Match(rec) }) {
 			return "", false
 		}
 		return keepFilters[0].ID, true
 	}
-	if f, ok := lo.Find(dropFilters, func(f model.LineFilter) bool { return f.Match(line) }); ok {
+	if f, ok := lo.Find(dropFilters, func(f model.LineFilter) bool { return f.Match(rec) }); ok {
 		return f.ID, true
 	}
 	return "", false
@@ -136,6 +144,38 @@ type piece struct {
 	titleSet bool
 	lines    []string
 	notes    map[int][]model.Match
+	// records is the same body as fields, one record per line, when the body is
+	// a record set; nil for a body of ordinary text.
+	records *model.RecordSet
+}
+
+// recordAt is the record a rule judges: the body's own when it arrived as
+// records, a one-field record of the line itself otherwise. scratch is the
+// caller's reusable record, so a body of plain text costs no allocation per
+// line.
+func (p piece) recordAt(index int, line string, scratch *model.Record) *model.Record {
+	if p.records == nil {
+		*scratch = model.Record{Fields: append(scratch.Fields[:0], model.Field{Value: line})}
+		return scratch
+	}
+	return &p.records.Rows[index]
+}
+
+// structured is the line's record as the presentation keeps it: nil for a body
+// of plain text, whose panel reads the line, not a record of one field.
+func (p piece) structured(index int) *model.Record {
+	if p.records == nil {
+		return nil
+	}
+	return &p.records.Rows[index]
+}
+
+// columns is the section's record columns; nil for a body of ordinary text.
+func (p piece) columns() []string {
+	if p.records == nil {
+		return nil
+	}
+	return p.records.Header
 }
 
 // pieces lazily splits and shapes sections. Without transforms it keeps the raw
@@ -168,6 +208,7 @@ func shaped(sec section.Section, transforms []model.Normalizer) piece {
 	}
 	text := strings.Join(sec.Lines, "\n")
 	var notes []model.LineMatch
+	var records *model.RecordSet
 	for _, transform := range transforms {
 		if transform == nil {
 			continue
@@ -178,8 +219,20 @@ func shaped(sec section.Section, transforms []model.Normalizer) piece {
 		}
 		text = result.Text
 		notes = append(notes, result.Notes...)
+		// The last shaper that recognized the body states its records, as it
+		// states the text they were read from.
+		if result.Records != nil {
+			records = result.Records
+		}
 	}
 	p.lines = textutil.CollectLines(text)
+	// The records line up with the text's lines or they are not this body's:
+	// a shaper whose record count disagrees with the text it produced is not
+	// something to draw half of.
+	if records != nil && len(records.Rows) != len(p.lines) {
+		records = nil
+	}
+	p.records = records
 	p.notes = lo.MapValues(
 		lo.GroupBy(notes, func(note model.LineMatch) int { return note.Line }),
 		func(notes []model.LineMatch, _ int) []model.Match {
@@ -214,22 +267,59 @@ func lineSeverity(matches []model.Match) model.Severity {
 	return severity
 }
 
-// lineMatches is the first match of each rule within a line; each rule counts at
-// most once per line. The result is nil when nothing matched — the common case
-// on a normal host — so a quiet line allocates nothing for the rules that did
-// not hit.
-func lineMatches(line string, rules []model.Rule) []model.Match {
+// judgeRecord is the judgment of one record by every rule: each rule states
+// the hits it recognizes (a Matcher reads the record's fields, so a rule
+// shaped around a field never has to parse a line back out), and a rule counts
+// at most once per record. The result is nil when nothing matched — the common
+// case on a normal host — so a quiet record allocates nothing.
+func judgeRecord(rec *model.Record, matchers []model.Matcher) []model.Match {
 	var matches []model.Match
-	for _, r := range rules {
-		start, end, ok := r.Find(line)
-		if !ok {
-			continue
-		}
-		matches = append(matches, model.Match{
-			ID: r.ID, Severity: r.Severity, Message: r.Message, Start: start, End: end,
-		})
+	for _, matcher := range matchers {
+		matches = append(matches, matcher.Judge(rec)...)
 	}
 	return matches
+}
+
+// AnalyzeRecords reads a body that arrived as fields: the records are the
+// lines, their fields are what every rule reads, and there is no text to cap,
+// split or shape — the collection already bounded the rows and the shape is
+// the form's business.
+func AnalyzeRecords(set *model.RecordSet, rules []model.Matcher, filters []model.LineFilter,
+	floor model.SeverityFloor) model.Document {
+	keepFilters, dropFilters := lo.FilterReject(filters, func(f model.LineFilter, _ int) bool {
+		return f.Mode == model.FilterKeep
+	})
+	var (
+		kept     = make([]model.Line, 0, len(set.Rows))
+		filtered counter
+	)
+	for index := range set.Rows {
+		rec := &set.Rows[index]
+		line := rec.LineText()
+		matches := judgeRecord(rec, rules)
+		severity := lineSeverity(matches)
+		if !floor.Keeps(severity) {
+			filtered = filtered.add(belowFloor)
+			continue
+		}
+		if id, hidden := hideReason(rec, matches, keepFilters, dropFilters); hidden {
+			filtered = filtered.add(id)
+			continue
+		}
+		kept = append(kept, model.Line{
+			Number:   index + 1,
+			Text:     line,
+			Severity: severity,
+			Matches:  matches,
+			Record:   rec,
+		})
+	}
+	document := model.Document{Filtered: filtered}
+	if len(kept) == 0 {
+		return document
+	}
+	document.Sections = []model.Section{{Lines: kept, Columns: set.Header}}
+	return document
 }
 
 // counter is a filter hit count that preserves insertion order. Value semantics: add returns the updated count table.

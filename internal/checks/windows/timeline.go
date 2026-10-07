@@ -67,7 +67,7 @@ var TimelineChecks = []*model.Check{
 			Filters: []model.LineFilter{
 				model.NewFilter("activity-shape", activityShape, model.FilterKeep),
 			},
-			Rules: []model.Rule{define.KeywordRule},
+			Rules: []model.Matcher{define.KeywordRule},
 		}),
 	define.WindowsCheck("sticky-notes", "Sticky Notes Content (String Extraction)", model.AspectTimeline,
 		[]model.Step{{PSProbe("strings", stringsScript("UTF8", 6, stickyGlob))}},
@@ -76,6 +76,6 @@ var TimelineChecks = []*model.Check{
 			Filters: []model.LineFilter{
 				model.NewFilter("sql-schema", sqlSchema, model.FilterDrop),
 			},
-			Rules: []model.Rule{define.KeywordRule, define.PrivateKeyRule},
+			Rules: []model.Matcher{define.KeywordRule, define.PrivateKeyRule},
 		}),
 }

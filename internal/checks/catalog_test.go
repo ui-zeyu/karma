@@ -11,8 +11,8 @@ import (
 
 func TestCatalogShape(t *testing.T) {
 	linux := checks.ChecksFor(model.Linux)
-	if len(linux) != 76 {
-		t.Fatalf("the Linux catalog should hold 76 checks, got %d", len(linux))
+	if len(linux) != 77 {
+		t.Fatalf("the Linux catalog should hold 77 checks, got %d", len(linux))
 	}
 	windows := checks.ChecksFor(model.Windows)
 	if len(windows) != 43 {
@@ -22,7 +22,7 @@ func TestCatalogShape(t *testing.T) {
 	for _, check := range windows {
 		aspects[check.Aspect] = true
 		for _, rule := range check.Rules {
-			if rule.ID == "reverse-shell-dev-tcp" {
+			if rule.Name() == "reverse-shell-dev-tcp" {
 				t.Fatalf("%s must not carry a Linux global rule", check.ID)
 			}
 		}
@@ -91,10 +91,10 @@ func TestCatalogInvariants(t *testing.T) {
 			}
 			rules := map[string]bool{}
 			for _, rule := range check.Rules {
-				if rules[rule.ID] {
-					t.Errorf("check %s repeats rule id %s", check.ID, rule.ID)
+				if rules[rule.Name()] {
+					t.Errorf("check %s repeats rule id %s", check.ID, rule.Name())
 				}
-				rules[rule.ID] = true
+				rules[rule.Name()] = true
 			}
 			filters := map[string]bool{}
 			for _, filter := range check.Filters {

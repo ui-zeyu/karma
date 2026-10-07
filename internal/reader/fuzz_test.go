@@ -42,7 +42,7 @@ func shout(_ string, body string) *model.Shaped {
 }
 
 func FuzzAnalyze(f *testing.F) {
-	rules := []model.Rule{
+	rules := []model.Matcher{
 		model.NewRule("root-line", `root`, model.High, "root line"),
 		model.NewRule("deleted-binary", `\(deleted\)`, model.Critical, "deleted"),
 	}

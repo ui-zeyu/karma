@@ -1,72 +1,37 @@
-// The pstree tier: the process tree from ppid links, drawn with ASCII
-// connectors, over the same snapshot proctable.go provides.
+// The pstree tier: the process tree's nodes as fields. The parent link travels
+// with each process, so the tree is drawn from the records rather than spelled
+// into a command column.
 
 package native
 
 import (
 	"context"
-	"fmt"
-	"strings"
+	"strconv"
 
 	"karma/internal/model"
 )
 
-// Pstree renders the process tree from ppid links, pstree -ap's
-// evidence in ASCII connectors.
-func Pstree(ctx context.Context) (string, error) {
+// PsTreeColumns is the process tree's columns: the node's identity, the parent
+// link the tree form nests on, the account, and the command line. The account
+// is carried for the rules that read it — a service account running a shell is
+// the same finding in a tree as in a table — and the form decides what a node
+// draws.
+var PsTreeColumns = []string{"PID", "PPID", "USER", "COMMAND"}
+
+// Pstree reads the process tree from the ppid links, pstree's evidence as the
+// nodes it is: one record per process, the parent link the form draws the nest
+// from. The order is the snapshot's own; the form orders siblings and works out
+// the depths, so nothing here spells a ladder.
+func Pstree(ctx context.Context) (*model.RecordSet, error) {
 	snap := procSnapshot(ctx)
 	if !snap.ok {
-		return "", model.ErrTierUnavailable
+		return nil, model.ErrTierUnavailable
 	}
-	return renderPstree(snap.entries), snap.cutReason(ctx)
-}
-
-// renderPstree prints the forest: every process whose parent is absent (pid
-// 1, kernel threads) starts a root; children follow under ASCII connectors,
-// args appended when the process has a command line.
-func renderPstree(entries []procEntry) string {
-	children := map[int][]procEntry{}
-	byPid := map[int]bool{}
-	for _, e := range entries {
-		byPid[e.pid] = true
-		children[e.ppid] = append(children[e.ppid], e)
+	rows := make([]model.Record, 0, len(snap.entries))
+	for _, entry := range snap.entries {
+		rows = append(rows, model.Record{Fields: fields(PsTreeColumns, []string{
+			strconv.Itoa(entry.pid), strconv.Itoa(entry.ppid), psUserCell(entry.user), entry.args,
+		})})
 	}
-	var roots []procEntry
-	for _, e := range entries {
-		if !byPid[e.ppid] { // pid 1 and any orphan of a vanished parent
-			roots = append(roots, e)
-		}
-	}
-	var b strings.Builder
-	var walk func(e procEntry, prefix, connector string, last bool)
-	walk = func(e procEntry, prefix, connector string, last bool) {
-		b.WriteString(prefix)
-		b.WriteString(connector)
-		fmt.Fprintf(&b, "%s(%d)", e.comm, e.pid)
-		if e.args != "" && !strings.HasPrefix(e.args, "[") {
-			b.WriteString(" " + e.args)
-		}
-		b.WriteByte('\n')
-		kidPrefix := prefix
-		if connector != "" {
-			if last {
-				kidPrefix += "  "
-			} else {
-				kidPrefix += "| "
-			}
-		}
-		for i, kid := range children[e.pid] {
-			kidLast := i == len(children[e.pid])-1
-			conn := "|-"
-			if kidLast {
-				conn = "`-"
-			}
-			walk(kid, kidPrefix, conn, kidLast)
-		}
-	}
-	lastRoot := len(roots) - 1
-	for i, root := range roots {
-		walk(root, "", "", i == lastRoot)
-	}
-	return b.String()
+	return &model.RecordSet{Header: PsTreeColumns, Rows: rows}, snap.cutReason(ctx)
 }

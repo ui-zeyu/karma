@@ -15,6 +15,7 @@ import (
 	"github.com/samber/lo"
 
 	"karma/internal/fault"
+	"karma/internal/form"
 	"karma/internal/model"
 	"karma/internal/textutil"
 )
@@ -32,9 +33,10 @@ var panelRenderer = checkPanel
 // panel. A collected check without signals and a check that was never
 // collected both return an empty string, and the caller stays silent: the
 // report only presents evidence, and a missing command belongs to the target's
-// environment and does not enter the report.
-func checkPanel(result *model.CheckResult, maxLines, term int) string {
-	rows := bodyRows(result, maxLines, term)
+// environment and does not enter the report. color says whether the stream is a
+// terminal: without it the panel is the same layout with no escapes.
+func checkPanel(result *model.CheckResult, maxLines, term int, color bool) string {
+	rows := bodyRows(result, maxLines, term, color)
 	rows = append(rows, stderrRows(result.Stderr)...)
 	if len(rows) > 0 {
 		return checkBlock(topSeverity(result.Document), checkHead(result, term), rows, term)
@@ -70,9 +72,9 @@ func checkHead(result *model.CheckResult, term int) []string {
 // even that cannot be drawn, failed=true with empty text so the caller prints
 // plain text. Each step is a boundary of the fault package, like every other
 // one a run crosses.
-func renderPanel(result *model.CheckResult, maxLines, term int) (string, bool) {
+func renderPanel(result *model.CheckResult, maxLines, term int, color bool) (string, bool) {
 	text, err := fault.Result("panel "+result.Check.ID, func() string {
-		return panelRenderer(result, maxLines, term)
+		return panelRenderer(result, maxLines, term, color)
 	})
 	if err == nil {
 		return text, false
@@ -173,8 +175,9 @@ func stderrRows(stderr string) []string {
 // quiet rows only; finding rows and their context are always printed, omitted
 // rows collapse into a count, and once the budget is gone, sources without a
 // hit are dropped entirely. term is the terminal width; body rows are laid out
-// to the text width inside the rail.
-func bodyRows(result *model.CheckResult, maxLines, term int) []string {
+// to the text width inside the rail. A section whose body arrived as records is
+// drawn in the shape its check declares; every other section reads as text.
+func bodyRows(result *model.CheckResult, maxLines, term int, color bool) []string {
 	width := textWidth(term)
 	base := newLineStyler(result.Check.Syntax)
 	var rows []string
@@ -200,9 +203,41 @@ func bodyRows(result *model.CheckResult, maxLines, term int) []string {
 		if section.Title != "" {
 			rows = append(rows, sourceTitle(section, width)...)
 		}
+		if block, ok := formBlock(result.Check.Form, section, planned, width); ok {
+			rows = append(rows, result.Check.Form.Render(block, model.RenderOptions{Width: width, Color: color})...)
+			continue
+		}
 		rows = append(rows, plannedRows(section.Lines, planned, lineStyler, width)...)
 	}
 	return rows
+}
+
+// formBlock is one section's records as the block a form lays out: the head
+// from the record set, one item per planned line, and a counted gap where the
+// display budget hid rows. ok is false when this section is not all records —
+// a form-less check, or a body the shaper declined — and the caller then draws
+// the section as text.
+func formBlock(form model.Form, section model.Section, planned []linePlan, width int) (model.Block, bool) {
+	if form == nil || len(section.Columns) == 0 {
+		return model.Block{}, false
+	}
+	for _, line := range section.Lines {
+		if line.Record == nil {
+			return model.Block{}, false
+		}
+	}
+	block := model.Block{Header: section.Columns}
+	for _, item := range planned {
+		if !item.visible {
+			block.Items = append(block.Items, model.BlockItem{
+				Note: fmt.Sprintf("… %d lines", item.count)})
+			continue
+		}
+		line := section.Lines[item.index]
+		block.Items = append(block.Items, model.BlockItem{
+			Rec: line.Record, Matches: line.Matches})
+	}
+	return block, true
 }
 
 // sectionSyntax resolves one section's syntax: the first SectionSyntax entry
@@ -221,7 +256,7 @@ func sectionSyntax(check *model.Check, title string) model.Syntax {
 // aligned with the body when it does not fit.
 func sourceTitle(section model.Section, width int) []string {
 	spans := []paintSpan{{Start: 0, End: len(section.Title), Style: style{bold: true}}}
-	spans = append(spans, hitSpans(section.TitleMatches)...)
+	spans = append(spans, hitSpans(section.Title, section.TitleMatches)...)
 	return withReason(paintLine(section.Title, spans), section.TitleMatches, width)
 }
 
@@ -309,7 +344,7 @@ func lineText(line model.Line, lineStyler lineStyler) string {
 	if lineStyler != nil {
 		spans = append(spans, lineStyler(line.Text)...)
 	}
-	hits := hitSpans(line.Matches)
+	hits := hitSpans(line.Text, line.Matches)
 	spans = append(spans, hits...)
 	if len(hits) == 0 && commentLine.MatchString(line.Text) {
 		spans = append(spans, paintSpan{Start: 0, End: len(line.Text), Style: mutedStyle})
@@ -320,39 +355,38 @@ func lineText(line model.Line, lineStyler lineStyler) string {
 // hitSpans paints a line's signal matches, most severe last. Spans stack in
 // order, so where two rules cover the same text the more severe one wins — the
 // span the trailing reason names, rather than whichever rule happened to be
-// declared later.
-func hitSpans(matches []model.Match) []paintSpan {
+// declared later. A line of text is a one-field record, so the spans sit in the
+// line's own coordinates already; a hit that belongs to the record paints the
+// whole line.
+func hitSpans(text string, matches []model.Match) []paintSpan {
 	signals := lo.Filter(matches, func(match model.Match, _ int) bool {
 		return match.Severity.IsSignal()
 	})
 	slices.SortStableFunc(signals, func(a, b model.Match) int {
 		return cmp.Compare(b.Severity, a.Severity)
 	})
-	return lo.Map(signals, func(match model.Match, _ int) paintSpan {
-		return paintSpan{Start: match.Start, End: match.End, Style: severityStyle(match.Severity)}
-	})
+	var spans []paintSpan
+	for _, match := range signals {
+		if len(match.Spans) == 0 {
+			spans = append(spans, paintSpan{Start: 0, End: len(text), Style: severityStyle(match.Severity)})
+			continue
+		}
+		for _, span := range match.Spans {
+			if span.Field != 0 {
+				continue
+			}
+			spans = append(spans, paintSpan{Start: span.Start, End: span.End, Style: severityStyle(match.Severity)})
+		}
+	}
+	return spans
 }
 
 // withReason appends the reason ⟨…⟩ of the highest hit severity at the end of
 // the row; when it does not fit it goes on its own line aligned with the body.
 func withReason(row string, matches []model.Match, width int) []string {
-	var top model.Match
-	signals := 0
-	for _, match := range matches {
-		if !match.Severity.IsSignal() {
-			continue
-		}
-		if signals == 0 || match.Severity < top.Severity {
-			top = match
-		}
-		signals++
-	}
-	if signals == 0 {
+	reason := reasonText(matches)
+	if reason == "" {
 		return []string{row}
-	}
-	reason := "⟨" + top.Message + "⟩"
-	if signals > 1 {
-		reason += fmt.Sprintf(" +%d", signals-1)
 	}
 	reasonSt := style{faint: true}.seq().Render(reason)
 	if lipgloss.Width(row)+2+lipgloss.Width(reason) <= width {
@@ -360,3 +394,9 @@ func withReason(row string, matches []model.Match, width int) []string {
 	}
 	return []string{row, reasonSt}
 }
+
+// reasonText is what the reading layer says about a finding: the most severe
+// hit's message in angle brackets, and the count of the hits beside it. A row
+// with no finding says nothing, which is also what keeps the reason off a quiet
+// row's line.
+func reasonText(matches []model.Match) string { return form.ReasonFor(matches) }

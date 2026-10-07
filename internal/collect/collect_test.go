@@ -33,7 +33,7 @@ func fixtureCatalog() []*model.Check {
 		{
 			ID: "answered", Title: "Answered", Aspect: model.AspectSystem, Platform: model.Linux,
 			Steps: []model.Step{{{Label: "ss", Inv: answer("== a\none two three\n")}}},
-			Rules: []model.Rule{model.NewRule("two", `two`, model.High, "a two")},
+			Rules: []model.Matcher{model.NewRule("two", `two`, model.High, "a two")},
 		},
 		{
 			ID: "fallback", Title: "Fallback", Aspect: model.AspectNetwork, Platform: model.Linux,
@@ -51,6 +51,16 @@ func fixtureCatalog() []*model.Check {
 			Steps: []model.Step{{{Label: "quiet", Inv: answer("")}}},
 		},
 		{
+			// A tier that reads fields: the records travel as data, and the reading
+			// of a stream is the reading of a local run, field rule and all.
+			ID: "fields", Title: "Fields", Aspect: model.AspectProcess, Platform: model.Linux,
+			Steps: []model.Step{{{Label: "ps", Inv: fieldsTier()}}},
+			Rules: []model.Matcher{
+				model.NewJudged("temp-path", model.Medium, "temp path in the command line",
+					model.FieldHas{Fields: []string{"COMMAND"}, Sub: "/tmp/"}),
+			},
+		},
+		{
 			// The stages a tier's text can pass through on the way to a panel: the
 			// tier's own join (Assemble), its dialect alignment (Adapt) and the
 			// check's normalization. A reader of the stream has to run all three
@@ -66,6 +76,25 @@ func fixtureCatalog() []*model.Check {
 			},
 		},
 	}
+}
+
+// fieldsTier is a tier whose body reads fields: two processes, one of them a
+// finding for the rule that reads the COMMAND column.
+func fieldsTier() model.Fields {
+	return model.Fields{Read: func(context.Context) (*model.RecordSet, error) {
+		row := func(user, pid, command string) model.Record {
+			return model.Record{Fields: []model.Field{
+				{Name: "USER", Value: user}, {Name: "PID", Value: pid}, {Name: "COMMAND", Value: command},
+			}}
+		}
+		return &model.RecordSet{
+			Header: []string{"USER", "PID", "COMMAND"},
+			Rows: []model.Record{
+				row("root", "1", "/sbin/init"),
+				row("www-data", "2210", "/bin/sh /tmp/x"),
+			},
+		}, nil
+	}}
 }
 
 // capturing is the observer that keeps the results a run produced, in the order

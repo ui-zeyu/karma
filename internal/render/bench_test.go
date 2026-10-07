@@ -21,7 +21,7 @@ func listingPanel(tb testing.TB, rows int, hit bool) *model.CheckResult {
 	tb.Helper()
 	check := &model.Check{
 		ID: "key-dirs", Aspect: model.AspectFilesystem, Syntax: model.SyntaxLsL,
-		Rules: []model.Rule{
+		Rules: []model.Matcher{
 			model.NewRule("hidden-tmp-path", `/?(?:(?:var/)?tmp|dev/shm)/\.[A-Za-z0-9_.-]+`,
 				model.High, "hidden file in a temporary directory"),
 		},
@@ -48,7 +48,7 @@ func BenchmarkCheckPanelListing(b *testing.B) {
 	result := listingPanel(b, 400, true)
 	b.ReportAllocs()
 	for b.Loop() {
-		checkPanel(result, 400, 120)
+		checkPanel(result, 400, 120, true)
 	}
 }
 
@@ -59,7 +59,7 @@ func BenchmarkCheckPanelQuietRail(b *testing.B) {
 	result := listingPanel(b, 400, false)
 	b.ReportAllocs()
 	for b.Loop() {
-		checkPanel(result, 400, 120)
+		checkPanel(result, 400, 120, true)
 	}
 }
 

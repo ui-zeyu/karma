@@ -9,7 +9,7 @@ import (
 )
 
 // readDocument is the reading shortcut the tests use.
-func readDocument(text string, rules []model.Rule, filters []model.LineFilter, normalize model.Normalizer) model.Document {
+func readDocument(text string, rules []model.Matcher, filters []model.LineFilter, normalize model.Normalizer) model.Document {
 	return reader.Analyze(text, rules, filters, 0, model.FloorAll, normalize)
 }
 
@@ -26,7 +26,7 @@ func keep(pattern string) model.LineFilter {
 
 func TestAnalyzeMatchesAndSections(t *testing.T) {
 	text := "== /etc/passwd\nroot:x:0:0:root:/root:/bin/bash\nplain line\n== beyond preamble\nanother\n"
-	rules := []model.Rule{rule("root-line", `^root:`, model.High)}
+	rules := []model.Matcher{rule("root-line", `^root:`, model.High)}
 	document := readDocument(text, rules, nil, nil)
 	if len(document.Sections) != 2 {
 		t.Fatalf("section count: %d, want 2", len(document.Sections))
@@ -49,7 +49,7 @@ func TestAnalyzeMatchesAndSections(t *testing.T) {
 
 func TestAnalyzeTitleMatches(t *testing.T) {
 	text := "== /root/authorized_keys\nssh-ed25519 AAAA comment\n"
-	rules := []model.Rule{rule("authkeys", `authorized_keys`, model.Medium)}
+	rules := []model.Matcher{rule("authkeys", `authorized_keys`, model.Medium)}
 	document := readDocument(text, rules, nil, nil)
 	if len(document.Sections) != 1 || len(document.Sections[0].TitleMatches) != 1 {
 		t.Fatalf("title should match the rule: %+v", document.Sections)
@@ -58,7 +58,7 @@ func TestAnalyzeTitleMatches(t *testing.T) {
 
 func TestExcludeSuppressesMatch(t *testing.T) {
 	rule := rule("uid0", `^[^:]+:[^:]*:0:0:`, model.Critical).WithExclude(`^root:`)
-	document := readDocument("root:x:0:0:r:/root:/bin/sh\nbackdoor:x:0:0::/:/bin/sh\n", []model.Rule{rule}, nil, nil)
+	document := readDocument("root:x:0:0:r:/root:/bin/sh\nbackdoor:x:0:0::/:/bin/sh\n", []model.Matcher{rule}, nil, nil)
 	lines := document.Sections[0].Lines
 	if len(lines[0].Matches) != 0 {
 		t.Fatalf("root line should be excluded: %v", lines[0].Matches)
@@ -96,7 +96,7 @@ func TestKeepFilterWhitelists(t *testing.T) {
 }
 
 func TestSignalLineSurvivesKeepFilter(t *testing.T) {
-	rules := []model.Rule{rule("boom", `boom`, model.High)}
+	rules := []model.Matcher{rule("boom", `boom`, model.High)}
 	text := "noise\nboom found\nnoise\n"
 	document := readDocument(text, rules, []model.LineFilter{keep(`target`)}, nil)
 	// lines with a signal match are exempt from keep filtering
@@ -110,7 +110,8 @@ func TestNormalizeProducesNotes(t *testing.T) {
 		return &model.Shaped{
 			Text: "rewritten",
 			Notes: []model.LineMatch{
-				{Line: 0, Match: model.Match{ID: "note", Severity: model.High, Message: "normalize verdict", Start: 0, End: 9}},
+				{Line: 0, Match: model.Match{ID: "note", Severity: model.High, Message: "normalize verdict",
+					Spans: []model.Span{{Start: 0, End: 9}}}},
 			},
 		}
 	}
@@ -164,7 +165,7 @@ func TestCapBytesTruncatesOnRuneBoundary(t *testing.T) {
 }
 
 func TestSeverityTakesMinimum(t *testing.T) {
-	rules := []model.Rule{
+	rules := []model.Matcher{
 		rule("low", `hit`, model.Low),
 		rule("benign", `hit`, model.Benign),
 	}

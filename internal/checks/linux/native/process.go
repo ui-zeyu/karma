@@ -19,6 +19,7 @@ import (
 	"karma/internal/model"
 	"karma/internal/script"
 	"karma/internal/section"
+	"karma/internal/textutil"
 )
 
 // ProcCaps reads the session's capability set; the host's own container markers
@@ -199,7 +200,7 @@ type MinerScan struct {
 // this section reads the same however the table was read.
 func minerPsLines(snap processSnapshot, now time.Time, pattern *regexp.Regexp) []string {
 	var out []string
-	for _, line := range psAuxForest(snap, now) {
+	for _, line := range textutil.CollectLines(model.RecordsText(psAuxRecords(snap, now))) {
 		if pattern.MatchString(line) && !strings.Contains(line, "grep") {
 			out = append(out, line)
 		}

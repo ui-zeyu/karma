@@ -183,7 +183,7 @@ var tunnelToolRule = model.NewRule("tunnel-tool",
 // directories, the system roots, and /etc: the places a dropped file shows up
 // as a name, where SSH key material, a tunnel tool and a secret-looking name
 // are what the analyst reads the listing for.
-var keyDirRules = []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule}
+var keyDirRules = []model.Matcher{sshMaterialRule, tunnelToolRule, define.KeywordRule}
 
 // FilesystemChecks covers disks and files.
 var FilesystemChecks = []*model.Check{
@@ -195,7 +195,7 @@ var FilesystemChecks = []*model.Check{
 		readFilesCheck("/etc/fstab"),
 		// The six fields are padded to the body's widest cell (shape.Fstab) so
 		// the panel reads the grid; comments keep their own bytes.
-		define.CheckOpt{Syntax: model.SyntaxFstab, Normalize: shape.Fstab, Rules: []model.Rule{mountRemoteFsRule}}),
+		define.CheckOpt{Syntax: model.SyntaxFstab, Normalize: shape.Fstab, Rules: []model.Matcher{mountRemoteFsRule}}),
 	define.LinuxCheck("mounts", "Mount points", model.AspectFilesystem,
 		[]model.Step{
 			{{Label: "findmnt", Inv: model.Native{Body: native.Findmnt}}},
@@ -206,7 +206,7 @@ var FilesystemChecks = []*model.Check{
 				model.NewFilter("mount-noise", mountNoise, model.FilterDrop),
 			},
 			Syntax: model.SyntaxTable,
-			Rules:  []model.Rule{mountRemoteFsRule},
+			Rules:  []model.Matcher{mountRemoteFsRule},
 		}),
 	// GTFOBins is the only verdict surface on these listings: a documented
 	// escalation program under SUID/SGID is critical/high, everything else is
@@ -216,7 +216,7 @@ var FilesystemChecks = []*model.Check{
 	define.LinuxCheck("suid", "SUID files", model.AspectFilesystem,
 		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.ModeBitScan(os.ModeSetuid, privFsTypes)}}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("suid-gtfobins", gtfobinsPattern, model.Critical,
 					"SUID privilege-escalation program in GTFOBins"),
 				model.NewRule("suid-outside-system", `^/\S+`, model.High,
@@ -228,7 +228,7 @@ var FilesystemChecks = []*model.Check{
 	define.LinuxCheck("sgid", "SGID files", model.AspectFilesystem,
 		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.ModeBitScan(os.ModeSetgid, privFsTypes)}}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("sgid-gtfobins", gtfobinsPattern, model.High,
 					"SGID of a GTFOBins privilege-escalation program (group escalation)"),
 				model.NewRule("sgid-outside-system", `^/\S+`, model.Medium,
@@ -243,7 +243,7 @@ var FilesystemChecks = []*model.Check{
 			// needs no root list; the local tier walks the same vocabulary.
 			{Label: "getcap", Inv: model.Native{Body: native.FileCaps(privFsTypes)}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				// Both rules span the whole `cap_...=value` assignment: the span is
 				// what the panel paints, and getcap's value (e, i, p) carries the
 				// meaning.
@@ -267,7 +267,7 @@ var FilesystemChecks = []*model.Check{
 			// A target that has tree installed already drew a tree, and that body
 			// passes through; the walk's listing rows are drawn here.
 			Normalize: shape.HomeTree,
-			Rules:     []model.Rule{sshMaterialRule, tunnelToolRule, define.KeywordRule},
+			Rules:     []model.Matcher{sshMaterialRule, tunnelToolRule, define.KeywordRule},
 		}),
 	define.LinuxCheck("web-dirs", "Recently changed scripts in web directories", model.AspectFilesystem,
 		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.RecentFiles(native.RecentScan{
@@ -277,7 +277,7 @@ var FilesystemChecks = []*model.Check{
 			Window:   webScriptWindow,
 		})}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("web-script", `\.(?:php[3-5]?|phtml|jsp|jspx|sh|py)$`, model.Medium,
 					"recently changed web script"),
 				define.KeywordRule,
@@ -293,7 +293,7 @@ var FilesystemChecks = []*model.Check{
 			ExcludeDirs: webshellExcludeDirs,
 		})}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("webshell-direct", `(?i)`+webshellDirect, model.Critical,
 					"request parameter passed straight into an exec function (one-liner webshell shape)"),
 				model.NewRule("webshell-decode", `(?i)`+webshellDecode, model.High,

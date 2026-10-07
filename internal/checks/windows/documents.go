@@ -178,12 +178,12 @@ func isDigits(text string) bool {
 var DocumentsChecks = []*model.Check{
 	RegCheck("recent-docs", "Recent Documents (RecentDocs)", model.AspectDocuments,
 		[]RegKey{{Path: recentDocsKey, Recurse: true, Label: "reg-direct"}},
-		define.CheckOpt{Normalize: recentDocsNormalize, Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Normalize: recentDocsNormalize, Rules: []model.Matcher{define.KeywordRule}}),
 	RegCheck("opensave-mru", "Open/Save Dialog History (ComDlg32)", model.AspectDocuments,
 		[]RegKey{{Path: comdlg32Key, Recurse: true, Label: "reg-direct"}},
 		define.CheckOpt{
 			Normalize: opensaveNormalize,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("opensave-temp-exec", tempExecutable, model.High,
 					"executable from temp/download directory in dialog"),
 				define.KeywordRule,
@@ -191,14 +191,14 @@ var DocumentsChecks = []*model.Check{
 		}),
 	define.WindowsCheck("office-mru", "Office Recent Files (File/Place MRU)", model.AspectDocuments,
 		[]model.Step{{PSProbe("reg", officeScript)}},
-		define.CheckOpt{Normalize: officeMruNormalize, Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Normalize: officeMruNormalize, Rules: []model.Matcher{define.KeywordRule}}),
 	RegCheck("adobe-recent", "Adobe Recent PDFs (cRecentFiles)", model.AspectDocuments,
 		adobeKeys,
-		define.CheckOpt{Syntax: model.SyntaxReg, Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Syntax: model.SyntaxReg, Rules: []model.Matcher{define.KeywordRule}}),
 	define.WindowsCheck("lnk-recent", "Shortcut Targets (Recent LNK)", model.AspectDocuments,
 		[]model.Step{{PSProbe("com", lnkScript)}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("lnk-mshta", lnkMshta, model.Critical,
 					"shortcut executes remote content via mshta (lure)"),
 				model.NewRule("lnk-url-argument", lnkURL, model.High, "shortcut arguments carry a network address"),
@@ -211,8 +211,8 @@ var DocumentsChecks = []*model.Check{
 			{Path: winzipLegacyKey, Recurse: true, Label: "winzip-old"},
 			{Path: winrarKey, Recurse: true, Label: "winrar"},
 		},
-		define.CheckOpt{Normalize: archiveNormalize, Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Normalize: archiveNormalize, Rules: []model.Matcher{define.KeywordRule}}),
 	define.WindowsCheck("jumplists", "Jump Lists (JumpLists, String Extraction)", model.AspectDocuments,
 		[]model.Step{{PSProbe("strings", jumplistScript)}},
-		define.CheckOpt{Timeout: stringsTimeout, Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Timeout: stringsTimeout, Rules: []model.Matcher{define.KeywordRule}}),
 }

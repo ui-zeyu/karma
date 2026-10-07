@@ -49,7 +49,8 @@ func TestOutlierMarkerAndMatch(t *testing.T) {
 	}
 
 	verdict := cluster.OutlierMatch("/tmp/.hidden", "!", 20)
-	if verdict == nil || verdict.Severity != model.Medium || verdict.End != 20 {
+	if verdict == nil || verdict.Severity != model.Medium ||
+		len(verdict.Spans) != 1 || verdict.Spans[0].End != 20 {
 		t.Fatalf("hidden file outlier should be medium over the whole line: %+v", verdict)
 	}
 	if v := cluster.OutlierMatch("/tmp/x.sh", "!", 10); v == nil || v.Severity != model.Low {
@@ -172,7 +173,7 @@ func TestListingNormalizeAlignsColumns(t *testing.T) {
 		t.Fatalf("the two outliers should be flagged: %+v", shaped.Notes)
 	}
 	for _, note := range shaped.Notes {
-		if note.Match.End != len(lines[note.Line]) {
+		if len(note.Match.Spans) != 1 || note.Match.Spans[0].End != len(lines[note.Line]) {
 			t.Fatalf("a verdict covers the whole aligned line: %+v", note)
 		}
 	}

@@ -38,7 +38,7 @@ var NetworkChecks = []*model.Check{
 		},
 		define.CheckOpt{
 			Syntax: model.SyntaxListen,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				// Established connections are the normal-case listing (every SSH session is in
 				// it), so making them always-printed findings would let --max-lines fail to bound
 				// the connection table; the process holding the socket is the signal, lit by the
@@ -90,7 +90,7 @@ var NetworkChecks = []*model.Check{
 			{{Label: "nft", Inv: model.NewCommand("nft", "list", "ruleset")}},
 		},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("firewall-active", `^-A `, model.Medium, "active firewall rule"),
 			},
 		}),
@@ -100,7 +100,7 @@ var NetworkChecks = []*model.Check{
 	define.LinuxCheck("tcp-wrappers", "TCP Wrappers (hosts.allow/deny)", model.AspectNetwork,
 		readFilesCheck("/etc/hosts.allow", "/etc/hosts.deny"),
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("wrappers-exec", `\b(?:spawn|twist)\b`, model.High,
 					"command runs on match (backdoor vector)"),
 				model.NewRule("wrappers-active", `^[^#\s][^:]*:`, model.Medium,
@@ -110,7 +110,7 @@ var NetworkChecks = []*model.Check{
 	define.LinuxCheck("hosts-file", "hosts and DNS config", model.AspectNetwork,
 		readFilesCheck("/etc/hosts", "/etc/resolv.conf"),
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				// "maps to a non-loopback address" becomes an exclusion (RE2 has no lookahead).
 				// The span is the whole entry, names included and the trailing comment
 				// left out: the span is what the panel paints. A comment-only row maps

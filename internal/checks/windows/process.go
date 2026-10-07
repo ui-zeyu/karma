@@ -18,7 +18,7 @@ var ProcessChecks = []*model.Check{
 	define.WindowsCheck("processes", "Process List (with Command Line)", model.AspectProcess,
 		[]model.Step{{PSProbe("cim", processesScript)}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("proc-temp-exe", procTempExe, model.High,
 					"executable running from temp directory"),
 				model.NewRule("proc-payload", procPayload, model.High,

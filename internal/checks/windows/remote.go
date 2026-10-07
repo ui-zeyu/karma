@@ -67,7 +67,7 @@ var RemoteChecks = []*model.Check{
 		remoteCtrlKeys,
 		define.CheckOpt{
 			Syntax: model.SyntaxReg,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("remote-ctrl-registry", remoteCtrlRegistry, model.High,
 					"remote control software registry traces"),
 				model.NewRule("remote-ctrl-service", remoteCtrlService, model.High,
@@ -84,7 +84,7 @@ var RemoteChecks = []*model.Check{
 			Filters: []model.LineFilter{
 				model.NewFilter("sunlogin-keep", sunloginKeep, model.FilterKeep),
 			},
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("sunlogin-remote-cmd", `(?i)path:\s*/check\?cmd=`, model.High,
 					"remote command executed through the Sunlogin HTTP interface"),
 				model.NewRule("sunlogin-verify-haras", `(?i)/cgi-bin/rpc\?action=verify-haras`, model.Medium,

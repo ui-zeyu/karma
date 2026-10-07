@@ -1,6 +1,6 @@
-// The ps-shaped tiers: the auxww table with ps's own forest ladder drawn in the
-// command column, the System V table, and the two sorted views. The /proc read
-// behind them is proctable.go; top and pstree have their own files.
+// The ps-shaped tiers: the auxww table, the System V table, and the two sorted
+// views. The /proc read behind them is proctable.go; top and pstree have their
+// own files.
 //
 // Every tier here renders the in-process listing, so no userspace interposition
 // (an LD_PRELOAD hook in a wrapped ps, a PATH shadow) can reshape the evidence on
@@ -11,11 +11,9 @@
 package native
 
 import (
-	"cmp"
 	"context"
 	"fmt"
-	"slices"
-	"strings"
+	"strconv"
 	"time"
 
 	"karma/internal/model"
@@ -105,194 +103,130 @@ func psUserCell(name string) string {
 	return name
 }
 
-// psAuxHeader is the procps aux header the table styler anchors on.
-const psAuxHeader = "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND"
-
-// forestRow is one row of the aux table in ps's forest order: the process, and
-// the ladder ps draws at the head of its COMMAND cell.
-type forestRow struct {
-	entry  procEntry
-	prefix string // four columns per level below the root; empty at the root
+// PsAuxColumns is the auxww table's columns, in ps's own order: the header the
+// panel draws, and the name every field of a record carries. It is exported
+// because it is the tier's schema — the check's table declaration is keyed by
+// these names, and a fixture that builds a body by hand reads them from here.
+var PsAuxColumns = []string{
+	"USER", "PID", "%CPU", "%MEM", "VSZ", "RSS", "TTY", "STAT", "START", "TIME", "COMMAND",
 }
 
-// forestRows orders the table the way ps does when the f flag is given, and
-// works out each row's ladder.
-//
-// procps sorts its array by parent and then by start time, which is what puts a
-// parent's children side by side; it then walks that array backwards and prints
-// a tree for every process whose parent is not in the table, each tree depth
-// first with its children in array order. A child of pid 1 prints at its
-// parent's level — procps adopts init's children — which is what keeps a
-// session chain from marching one column right for every sshd hop.
-func forestRows(entries []procEntry) []forestRow {
-	ordered := slices.Clone(entries)
-	slices.SortStableFunc(ordered, func(a, b procEntry) int {
-		// start time, then pid: processes born in the same tick stay in a
-		// fixed order rather than the readdir order they arrived in
-		return cmp.Or(
-			cmp.Compare(a.ppid, b.ppid),
-			cmp.Compare(a.starttime, b.starttime),
-			cmp.Compare(a.pid, b.pid),
-		)
-	})
-	children := make(map[int][]int, len(ordered))
-	inTable := make(map[int]bool, len(ordered))
-	for index, entry := range ordered {
-		inTable[entry.pid] = true
-		children[entry.ppid] = append(children[entry.ppid], index)
-	}
-	var (
-		rows    []forestRow
-		printed = make([]bool, len(ordered))
-	)
-	var walk func(index int, prefix string, hasSibling bool)
-	walk = func(index int, prefix string, hasSibling bool) {
-		entry := ordered[index]
-		printed[index] = true
-		rows = append(rows, forestRow{entry: entry, prefix: prefix})
-		kids := children[entry.pid]
-		for n, kid := range kids {
-			if printed[kid] {
-				continue
-			}
-			// Whether this row still has a sibling below it decides the bar
-			// its children hang from; the child's own place decides only its
-			// connector, which reads the same either way.
-			kidHasSibling := n != len(kids)-1
-			// An adopted child (pid 1's) renders where its parent did, so it
-			// adds no column of its own.
-			if entry.pid == 1 {
-				walk(kid, prefix, kidHasSibling)
-				continue
-			}
-			walk(kid, childPrefix(prefix, hasSibling), kidHasSibling)
+// psEfColumns is the System V table's columns.
+var psEfColumns = []string{"UID", "PID", "PPID", "C", "STIME", "TTY", "TIME", "CMD"}
+
+// fields names a row's values in column order, so the values and the header
+// they travel with cannot drift apart.
+func fields(names, values []string) []model.Field {
+	fields := make([]model.Field, len(values))
+	for index, value := range values {
+		name := ""
+		if index < len(names) {
+			name = names[index]
 		}
+		fields[index] = model.Field{Name: name, Value: value}
 	}
-	for index := len(ordered) - 1; index >= 0; index-- {
-		if printed[index] || inTable[ordered[index].ppid] {
-			continue
-		}
-		walk(index, "", false)
-	}
-	return rows
+	return fields
 }
 
-// childPrefix is the ladder a row passes to its children: its own prefix with
-// the connector replaced by the bar that runs down to its siblings — four
-// spaces when it is the last of them — and then the next level's connector.
-// That is ps's own spelling: " \_ " for the connector, " |  " for the bar.
-func childPrefix(prefix string, hasSibling bool) string {
-	const (
-		connector = ` \_ `
-		bar       = ` |  `
-		gap       = "    "
-	)
-	if prefix == "" {
-		return connector
+// psAuxRecords is the aux table as records, one row per process in the pid
+// order the snapshot reads. The command line is the kernel's own spelling of
+// it; the hierarchy is the pstree tier's business, drawn from the parent link.
+func psAuxRecords(snap processSnapshot, now time.Time) []model.Record {
+	records := make([]model.Record, 0, len(snap.entries))
+	for _, entry := range snap.entries {
+		records = append(records, model.Record{
+			Fields: fields(PsAuxColumns, psAuxValues(entry, snap.boot, now, snap.uptime, snap.memTotal)),
+		})
 	}
-	if hasSibling {
-		return prefix[:len(prefix)-len(connector)] + bar + connector
-	}
-	return prefix[:len(prefix)-len(connector)] + gap + connector
+	return records
 }
 
-// psAuxForest renders the aux table in the forest order and shape of this
-// tier's shell counterpart, `ps auxwwf`: same columns, with the hierarchy drawn
-// in the COMMAND cell.
-func psAuxForest(snap processSnapshot, now time.Time) []string {
-	rows := forestRows(snap.entries)
-	text := make([]string, 0, len(rows))
-	for _, row := range rows {
-		entry := row.entry
-		entry.args = row.prefix + entry.args
-		text = append(text, psAuxRow(entry, snap.boot, now, snap.uptime, snap.memTotal))
-	}
-	return text
-}
-
-// psAuxRow renders one auxww row: the shape every ps aux consumer (and the
-// miner filter) matches on.
-func psAuxRow(e procEntry, boot time.Time, now time.Time, uptime float64, memTotal int64) string {
-	return fmt.Sprintf("%-8s %5d %4.1f %4.1f %6d %5d %-7s %-4s %-5s %6s %s",
-		psUserCell(e.user), e.pid, e.cpuPercent(uptime), e.memPercent(memTotal),
-		e.vsizeKiB(), e.rssKiB(),
+// psAuxValues is one auxww row's values: what ps prints in each column, and
+// none of the widths it pads them to — the panel's table decides those.
+func psAuxValues(e procEntry, boot time.Time, now time.Time, uptime float64, memTotal int64) []string {
+	return []string{
+		psUserCell(e.user), strconv.Itoa(e.pid),
+		fmt.Sprintf("%.1f", e.cpuPercent(uptime)), fmt.Sprintf("%.1f", e.memPercent(memTotal)),
+		strconv.FormatInt(e.vsizeKiB(), 10), strconv.FormatInt(e.rssKiB(), 10),
 		ttyName(e.ttyNr), e.psStatString(), e.startClock(boot, now),
-		psTimeFormat(e.cpuSeconds()), e.args)
+		psTimeFormat(e.cpuSeconds()), e.args,
+	}
 }
 
-// psEfRow renders one `ps -ef` row.
-func psEfRow(e procEntry, boot time.Time, now time.Time, uptime float64) string {
-	c := int(e.cpuPercent(uptime) + 0.5)
-	return fmt.Sprintf("%-8s %6d %6d %3d %-5s %-8s %6s %s",
-		psUserCell(e.user), e.pid, e.ppid, c, e.startClock(boot, now),
-		ttyName(e.ttyNr), psTimeFormat(e.cpuSeconds()), e.args)
+// psEfValues is one `ps -ef` row's values.
+func psEfValues(e procEntry, boot time.Time, now time.Time, uptime float64) []string {
+	return []string{
+		psUserCell(e.user), strconv.Itoa(e.pid), strconv.Itoa(e.ppid),
+		strconv.Itoa(int(e.cpuPercent(uptime) + 0.5)),
+		e.startClock(boot, now), ttyName(e.ttyNr), psTimeFormat(e.cpuSeconds()), e.args,
+	}
 }
 
-// PsAux renders the auxww table with the hierarchy drawn in it: the same
-// rows `ps auxwwf` prints, forest order, ladder, and all. This is the tier that
-// answers in practice, so the local channel gets the columns and the tree from
-// one panel.
-func PsAux(ctx context.Context) (string, error) {
+// psEfRecords is the System V table as records.
+func psEfRecords(snap processSnapshot, now time.Time) []model.Record {
+	records := make([]model.Record, 0, len(snap.entries))
+	for _, entry := range snap.entries {
+		records = append(records, model.Record{
+			Fields: fields(psEfColumns, psEfValues(entry, snap.boot, now, snap.uptime)),
+		})
+	}
+	return records
+}
+
+// PsAux reads the auxww table: the same rows `ps auxww` prints — one row per
+// process in pid order, the command line as the kernel spells it — handed over
+// as the fields they are.
+func PsAux(ctx context.Context) (*model.RecordSet, error) {
 	snap := procSnapshot(ctx)
 	if !snap.ok {
-		return "", model.ErrTierUnavailable
+		return nil, model.ErrTierUnavailable
 	}
-	now := time.Now()
-	var b strings.Builder
-	b.WriteString(psAuxHeader + "\n")
-	for _, row := range psAuxForest(snap, now) {
-		b.WriteString(row)
-		b.WriteByte('\n')
+	if err := snap.cutReason(ctx); err != nil {
+		return &model.RecordSet{Header: PsAuxColumns, Rows: psAuxRecords(snap, time.Now())}, err
 	}
-	return b.String(), snap.cutReason(ctx)
+	return &model.RecordSet{Header: PsAuxColumns, Rows: psAuxRecords(snap, time.Now())}, nil
 }
 
-// PsEf renders the System V table.
-func PsEf(ctx context.Context) (string, error) {
+// PsEf reads the System V table.
+func PsEf(ctx context.Context) (*model.RecordSet, error) {
 	snap := procSnapshot(ctx)
 	if !snap.ok {
-		return "", model.ErrTierUnavailable
+		return nil, model.ErrTierUnavailable
 	}
-	now := time.Now()
-	var b strings.Builder
-	b.WriteString("UID          PID  PPID  C STIME TTY          TIME CMD\n")
-	for _, e := range snap.entries {
-		b.WriteString(psEfRow(e, snap.boot, now, snap.uptime))
-		b.WriteByte('\n')
-	}
-	return b.String(), snap.cutReason(ctx)
+	set := &model.RecordSet{Header: psEfColumns, Rows: psEfRecords(snap, time.Now())}
+	return set, snap.cutReason(ctx)
 }
 
-// nativePsSort renders an aux table sorted by a column, ps --sort's shape; the
-// machine facts arrive once, with the key computed once per row.
+// nativePsSort reads aux rows sorted by a column, ps --sort's shape; the machine
+// facts arrive once, with the key computed once per row.
 func nativePsSort(ctx context.Context,
-	key func(e procEntry, uptime float64, memTotal int64) float64) (string, error) {
+	key func(e procEntry, uptime float64, memTotal int64) float64) (*model.RecordSet, error) {
 	snap := procSnapshot(ctx)
 	if !snap.ok {
-		return "", model.ErrTierUnavailable
+		return nil, model.ErrTierUnavailable
 	}
 	entries := sortedByKey(snap.entries, func(e procEntry) float64 {
 		return key(e, snap.uptime, snap.memTotal)
 	})
 	now := time.Now()
-	var b strings.Builder
-	b.WriteString(psAuxHeader + "\n")
-	for _, e := range entries {
-		b.WriteString(psAuxRow(e, snap.boot, now, snap.uptime, snap.memTotal))
-		b.WriteByte('\n')
+	rows := make([]model.Record, 0, len(entries))
+	for _, entry := range entries {
+		rows = append(rows, model.Record{
+			Fields: fields(PsAuxColumns, psAuxValues(entry, snap.boot, now, snap.uptime, snap.memTotal)),
+		})
 	}
-	return b.String(), snap.cutReason(ctx)
+	return &model.RecordSet{Header: PsAuxColumns, Rows: rows}, snap.cutReason(ctx)
 }
 
 // PsCPU is `ps aux --sort=-%cpu`.
-func PsCPU(ctx context.Context) (string, error) {
+func PsCPU(ctx context.Context) (*model.RecordSet, error) {
 	return nativePsSort(ctx, func(e procEntry, uptime float64, _ int64) float64 {
 		return e.cpuPercent(uptime)
 	})
 }
 
 // PsMem is `ps aux --sort=-%mem`.
-func PsMem(ctx context.Context) (string, error) {
+func PsMem(ctx context.Context) (*model.RecordSet, error) {
 	return nativePsSort(ctx, func(e procEntry, _ float64, _ int64) float64 {
 		return float64(e.rss)
 	})

@@ -88,13 +88,14 @@ func TestCheckPanelSignalRail(t *testing.T) {
 			Sections: []model.Section{{Lines: []model.Line{
 				{
 					Text: "tcp 0.0.0.0:22", Severity: model.High,
-					Matches: []model.Match{{ID: "open", Severity: model.High, Message: "external listener", Start: 0, End: 3}},
+					Matches: []model.Match{{ID: "open", Severity: model.High, Message: "external listener",
+						Spans: []model.Span{{Start: 0, End: 3}}}},
 				},
 				{Text: long, Severity: model.Info},
 			}}},
 		},
 	}
-	got := checkPanel(result, 40, width)
+	got := checkPanel(result, 40, width, true)
 	lines := strings.Split(got, "\n")
 	if len(lines) < 3 {
 		t.Fatalf("panel too short: %q", plain(got))
@@ -145,7 +146,7 @@ func TestCheckPanelNoteBlock(t *testing.T) {
 		Note:    "timeout (30s), partial output kept",
 		Raw:     "line one\nline two\n",
 	}
-	got := checkPanel(result, 400, 80)
+	got := checkPanel(result, 400, 80, true)
 	if got == "" {
 		t.Fatal("a check with a note must not stay silent")
 	}
@@ -173,7 +174,7 @@ func TestCheckPanelQuietRailAndSkippedLine(t *testing.T) {
 			{Lines: []model.Line{{Text: "root:x:0:0:root:/root:/bin/bash", Severity: model.Info}}},
 		}},
 	}
-	lines := strings.Split(checkPanel(quiet, 40, 80), "\n")
+	lines := strings.Split(checkPanel(quiet, 40, 80, true), "\n")
 	quietRail := mutedStyle.seq().Render("▌")
 	for i, line := range lines {
 		if !strings.HasPrefix(plain(line), "▌ ") {
@@ -192,7 +193,7 @@ func TestCheckPanelQuietRailAndSkippedLine(t *testing.T) {
 		Outcome:       model.Skipped,
 		SkippedLabels: []string{"last", "lastlog"},
 	}
-	if got := checkPanel(skipped, 40, 80); got != "" {
+	if got := checkPanel(skipped, 40, 80, true); got != "" {
 		t.Fatalf("a check that was never collected should stay silent: %q", plain(got))
 	}
 	empty := &model.CheckResult{
@@ -200,7 +201,7 @@ func TestCheckPanelQuietRailAndSkippedLine(t *testing.T) {
 		Outcome:  model.Collected,
 		Document: model.Document{Sections: []model.Section{{}}},
 	}
-	if got := checkPanel(empty, 40, 80); got != "" {
+	if got := checkPanel(empty, 40, 80, true); got != "" {
 		t.Fatalf("a check collected with no content should stay silent: %q", plain(got))
 	}
 }
@@ -219,7 +220,7 @@ func TestTitleOnlySectionIsShown(t *testing.T) {
 			TitleMatches: []model.Match{{ID: "evil-path", Severity: model.High, Message: "hidden payload path"}},
 		}}},
 	}
-	panel := plain(checkPanel(result, 40, 80))
+	panel := plain(checkPanel(result, 40, 80, true))
 	if !strings.Contains(panel, "/tmp/.evil") || !strings.Contains(panel, "hidden payload path") {
 		t.Fatalf("a title-only finding lost its text or reason: %q", panel)
 	}
@@ -256,7 +257,7 @@ func TestCheckPanelHeadIsASubBand(t *testing.T) {
 			{Text: "tcp 0.0.0.0:22", Severity: model.Info},
 		}}}},
 	}
-	panel := checkPanel(result, 40, width)
+	panel := checkPanel(result, 40, width, true)
 	lines := strings.Split(panel, "\n")
 	head := lines[0]
 	if got := lipgloss.Width(head); got != railInner(width)+1 {
@@ -284,7 +285,7 @@ func TestCheckPanelHeadIsASubBand(t *testing.T) {
 	long.Document.Truncated = true
 	long.Document.Filtered = []model.FilterCount{{ID: "quiet", Count: 12}}
 	long.Check.ID = "last-log"
-	narrow := checkPanel(long, 40, 20)
+	narrow := checkPanel(long, 40, 20, true)
 	narrowLines := strings.Split(narrow, "\n")
 	if plain(narrowLines[0]) == plain(narrowLines[1]) {
 		t.Fatalf("the metadata should sit on its own band row:\n%s", plain(narrow))
@@ -308,7 +309,7 @@ func TestCheckPanelBoundsUnbreakableTokens(t *testing.T) {
 			{Text: "501 1 0 0 Tue09AM ?? 0:00 x " + blob, Severity: model.Info},
 		}}}},
 	}
-	panel := checkPanel(result, 40, 100)
+	panel := checkPanel(result, 40, 100, true)
 	for index, line := range strings.Split(panel, "\n") {
 		if got := lipgloss.Width(line); got > lineWidth(100) {
 			t.Fatalf("line %d is %d cells wide: %q", index, got, plain(line))
@@ -478,13 +479,13 @@ func TestLineStylerPanicFallsBackToPlain(t *testing.T) {
 func TestPanelRenderPanicFallsBackToPlainBlock(t *testing.T) {
 	original := panelRenderer
 	defer func() { panelRenderer = original }()
-	panelRenderer = func(*model.CheckResult, int, int) string { panic("layout blew up") }
+	panelRenderer = func(*model.CheckResult, int, int, bool) string { panic("layout blew up") }
 	result := &model.CheckResult{
 		Check:   &model.Check{ID: "listen", Aspect: model.AspectNetwork},
 		Outcome: model.Collected,
 		Raw:     "tcp 0.0.0.0:22\n",
 	}
-	text, failed := renderPanel(result, 400, 100)
+	text, failed := renderPanel(result, 400, 100, true)
 	if !failed || text == "" {
 		t.Fatalf("a failed render should fall back to the grey block: failed=%v text=%q", failed, plain(text))
 	}
@@ -510,7 +511,8 @@ func TestProgressDoesNotStickToPanels(t *testing.T) {
 			Lines: []model.Line{{
 				Text: "tcp 0.0.0.0:22", Severity: model.High,
 				Matches: []model.Match{{
-					ID: "open", Severity: model.High, Message: "external listener", Start: 0, End: 3,
+					ID: "open", Severity: model.High, Message: "external listener",
+					Spans: []model.Span{{Start: 0, End: 3}},
 				}},
 			}},
 		}}},
@@ -618,11 +620,13 @@ func TestBodyRowsSourceBlocks(t *testing.T) {
 		Outcome: model.Collected,
 		Document: model.Document{Sections: []model.Section{
 			{
-				Title:        "/etc/cron.d/evil",
-				TitleMatches: []model.Match{{ID: "cron-reboot", Severity: model.High, Message: "reboot trigger", Start: 5, End: 10}},
+				Title: "/etc/cron.d/evil",
+				TitleMatches: []model.Match{{ID: "cron-reboot", Severity: model.High, Message: "reboot trigger",
+					Spans: []model.Span{{Start: 5, End: 10}}}},
 				Lines: []model.Line{{
 					Text: "@reboot cmd", Severity: model.High,
-					Matches: []model.Match{{ID: "cron-reboot", Severity: model.High, Message: "reboot trigger", Start: 0, End: 7}},
+					Matches: []model.Match{{ID: "cron-reboot", Severity: model.High, Message: "reboot trigger",
+						Spans: []model.Span{{Start: 0, End: 7}}}},
 				}},
 			},
 			{
@@ -631,7 +635,7 @@ func TestBodyRowsSourceBlocks(t *testing.T) {
 			},
 		}},
 	}
-	rows := bodyRows(result, 400, 100)
+	rows := bodyRows(result, 400, 100, true)
 	if got := plain(rows[0]); got != "/etc/cron.d/evil  ⟨reboot trigger⟩" {
 		t.Fatalf("the source title should come before the body, with the trailing reason: %q", got)
 	}
@@ -663,7 +667,7 @@ func TestBodyRowsPreludeComesFirst(t *testing.T) {
 			{Title: "/etc/passwd", Lines: []model.Line{{Text: "root:x:0:0:", Severity: model.Info}}},
 		}},
 	}
-	rows := bodyRows(result, 400, 100)
+	rows := bodyRows(result, 400, 100, true)
 	if plain(rows[0]) != "raw prelude" {
 		t.Fatalf("the preamble should come first: %q", plain(rows[0]))
 	}
@@ -950,7 +954,7 @@ func TestUnitsPanelPaintsStateCells(t *testing.T) {
 			{Text: "certbot.service  loaded active   exited     Certbot renewal", Severity: model.Info},
 		}}}},
 	}
-	panel := checkPanel(result, 40, 120)
+	panel := checkPanel(result, 40, 120, true)
 	if !strings.Contains(panel, style{fg: "2"}.seq().Render("running")) {
 		t.Fatalf("running should be green in the panel:\n%s", plain(panel))
 	}
@@ -973,7 +977,7 @@ func TestUnitsPanelPaintsSysvStateMarkers(t *testing.T) {
 			{Text: " [ ? ]  dnsmasq", Severity: model.Info},
 		}}}},
 	}
-	panel := checkPanel(result, 40, 120)
+	panel := checkPanel(result, 40, 120, true)
 	if !strings.Contains(panel, style{fg: "2"}.seq().Render("[ + ]")) {
 		t.Fatalf("a running marker should be green as one field:\n%s", plain(panel))
 	}
@@ -991,7 +995,8 @@ func TestUnitsPanelPaintsSysvStateMarkers(t *testing.T) {
 func TestLineTextMostSevereSpanWins(t *testing.T) {
 	const text = "cap_setuid=ep"
 	match := func(id string, severity model.Severity) model.Match {
-		return model.Match{ID: id, Severity: severity, Message: id, Start: 0, End: len(text)}
+		return model.Match{ID: id, Severity: severity, Message: id,
+			Spans: []model.Span{{Start: 0, End: len(text)}}}
 	}
 	for _, matches := range [][]model.Match{
 		{match("caps-setuid", model.Critical), match("caps-present", model.Low)},
@@ -1023,7 +1028,7 @@ func TestSkelPanelKeepsLsColorsForTheListing(t *testing.T) {
 			}},
 		}},
 	}
-	panel := checkPanel(result, 40, 120)
+	panel := checkPanel(result, 40, 120, true)
 	if !strings.Contains(panel, style{fg: "2"}.seq().Render("Jan 01 12:34")) {
 		t.Fatalf("the listing should keep the ls -l colors:\n%s", plain(panel))
 	}

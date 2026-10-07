@@ -65,8 +65,13 @@ func TestTempListingAlignsRowsAndNamesTheHiddenEntry(t *testing.T) {
 		}
 		named := false
 		for _, match := range line.Matches {
-			if match.ID == "hidden-tmp-path" && line.Text[match.Start:match.End] == "/tmp/.backdoor" {
-				named = true
+			if match.ID != "hidden-tmp-path" {
+				continue
+			}
+			for _, span := range match.Spans {
+				if line.Text[span.Start:span.End] == "/tmp/.backdoor" {
+					named = true
+				}
 			}
 		}
 		if !named {
@@ -97,10 +102,15 @@ func TestEtcListingFlagsAnIsolatedEntry(t *testing.T) {
 		verdict, named := false, false
 		for _, match := range line.Matches {
 			if match.ID == "mtime-outlier-hidden" {
-				verdict = match.Severity == model.Medium && match.End == len(line.Text)
+				verdict = match.Severity == model.Medium &&
+					len(match.Spans) == 1 && match.Spans[0].End == len(line.Text)
 			}
-			if match.ID == "hidden-nonhome-path" && line.Text[match.Start:match.End] == "/etc/.backdoor" {
-				named = true
+			if match.ID == "hidden-nonhome-path" {
+				for _, span := range match.Spans {
+					if line.Text[span.Start:span.End] == "/etc/.backdoor" {
+						named = true
+					}
+				}
 			}
 		}
 		if verdict && named {

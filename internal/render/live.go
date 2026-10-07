@@ -208,7 +208,7 @@ func (o *LiveObserver) flush() {
 	}
 }
 func (o *LiveObserver) emit(result *model.CheckResult) {
-	text, failed := renderPanel(result, o.maxLines, o.term)
+	text, failed := renderPanel(result, o.maxLines, o.term, o.tty)
 	if text == "" && !failed { // no signal: stay silent
 		return
 	}

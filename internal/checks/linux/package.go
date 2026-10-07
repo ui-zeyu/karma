@@ -46,7 +46,7 @@ const pkgHistoryLines = 300
 // are context rather than findings: the check keeps them with keep filters and
 // paints them by shape (the `pkg-history` syntax), so a row carries no severity
 // and no reason repeating what the check's own title says.
-var pkgHistoryRules = []model.Rule{
+var pkgHistoryRules = []model.Matcher{
 	// The keyword rule is excluded from the package lists apt prints: they are
 	// package names, and "debian-keyring" is not a leaked key. A signal there
 	// would also drag the whole line — one apt Install record runs to
@@ -130,14 +130,14 @@ var (
 var PackageChecks = []*model.Check{
 	define.LinuxCheck("containers", "Containers (Docker)", model.AspectPackage,
 		[]model.Step{{{Label: "docker", Inv: model.Native{Body: native.Docker}}}},
-		define.CheckOpt{Syntax: model.SyntaxTable, Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{Syntax: model.SyntaxTable, Rules: []model.Matcher{define.KeywordRule}}),
 	define.LinuxCheck("pkg-verify", "Package integrity verification", model.AspectPackage,
 		[]model.Step{
 			{{Label: "dpkg", Inv: model.Native{Body: native.PkgVerify([]string{"dpkg", "-V"})}}},
 			{{Label: "rpm", Inv: model.Native{Body: native.PkgVerify([]string{"rpm", "-Va"})}}},
 		},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				pkgChangedFileRule,
 				model.NewRule("pkg-checksum", `^..5`, model.High,
 					"checksum differs from package db").WithExclude(regularFileVerify),
@@ -152,7 +152,7 @@ var PackageChecks = []*model.Check{
 		}),
 	define.LinuxCheck("unowned-files", "Files no package owns (system directories)", model.AspectPackage,
 		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.UnownedFiles(unownedDirs)}, Cap: model.Scan(openScanLines)}}},
-		define.CheckOpt{Rules: []model.Rule{unownedFileRule}, Timeout: unownedTimeout}),
+		define.CheckOpt{Rules: []model.Matcher{unownedFileRule}, Timeout: unownedTimeout}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
 		[]model.Step{{{Label: "log", Inv: model.Native{Body: native.PkgHistory(pkgHistoryPaths, pkgHistoryLines)}}}},
 		define.CheckOpt{
@@ -165,6 +165,6 @@ var PackageChecks = []*model.Check{
 		[]model.Step{{{Label: "file", Inv: model.Native{Body: native.AuthBinaries(authBinPaths)}}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxLsL,
-			Rules:  []model.Rule{binNotElfRule, define.KeywordRule},
+			Rules:  []model.Matcher{binNotElfRule, define.KeywordRule},
 		}),
 }

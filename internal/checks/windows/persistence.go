@@ -128,7 +128,7 @@ var PersistenceChecks = []*model.Check{
 		},
 		define.CheckOpt{
 			Syntax: model.SyntaxReg,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("autorun-temp", autorunTempRule, model.High,
 					"autorun points to temp/public directory"),
 				model.NewRule("autorun-payload", autorunPayloadRule, model.High,
@@ -140,7 +140,7 @@ var PersistenceChecks = []*model.Check{
 	define.WindowsCheck("nt-services", "Service List (with binPath)", model.AspectPersistence,
 		[]model.Step{{PSProbe("cim", servicesScript)}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("svc-temp", serviceTempRule, model.High,
 					"service points to temp/public directory"),
 				model.NewRule("svc-unquoted", serviceUnquotedRule, model.Medium,
@@ -151,7 +151,7 @@ var PersistenceChecks = []*model.Check{
 	define.WindowsCheck("tasks", "Scheduled Task List (with Actions)", model.AspectPersistence,
 		[]model.Step{{PSProbe("task", tasksScript)}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("task-userpath", autorunTempRule, model.High,
 					"scheduled task points to temp/user-writable directory"),
 				// Payload traits are independent of path: a task disguised under the built-in \Microsoft\ path
@@ -164,7 +164,7 @@ var PersistenceChecks = []*model.Check{
 	define.WindowsCheck("wmi-subscription", "WMI Event Subscriptions (Persistence)", model.AspectPersistence,
 		[]model.Step{{PSProbe("cim", wmiSubscriptionScript)}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("wmi-consumer", wmiConsumerRule, model.High,
 					"WMI event subscription with consumer content"),
 				define.KeywordRule,
@@ -174,7 +174,7 @@ var PersistenceChecks = []*model.Check{
 		ifeoKeys,
 		define.CheckOpt{
 			Syntax: model.SyntaxReg,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("ifeo-debugger", ifeoDebuggerRule, model.High,
 					"Debugger value takes over a program at launch (confirm it is expected)"),
 				model.NewRule("ifeo-monitor", ifeoMonitorRule, model.High,
@@ -186,7 +186,7 @@ var PersistenceChecks = []*model.Check{
 		winlogonKeys,
 		define.CheckOpt{
 			Syntax: model.SyntaxReg,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				winlogonShellRule,
 				winlogonUserinitRule,
 				winlogonNotifyRule,
@@ -200,7 +200,7 @@ var PersistenceChecks = []*model.Check{
 		[]RegKey{{Path: appcompatLayersKey, Label: "layers"}},
 		define.CheckOpt{
 			Syntax: model.SyntaxReg,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				appcompatTempRule,
 				appcompatLayerRule,
 				appcompatSdbRule,
@@ -211,7 +211,7 @@ var PersistenceChecks = []*model.Check{
 	define.WindowsCheck("svc-dll", "svchost Service DLLs (ServiceDll)", model.AspectPersistence,
 		[]model.Step{{PSProbe("cim", serviceDllScript)}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				serviceDllTempRule,
 				serviceDllOutsideRule,
 				define.KeywordRule,

@@ -84,7 +84,7 @@ var IdentityChecks = []*model.Check{
 				model.NewFilter("acct-nologin",
 					`:(?:/usr/sbin/nologin|/sbin/nologin|/bin/false|/usr/bin/false)$`, model.FilterDrop),
 			},
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("acct-malformed-record", malformedRecordPattern(7), model.High,
 					"malformed /etc/passwd record (not seven colon-separated fields)"),
 				model.NewRule("acct-root-uid0", `^root:[^:]*:0:`, model.Benign, "the root account itself"),
@@ -114,7 +114,7 @@ var IdentityChecks = []*model.Check{
 			Filters: []model.LineFilter{
 				model.NewFilter("shadow-locked", `^[^:\n]+:[!*]+:`, model.FilterDrop),
 			},
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("shadow-malformed-record", malformedRecordPattern(9), model.High,
 					"malformed /etc/shadow record (not nine colon-separated fields)"),
 				model.NewRule("shadow-empty-root", `^root::`, model.Critical, "empty root password"),
@@ -137,7 +137,7 @@ var IdentityChecks = []*model.Check{
 			Filters: []model.LineFilter{
 				model.NewFilter("group-empty", `^[^:\n]+:[!*x]+:[^:]*:$`, model.FilterDrop),
 			},
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("group-malformed-record", malformedRecordPattern(4), model.High,
 					"malformed /etc/group record (not four colon-separated fields)"),
 				model.NewRule("group-privileged",
@@ -174,7 +174,7 @@ var IdentityChecks = []*model.Check{
 			{{Label: "sudo", Inv: model.NewCommand("sudo", "-n", "-l")}},
 		},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("sudo-nopasswd", `NOPASSWD`, model.High, "passwordless sudo grant"),
 				model.NewRule("sudoers-user-all", `^[^#%\n][^=\n]*\bALL\s*=`, model.Low,
 					"sudo grant to non-root user").WithExclude(`^(?:root\s|Defaults\b)`),
@@ -182,12 +182,12 @@ var IdentityChecks = []*model.Check{
 			},
 		}),
 	listingCheck("pam", "PAM config and module directories", model.AspectIdentity, pamDirs, 100,
-		[]model.Rule{define.KeywordRule}),
+		[]model.Matcher{define.KeywordRule}),
 	define.LinuxCheck("authorized-keys", "SSH authorized keys", model.AspectIdentity,
 		[]model.Step{{{Label: "find", Inv: model.Native{Body: native.AuthorizedKeys(homeGlobs, authorizedKeysDepth, sshdConfigPaths)}}}},
 		define.CheckOpt{
 			Syntax: model.SyntaxSSHPubkey,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("authkeys-force-command", `\bcommand="[^"\n]*"`, model.Medium,
 					"authorized_keys forced command"),
 				define.KeywordRule,
@@ -199,7 +199,7 @@ var IdentityChecks = []*model.Check{
 		readFilesCheck(sshdConfigPaths...),
 		define.CheckOpt{
 			Syntax: model.SyntaxSshdConfig,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("sshd-authorized-keys-file", `^\s*AuthorizedKeysFile\b`, model.Medium,
 					"AuthorizedKeysFile overridden"),
 				model.NewRule("sshd-permit-root-login", `^\s*PermitRootLogin\s+(?:yes|prohibit-password)\b`,
@@ -214,7 +214,7 @@ var IdentityChecks = []*model.Check{
 		readFilesCheck(sshClientConfigPaths...),
 		define.CheckOpt{
 			Syntax: model.SyntaxSshdConfig,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("ssh-client-proxy-command", `^\s*ProxyCommand\b`, model.Medium,
 					"ProxyCommand configured"),
 				model.NewRule("ssh-client-local-command", `^\s*(?:LocalCommand|PermitLocalCommand)\b`,

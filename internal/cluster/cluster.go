@@ -47,7 +47,8 @@ var (
 // annotation).
 func OutlierMatch(path, marker string, span int) *model.Match {
 	verdict := func(id string, severity model.Severity, message string) *model.Match {
-		return &model.Match{ID: id, Severity: severity, Message: message, Start: 0, End: span}
+		return &model.Match{ID: id, Severity: severity, Message: message,
+			Spans: []model.Span{{Start: 0, End: span}}}
 	}
 	switch {
 	case marker == "!!":

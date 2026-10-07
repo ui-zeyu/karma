@@ -137,7 +137,7 @@ var ExecutionChecks = []*model.Check{
 		userassistKeys,
 		define.CheckOpt{
 			Normalize: userassistNormalize,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("userassist-suspicious-path", suspiciousPath, model.Medium,
 					"executable run from an unusual location"),
 			},
@@ -149,7 +149,7 @@ var ExecutionChecks = []*model.Check{
 		trackKeys,
 		define.CheckOpt{
 			Syntax: model.SyntaxReg,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("userassist-track-disabled", trackDisabled, model.High,
 					"UserAssist program execution tracking disabled"),
 			},
@@ -158,7 +158,7 @@ var ExecutionChecks = []*model.Check{
 		runmruKeys,
 		define.CheckOpt{
 			Normalize: runmruNormalize,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("runmru-unc-path", runUNC, model.Medium, "network share path accessed from Run box"),
 				model.NewRule("runmru-suspicious", runSuspicious, model.High, "Run command with payload execution traits"),
 				define.KeywordRule,
@@ -168,7 +168,7 @@ var ExecutionChecks = []*model.Check{
 		[]model.Step{{PSProbe("type", psHistoryScript)}},
 		define.CheckOpt{
 			Syntax: model.SyntaxPowerShell,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("psreadline-suspicious", historySuspicious, model.High,
 					"history command with payload execution traits"),
 				model.NewRule("psreadline-clear-history", `\bClear-History\b`, model.High,
@@ -179,6 +179,6 @@ var ExecutionChecks = []*model.Check{
 	define.WindowsCheck("clipboard", "Current Clipboard Content", model.AspectExecution,
 		[]model.Step{{PSProbe("clipboard", clipboardScript)}},
 		define.CheckOpt{
-			Rules: []model.Rule{define.KeywordRule, define.PrivateKeyRule},
+			Rules: []model.Matcher{define.KeywordRule, define.PrivateKeyRule},
 		}),
 }

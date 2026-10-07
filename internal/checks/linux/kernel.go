@@ -117,7 +117,7 @@ var KernelChecks = []*model.Check{
 	define.LinuxCheck("modules-load", "Boot-loaded modules (/etc/modules, modules-load.d)", model.AspectKernel,
 		[]model.Step{{{Label: "cat", Inv: model.Native{Body: native.ModulesLoad(modulesLoadPaths)}}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				// Exclude a leading /: an == section title is a file path and should not light
 				// up as a module entry, otherwise a comment-only /etc/modules would produce an
 				// empty box by matching the title
@@ -141,7 +141,7 @@ var KernelChecks = []*model.Check{
 			// The Used by tail can contain spaces, which the generic table word-by-word
 			// coloring would split apart
 			Syntax: model.SyntaxLsmod,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				// Out-of-tree and unsigned are common on a healthy host (dkms, nvidia,
 				// virtualbox), so both are leads rather than findings: what makes them
 				// evidence is the module they belong to.
@@ -163,7 +163,7 @@ var KernelChecks = []*model.Check{
 		}),
 	listingCheck("module-files", "Out-of-tree kernel modules (updates/dkms, extra, etc.)", model.AspectKernel,
 		moduleDirs, 100,
-		[]model.Rule{
+		[]model.Matcher{
 			// The filename is at the end of an ls line (symlink lines carry " -> target", so
 			// the rule ends with \s|$); modules.* metadata in the root and entries under the
 			// kernel/ subdirectory are official content and are not flagged
@@ -185,7 +185,7 @@ var KernelChecks = []*model.Check{
 		[]model.Step{{{Label: "diff", Inv: model.Native{Body: native.ModulesHidden(hiddenModuleViews)},
 			Assemble: script.HiddenModuleBody}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				// The span carries the name: the reason is about that module, and the
 				// evidence tail after it is the module's own description.
 				model.NewRule("module-hidden", `^HIDDEN \S+`, model.Critical,
@@ -218,7 +218,7 @@ var KernelChecks = []*model.Check{
 	define.LinuxCheck("module-memory", "Module memory (vmalloc regions vs the module list)", model.AspectKernel,
 		[]model.Step{{{Label: "vmap", Inv: model.Native{Body: native.ModuleMemory(moduleMemoryViews, moduleImagesRe)}, Assemble: moduleMemoryBody}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				// The row carries the range, the caller and the symbols inside, so
 				// the analyst can read the same memory in /proc/kcore or in a dump.
 				model.NewRule("module-memory-unowned", `^UNOWNED \S+`, model.Critical,
@@ -248,7 +248,7 @@ var KernelChecks = []*model.Check{
 	define.LinuxCheck("kallsyms", "Kernel symbol table rootkit signatures (/proc/kallsyms)", model.AspectKernel,
 		[]model.Step{{{Label: "grep", Inv: model.Native{Body: native.Kallsyms(kallsymsRe)}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("kallsyms-rootkit", `\b(?:`+rootkitSyms+`)\b`, model.Critical,
 					"known LKM rootkit symbol in the kernel symbol table"),
 			},
@@ -256,7 +256,7 @@ var KernelChecks = []*model.Check{
 	define.LinuxCheck("tainted", "Kernel tainted flags", model.AspectKernel,
 		[]model.Step{{{Label: "tainted", Inv: model.Native{Body: native.Tainted}}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				// The whole mask is the finding, not its first digit: the span is
 				// what the panel paints, and what a reader needs is the number the
 				// bits add up to (12288 is out-of-tree + unsigned), not the
@@ -273,7 +273,7 @@ var KernelChecks = []*model.Check{
 		define.CheckOpt{
 			Syntax:  model.SyntaxDmesg,
 			Filters: dmesgKeepFilters,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("dmesg-taint", `(?i)\btaint`, model.Medium,
 					"kernel tainted (dmesg)"),
 				model.NewRule("dmesg-syscall-hook",

@@ -1,63 +1,20 @@
 // tests for the /proc process snapshot's pure parts: tty decoding, the ps
-// row formats, stat modifiers, the forest walk, the pstree render, and the
-// run's shared view.
+// row formats, stat modifiers, the tree nodes, and the run's shared view.
 
 package native
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"karma/internal/model"
 	"karma/internal/runstate"
 )
-
-// The forest walk reproduces ps's own f mode: procps sorts its array by parent
-// and then by start time, scans that array back to front for the processes
-// whose parent is absent, and draws four columns per level — " |  " while an
-// ancestor still has a sibling below it, "    " for a last child, and " \_ "
-// for the row's own connector. A child of pid 1 prints at its parent's level
-// (procps adopts init's children), so a session chain does not march one column
-// right at every hop. The fixture's array order is ppid 0:{1,2}, ppid 1:{6,9},
-// ppid 2:{3,4}, ppid 4:{5}, ppid 6:{7,70}, ppid 7:{8} — deliberately not pid
-// order, and the input slice is shuffled so the walk cannot lean on it.
-func TestForestRowsMatchPsForest(t *testing.T) {
-	entry := func(pid, ppid int, start int64) procEntry {
-		return procEntry{pid: pid, ppid: ppid, starttime: start, args: fmt.Sprintf("p%d", pid)}
-	}
-	entries := []procEntry{
-		entry(9, 1, 170), entry(70, 6, 180), entry(5, 4, 130), entry(8, 7, 160),
-		entry(4, 2, 120), entry(1, 0, 100), entry(3, 2, 110), entry(2, 0, 100),
-		entry(7, 6, 150), entry(6, 1, 140),
-	}
-	want := []struct {
-		pid    int
-		prefix string
-	}{
-		{2, ""}, {3, ` \_ `}, {4, ` \_ `}, {5, `     \_ `},
-		{1, ""}, {6, ""}, {7, ` \_ `}, {8, ` |   \_ `}, {70, ` \_ `}, {9, ""},
-	}
-	rows := forestRows(entries)
-	if len(rows) != len(want) {
-		t.Fatalf("forest printed %d rows, want %d: %+v", len(rows), len(want), rows)
-	}
-	for i, w := range want {
-		if rows[i].entry.pid != w.pid || rows[i].prefix != w.prefix {
-			t.Errorf("row %d = pid %d prefix %q, want pid %d prefix %q",
-				i, rows[i].entry.pid, rows[i].prefix, w.pid, w.prefix)
-		}
-	}
-	// An orphan whose parent is gone starts a tree of its own, like ps.
-	orphan := append([]procEntry{}, entries...)
-	orphan = append(orphan, procEntry{pid: 500, ppid: 499, starttime: 200, args: "orphan"})
-	if last := forestRows(orphan)[0]; last.entry.pid != 500 || last.prefix != "" {
-		t.Errorf("an orphan should be its own root, got pid %d prefix %q", last.entry.pid, last.prefix)
-	}
-}
 
 // A walk that a check's own deadline stopped is partial, and the tier says so:
 // the panel reads as a timeout with the rows already read, instead of passing
@@ -74,12 +31,12 @@ func TestProcessTierReportsACutWalk(t *testing.T) {
 			ok: true,
 		}
 	})
-	text, err := PsAux(ctx)
+	set, err := PsAux(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cut walk should be reported, got %v", err)
 	}
-	if !strings.Contains(text, "half") {
-		t.Fatalf("the rows already read should stay: %q", text)
+	if got, _ := set.Rows[0].Value("COMMAND"); got != "half" {
+		t.Fatalf("the rows already read should stay: %+v", set.Rows)
 	}
 }
 
@@ -107,19 +64,43 @@ func TestProcessTiersReadTheSharedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ps tier: %v", err)
 	}
-	if !strings.Contains(aux, "quiet --arg") || !strings.Contains(aux, "busy") {
-		t.Fatalf("the ps tier should render the shared snapshot:\n%s", aux)
+	if len(aux.Rows) != 2 {
+		t.Fatalf("the ps tier should read the shared snapshot: %+v", aux.Rows)
 	}
-	if tree, err := Pstree(ctx); err != nil || !strings.Contains(tree, "quiet(1)") {
-		t.Fatalf("pstree tier = %q, %v", tree, err)
+	for _, want := range []string{"quiet --arg", "busy"} {
+		if !slices.ContainsFunc(aux.Rows, func(rec model.Record) bool {
+			value, _ := rec.Value("COMMAND")
+			return value == want
+		}) {
+			t.Fatalf("the ps tier should carry %q: %+v", want, aux.Rows)
+		}
+	}
+	// The table is flat and in pid order, the way `ps auxww` prints it; the
+	// hierarchy is the tree tier's business.
+	if first, _ := aux.Rows[0].Value("COMMAND"); first != "quiet --arg" {
+		t.Fatalf("the ps tier should read the snapshot in pid order: %+v", aux.Rows)
+	}
+	if strings.Contains(model.RecordsText(aux.Rows), `\_`) {
+		t.Fatalf("the ps tier should carry no ladder: %q", model.RecordsText(aux.Rows))
+	}
+	tree, err := Pstree(ctx)
+	if err != nil || len(tree.Rows) != 2 {
+		t.Fatalf("pstree tier = %+v, %v", tree, err)
+	}
+	if !slices.ContainsFunc(tree.Rows, func(rec model.Record) bool {
+		pid, _ := rec.Value("PID")
+		parent, _ := rec.Value("PPID")
+		return pid == "2" && parent == "0"
+	}) {
+		t.Fatalf("the tree tier should carry the parent link: %+v", tree.Rows)
 	}
 
 	sorted, err := PsCPU(ctx)
 	if err != nil {
 		t.Fatalf("ps-cpu tier: %v", err)
 	}
-	if first := strings.SplitN(sorted, "\n", 3)[1]; !strings.Contains(first, "busy") {
-		t.Fatalf("the sorted tier should lead with the busiest process:\n%s", sorted)
+	if first, _ := sorted.Rows[0].Value("COMMAND"); first != "busy" {
+		t.Fatalf("the sorted tier should lead with the busiest process: %+v", sorted.Rows)
 	}
 	if got := procSnapshot(ctx).entries[0].comm; got != "quiet" {
 		t.Fatalf("sorting a tier's own copy reordered the shared snapshot: %q first", got)
@@ -230,44 +211,89 @@ func TestPsAuxRowShape(t *testing.T) {
 		utime: 6 * clkTck, stime: 3 * clkTck, starttime: 23 * 3600 * clkTck,
 		vsize: 25 << 20, rss: 4096, numThreads: 1,
 	}
-	row := psAuxRow(e, boot, now, 24*3600, 16<<30)
-	for _, want := range []string{"root", "2210", "pts/0", "Ss", "0:09", "bash -i"} {
-		if !strings.Contains(row, want) {
-			t.Errorf("aux row missing %q:\n%s", want, row)
+	rec := model.Record{Fields: fields(PsAuxColumns, psAuxValues(e, boot, now, 24*3600, 16<<30))}
+	// The values are what ps prints in each column, and none of the widths it
+	// pads them to: those are the table's business.
+	for name, want := range map[string]string{
+		"USER": "root", "PID": "2210", "TTY": "pts/0", "STAT": "Ss", "TIME": "0:09", "COMMAND": "bash -i",
+	} {
+		got, ok := rec.Value(name)
+		if !ok || got != want {
+			t.Errorf("%s = %q (present %v), want %q", name, got, ok, want)
 		}
 	}
 	kernel := e
 	kernel.args = "[" + kernel.comm + "]"
-	row = psAuxRow(kernel, boot, now, 24*3600, 16<<30)
-	if !strings.Contains(row, "[bash]") {
-		t.Errorf("kernel thread args should stay bracketed:\n%s", row)
+	rec = model.Record{Fields: fields(PsAuxColumns, psAuxValues(kernel, boot, now, 24*3600, 16<<30))}
+	if got, _ := rec.Value("COMMAND"); got != "[bash]" {
+		t.Errorf("kernel thread command = %q, want [bash]", got)
 	}
 }
 
-func TestRenderPstree(t *testing.T) {
-	entries := []procEntry{
-		{pid: 1, ppid: 0, comm: "systemd"},
-		{pid: 630, ppid: 1, comm: "accounts-daemon"},
-		{pid: 948, ppid: 1, comm: "sshd"},
-		{pid: 2200, ppid: 948, comm: "sshd"},
-		{pid: 2210, ppid: 2200, comm: "bash", args: "-bash"},
-	}
-	tree := renderPstree(entries)
-	want := []string{
-		"systemd(1)",
-		"|-accounts-daemon(630)",
-		"`-sshd(948)",
-		"  `-sshd(2200)",
-		"    `-bash(2210) -bash",
-	}
-	lines := strings.Split(strings.TrimRight(tree, "\n"), "\n")
-	if len(lines) != len(want) {
-		t.Fatalf("pstree lines = %d, want %d:\n%s", len(lines), len(want), tree)
-	}
-	for i, w := range want {
-		if lines[i] != w {
-			t.Errorf("pstree line %d = %q, want %q", i, lines[i], w)
+// A tier answers with the fields themselves: the names, the column order and
+// the values are what the reading layer judges and the form draws, with no text
+// form in between.
+func TestPsAuxBodyCarriesItsRecords(t *testing.T) {
+	ctx := runstate.WithStore(t.Context())
+	runstate.Memo(ctx, runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
+		return processSnapshot{
+			entries: []procEntry{
+				{pid: 1, comm: "systemd", args: "/sbin/init", state: 'S', user: "root", numThreads: 1},
+			},
+			boot: time.Unix(1_700_000_000, 0), uptime: 3600, memTotal: 1 << 30, ok: true, complete: true,
 		}
+	})
+	set, err := PsAux(ctx)
+	if err != nil {
+		t.Fatalf("ps tier: %v", err)
+	}
+	if len(set.Header) != len(PsAuxColumns) || set.Header[0] != "USER" {
+		t.Fatalf("header = %v, want the aux columns", set.Header)
+	}
+	if len(set.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(set.Rows))
+	}
+	if got, _ := set.Rows[0].Value("COMMAND"); got != "/sbin/init" {
+		t.Errorf("COMMAND = %q, want /sbin/init", got)
+	}
+	if text := model.RecordsText(set.Rows); !strings.Contains(text, "/sbin/init") {
+		t.Errorf("the readable rendering should carry the row: %q", text)
+	}
+}
+
+// The tree tier hands over the nodes and their links, and nothing that looks
+// like a drawing: the nesting is the tree form's, so nothing here spells a
+// ladder or a depth.
+func TestPstreeReadsTheNodesAndTheirLinks(t *testing.T) {
+	ctx := runstate.WithStore(t.Context())
+	runstate.Memo(ctx, runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
+		return processSnapshot{
+			entries: []procEntry{
+				{pid: 1, ppid: 0, comm: "systemd", args: "/sbin/init", state: 'S', user: "root", numThreads: 1},
+				{pid: 948, ppid: 1, comm: "sshd", args: "/usr/sbin/sshd -D", state: 'S', user: "root", numThreads: 1},
+				{pid: 2210, ppid: 948, comm: "bash", args: "-bash", state: 'S', user: "lab", numThreads: 1},
+			},
+			boot: time.Unix(1_700_000_000, 0), uptime: 3600, memTotal: 1 << 30, ok: true, complete: true,
+		}
+	})
+	set, err := Pstree(ctx)
+	if err != nil {
+		t.Fatalf("pstree tier: %v", err)
+	}
+	if !slices.Equal(set.Header, PsTreeColumns) {
+		t.Fatalf("header = %v, want the tree columns", set.Header)
+	}
+	want := []string{"1 0 root /sbin/init", "948 1 root /usr/sbin/sshd -D", "2210 948 lab -bash"}
+	if len(set.Rows) != len(want) {
+		t.Fatalf("rows = %d, want %d: %+v", len(set.Rows), len(want), set.Rows)
+	}
+	for index, want := range want {
+		if got := set.Rows[index].LineText(); got != want {
+			t.Errorf("row %d = %q, want %q", index, got, want)
+		}
+	}
+	if strings.Contains(model.RecordsText(set.Rows), `\_`) {
+		t.Errorf("the tier should hand over nodes, not a drawn ladder: %q", model.RecordsText(set.Rows))
 	}
 }
 

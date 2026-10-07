@@ -49,7 +49,7 @@ func TestLiveObserverSurvivesAPanickingPanel(t *testing.T) {
 	check := &model.Check{ID: "listen", Aspect: model.AspectNetwork}
 	observer := NewLiveObserver(&buf, []*model.Check{check}, 40, 48, false)
 	original := panelRenderer
-	panelRenderer = func(*model.CheckResult, int, int) string { panic("layout blew up") }
+	panelRenderer = func(*model.CheckResult, int, int, bool) string { panic("layout blew up") }
 	t.Cleanup(func() { panelRenderer = original })
 
 	observer.Start()

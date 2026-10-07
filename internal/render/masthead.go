@@ -14,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"karma/internal/form"
 	"karma/internal/model"
 )
 
@@ -112,8 +113,7 @@ func scopeLine(info HeaderInfo) string {
 // this report — with the floor's own name after them.
 func legendChips(floor model.SeverityFloor) []string {
 	var chips []string
-	for severity := range severityTheme {
-		level := model.Severity(severity)
+	for _, level := range form.Severities() {
 		st := severityStyle(level)
 		if !floor.Keeps(level) {
 			st = mutedStyle

@@ -33,7 +33,7 @@ var SystemChecks = []*model.Check{
 			// No filter: a whitelist would hide hijack vectors outside the list
 			// (PYTHONPATH/NODE_OPTIONS etc.); a blacklist cannot be exhaustive, so show
 			// everything and let the rules color it
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("env-ld-library-path", `^LD_LIBRARY_PATH=`, model.Medium, "non-standard library search path"),
 				// An empty component (a leading or trailing colon, or `::`) means the
 				// current directory just like a bare dot. RE2 has no lookahead, so the

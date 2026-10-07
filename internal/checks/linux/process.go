@@ -1,5 +1,5 @@
-// process: process tree, the session capability set (container escape
-// surface), and a cryptominer hunt.
+// process: the process listing and the tree the parent links make of it, the
+// session capability set (container escape surface), and a cryptominer hunt.
 
 package linux
 
@@ -9,8 +9,28 @@ import (
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
+	"karma/internal/form"
 	"karma/internal/model"
 )
+
+// psServiceAccounts is the account column's web-service names, and psInterpreter
+// the interpreters a service account has no business spawning: the two halves of
+// the webshell rule, stated where the rule reads them.
+var psServiceAccounts = []string{"www-data", "wwwrun", "apache", "nginx", "nobody"}
+
+var psInterpreter = regexp.MustCompile(`\b(?:(?:ba|z|da|k)?sh|python[0-9.]*|perl|ruby|nc|socat)\b`)
+
+// psTable is the /proc snapshot's shape: a table, with the numeric columns
+// right-aligned the way ps prints them. The declaration is keyed by column name
+// because the tiers print different columns (auxww's eleven, System V's eight)
+// and both read right against one table.
+var psTable = form.Table{
+	Align: map[string]form.Alignment{
+		"PID": form.Right, "%CPU": form.Right, "%MEM": form.Right, "VSZ": form.Right,
+		"RSS": form.Right, "START": form.Right, "TIME": form.Right,
+		"PPID": form.Right, "C": form.Right, "STIME": form.Right,
+	},
+}
 
 // containerMarkers is the ERE that recognizes a container's cgroup scope, whose
 // runtimes each spell their own scope name. One string feeds both readings: the
@@ -78,55 +98,81 @@ const (
 	psSortHead = 10
 )
 
+// pstreeTree is the process tree's shape: the ppid link nests the nodes, and a
+// node draws the process's identity and its command line. The account travels
+// with every record for the rules to read; the tree's own line does not carry
+// it, so a rule that names it paints the node whole.
+var pstreeTree = form.Tree{ID: "PID", Parent: "PPID", Label: []string{"PID", "COMMAND"}}
+
+// processRules judge one row of a process listing. The table and the tree read
+// the same fields — the account and the command line — so one list serves both,
+// and a finding reads the same whichever shape the check is drawn in.
+var processRules = []model.Matcher{
+	// The command line is one field, so the pattern runs over its value: a
+	// temp path at the value's start or after a blank is the finding, in
+	// whichever column holds it.
+	model.NewRule("ps-tmp-path", `(?:^|\s)/(?:tmp|var/tmp|dev/shm)/\S*`, model.Medium,
+		"command line references temp path"),
+	// A web service account spawning a shell/interpreter is webshell execution in
+	// progress; normal web process names (php-fpm, httpd, gunicorn) do not contain
+	// these words. The selection names both spellings of each column — auxww's
+	// USER and COMMAND, System V's UID and CMD — and the conjunction paints the
+	// account cell and the interpreter word, nothing between them.
+	model.NewJudged("ps-service-shell", model.Medium,
+		"service account running a shell/interpreter (typical webshell execution)",
+		model.All{
+			model.FieldOneOf{Fields: []string{"USER", "UID"}, Values: psServiceAccounts},
+			model.FieldRegex{Fields: []string{"COMMAND", "CMD"}, Pattern: psInterpreter},
+		}),
+	// A JDWP agent on a Java command line means the debug port executes code as
+	// the process for anyone who can reach it — a finding even when the process
+	// is the application itself
+	model.NewRule("ps-jdwp", `\bagentlib:jdwp\b|\brunjdwp\b`, model.High,
+		"JDWP debug agent on the command line (code execution via the debug port)"),
+	// python -m http.server hands its whole working directory to the network;
+	// during an incident it is more often the staging/exfil channel than a
+	// sharing convenience
+	model.NewRule("ps-http-server", `-m\s+(?:http\.server|SimpleHTTPServer)\b`, model.Medium,
+		"Python one-line HTTP server exposing its directory"),
+	define.KeywordRule,
+}
+
 // ProcessChecks covers processes.
 var ProcessChecks = []*model.Check{
-	// Locally every tier renders the in-process /proc snapshot (native_ps);
-	// forest nesting is pstree's job there. On ssh the same labels run the
-	// host binaries.
-	define.LinuxCheck("ps", "Process tree", model.AspectProcess,
+	// Two probes read the same /proc snapshot: auxww's eleven columns, and
+	// System V's eight as the fallback. Both state their fields, so no tier
+	// here hands the panel text to read back. The table is flat — one row per
+	// process — because the hierarchy is the pstree check's business.
+	define.LinuxCheck("ps", "Process table", model.AspectProcess,
 		[]model.Step{
-			{{Label: "ps", Inv: model.Native{Body: native.PsAux}}},
-			{{Label: "pstree", Inv: model.Native{Body: native.Pstree}}},
-			{{Label: "ps-ef", Inv: model.Native{Body: native.PsEf}}},
+			{{Label: "ps", Inv: model.Fields{Read: native.PsAux}}},
+			{{Label: "ps-ef", Inv: model.Fields{Read: native.PsEf}}},
 		},
-		define.CheckOpt{
-			Syntax: model.SyntaxTable,
-			Rules: []model.Rule{
-				model.NewRule("ps-tmp-path", `\s/(?:tmp|var/tmp|dev/shm)/\S*`, model.Medium,
-					"command line references temp path"),
-				// A web service account spawning a shell/interpreter is webshell execution in
-				// progress; normal web process names (php-fpm, httpd, gunicorn) do not contain
-				// these words
-				model.NewRule("ps-service-shell",
-					`^(?:www-data|wwwrun|apache|nginx|nobody)\s`+
-						`.*\b(?:(?:ba|z|da|k)?sh|python[0-9.]*|perl|ruby|nc|socat)\b`,
-					model.Medium, "service account running a shell/interpreter (typical webshell execution)"),
-				// A JDWP agent on a Java command line means the debug port executes code as
-				// the process for anyone who can reach it — a finding even when the process
-				// is the application itself
-				model.NewRule("ps-jdwp", `\bagentlib:jdwp\b|\brunjdwp\b`, model.High,
-					"JDWP debug agent on the command line (code execution via the debug port)"),
-				// python -m http.server hands its whole working directory to the network;
-				// during an incident it is more often the staging/exfil channel than a
-				// sharing convenience
-				model.NewRule("ps-http-server", `-m\s+(?:http\.server|SimpleHTTPServer)\b`, model.Medium,
-					"Python one-line HTTP server exposing its directory"),
-				define.KeywordRule,
-			},
-		}),
+		define.CheckOpt{Form: psTable, Rules: processRules}),
+	// The same snapshot, drawn as the tree the ppid links make of it: the tier
+	// hands the parent link over and the form nests the nodes.
+	define.LinuxCheck("pstree", "Process tree", model.AspectProcess,
+		[]model.Step{{{Label: "pstree", Inv: model.Fields{Read: native.Pstree}}}},
+		define.CheckOpt{Form: pstreeTree, Rules: processRules}),
 	define.LinuxCheck("top", "Resource usage snapshot", model.AspectProcess,
 		[]model.Step{
 			{ // these caps are the shape each probe wants: plenty to read, and
 				// small enough that a busy host's snapshot stays a panel
 				{Label: "top", Inv: model.Native{Body: native.Top}, Cap: model.Shape(topHead)}},
-			{{Label: "ps-cpu", Inv: model.Native{Body: native.PsCPU}, Cap: model.Shape(psSortHead)}},
-			{{Label: "ps-mem", Inv: model.Native{Body: native.PsMem}, Cap: model.Shape(psSortHead)}},
+			{{Label: "ps-cpu", Inv: model.Fields{Read: native.PsCPU}, Cap: model.Shape(psSortHead)}},
+			{{Label: "ps-mem", Inv: model.Fields{Read: native.PsMem}, Cap: model.Shape(psSortHead)}},
 		},
-		define.CheckOpt{Syntax: model.SyntaxTop, Rules: []model.Rule{define.KeywordRule}}),
+		define.CheckOpt{
+			Syntax: model.SyntaxTop,
+			// top's own table is the tool's text; the two ps --sort tiers state the
+			// same fields the ps check draws, and land in the same table.
+			Form:  psTable,
+			Rules: []model.Matcher{define.KeywordRule},
+		}),
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,
 		[]model.Step{{{Label: "caps", Inv: model.Native{Body: native.ProcCaps(containerCgroupRe)}, Adapt: native.DecodeCapMasks}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("cap-container-context", `^context: container`, model.Medium,
 					"session runs inside a container (the set below is the escape surface)"),
 				// The dangerous caps fire only here: the capability table prints only in the
@@ -160,7 +206,7 @@ var ProcessChecks = []*model.Check{
 	define.LinuxCheck("cwd-tmp", "Processes with cwd in a temp directory", model.AspectProcess,
 		[]model.Step{{{Label: "proc-cwd", Inv: model.Native{Body: native.CwdTmp(tmpDirs)}}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("proc-cwd-tmp", `^/proc/\d+ -> /(?:tmp|var/tmp|dev/shm)/\S*`, model.High,
 					"process cwd is in a temp directory"),
 			},
@@ -168,7 +214,7 @@ var ProcessChecks = []*model.Check{
 	define.LinuxCheck("hidden-procs", "proc vs ps process comparison", model.AspectProcess,
 		[]model.Step{{{Label: "ps", Inv: model.Native{Body: native.HiddenProcs}}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("proc-not-in-ps", `^[0-9]+$`, model.High,
 					"in /proc but not in ps (or just exited)"),
 			},
@@ -177,7 +223,7 @@ var ProcessChecks = []*model.Check{
 		// Both branches print the same text shape, so the rules are shared.
 		[]model.Step{{{Label: "brute", Inv: model.Native{Body: native.HiddenPIDs}, Cap: model.Scan(openScanLines)}}},
 		define.CheckOpt{
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("hidden-pid", `^PID \d+ `, model.Critical,
 					"alive for the kernel, hidden from /proc listing"),
 			},
@@ -198,7 +244,7 @@ var ProcessChecks = []*model.Check{
 				{Title: "drop paths", Syntax: model.SyntaxLsL},
 				{Title: "temp names", Syntax: model.SyntaxLsL},
 			},
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				// Fires on process lines and on file lines alike: a file literally named
 				// after a miner family is the same finding
 				model.NewRule("miner-family", `\b(?:`+minerFamily+`)\b`, model.Critical,

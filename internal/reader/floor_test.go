@@ -13,7 +13,7 @@ import (
 )
 
 // floor reads one text at a given floor.
-func floor(text string, rules []model.Rule, filters []model.LineFilter, at model.SeverityFloor) model.Document {
+func floor(text string, rules []model.Matcher, filters []model.LineFilter, at model.SeverityFloor) model.Document {
 	return reader.Analyze(text, rules, filters, 0, at, nil)
 }
 
@@ -40,7 +40,7 @@ func keptText(document model.Document) []string {
 
 func TestSeverityFloorKeepsOnlyTheLevelsAbove(t *testing.T) {
 	text := "== body\nhigh hit\nquiet row\n"
-	rules := []model.Rule{rule("high", `^high`, model.High)}
+	rules := []model.Matcher{rule("high", `^high`, model.High)}
 	cases := []struct {
 		name   string
 		at     model.SeverityFloor
@@ -79,7 +79,7 @@ func TestSeverityFloorKeepsOnlyTheLevelsAbove(t *testing.T) {
 // above it.
 func TestSeverityFloorOutranksTheChecksOwnFilters(t *testing.T) {
 	text := "== body\nlow hit\nquiet row\n"
-	rules := []model.Rule{rule("low", `^low`, model.Low)}
+	rules := []model.Matcher{rule("low", `^low`, model.Low)}
 
 	kept := floor(text, rules, []model.LineFilter{keep(`^quiet`)}, model.FloorAbove(model.Medium))
 	if got := keptText(kept); len(got) != 0 {
@@ -109,7 +109,7 @@ func TestSeverityFloorDropsAnEmptiedSection(t *testing.T) {
 // the title itself matched a rule below it.
 func TestSeverityFloorKeepsSectionTitles(t *testing.T) {
 	text := "== /tmp/.hidden\nlow hit\n"
-	rules := []model.Rule{rule("hidden", `^/tmp/\.`, model.Low), rule("low", `^low`, model.Low)}
+	rules := []model.Matcher{rule("hidden", `^/tmp/\.`, model.Low), rule("low", `^low`, model.Low)}
 	document := floor(text, rules, nil, model.FloorAbove(model.High))
 	if len(document.Sections) != 1 {
 		t.Fatalf("the title keeps its section: %+v", document.Sections)

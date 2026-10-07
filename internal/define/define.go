@@ -17,9 +17,10 @@ import (
 // (no own rules, no normalization, the global timeout and read cap).
 type CheckOpt struct {
 	Filters       []model.LineFilter
-	Rules         []model.Rule
+	Rules         []model.Matcher
 	Normalize     model.Normalizer
 	Syntax        model.Syntax
+	Form          model.Form
 	SectionSyntax []model.SectionSyntax
 	Timeout       time.Duration
 	ScanBytes     int
@@ -95,7 +96,7 @@ const dashUnitExclude = `/-\.(?:mount|slice|target|service|socket|device|swap)$`
 
 // GlobalRules is the cross-check rule pack of the Linux catalog. Rules must be
 // written for high precision: for critical / high, spare rather than overreach.
-var GlobalRules = []model.Rule{
+var GlobalRules = []model.Matcher{
 	model.NewRule("reverse-shell-dev-tcp", `/dev/(tcp|udp)/[0-9]`, model.Critical,
 		"redirect to a network socket (reverse shell trait)"),
 	model.NewRule("shell-interactive", `\b(?:ba|z|da|k)?sh\s+-i\b`, model.Critical,
@@ -159,7 +160,7 @@ var GlobalRules = []model.Rule{
 // (reverse shell, ld.so.preload, and similar regexes) target dash text and are
 // not applied to Windows output; Windows checks carry all their rules
 // themselves.
-var WindowsGlobalRules []model.Rule
+var WindowsGlobalRules []model.Matcher
 
 // GlobalFilters are the global filters: blank lines are not shown.
 var GlobalFilters = []model.LineFilter{
@@ -170,7 +171,7 @@ var GlobalFilters = []model.LineFilter{
 // platform's pack plus its own rules. Windows' pack is empty today (Linux's
 // regexes target dash text and are not applied to Windows output), so a Windows
 // check carries its own rules alone.
-var globalRules = map[model.Platform][]model.Rule{
+var globalRules = map[model.Platform][]model.Matcher{
 	model.Linux:   GlobalRules,
 	model.Windows: WindowsGlobalRules,
 }
@@ -203,6 +204,7 @@ func build(platform model.Platform, id, title string, aspect model.Aspect, steps
 		Syntax:        opt.Syntax,
 		SectionSyntax: opt.SectionSyntax,
 		Normalize:     opt.Normalize,
+		Form:          opt.Form,
 		ScanBytes:     opt.ScanBytes,
 	}
 }

@@ -45,9 +45,6 @@ func TestLinuxCheckRules(t *testing.T) {
 		{"sshd-config", `AuthorizedKeysFile .ssh/keys`, "sshd-authorized-keys-file"},
 		{"sshd-config", `PasswordAuthentication yes`, "sshd-password-auth"},
 		{"ssh-client-config", `ProxyCommand nc -x 10.0.0.8:1080 %h %p`, "ssh-client-proxy-command"},
-		{"ps", `www-data  1234  0.0  0.1  1360  580 pts/0  Ss  /bin/sh`, "ps-service-shell"},
-		{"ps", `root  1234  5.6  java -agentlib:jdwp=transport=dt_socket,server=y App`, "ps-jdwp"},
-		{"ps", `www-data  2345  0.1  python3 -m http.server 8080`, "ps-http-server"},
 		{"proc-caps", `context: container`, "cap-container-context"},
 		{"proc-caps", `Current: cap_chown, cap_dac_override, cap_sys_admin`, "cap-sys-admin"},
 		{"proc-caps", `CapEff: 000001ffffffffff  = cap_chown, cap_sys_admin`, "cap-sys-admin"},
@@ -175,6 +172,57 @@ func TestLinuxCheckRules(t *testing.T) {
 		check := testkit.CheckByID(t, All, tc.check)
 		if !slices.Contains(testkit.HitIDs(t, tc.text, check), tc.want) {
 			t.Errorf("%s should light %s: %q", tc.check, tc.want, tc.text)
+		}
+	}
+}
+
+// The process rules read fields, so their fixtures are records: the ps check's
+// body is the /proc snapshot as records, and a rule names its columns instead
+// of guessing where the account ends and the command line begins. The pattern
+// rules run over every field's value on the same body, which is what keeps the
+// catalog's other pattern rules working unchanged.
+func TestProcessRulesReadFields(t *testing.T) {
+	row := func(pairs ...string) *model.Record {
+		rec := &model.Record{}
+		for index := 0; index+1 < len(pairs); index += 2 {
+			rec.Fields = append(rec.Fields, model.Field{Name: pairs[index], Value: pairs[index+1]})
+		}
+		return rec
+	}
+	judge := func(rec *model.Record) []string {
+		check := testkit.CheckByID(t, All, "ps")
+		var ids []string
+		for _, matcher := range check.Rules {
+			for _, match := range matcher.Judge(rec) {
+				ids = append(ids, match.ID)
+			}
+		}
+		return ids
+	}
+	cases := []struct {
+		name string
+		rec  *model.Record
+		want string
+	}{
+		{"webshell", row("USER", "www-data", "COMMAND", "/bin/sh"), "ps-service-shell"},
+		{"webshell, System V spelling", row("UID", "www-data", "CMD", "/bin/sh"), "ps-service-shell"},
+		{"jdwp agent", row("USER", "root", "COMMAND", "java -agentlib:jdwp=transport=dt_socket,server=y App"), "ps-jdwp"},
+		{"python http server", row("USER", "www-data", "COMMAND", "python3 -m http.server 8080"), "ps-http-server"},
+		{"temp path in the command line", row("USER", "root", "COMMAND", "/tmp/x"), "ps-tmp-path"},
+	}
+	for _, tc := range cases {
+		if ids := judge(tc.rec); !slices.Contains(ids, tc.want) {
+			t.Errorf("%s should light %s, got %v", tc.name, tc.want, ids)
+		}
+	}
+	// The account alone is not the finding, and neither is the word alone: the
+	// rule is the conjunction of the two fields.
+	for _, quiet := range []*model.Record{
+		row("USER", "www-data", "COMMAND", "/usr/sbin/nginx -g daemon off;"),
+		row("USER", "root", "COMMAND", "/bin/sh"),
+	} {
+		if ids := judge(quiet); slices.Contains(ids, "ps-service-shell") {
+			t.Errorf("a service account is not a shell by itself: %v", ids)
 		}
 	}
 }
@@ -387,9 +435,13 @@ func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
 					if match.ID != tc.rule {
 						continue
 					}
-					spans++
-					if got := line.Text[match.Start:match.End]; got != tc.want {
-						t.Errorf("%s %s paints %q, want %q", tc.check, tc.rule, got, tc.want)
+					spans += len(match.Spans)
+					// A body of text is a one-field record, so the spans sit
+					// in the line's own coordinates.
+					for _, span := range match.Spans {
+						if got := line.Text[span.Start:span.End]; got != tc.want {
+							t.Errorf("%s %s paints %q, want %q", tc.check, tc.rule, got, tc.want)
+						}
 					}
 				}
 			}
@@ -442,7 +494,11 @@ func TestPkgVerifyGradesTheVerifierRows(t *testing.T) {
 			t.Errorf("%q should be graded by %s alone, got %+v", tc.text, tc.rule, line.Matches)
 			continue
 		}
-		if got := line.Text[line.Matches[0].Start:line.Matches[0].End]; got != tc.span {
+		var got string
+		for _, span := range line.Matches[0].Spans {
+			got += line.Text[span.Start:span.End]
+		}
+		if got != tc.span {
 			t.Errorf("%s paints %q, want %q", tc.rule, got, tc.span)
 		}
 	}

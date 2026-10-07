@@ -35,7 +35,7 @@ var ServiceChecks = []*model.Check{
 				model.NewFilter("unit-state", unitStateKeep, model.FilterKeep),
 			},
 			Syntax: model.SyntaxUnits,
-			Rules: []model.Rule{
+			Rules: []model.Matcher{
 				model.NewRule("unit-crashloop", `\bauto-restart\b`, model.Medium,
 					"service crash loop (dwell sign)"),
 			},
