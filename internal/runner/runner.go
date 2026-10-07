@@ -17,10 +17,9 @@
 // Runner only depends on session.Session's Run method: it knows neither SSH nor
 // any concrete command. The step that wins is sent to the target as a whole,
 // with row limits declared by the probe itself (a shape cap is the row set the
-// tier asked for, a scan cap only bounds an open walk). Reading first assembles
-// the winning tier's raw output into the body (assemble), then aligns its
-// dialect (adapt) and normalizes it for the check (normalize); the last two run
-// per section and carry the section title.
+// tier asked for, a scan cap only bounds an open walk). The winning tier's
+// output is handed to the reading layer (internal/reader), which owns everything
+// from there to the document the presentation draws.
 package runner
 
 import (
@@ -331,7 +330,13 @@ func finishStep(check *model.Check, step model.Step, joined model.RunResult, lab
 		note = failureNote(joined)
 	}
 	body := model.Body{Text: joined.Stdout, Records: joined.Records}
-	reading := readingOf(check, step, body, joined.Truncated, options)
+	reading := reader.Read(model.ReadRequest{
+		Check:     check,
+		Step:      step,
+		Body:      body,
+		Floor:     options.MinSeverity,
+		Truncated: joined.Truncated,
+	})
 	// Stderr from a zero exit is incidental noise; only a non-zero exit keeps
 	// it alongside the body
 	stderr := joined.Stderr
@@ -346,7 +351,7 @@ func finishStep(check *model.Check, step model.Step, joined model.RunResult, lab
 		// Evidence is what the target actually sent: the raw stdout before the
 		// reading layer's byte cap, section split, and normalization — or, for a
 		// tier that read fields, the readable rendering of those fields.
-		Raw:      evidence(body),
+		Raw:      reader.Evidence(body),
 		Records:  joined.Records,
 		Stderr:   stderr,
 		Note:     note,
@@ -376,73 +381,4 @@ func failureNote(result model.RunResult) string {
 		return base + ": " + head
 	}
 	return base
-}
-
-// readingOf is the reading of one step's winning text: the tier's own join over
-// the raw output (assemble), the step's dialect alignment, the check's
-// normalization, then the reading pipeline — and the source-side cut travels
-// into the document, because a panel marks a body a row cap stopped, which is
-// something only the channel knows.
-func readingOf(check *model.Check, step model.Step, body model.Body, truncated bool, options model.RunOptions) model.Document {
-	var reading model.Document
-	if body.Records != nil {
-		// The fields are read as they are: no cap (the collection bounded the
-		// rows), no section split, no shaper — there is no text to shape.
-		reading = reader.AnalyzeRecords(body.Records, check.Rules, check.Filters, options.MinSeverity)
-	} else {
-		reading = reader.Analyze(assembleBody(step, body.Text), check.Rules, check.Filters,
-			check.ScanBytes, options.MinSeverity, transforms(stepAdapt(step), check)...)
-	}
-	reading.Truncated = reading.Truncated || truncated
-	return reading
-}
-
-// evidence is one body as the record of what the target sent: a tool's own text
-// as it stands, or the fields rendered as the lines they read as.
-func evidence(body model.Body) string {
-	if body.Records != nil {
-		return model.RecordsText(body.Records.Rows)
-	}
-	return body.Text
-}
-
-// stepAdapt is the dialect alignment of one step: a step of several probes joined
-// bodies from several processes, so there is no single dialect to align, while a
-// one-probe step hands its own over.
-func stepAdapt(step model.Step) model.Normalizer {
-	if len(step) == 1 {
-		return step[0].Adapt
-	}
-	return nil
-}
-
-// assembleBody runs the winning tier's own join over its raw output, before the
-// reading layer caps or splits anything: the join is the tier's own reduction
-// (a marked record stream becomes the body), so capping its input would cut the
-// very records it groups. A step of several probes has no single tier to ask
-// (stepAssemble is nil) and a tier without one keeps its output as it stands.
-//
-// A panic here is karma's own defect rather than odd target output — the stream
-// is this catalog's own emitter's shape — so it travels to the check's boundary
-// (RunCatalog), which fails that one check with a note naming it.
-func assembleBody(step model.Step, stream string) string {
-	if len(step) != 1 || step[0].Assemble == nil {
-		return stream
-	}
-	return step[0].Assemble(stream)
-}
-
-// transforms is the winning tier's dialect alignment followed by the check's
-// body normalization: both shape one section, in this order, and either may be
-// absent. Dialect alignment only produces text; stating spans up front is the
-// check-level normalizer's job.
-func transforms(adapt model.Normalizer, check *model.Check) []model.Normalizer {
-	var all []model.Normalizer
-	if adapt != nil {
-		all = append(all, adapt)
-	}
-	if check.Normalize != nil {
-		all = append(all, check.Normalize)
-	}
-	return all
 }

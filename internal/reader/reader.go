@@ -1,10 +1,13 @@
 // Package reader is the reading pipeline: split sections (the `== ` convention,
 // owned by internal/section), shape the body, and decide per-line visibility,
-// producing the Document the presentation layer renders. Pure functions, with no
+// producing the Document the presentation layer renders. Read is the entry
+// point — one body in, one document out — with Analyze (text) and
+// AnalyzeRecords (fields) as its two engines. Pure functions, with no
 // dependency on the executor or terminal. Checks compose rules
 // and filters at construction time; this consumes only the already-assembled slices.
 // Filtered lines are not shown but are counted per filter. The evidence stays
-// elsewhere: CheckResult.Raw is the channel's raw output, which nothing here touches.
+// elsewhere: CheckResult.Raw is the channel's raw output, which nothing here
+// reads back — Evidence states a body as that text for the runner.
 package reader
 
 import (
@@ -28,6 +31,64 @@ const MaxScanBytes = 2 * 1024 * 1024
 // floor is the run's own filter, and a hidden row is counted the way a filter's
 // rows are, so the panel reports both in one number.
 const belowFloor = "below-severity"
+
+// Read is one body's reading: the winning step's output, from the tier's own
+// join over it to the document the presentation draws. A body that arrived as
+// fields takes the records path; text takes the text path, where the step's
+// dialect alignment and the check's own normalization shape each section before
+// the rules run over it.
+//
+// The source-side cut travels into the document here, because a panel marks a
+// body a row cap stopped, and only the channel knows that happened.
+func Read(req model.ReadRequest) model.Document {
+	var reading model.Document
+	if req.Body.Records != nil {
+		// The fields are read as they are: no cap (the collection bounded the
+		// rows), no section split, no shaper — there is no text to shape.
+		reading = AnalyzeRecords(req.Body.Records, req.Check.Rules, req.Check.Filters, req.Floor)
+	} else {
+		var shapers []model.Normalizer
+		// A step of several probes joined bodies from several processes, so
+		// there is no single dialect to align; the check's own normalization
+		// applies either way, after it. Dialect alignment only produces text —
+		// stating spans up front is the check-level normalizer's job.
+		if len(req.Step) == 1 && req.Step[0].Adapt != nil {
+			shapers = append(shapers, req.Step[0].Adapt)
+		}
+		if req.Check.Normalize != nil {
+			shapers = append(shapers, req.Check.Normalize)
+		}
+		reading = Analyze(assemble(req.Step, req.Body.Text), req.Check.Rules, req.Check.Filters,
+			req.Check.ScanBytes, req.Floor, shapers...)
+	}
+	reading.Truncated = reading.Truncated || req.Truncated
+	return reading
+}
+
+// assemble runs the winning tier's own join over its raw output, before the
+// reading caps or splits anything: the join is the tier's own reduction (a
+// marked record stream becomes the body), so capping its input would cut the
+// very records it groups. A step of several probes has no single tier to ask,
+// and a tier without a join keeps its output as it stands.
+//
+// A panic here is karma's own defect rather than odd target output — the stream
+// is this catalog's own emitter's shape — so it travels to the check's boundary
+// in the runner, which fails that one check with a note naming it.
+func assemble(step model.Step, stream string) string {
+	if len(step) != 1 || step[0].Assemble == nil {
+		return stream
+	}
+	return step[0].Assemble(stream)
+}
+
+// Evidence is one body as the record of what the target sent: a tool's own text
+// as it stands, or the fields rendered as the lines they read as.
+func Evidence(body model.Body) string {
+	if body.Records != nil {
+		return model.RecordsText(body.Records.Rows)
+	}
+	return body.Text
+}
 
 // Analyze reads one command output into a document.
 //
