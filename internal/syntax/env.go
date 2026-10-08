@@ -1,6 +1,6 @@
 // env pseudo-lexer: KEY=value rows, only the = is lit.
 
-package render
+package syntax
 
 var envName = compile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 

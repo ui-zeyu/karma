@@ -29,7 +29,9 @@ import (
 	"github.com/charmbracelet/x/cellbuf"
 	"github.com/samber/lo"
 
+	"karma/internal/form"
 	"karma/internal/model"
+	"karma/internal/syntax"
 )
 
 // Layout constants inside a rail panel: one column of padding on each side,
@@ -78,12 +80,12 @@ func fillBand(label string, width int, st lipgloss.Style) string {
 // caller because a table lexer carries its column anchors from line to line: a
 // painter built per line would never carry them. An unknown syntax returns
 // nil, and the caller prints the line as it is.
-func SyntaxPainter(syntax model.Syntax) func(string) string {
-	styler := newLineStyler(syntax)
-	if styler == nil {
+func SyntaxPainter(declared model.Syntax) func(string) string {
+	painter := syntax.Painter(declared)
+	if painter == nil {
 		return nil
 	}
-	return func(line string) string { return paintLine(line, styler(line)) }
+	return func(line string) string { return form.PaintLine(line, painter(line)) }
 }
 
 // Masthead and Panel expose the report's own surfaces to callers outside it:

@@ -105,12 +105,11 @@ type BodySection struct {
 }
 
 // ReadRequest is one body's reading: the check the body belongs to (its rules,
-// filters, scan budget and normalization), the step that won (whose own join
-// and dialect alignment apply), the body that step answered with, the run's
-// severity floor, and whether the channel stopped the body at a row cap.
+// filters, scan budget and normalization), the body the winning step answered
+// with, the run's severity floor, and whether the channel stopped the body at a
+// row cap.
 type ReadRequest struct {
 	Check     *Check
-	Step      Step
 	Body      Body
 	Floor     SeverityFloor
 	Truncated bool

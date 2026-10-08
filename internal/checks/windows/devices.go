@@ -73,5 +73,5 @@ var usbProbes = func() model.Step {
 var DevicesChecks = []*model.Check{
 	define.WindowsCheck("usb-devices", "USB Storage Devices (USBSTOR/SCSI/USB)", model.AspectDevices,
 		[]model.Step{usbProbes},
-		define.CheckOpt{Syntax: model.SyntaxPipe}),
+		model.Options{Syntax: model.SyntaxPipe}),
 }

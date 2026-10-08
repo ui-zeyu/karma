@@ -44,7 +44,7 @@ func filterIDs(filters []model.LineFilter) []string {
 func TestCheckMergesItsOwnRulesAndFiltersFirst(t *testing.T) {
 	check := LinuxCheck("probe", "Probe", model.AspectSystem,
 		[]model.Step{{{Label: "probe", Inv: model.NewCommand("true")}}},
-		CheckOpt{
+		model.Options{
 			Rules:   []model.Matcher{model.NewRule("own-rule", `own`, model.High, "own")},
 			Filters: []model.LineFilter{model.NewFilter("own-filter", `^own`, model.FilterDrop)},
 		})
@@ -65,7 +65,7 @@ func TestCheckMergesItsOwnRulesAndFiltersFirst(t *testing.T) {
 func TestWindowsCheckCarriesNoLinuxPack(t *testing.T) {
 	check := WindowsCheck("probe", "Probe", model.AspectSystem,
 		[]model.Step{{{Label: "probe", Inv: model.NewCommand("whoami")}}},
-		CheckOpt{Rules: []model.Matcher{model.NewRule("own-rule", `own`, model.High, "own")}})
+		model.Options{Rules: []model.Matcher{model.NewRule("own-rule", `own`, model.High, "own")}})
 	if got := names(check.Rules); !slices.Equal(got, []string{"own-rule"}) {
 		t.Fatalf("rules = %v, want the check's own alone", got)
 	}
@@ -79,11 +79,11 @@ func TestWindowsCheckCarriesNoLinuxPack(t *testing.T) {
 
 // Everything a check declares about itself and its body arrives on the check:
 // the walk, the presentation, and the run parameters.
-func TestCheckOptLandsOnTheCheck(t *testing.T) {
+func TestOptionsLandOnTheCheck(t *testing.T) {
 	steps := []model.Step{{{Label: "probe", Inv: model.NewCommand("true")}}}
 	sections := []model.SectionSyntax{{Title: "/etc/*", Syntax: model.SyntaxSshdConfig}}
 	shaped := func(string, string) *model.Shaped { return nil }
-	check := LinuxCheck("probe", "Probe", model.AspectFilesystem, steps, CheckOpt{
+	check := LinuxCheck("probe", "Probe", model.AspectFilesystem, steps, model.Options{
 		Syntax:        model.SyntaxTable,
 		SectionSyntax: sections,
 		Normalize:     shaped,

@@ -61,13 +61,13 @@ const sunloginKeep = `(?i)(\[Acceptor\]|new acceptor|path:\s*/|encry_pwd|no_wind
 var RemoteChecks = []*model.Check{
 	RegCheck("putty", "PuTTY Sessions and Host Keys", model.AspectRemote,
 		[]RegKey{{Path: puttyKey, Recurse: true, Label: "reg-direct"}},
-		define.CheckOpt{Syntax: model.SyntaxReg}),
+		model.Options{Syntax: model.SyntaxReg}),
 	RegCheck("rdp-history", "Remote Desktop Connection History (tsclient)", model.AspectRemote,
 		[]RegKey{{Path: rdpKey, Recurse: true, Label: "reg-direct"}},
-		define.CheckOpt{Syntax: model.SyntaxReg}),
+		model.Options{Syntax: model.SyntaxReg}),
 	RegCheck("remote-control", "Remote Control Software (Sunlogin/ToDesk/TeamViewer/RustDesk/VNC)", model.AspectRemote,
 		remoteCtrlKeys,
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxReg,
 			Rules: []model.Matcher{
 				model.NewRule("remote-ctrl-registry", remoteCtrlRegistry, model.High,
@@ -82,7 +82,7 @@ var RemoteChecks = []*model.Check{
 		remoteCtrlServicesFragment),
 	define.WindowsCheck("sunlogin", "Sunlogin Client Logs and Access Code", model.AspectRemote,
 		[]model.Step{{sunloginProbe}},
-		define.CheckOpt{
+		model.Options{
 			Filters: []model.LineFilter{
 				model.NewFilter("sunlogin-keep", sunloginKeep, model.FilterKeep),
 			},

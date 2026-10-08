@@ -34,11 +34,11 @@ const openScanLines = 200
 // alignment, run on every section the tier answered with (nil for none).
 func filesTier(label, shellCmd string, transform func(string) string, adapt model.Normalizer, paths []string) []model.Step {
 	return []model.Step{
-		{{Label: label, Adapt: adapt, Files: &model.Files{
+		{{Label: label, Adapt: adapt, Inv: model.FileList{
 			List: model.Native{Body: listFiles(paths)},
 			Read: func(path string) model.Invocation { return model.Native{Body: readFile(path, transform)} },
 		}}},
-		{{Label: label + "-sh", Adapt: adapt, Files: &model.Files{
+		{{Label: label + "-sh", Adapt: adapt, Inv: model.FileList{
 			List: model.Sh(script.ListFiles(paths)),
 			Read: func(path string) model.Invocation { return model.Sh(script.ReadFile(path, shellCmd)) },
 		}}},
@@ -92,11 +92,11 @@ func withCap(steps []model.Step, cap model.RowCap) []model.Step {
 // tier per source.
 func listingTier(label string, dirs []string, head int) []model.Step {
 	return []model.Step{
-		{{Label: label, Files: &model.Files{
+		{{Label: label, Inv: model.FileList{
 			List: model.Native{Body: listDirs(dirs)},
 			Read: func(dir string) model.Invocation { return model.Native{Body: dirListing(dir, head)} },
 		}}},
-		{{Label: label + "-sh", Files: &model.Files{
+		{{Label: label + "-sh", Inv: model.FileList{
 			List: model.Sh(script.ListDirs(dirs)),
 			Read: func(dir string) model.Invocation { return model.Sh(script.ListingFind(dir, head)) },
 		}}},
@@ -159,5 +159,5 @@ var listingNormalize = cluster.ListingNormalize(time.Now)
 func listingCheck(id, title string, aspect model.Aspect, dirs []string, head int, rules []model.Matcher) *model.Check {
 	return define.LinuxCheck(id, title, aspect,
 		listingTier("find", dirs, head),
-		define.CheckOpt{Rules: rules, Syntax: model.SyntaxLsL, Normalize: listingNormalize})
+		model.Options{Rules: rules, Syntax: model.SyntaxLsL, Normalize: listingNormalize})
 }

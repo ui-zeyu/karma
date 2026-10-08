@@ -1,6 +1,6 @@
 // dmesg pseudo-lexer: the leading wall-clock timestamp is muted.
 
-package render
+package syntax
 
 var dmesgTS = compile(`^\[\s*\d+\.\d+\]\s`)
 

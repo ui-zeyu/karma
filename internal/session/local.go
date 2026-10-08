@@ -53,23 +53,13 @@ func (LocalSession) Channel() model.Channel { return model.ChanLocal }
 // the chain in the runner falls to the next tier, which is what happens on every
 // other channel too.
 func (s LocalSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return s.run(ctx, call)
+	return dispatch(ctx, call.Inv, call.Cap, s.shell)
 }
 
-func (s LocalSession) run(ctx context.Context, call model.Call) model.RunResult {
-	if fields, ok := call.Inv.(model.Fields); ok {
-		// A body that reads fields answers with the fields: nothing formats
-		// them into a line for the reading layer to parse back out.
-		return runFields(ctx, fields.Read, call.Cap)
-	}
-	if native, ok := call.Inv.(model.Native); ok {
-		// A body runs in this process and its text is the whole answer.
-		return runNative(ctx, native.Body, call.Cap)
-	}
-	if script, ok := call.Inv.(model.Script); ok {
-		return runScript(ctx, s.run, script, call.Cap)
-	}
-	return runLocal(ctx, ArgvFor(call.Inv), call.Cap)
+// shell is the local channel's shell front: a Command execs without a shell,
+// everything else goes through /bin/sh -c.
+func (s LocalSession) shell(ctx context.Context, inv model.Invocation, cap model.RowCap) model.RunResult {
+	return runLocal(ctx, ArgvFor(inv), cap)
 }
 
 // Close releases the local channel's resources: there are none.

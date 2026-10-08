@@ -38,7 +38,7 @@ const winrarKey = `HKCU\Software\WinRAR\ArcHistory`
 
 // officeScript enumerates File/Place MRU per app under version directories (16.0 etc.); User MRU
 // (Microsoft account paths) alongside.
-var officeProbe = model.Probe{Label: "reg", Files: &model.Files{
+var officeProbe = model.Probe{Label: "reg", Inv: model.FileList{
 	List: powershell.PowerShell(
 		`foreach ($ver in Get-ChildItem 'HKCU:\SOFTWARE\Microsoft\Office' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d' }) { ` +
 			`foreach ($app in 'Word','Excel','PowerPoint') { ` +
@@ -181,10 +181,10 @@ func isDigits(text string) bool {
 var DocumentsChecks = []*model.Check{
 	RegCheck("recent-docs", "Recent Documents (RecentDocs)", model.AspectDocuments,
 		[]RegKey{{Path: recentDocsKey, Recurse: true, Label: "reg-direct"}},
-		define.CheckOpt{Normalize: recentDocsNormalize, Rules: []model.Matcher{define.KeywordRule}}),
+		model.Options{Normalize: recentDocsNormalize, Rules: []model.Matcher{define.KeywordRule}}),
 	RegCheck("opensave-mru", "Open/Save Dialog History (ComDlg32)", model.AspectDocuments,
 		[]RegKey{{Path: comdlg32Key, Recurse: true, Label: "reg-direct"}},
-		define.CheckOpt{
+		model.Options{
 			Normalize: opensaveNormalize,
 			Rules: []model.Matcher{
 				model.NewRule("opensave-temp-exec", tempExecutable, model.High,
@@ -194,13 +194,13 @@ var DocumentsChecks = []*model.Check{
 		}),
 	define.WindowsCheck("office-mru", "Office Recent Files (File/Place MRU)", model.AspectDocuments,
 		[]model.Step{{officeProbe}},
-		define.CheckOpt{Normalize: officeMruNormalize, Rules: []model.Matcher{define.KeywordRule}}),
+		model.Options{Normalize: officeMruNormalize, Rules: []model.Matcher{define.KeywordRule}}),
 	RegCheck("adobe-recent", "Adobe Recent PDFs (cRecentFiles)", model.AspectDocuments,
 		adobeKeys,
-		define.CheckOpt{Syntax: model.SyntaxReg, Rules: []model.Matcher{define.KeywordRule}}),
+		model.Options{Syntax: model.SyntaxReg, Rules: []model.Matcher{define.KeywordRule}}),
 	define.WindowsCheck("lnk-recent", "Shortcut Targets (Recent LNK)", model.AspectDocuments,
 		[]model.Step{{lnkProbe}},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("lnk-mshta", lnkMshta, model.Critical,
 					"shortcut executes remote content via mshta (lure)"),
@@ -214,8 +214,8 @@ var DocumentsChecks = []*model.Check{
 			{Path: winzipLegacyKey, Recurse: true, Label: "winzip-old"},
 			{Path: winrarKey, Recurse: true, Label: "winrar"},
 		},
-		define.CheckOpt{Normalize: archiveNormalize, Rules: []model.Matcher{define.KeywordRule}}),
+		model.Options{Normalize: archiveNormalize, Rules: []model.Matcher{define.KeywordRule}}),
 	define.WindowsCheck("jumplists", "Jump Lists (JumpLists, String Extraction)", model.AspectDocuments,
 		[]model.Step{{jumplistProbe}},
-		define.CheckOpt{Timeout: stringsTimeout, Rules: []model.Matcher{define.KeywordRule}}),
+		model.Options{Timeout: stringsTimeout, Rules: []model.Matcher{define.KeywordRule}}),
 }

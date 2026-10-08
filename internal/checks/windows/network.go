@@ -25,7 +25,7 @@ const winHostsScript = `Get-Content 'C:\Windows\System32\drivers\etc\hosts' -Err
 var NetworkChecks = []*model.Check{
 	define.WindowsCheck("connections", "Network Connections and Ports (netstat)", model.AspectNetwork,
 		[]model.Step{{{Label: "netstat", Inv: model.NewCommand("netstat", "-ano")}}},
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxNetstat,
 			Rules: []model.Matcher{
 				model.NewRule("conn-evil-port", connEvilPort, model.High,
@@ -35,7 +35,7 @@ var NetworkChecks = []*model.Check{
 		}),
 	define.WindowsCheck("portproxy", "Port Forwarding (netsh portproxy)", model.AspectNetwork,
 		[]model.Step{{{Label: "netsh", Inv: model.NewCommand("netsh", "interface", "portproxy", "show", "all")}}},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("portproxy-forward", portproxyRow, model.High,
 					"port forwarding configured (netsh portproxy tunnel, confirm it is expected)"),
@@ -44,7 +44,7 @@ var NetworkChecks = []*model.Check{
 		}),
 	define.WindowsCheck("win-hosts", "Hosts File", model.AspectNetwork,
 		[]model.Step{{PSProbe("type", winHostsScript)}},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("hosts-map", hostsMapRule, model.Medium,
 					"hosts forces domain resolution (hijack or emulation)"),

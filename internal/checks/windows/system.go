@@ -36,7 +36,7 @@ const rdpNLAOffRule = `UserAuthentication\s+REG_DWORD\s+0x0\b`
 var SystemChecks = []*model.Check{
 	define.WindowsCheck("software", "Installed Software Inventory (Uninstall)", model.AspectSystem,
 		[]model.Step{{PSProbe("reg", softwareScript)}},
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxPipe,
 			Rules: []model.Matcher{
 				model.NewRule("software-pentest", softwarePentest, model.High,
@@ -48,13 +48,13 @@ var SystemChecks = []*model.Check{
 		}),
 	define.WindowsCheck("hotfixes", "Patch List (Get-HotFix)", model.AspectSystem,
 		[]model.Step{{PSProbe("cim", hotfixScript)}},
-		define.CheckOpt{Rules: []model.Matcher{define.KeywordRule}}),
+		model.Options{Rules: []model.Matcher{define.KeywordRule}}),
 	RegCheck("env-vars", "Environment Variables (System and User)", model.AspectSystem,
 		[]RegKey{
 			{Path: `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`, Label: "hklm"},
 			{Path: `HKCU\Environment`, Label: "hkcu"},
 		},
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxReg,
 			Rules: []model.Matcher{
 				model.NewRule("env-path-suspicious", envPathSuspicious, model.Medium,
@@ -64,7 +64,7 @@ var SystemChecks = []*model.Check{
 		}),
 	define.WindowsCheck("shares", "Share List (LanmanServer)", model.AspectSystem,
 		[]model.Step{{PSProbe("reg", sharesScript)}},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("custom-share", customShare, model.Medium,
 					"custom share present"),
@@ -77,7 +77,7 @@ var SystemChecks = []*model.Check{
 			{Path: `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server`, Value: "UserAuthentication", Label: "nla"},
 			{Path: `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp`, Value: "PortNumber", Label: "port"},
 		},
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxReg,
 			Rules: []model.Matcher{
 				model.NewRule("rdp-enabled", rdpEnabledRule, model.Medium,

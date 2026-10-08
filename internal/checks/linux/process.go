@@ -369,7 +369,7 @@ var ProcessChecks = []*model.Check{
 			{{Label: "ps", Inv: model.Fields{Read: native.PsEf}}},
 			{{Label: "ps-ef", Inv: psEfScript}},
 		},
-		define.CheckOpt{Form: psTable, Rules: processRules}),
+		model.Options{Form: psTable, Rules: processRules}),
 	// The same records, drawn as the tree the ppid links make of them: either
 	// source hands the parent link over and the form nests the nodes.
 	define.LinuxCheck("pstree", "Process tree", model.AspectProcess,
@@ -377,7 +377,7 @@ var ProcessChecks = []*model.Check{
 			{{Label: "pstree", Inv: model.Fields{Read: native.PsEf}}},
 			{{Label: "pstree-ef", Inv: psEfScript}},
 		},
-		define.CheckOpt{Form: pstreeTree, Rules: processRules}),
+		model.Options{Form: pstreeTree, Rules: processRules}),
 	define.LinuxCheck("top", "Resource usage snapshot", model.AspectProcess,
 		[]model.Step{
 			{ // these caps are the shape each probe wants: plenty to read, and
@@ -392,7 +392,7 @@ var ProcessChecks = []*model.Check{
 			{{Label: "ps-cpu-sh", Inv: psAuxScript("ps", "auxww", "--sort=-%cpu"), Cap: model.Shape(psSortHead)}},
 			{{Label: "ps-mem-sh", Inv: psAuxScript("ps", "auxww", "--sort=-%mem"), Cap: model.Shape(psSortHead)}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxTop,
 			// top's own table is the tool's text; the two ps --sort tiers state the
 			// same fields the ps check draws, and land in the same table.
@@ -401,7 +401,7 @@ var ProcessChecks = []*model.Check{
 		}),
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,
 		procCapsTier(),
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("cap-container-context", `^context: container`, model.Medium,
 					"session runs inside a container (the set below is the escape surface)"),
@@ -432,7 +432,7 @@ var ProcessChecks = []*model.Check{
 			{{Label: "find-sh", Inv: model.Sh(findDeletedScript), Cap: model.Scan(openScanLines)}},
 			{{Label: "proc-links-sh", Inv: model.Sh(deletedLinksScript), Cap: model.Scan(openScanLines)}},
 		},
-		define.CheckOpt{
+		model.Options{
 			// Keep only rows the kernel marked deleted; signal rows bypass keep
 			// filters and are always kept.
 			Filters: []model.LineFilter{
@@ -444,7 +444,7 @@ var ProcessChecks = []*model.Check{
 			{{Label: "proc-cwd", Inv: model.Native{Body: native.CwdTmp(tmpDirs)}}},
 			{{Label: "proc-cwd-sh", Inv: model.Sh(cwdTmpScript)}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("proc-cwd-tmp", `^/proc/\d+ -> /(?:tmp|var/tmp|dev/shm)/\S*`, model.High,
 					"process cwd is in a temp directory"),
@@ -455,7 +455,7 @@ var ProcessChecks = []*model.Check{
 			{{Label: "ps", Inv: model.Native{Body: native.HiddenProcs}}},
 			{{Label: "ps-sh", Inv: model.Sh(hiddenProcsScript)}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("proc-not-in-ps", `^[0-9]+$`, model.High,
 					"in /proc but not in ps (or just exited)"),
@@ -467,7 +467,7 @@ var ProcessChecks = []*model.Check{
 			{{Label: "brute", Inv: model.Native{Body: native.HiddenPIDs}, Cap: model.Scan(openScanLines)}},
 			{{Label: "brute-sh", Inv: model.Sh(hiddenPidsScript), Cap: model.Scan(openScanLines)}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("hidden-pid", `^PID \d+ `, model.Critical,
 					"alive for the kernel, hidden from /proc listing"),
@@ -475,7 +475,7 @@ var ProcessChecks = []*model.Check{
 		}),
 	define.LinuxCheck("miner", "Cryptominer hunt (processes and drop paths)", model.AspectProcess,
 		minerTier(),
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxTable,
 			// The drop-path and temp-name sections are ls -l shape, the ps section a
 			// process table; one override per section keeps both colored

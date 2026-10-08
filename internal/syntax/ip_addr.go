@@ -1,6 +1,6 @@
 // ip-addr pseudo-lexer: `ip -br addr` rows, the state colored by meaning.
 
-package render
+package syntax
 
 var brAddrRow = compile(`^(?P<iface>\S+)\s{2,}(?P<state>\S+)(?:\s{2,}(?P<rest>\S.*))?$`)
 

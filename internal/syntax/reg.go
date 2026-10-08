@@ -1,6 +1,6 @@
 // reg pseudo-lexer: Windows reg.exe query dumps (key paths, value rows).
 
-package render
+package syntax
 
 import "strings"
 

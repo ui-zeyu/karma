@@ -177,14 +177,14 @@ const accessLogLines = 400
 var LogsChecks = []*model.Check{
 	define.LinuxCheck("history", "User command history (tail)", model.AspectLog,
 		tailFilesCheck(400, historyPaths...),
-		define.CheckOpt{
+		model.Options{
 			Syntax:    model.SyntaxBash,
 			Normalize: collapseRepeats,
 			Rules:     []model.Matcher{historyOffRule, historyClearRule, define.KeywordRule},
 		}),
 	define.LinuxCheck("viminfo", "vim command history", model.AspectLog,
 		tailFilesCheck(200, "/root/.viminfo", "/home/*/.viminfo"),
-		define.CheckOpt{
+		model.Options{
 			Filters: []model.LineFilter{
 				// viminfo is mostly registers and file marks; the command-line history section
 				// starts with ":"
@@ -197,7 +197,7 @@ var LogsChecks = []*model.Check{
 			{{Label: "lastb", Inv: model.Native{Body: native.Lastb(lastbRows)}}},
 			{{Label: "lastb-sh", Inv: model.Sh("lastb -n " + strconv.Itoa(lastbRows))}},
 		},
-		define.CheckOpt{Syntax: model.SyntaxTable}),
+		model.Options{Syntax: model.SyntaxTable}),
 	listingCheck("log-dirs", "Log directory listing (by mtime)", model.AspectLog,
 		[]string{"/var/log", "/var/log/journal"}, 100,
 		[]model.Matcher{
@@ -216,7 +216,7 @@ var LogsChecks = []*model.Check{
 	// rules are one vocabulary.
 	define.LinuxCheck("access-log", "Web access log summary (clients, minutes, probes)", model.AspectLog,
 		accessLogTier(),
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				logScanToolRule, logTraversalRule, logExecParamRule, logSensitiveFileRule,
 			},
@@ -229,13 +229,13 @@ var LogsChecks = []*model.Check{
 // target's own awk through the channel — the same summary either way.
 func accessLogTier() []model.Step {
 	return withCap([]model.Step{
-		{{Label: "log", Files: &model.Files{
+		{{Label: "log", Inv: model.FileList{
 			List: model.Native{Body: listFiles(accessLogPaths)},
 			Read: func(path string) model.Invocation {
 				return model.Native{Body: native.AccessLogFile(path, accessLogKeepRe)}
 			},
 		}}},
-		{{Label: "log-sh", Files: &model.Files{
+		{{Label: "log-sh", Inv: model.FileList{
 			List: model.Sh(script.ListFiles(accessLogPaths)),
 			Read: func(path string) model.Invocation {
 				return model.Sh(script.AccessLogRead(path, accessLogKeep))

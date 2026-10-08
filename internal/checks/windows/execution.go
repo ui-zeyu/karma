@@ -135,7 +135,7 @@ func runmruNormalize(_ string, body string) *model.Shaped {
 var ExecutionChecks = []*model.Check{
 	RegCheck("userassist", "Program Execution History (UserAssist)", model.AspectExecution,
 		userassistKeys,
-		define.CheckOpt{
+		model.Options{
 			Normalize: userassistNormalize,
 			Rules: []model.Matcher{
 				model.NewRule("userassist-suspicious-path", suspiciousPath, model.Medium,
@@ -147,7 +147,7 @@ var ExecutionChecks = []*model.Check{
 	// is handled naturally by fallback semantics--a missing probe gives an empty/non-zero body, so it moves to the next
 	RegCheck("userassist-track", "Program Execution Tracking Switches (Anti-Forensics)", model.AspectExecution,
 		trackKeys,
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxReg,
 			Rules: []model.Matcher{
 				model.NewRule("userassist-track-disabled", trackDisabled, model.High,
@@ -156,7 +156,7 @@ var ExecutionChecks = []*model.Check{
 		}),
 	RegCheck("runmru", "Run Command History (RunMRU)", model.AspectExecution,
 		runmruKeys,
-		define.CheckOpt{
+		model.Options{
 			Normalize: runmruNormalize,
 			Rules: []model.Matcher{
 				model.NewRule("runmru-unc-path", runUNC, model.Medium, "network share path accessed from Run box"),
@@ -166,7 +166,7 @@ var ExecutionChecks = []*model.Check{
 		}),
 	define.WindowsCheck("psreadline", "PowerShell Command History", model.AspectExecution,
 		[]model.Step{{psHistoryProbe}},
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxPowerShell,
 			Rules: []model.Matcher{
 				model.NewRule("psreadline-suspicious", historySuspicious, model.High,
@@ -178,7 +178,7 @@ var ExecutionChecks = []*model.Check{
 		}),
 	define.WindowsCheck("clipboard", "Current Clipboard Content", model.AspectExecution,
 		[]model.Step{{PSProbe("clipboard", clipboardScript)}},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{define.KeywordRule, define.PrivateKeyRule},
 		}),
 }

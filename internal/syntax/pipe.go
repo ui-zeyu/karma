@@ -1,6 +1,6 @@
 // pipe pseudo-lexer: ` | `-segmented rows (usb-devices, software).
 
-package render
+package syntax
 
 import "strings"
 

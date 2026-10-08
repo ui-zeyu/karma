@@ -5,32 +5,46 @@ package model
 
 import "time"
 
-// Check is one check: its fallback walk, its already-composed filters and
-// rules, and an optional body normalizer.
-type Check struct {
-	ID       string
-	Title    string
-	Aspect   Aspect
-	Platform Platform // catalog platform: the list group banner and the platform selector
-	Steps    []Step   // the walk: one step per tier or group of tiers that answer together
-	Filters  []LineFilter
-	Rules    []Matcher
+// Options is a check's declaration surface: everything a check states beside its
+// walk. The zero value is usable (no own rules, no normalization, the global
+// timeout and read cap); the constructor merges the platform's default packs
+// into the same fields, so a check reads one vocabulary whether it is being
+// declared or consumed.
+type Options struct {
+	Filters []LineFilter
+	Rules   []Matcher
 	// Timeout is this check's own budget, overriding the run option; 0 means the
 	// run's. It bounds the whole walk (runner.runCheck), not one tier's call.
-	Timeout   time.Duration
-	Syntax    Syntax     // syntax declaration for the presentation layer; empty for none
-	Normalize Normalizer // normalizes the winning body per section; the section title is passed and only dialect alignment (Probe.Adapt) reads it
+	Timeout time.Duration
+	Syntax  Syntax // syntax declaration for the presentation layer; empty for none
+	// Normalize normalizes the winning body per section; the section title is
+	// passed and only dialect alignment (Probe.Adapt) reads it.
+	Normalize Normalizer
 	// Form is the shape this check's body is drawn in (a table, a column of
 	// ls -l rows, ...). It is also the tail of the reading: the form projects
 	// the rule hits onto the units it can paint. Nil draws the body as text.
-	Form      Form
-	ScanBytes int // 0 means the default read cap, reader.MaxScanBytes
+	Form Form
+	// ScanBytes is the reading's byte budget for this check; 0 means the default
+	// read cap, reader.MaxScanBytes.
+	ScanBytes int
 	// SectionSyntax overrides Syntax per section: the first entry whose Title
 	// glob (path.Match) matches the section title wins, other sections keep
 	// Syntax. A section usually carries one source's shape, so mixed-output
 	// checks (a listing followed by the files' contents) declare one override
 	// per shape instead of one combined lexer.
 	SectionSyntax []SectionSyntax
+}
+
+// Check is one check: its identity and fallback walk, and the declaration
+// surface (Options) beside them — its already-composed filters and rules, and
+// an optional body normalizer.
+type Check struct {
+	ID       string
+	Title    string
+	Aspect   Aspect
+	Platform Platform // catalog platform: the list group banner and the platform selector
+	Steps    []Step   // the walk: one step per tier or group of tiers that answer together
+	Options
 }
 
 // SectionSyntax is one title-syntax override of Check.Syntax.

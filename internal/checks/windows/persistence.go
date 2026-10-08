@@ -28,7 +28,7 @@ const tasksScript = `Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-O
 
 // wmiSubscriptionProbe reads the four subscription classes, one call each, its
 // section titled with the class.
-var wmiSubscriptionProbe = model.Probe{Label: "cim", Files: &model.Files{
+var wmiSubscriptionProbe = model.Probe{Label: "cim", Inv: model.FileList{
 	List: powershell.PowerShell(`'__EventFilter','CommandLineEventConsumer','ActiveScriptEventConsumer','__FilterToConsumerBinding'`),
 	Read: func(class string) model.Invocation {
 		return powershell.PowerShell("Get-CimInstance -Namespace root\\subscription -Class " + PSQuote(class) +
@@ -131,7 +131,7 @@ var PersistenceChecks = []*model.Check{
 			{Path: `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`, Label: "hkcu-run"},
 			{Path: `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`, Label: "hkcu-runonce"},
 		},
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxReg,
 			Rules: []model.Matcher{
 				model.NewRule("autorun-temp", autorunTempRule, model.High,
@@ -144,7 +144,7 @@ var PersistenceChecks = []*model.Check{
 		startupFolderFragment),
 	define.WindowsCheck("nt-services", "Service List (with binPath)", model.AspectPersistence,
 		[]model.Step{{PSProbe("cim", servicesScript)}},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("svc-temp", serviceTempRule, model.High,
 					"service points to temp/public directory"),
@@ -155,7 +155,7 @@ var PersistenceChecks = []*model.Check{
 		}),
 	define.WindowsCheck("tasks", "Scheduled Task List (with Actions)", model.AspectPersistence,
 		[]model.Step{{PSProbe("task", tasksScript)}},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("task-userpath", autorunTempRule, model.High,
 					"scheduled task points to temp/user-writable directory"),
@@ -168,7 +168,7 @@ var PersistenceChecks = []*model.Check{
 		}),
 	define.WindowsCheck("wmi-subscription", "WMI Event Subscriptions (Persistence)", model.AspectPersistence,
 		[]model.Step{{wmiSubscriptionProbe}},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("wmi-consumer", wmiConsumerRule, model.High,
 					"WMI event subscription with consumer content"),
@@ -177,7 +177,7 @@ var PersistenceChecks = []*model.Check{
 		}),
 	RegCheck("ifeo", "Debugger Hijack (Image File Execution Options, SilentProcessExit)", model.AspectPersistence,
 		ifeoKeys,
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxReg,
 			Rules: []model.Matcher{
 				model.NewRule("ifeo-debugger", ifeoDebuggerRule, model.High,
@@ -189,7 +189,7 @@ var PersistenceChecks = []*model.Check{
 		}),
 	RegCheck("winlogon", "Logon Hooks and DLL Injection (Winlogon, AppInit_DLLs)", model.AspectPersistence,
 		winlogonKeys,
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxReg,
 			Rules: []model.Matcher{
 				winlogonShellRule,
@@ -203,7 +203,7 @@ var PersistenceChecks = []*model.Check{
 		}),
 	RegCheck("appcompat", "Compatibility Shims (AppCompatFlags Layers, custom sdb)", model.AspectPersistence,
 		[]RegKey{{Path: appcompatLayersKey, Label: "layers"}},
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxReg,
 			Rules: []model.Matcher{
 				appcompatTempRule,
@@ -215,7 +215,7 @@ var PersistenceChecks = []*model.Check{
 		appPatchFragment),
 	define.WindowsCheck("svc-dll", "svchost Service DLLs (ServiceDll)", model.AspectPersistence,
 		[]model.Step{{PSProbe("cim", serviceDllScript)}},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				serviceDllTempRule,
 				serviceDllOutsideRule,

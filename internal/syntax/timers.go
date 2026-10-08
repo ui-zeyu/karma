@@ -3,7 +3,7 @@
 // colors word by word, so one date came out in four colors; this lexer reads
 // the row as the six cells it is and paints each whole.
 
-package render
+package syntax
 
 import (
 	"slices"

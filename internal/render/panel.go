@@ -17,6 +17,7 @@ import (
 	"karma/internal/fault"
 	"karma/internal/form"
 	"karma/internal/model"
+	"karma/internal/syntax"
 	"karma/internal/textutil"
 )
 
@@ -185,7 +186,7 @@ func bodyRows(result *model.CheckResult, maxLines, term int, color bool) []strin
 	// forms make the same decision from the same flag.
 	var base lineStyler
 	if color {
-		base = newLineStyler(result.Check.Syntax)
+		base = syntax.Painter(result.Check.Syntax)
 	}
 	var rows []string
 	budget := maxLines
@@ -193,8 +194,8 @@ func bodyRows(result *model.CheckResult, maxLines, term int, color bool) []strin
 		// A section override builds its own instance: cross-line state (table
 		// anchors) must not leak across sections or shapes.
 		lineStyler := base
-		if syntax := sectionSyntax(result.Check, section.Title); color && syntax != result.Check.Syntax {
-			lineStyler = newLineStyler(syntax)
+		if declared := sectionSyntax(result.Check, section.Title); color && declared != result.Check.Syntax {
+			lineStyler = syntax.Painter(declared)
 		}
 		planned, used := plan(section.Lines, budget)
 		// A section the reading layer kept for its title alone — every row was
@@ -264,7 +265,7 @@ func sectionSyntax(check *model.Check, title string) model.Syntax {
 func sectionTitle(section model.Section, width int) []string {
 	spans := []paintSpan{{Start: 0, End: len(section.Title), Style: style{Bold: true}}}
 	spans = append(spans, hitSpans(section.Title, section.TitleMatches)...)
-	return withReason(paintLine(section.Title, spans), section.TitleMatches, width)
+	return withReason(form.PaintLine(section.Title, spans), section.TitleMatches, width)
 }
 
 // plannedRows emits rows as planned: visible rows render the body, omitted rows
@@ -356,7 +357,7 @@ func lineText(line model.Line, lineStyler lineStyler) string {
 	if len(hits) == 0 && commentLine.MatchString(line.Text) {
 		spans = append(spans, paintSpan{Start: 0, End: len(line.Text), Style: mutedStyle})
 	}
-	return paintLine(line.Text, spans)
+	return form.PaintLine(line.Text, spans)
 }
 
 // hitSpans paints a line's signal matches, most severe last. Spans stack in

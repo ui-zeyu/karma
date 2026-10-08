@@ -28,11 +28,9 @@ type Probe struct {
 	// a part with nothing to show states nothing. Empty means the answer is the
 	// one section Title names.
 	Titles []string
-	Inv    Invocation
-	// Files makes the probe a file list: List answers with the paths, one per
-	// line, and Read builds the call that reads one of them. Each path becomes
-	// one section, titled with the path.
-	Files *Files
+	// Inv is what the tier runs: one of the invocation kinds, a file-list walk
+	// included.
+	Inv Invocation
 	// Assemble is the tier's own join: the body emits a marked record stream
 	// (records the join can also explain, not only render), and this one
 	// function reduces it to rows.
@@ -41,24 +39,9 @@ type Probe struct {
 	Cap      RowCap
 }
 
-// Files is a probe's file list: the call that names the paths, and the call that
-// reads one of them. It is how a tier reads a directory or a glob without a
-// marker line in the body: the list is a body of its own, and every path is
-// asked for separately.
-//
-// Read must build a call for any path the list answered with; the runner walks
-// the answer in order.
-type Files struct {
-	List Invocation
-	Read func(path string) Invocation
-}
-
-// Runs reports whether a run in this source walks the probe: the probe's own
-// invocation decides, or the listing call when the probe reads a file list.
+// Runs reports whether a run in this source walks the probe: the invocation
+// answers for itself, whatever kind it is.
 func (p Probe) Runs(source Source) bool {
-	if p.Files != nil {
-		return p.Files.List.RunsOn(source)
-	}
 	return p.Inv.RunsOn(source)
 }
 

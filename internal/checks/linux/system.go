@@ -21,7 +21,7 @@ var SystemChecks = []*model.Check{
 			{{Label: "os-release-sh", Inv: model.Sh(osReleaseSh)}},
 		},
 		// os-release is KEY=VALUE, so the env pseudo-lexer is reused directly
-		define.CheckOpt{Syntax: model.SyntaxEnv}),
+		model.Options{Syntax: model.SyntaxEnv}),
 	define.LinuxCheck("uptime", "Hostname and boot time", model.AspectSystem,
 		[]model.Step{
 			{{Label: "uptime", Inv: model.Native{Body: native.Uptime}}},
@@ -31,20 +31,20 @@ var SystemChecks = []*model.Check{
 			{{Label: "uptime-sh", Inv: model.Sh("uptime")}},
 			{{Label: "proc-uptime-sh", Inv: model.Sh("cat /proc/uptime")}},
 		},
-		define.CheckOpt{}),
+		model.Options{}),
 	define.LinuxCheck("time", "System time and timezone", model.AspectSystem,
 		[]model.Step{
 			{{Label: "timedatectl", Inv: model.NewCommand("timedatectl")}},
 			{{Label: "date", Inv: model.Native{Body: native.Date}}},
 			{{Label: "date-sh", Inv: model.Sh("date")}},
 		},
-		define.CheckOpt{}),
+		model.Options{}),
 	define.LinuxCheck("env", "Environment variables (security-relevant)", model.AspectSystem,
 		[]model.Step{
 			{{Label: "env", Inv: model.Native{Body: native.Env}}},
 			{{Label: "env-sh", Inv: model.Sh("env")}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxEnv,
 			// No filter: a whitelist would hide hijack vectors outside the list
 			// (PYTHONPATH/NODE_OPTIONS etc.); a blacklist cannot be exhaustive, so show

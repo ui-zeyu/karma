@@ -128,14 +128,3 @@ func BenchmarkCheckPanelFormPlain(b *testing.B) {
 		checkPanel(result, 400, 120, false)
 	}
 }
-
-// BenchmarkPaintLine isolates the span stacker: a row with the ls-l lexer's
-// spans for every permission bit, the size, the date and the name.
-func BenchmarkPaintLine(b *testing.B) {
-	const row = "drwxr-xr-x 2 root root 4096 Oct 06 12:00 /tmp/sub"
-	spans := styleLsL(row)
-	b.ReportAllocs()
-	for b.Loop() {
-		paintLine(row, spans)
-	}
-}

@@ -1,6 +1,6 @@
 // colon pseudo-lexer: colon-separated tables (passwd/group), fields cycled.
 
-package render
+package syntax
 
 import "strings"
 

@@ -84,7 +84,7 @@ var scriptBlockSelf = model.NewFilter("scriptblock-self",
 var WinLogChecks = []*model.Check{
 	define.WindowsCheck("sec-log", "Key Security Log Events (Logon Failure/Account Creation/Service Install/Log Cleared)", model.AspectLog,
 		[]model.Step{secLogProbes},
-		define.CheckOpt{
+		model.Options{
 			Timeout: winlogTimeout,
 			Rules: []model.Matcher{
 				model.NewRule("log-cleared", logClearedRule, model.Medium,
@@ -94,7 +94,7 @@ var WinLogChecks = []*model.Check{
 		}),
 	define.WindowsCheck("scriptblock-log", "PowerShell Script Block Log (4104)", model.AspectLog,
 		[]model.Step{{scriptBlockProbe}},
-		define.CheckOpt{
+		model.Options{
 			Timeout: winlogTimeout,
 			Filters: []model.LineFilter{scriptBlockSelf},
 			Rules: []model.Matcher{

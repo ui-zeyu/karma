@@ -3,7 +3,7 @@
 // (list-unit-files) with its state words colored by value, plus the SysV
 // fallback rows (`service --status-all`) the services check also collects.
 
-package render
+package syntax
 
 import "slices"
 

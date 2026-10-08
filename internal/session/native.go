@@ -159,17 +159,6 @@ func fieldFailure(err error) model.RunResult {
 	}
 }
 
-// runScript is a Script tier's front on every channel: the pinned command runs
-// as the channel's own shell call, and what came back is read into the records
-// the parser states. The two halves belong together — a channel that ran the
-// shell text without the parse would answer a Script tier with the tool's own
-// layout — so every channel states them here rather than at each of its Run
-// methods.
-func runScript(ctx context.Context, run func(context.Context, model.Call) model.RunResult,
-	script model.Script, cap model.RowCap) model.RunResult {
-	return finishScript(run(ctx, scriptCall(script, cap)), script, cap)
-}
-
 // scriptCall is the shell harvest of a Script tier. A parser turns that text
 // into records, and a header line is not a record, so the row cap waits until
 // the records exist; the harvest's byte valve still bounds the text. A tier

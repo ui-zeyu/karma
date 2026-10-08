@@ -106,8 +106,7 @@ func TestCatalogInvariants(t *testing.T) {
 			labels := map[string]bool{}
 			for _, step := range check.Steps {
 				// A step with no probe has nothing to run and no label to name; a
-				// probe with neither an invocation nor a file list is a walk that
-				// would stop in silence.
+				// probe with no invocation is a walk that would stop in silence.
 				if len(step) == 0 {
 					t.Errorf("check %s has an empty step", check.ID)
 				}
@@ -117,16 +116,20 @@ func TestCatalogInvariants(t *testing.T) {
 				stepLabels := map[string]bool{}
 				for _, probe := range step {
 					switch {
-					case probe.Inv == nil && probe.Files == nil:
+					case probe.Inv == nil:
 						t.Errorf("check %s probe %s carries no invocation", check.ID, probe.Label)
-					case probe.Inv != nil && probe.Files != nil:
-						t.Errorf("check %s probe %s carries both an invocation and a file list", check.ID, probe.Label)
-					case probe.Files != nil && (probe.Files.List == nil || probe.Files.Read == nil):
-						t.Errorf("check %s probe %s has an incomplete file list", check.ID, probe.Label)
-					case len(probe.Titles) > 0 && probe.Files != nil:
-						// A file section is titled with its path, so declared titles
-						// would have nowhere to apply and would be dropped silently.
-						t.Errorf("check %s probe %s declares titles and a file list", check.ID, probe.Label)
+					default:
+						if list, ok := probe.Inv.(model.FileList); ok {
+							if list.List == nil || list.Read == nil {
+								t.Errorf("check %s probe %s has an incomplete file list", check.ID, probe.Label)
+							}
+							// A file section is titled with its path, so declared
+							// titles would have nowhere to apply and would be
+							// dropped silently.
+							if len(probe.Titles) > 0 {
+								t.Errorf("check %s probe %s declares titles and a file list", check.ID, probe.Label)
+							}
+						}
 					}
 					for _, title := range probe.Titles {
 						if strings.TrimSpace(title) == "" {

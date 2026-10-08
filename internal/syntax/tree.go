@@ -3,7 +3,7 @@
 // hits — a colored skeleton is the level's business, and a finding on a node
 // still reads as the loudest thing on its line.
 
-package render
+package syntax
 
 import (
 	"strings"

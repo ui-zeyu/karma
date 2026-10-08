@@ -51,7 +51,7 @@ func PSKeyProbe(label, title, pipeline string) model.Probe {
 // of the Linux catalog's file list, and it keeps every file's section titled with
 // its path.
 func PSFilesProbe(label, list string, read func(path string) string) model.Probe {
-	return model.Probe{Label: label, Files: &model.Files{
+	return model.Probe{Label: label, Inv: model.FileList{
 		List: powershell.PowerShell(list),
 		Read: func(path string) model.Invocation { return powershell.PowerShell(read(path)) },
 	}}
@@ -152,7 +152,7 @@ func (k RegKey) title() string { return regTitle(k.Path, k.Value) }
 // the local Windows channel has no shell to loop in — while one step per key
 // would let the walk stop at the first key that exists and silently drop the rest
 // of the evidence.
-func RegCheck(id, title string, aspect model.Aspect, keys []RegKey, opt define.CheckOpt, extra ...ExtraFragment) *model.Check {
+func RegCheck(id, title string, aspect model.Aspect, keys []RegKey, opt model.Options, extra ...ExtraFragment) *model.Check {
 	inProcess := make(model.Step, 0, len(keys)+len(extra))
 	for _, key := range keys {
 		inProcess = append(inProcess, PSKeyProbe("reg", key.title(), key.fragment()))

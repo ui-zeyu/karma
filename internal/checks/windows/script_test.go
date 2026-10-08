@@ -52,11 +52,15 @@ func TestScriptsCarryNoSectionHeader(t *testing.T) {
 		jumplistProbe,
 	}
 	for _, probe := range stringProbes {
+		list, ok := probe.Inv.(model.FileList)
+		if !ok {
+			t.Fatalf("probe %s is not a file list: %+v", probe.Label, probe)
+		}
 		names := []string{"list"}
-		scripts := []string{callScript(t, probe.Files.List)}
+		scripts := []string{callScript(t, list.List)}
 		for _, path := range []string{`C:\Users\x\Recent\a.lnk`, `C:\Windows\AppCompat\Custom\b.sdb`} {
 			names = append(names, "read"+path)
-			scripts = append(scripts, callScript(t, probe.Files.Read(path)))
+			scripts = append(scripts, callScript(t, list.Read(path)))
 		}
 		for index, script := range scripts {
 			if strings.Contains(script, "'== '") {

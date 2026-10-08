@@ -7,24 +7,9 @@ package define
 
 import (
 	"slices"
-	"time"
 
 	"karma/internal/model"
 )
-
-// CheckOpt is the optional surface of a check: rules, filters, body
-// normalization, presentation, and run parameters. The zero value is usable
-// (no own rules, no normalization, the global timeout and read cap).
-type CheckOpt struct {
-	Filters       []model.LineFilter
-	Rules         []model.Matcher
-	Normalize     model.Normalizer
-	Syntax        model.Syntax
-	Form          model.Form
-	SectionSyntax []model.SectionSyntax
-	Timeout       time.Duration
-	ScanBytes     int
-}
 
 // PrivateKeyRule is the same on every platform: it joins the global pack on
 // Linux, and Windows checks attach it explicitly.
@@ -179,32 +164,27 @@ var globalRules = map[model.Platform][]model.Matcher{
 // LinuxCheck builds one Linux check and merges in the Linux global rule pack by
 // default. steps is the check's walk: one entry per tier, an entry of several
 // probes being a tier that answers as a whole.
-func LinuxCheck(id, title string, aspect model.Aspect, steps []model.Step, opt CheckOpt) *model.Check {
+func LinuxCheck(id, title string, aspect model.Aspect, steps []model.Step, opt model.Options) *model.Check {
 	return build(model.Linux, id, title, aspect, steps, opt)
 }
 
 // WindowsCheck builds one Windows check.
-func WindowsCheck(id, title string, aspect model.Aspect, steps []model.Step, opt CheckOpt) *model.Check {
+func WindowsCheck(id, title string, aspect model.Aspect, steps []model.Step, opt model.Options) *model.Check {
 	return build(model.Windows, id, title, aspect, steps, opt)
 }
 
 // build is the shared construction path of both platforms: the check's own rules
 // first, the platform's default pack after. slices.Concat allocates a new slice
 // and never writes through the caller's shared array.
-func build(platform model.Platform, id, title string, aspect model.Aspect, steps []model.Step, opt CheckOpt) *model.Check {
+func build(platform model.Platform, id, title string, aspect model.Aspect, steps []model.Step, opt model.Options) *model.Check {
+	opt.Filters = slices.Concat(opt.Filters, GlobalFilters)
+	opt.Rules = slices.Concat(opt.Rules, globalRules[platform])
 	return &model.Check{
-		ID:            id,
-		Title:         title,
-		Aspect:        aspect,
-		Platform:      platform,
-		Steps:         steps,
-		Filters:       slices.Concat(opt.Filters, GlobalFilters),
-		Rules:         slices.Concat(opt.Rules, globalRules[platform]),
-		Timeout:       opt.Timeout,
-		Syntax:        opt.Syntax,
-		SectionSyntax: opt.SectionSyntax,
-		Normalize:     opt.Normalize,
-		Form:          opt.Form,
-		ScanBytes:     opt.ScanBytes,
+		ID:       id,
+		Title:    title,
+		Aspect:   aspect,
+		Platform: platform,
+		Steps:    steps,
+		Options:  opt,
 	}
 }

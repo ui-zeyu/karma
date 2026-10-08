@@ -1,7 +1,7 @@
 // ls -l pseudo-lexer: permissions, size, date, and the name colored by file
 // kind (the shape script.LSBodyPrintf collects).
 
-package render
+package syntax
 
 import "strings"
 

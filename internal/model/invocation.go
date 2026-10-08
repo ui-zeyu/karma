@@ -10,7 +10,8 @@ import (
 
 // Invocation is one way a tier gets its text: Command goes through exec
 // without a shell, Shell is a script that must go through /bin/sh -c (globs,
-// redirections, loops), Native is a body run inside karma's own process. The
+// redirections, loops), Native is a body run inside karma's own process, and
+// FileList is a walk of one call per path. The
 // unexported method seals the implementation set, and each variant states for
 // itself which source walks it (RunsOn), so a new kind of tier cannot inherit
 // a source rule by landing in a switch's default branch.
@@ -104,6 +105,24 @@ func (Script) isInvocation() {}
 // RunsOn is the sh source alone: the tier is that source's spelling of the
 // evidence, read over the target's own shell.
 func (Script) RunsOn(s Source) bool { return s == SourceSh }
+
+// FileList is a tier that reads a list of files one call per path: List answers
+// with the paths, one per line, and Read builds the call that reads one of them.
+// It is how a tier reads a directory or a glob without a marker line in the
+// body — the list is a body of its own, and every path is asked for separately,
+// which is the runner's walk (one section per path, titled with the path).
+//
+// Read must build a call for any path the list answered with; the runner walks
+// the answer in order.
+type FileList struct {
+	List Invocation
+	Read func(path string) Invocation
+}
+
+func (FileList) isInvocation() {}
+
+// RunsOn is the listing call's own answer: the walk runs where the list runs.
+func (f FileList) RunsOn(s Source) bool { return f.List.RunsOn(s) }
 
 // Source is which side of the wire reads the evidence, and the run's own
 // channel states it (Channel.Source). The native source is where karma itself

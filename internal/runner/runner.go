@@ -154,7 +154,6 @@ const defaultFileCap = 200
 // probeFailure is the first step of the walk that failed with error output; it
 // goes into the panel at the end.
 type probeFailure struct {
-	step     model.Step
 	label    string
 	result   model.RunResult
 	sections []model.BodySection
@@ -208,12 +207,12 @@ func runCheck(ctx context.Context, sess session.Session, check *model.Check, opt
 		joined, sections, label := joinStep(members)
 		switch {
 		case joined.Verdict.Settled():
-			return finishStep(check, step, joined, sections, label, skipped, options, budget)
+			return finishStep(check, joined, sections, label, skipped, options, budget)
 		case joined.Verdict == model.VerdictUnavailable:
 			unavailable = true
 		default:
 			if failure == nil && strings.TrimSpace(joined.Stderr) != "" {
-				failure = &probeFailure{step: step, label: label, result: joined,
+				failure = &probeFailure{label: label, result: joined,
 					sections: sections, skipped: slices.Clone(skipped)}
 			}
 		}
@@ -221,7 +220,7 @@ func runCheck(ctx context.Context, sess session.Session, check *model.Check, opt
 	}
 
 	if failure != nil {
-		return finishStep(check, failure.step, failure.result, failure.sections, failure.label,
+		return finishStep(check, failure.result, failure.sections, failure.label,
 			failure.skipped, options, budget)
 	}
 	if unavailable {
@@ -263,18 +262,18 @@ func stepMembers(ctx context.Context, sess session.Session, step model.Step) []a
 // the probe's own title — split into the parts the probe declares (Probe.Titles);
 // a file list answers with one section per path, titled with the path.
 func runProbe(ctx context.Context, sess session.Session, probe model.Probe) answeredTier {
-	if probe.Files == nil {
-		result := sess.Run(ctx, model.Call{Inv: probe.Inv, Cap: probe.Cap})
-		return answeredTier{probe: probe, result: result, sections: []model.BodySection{{
-			Title:    probe.Title,
-			Titles:   probe.Titles,
-			Text:     result.Stdout,
-			Records:  result.Records,
-			Adapt:    probe.Adapt,
-			Assemble: probe.Assemble,
-		}}}
+	if list, ok := probe.Inv.(model.FileList); ok {
+		return readFiles(ctx, sess, probe, list)
 	}
-	return readFiles(ctx, sess, probe)
+	result := sess.Run(ctx, model.Call{Inv: probe.Inv, Cap: probe.Cap})
+	return answeredTier{probe: probe, result: result, sections: []model.BodySection{{
+		Title:    probe.Title,
+		Titles:   probe.Titles,
+		Text:     result.Stdout,
+		Records:  result.Records,
+		Adapt:    probe.Adapt,
+		Assemble: probe.Assemble,
+	}}}
 }
 
 // readFiles runs a file-list probe: the list call names the paths, then one call
@@ -284,8 +283,8 @@ func runProbe(ctx context.Context, sess session.Session, probe model.Probe) answ
 //
 // The probe's cap bounds the number of files: a list longer than it is a cut,
 // like an open scan's own cap, and the files past it are not read at all.
-func readFiles(ctx context.Context, sess session.Session, probe model.Probe) answeredTier {
-	listing := sess.Run(ctx, model.Call{Inv: probe.Files.List})
+func readFiles(ctx context.Context, sess session.Session, probe model.Probe, list model.FileList) answeredTier {
+	listing := sess.Run(ctx, model.Call{Inv: list.List})
 	if !listing.Verdict.Settled() {
 		return answeredTier{probe: probe, result: listing}
 	}
@@ -309,7 +308,7 @@ func readFiles(ctx context.Context, sess session.Session, probe model.Probe) ans
 	// business, and the list's stderr stays the probe's.
 	sections := make([]model.BodySection, 0, len(paths))
 	for _, path := range paths {
-		read := sess.Run(ctx, model.Call{Inv: probe.Files.Read(path)})
+		read := sess.Run(ctx, model.Call{Inv: list.Read(path)})
 		if read.Verdict.Cut() {
 			// The channel or the walk's budget is gone: the files after this one
 			// would read the same dead source, and what arrived is kept.
@@ -409,7 +408,7 @@ func allUnavailable(members []answeredTier) bool {
 // finishStep finishes the step that ended the walk (or failed it): the note the
 // verdict deserves, then dialect alignment and body normalization, then reading
 // into a document.
-func finishStep(check *model.Check, step model.Step, joined model.RunResult, sections []model.BodySection,
+func finishStep(check *model.Check, joined model.RunResult, sections []model.BodySection,
 	label string, skipped []string, options model.RunOptions, budget time.Duration) *model.CheckResult {
 	note := ""
 	switch joined.Verdict {
@@ -423,7 +422,6 @@ func finishStep(check *model.Check, step model.Step, joined model.RunResult, sec
 	body := model.Body{Sections: sections}
 	reading := reader.Read(model.ReadRequest{
 		Check:     check,
-		Step:      step,
 		Body:      body,
 		Floor:     options.MinSeverity,
 		Truncated: joined.Truncated,

@@ -214,7 +214,7 @@ func bagMRUPath(key string) []string {
 var NavigationChecks = []*model.Check{
 	RegCheck("wordwheel-query", "Explorer Search Terms (WordWheelQuery)", model.AspectNavigation,
 		wordwheelKeys,
-		define.CheckOpt{
+		model.Options{
 			Normalize: func(_ string, body string) *model.Shaped {
 				return &model.Shaped{Text: strings.Join(MRUTerms(body, 2), "\n")}
 			},
@@ -225,7 +225,7 @@ var NavigationChecks = []*model.Check{
 		}),
 	RegCheck("typedpaths", "Address Bar Typed Paths (TypedPaths)", model.AspectNavigation,
 		typedpathsKeys,
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxReg,
 			Rules: []model.Matcher{
 				model.NewRule("typedpaths-nonlocal", nonlocalPath, model.Medium,
@@ -235,7 +235,7 @@ var NavigationChecks = []*model.Check{
 		}),
 	RegCheck("shellbags", "Folder Browsing History (Shellbags, Path Recovery)", model.AspectNavigation,
 		shellbagKeys,
-		define.CheckOpt{
+		model.Options{
 			Normalize: shellbagNormalize,
 			Rules: []model.Matcher{
 				model.NewRule("shellbags-nonlocal", nonlocalPath, model.Medium, "FTP or network location browsed"),

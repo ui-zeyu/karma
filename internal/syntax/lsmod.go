@@ -1,6 +1,6 @@
 // lsmod pseudo-lexer: module tables (lsmod and the /proc/modules fallback).
 
-package render
+package syntax
 
 import "slices"
 

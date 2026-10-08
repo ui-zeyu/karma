@@ -126,7 +126,7 @@ var moduleImagesRe = regexp.MustCompile(`\b(?:` + define.RootkitNames + `)(?:[_-
 var KernelChecks = []*model.Check{
 	define.LinuxCheck("modules-load", "Boot-loaded modules (/etc/modules, modules-load.d)", model.AspectKernel,
 		readFilesCheck(modulesLoadPaths...),
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				// Exclude a leading /: a section title is a file path and should not light
 				// up as a module entry, otherwise a comment-only /etc/modules would produce an
@@ -149,7 +149,7 @@ var KernelChecks = []*model.Check{
 			{{Label: "lsmod-sh", Inv: model.Sh("lsmod")}},
 			{{Label: "proc-modules-sh", Inv: model.Sh("cat /proc/modules 2>/dev/null")}},
 		},
-		define.CheckOpt{
+		model.Options{
 			// The Used by tail can contain spaces, which the generic table word-by-word
 			// coloring would split apart
 			Syntax: model.SyntaxLsmod,
@@ -200,7 +200,7 @@ var KernelChecks = []*model.Check{
 			{{Label: "diff-sh", Inv: model.Sh(hiddenModuleScript),
 				Assemble: script.HiddenModuleBody}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				// The span carries the name: the reason is about that module, and the
 				// evidence tail after it is the module's own description.
@@ -238,7 +238,7 @@ var KernelChecks = []*model.Check{
 			// way to), so its rows are the pipeline's own; the join is the same.
 			{{Label: "vmap-sh", Inv: model.Sh(script.ModuleMemoryScript(moduleMemoryViews)), Assemble: moduleMemoryBody}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				// The row carries the range, the caller and the symbols inside, so
 				// the analyst can read the same memory in /proc/kcore or in a dump.
@@ -271,7 +271,7 @@ var KernelChecks = []*model.Check{
 			{{Label: "grep", Inv: model.Native{Body: native.Kallsyms(kallsymsRe)}, Cap: model.Scan(openScanLines)}},
 			{{Label: "grep-sh", Inv: model.Sh(kallsymsScript), Cap: model.Scan(openScanLines)}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("kallsyms-rootkit", `\b(?:`+rootkitSyms+`)\b`, model.Critical,
 					"known LKM rootkit symbol in the kernel symbol table"),
@@ -282,7 +282,7 @@ var KernelChecks = []*model.Check{
 			{{Label: "tainted", Inv: model.Native{Body: native.Tainted}}},
 			{{Label: "tainted-sh", Inv: model.Sh("cat /proc/sys/kernel/tainted 2>/dev/null")}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				// The whole mask is the finding, not its first digit: the span is
 				// what the panel paints, and what a reader needs is the number the
@@ -300,7 +300,7 @@ var KernelChecks = []*model.Check{
 			{{Label: "dmesg", Inv: model.Native{Body: native.Dmesg}}},
 			{{Label: "dmesg-sh", Inv: model.Sh("dmesg")}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Syntax:  model.SyntaxDmesg,
 			Filters: dmesgKeepFilters,
 			Rules: []model.Matcher{

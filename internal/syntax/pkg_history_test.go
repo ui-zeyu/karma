@@ -2,7 +2,7 @@
 // no severity and the coloring has to do the reading — the command line's
 // program and its arguments are told apart.
 
-package render
+package syntax
 
 import (
 	"strings"

@@ -1,6 +1,6 @@
 // ssh-pubkey pseudo-lexer: "type base64 comment" rows.
 
-package render
+package syntax
 
 var sshPubKey = compile(`(?P<type>(?:sk-)?(?:ecdsa-sha2-nistp\d+|ssh-(?:rsa|dss|ed25519))(?:@openssh\.com)?)` +
 	`\s+(?P<blob>[A-Za-z0-9+/]{20,}={0,2})`)

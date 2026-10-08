@@ -144,7 +144,7 @@ var IdentityChecks = []*model.Check{
 	define.LinuxCheck("accounts", "Accounts", model.AspectIdentity,
 		readFilesCheck("/etc/passwd", "/etc/passwd-"),
 		// passwd/group are colon-separated tables; color fields in a cycle to separate columns
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxColon,
 			Filters: []model.LineFilter{
 				model.NewFilter("acct-nologin",
@@ -173,7 +173,7 @@ var IdentityChecks = []*model.Check{
 	// An empty root password is its own CRITICAL, matching the uid0 wording.
 	define.LinuxCheck("shadow", "Shadow passwords (/etc/shadow)", model.AspectIdentity,
 		readFilesCheck("/etc/shadow", "/etc/shadow-"),
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxColon,
 			// Ubuntu locks with !*, RedHat with !; only entries whose field 2 is entirely
 			// */!/!! are dropped, while !+hash (what passwd -l leaves) is kept.
@@ -194,7 +194,7 @@ var IdentityChecks = []*model.Check{
 	// The dash-suffixed copies go along for the same reason as passwd-.
 	define.LinuxCheck("groups", "Groups (/etc/group, /etc/gshadow)", model.AspectIdentity,
 		readFilesCheck("/etc/group", "/etc/gshadow", "/etc/group-", "/etc/gshadow-"),
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxColon,
 			// Only entries with no members and a normal placeholder password (x/*/!/!*) are
 			// hidden: an anomalous password field (a real hash is set, letting anyone newgrp
@@ -222,19 +222,19 @@ var IdentityChecks = []*model.Check{
 			{{Label: "w-sh", Inv: model.Sh("w")}},
 			{{Label: "who-sh", Inv: model.Sh("who")}},
 		},
-		define.CheckOpt{Syntax: model.SyntaxTable}),
+		model.Options{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("last", "Login history (last)", model.AspectIdentity,
 		[]model.Step{
 			{{Label: "last", Inv: model.Native{Body: native.Last(lastRows)}}},
 			{{Label: "last-sh", Inv: model.Sh("last -n " + strconv.Itoa(lastRows))}},
 		},
-		define.CheckOpt{Syntax: model.SyntaxTable}),
+		model.Options{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("lastlog", "Last account login (lastlog)", model.AspectIdentity,
 		[]model.Step{
 			{{Label: "lastlog", Inv: model.Native{Body: native.Lastlog}}},
 			{{Label: "lastlog-sh", Inv: model.Sh("lastlog")}},
 		},
-		define.CheckOpt{
+		model.Options{
 			// The header is mixed case, so the columns are anchored by their own
 			// syntax; the note line ahead of the header stays plain.
 			Syntax: model.SyntaxLastlog,
@@ -244,17 +244,17 @@ var IdentityChecks = []*model.Check{
 		}),
 	define.LinuxCheck("sudoers", "Sudo grants", model.AspectIdentity,
 		[]model.Step{
-			{{Label: "cat", Files: &model.Files{
+			{{Label: "cat", Inv: model.FileList{
 				List: model.Native{Body: native.SudoersFiles(sudoersPaths)},
 				Read: func(path string) model.Invocation { return model.Native{Body: readFile(path, nil)} },
 			}}},
-			{{Label: "cat-sh", Files: &model.Files{
+			{{Label: "cat-sh", Inv: model.FileList{
 				List: model.Sh(sudoersListScript),
 				Read: func(path string) model.Invocation { return model.Sh(script.ReadFile(path, `cat "$f"`)) },
 			}}},
 			{{Label: "sudo", Inv: model.NewCommand("sudo", "-n", "-l")}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("sudo-nopasswd", `NOPASSWD`, model.High, "passwordless sudo grant"),
 				model.NewRule("sudoers-user-all", `^[^#%\n][^=\n]*\bALL\s*=`, model.Low,
@@ -266,16 +266,16 @@ var IdentityChecks = []*model.Check{
 		[]model.Matcher{define.KeywordRule}),
 	define.LinuxCheck("authorized-keys", "SSH authorized keys", model.AspectIdentity,
 		[]model.Step{
-			{{Label: "find", Files: &model.Files{
+			{{Label: "find", Inv: model.FileList{
 				List: model.Native{Body: native.AuthorizedKeyFiles(homeGlobs, authorizedKeysDepth, sshdConfigPaths)},
 				Read: func(path string) model.Invocation { return model.Native{Body: readFile(path, nil)} },
 			}}},
-			{{Label: "find-sh", Files: &model.Files{
+			{{Label: "find-sh", Inv: model.FileList{
 				List: model.Sh(authorizedKeysListScript),
 				Read: func(path string) model.Invocation { return model.Sh(script.ReadFile(path, `cat "$f"`)) },
 			}}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxSSHPubkey,
 			Rules: []model.Matcher{
 				model.NewRule("authkeys-force-command", `\bcommand="[^"\n]*"`, model.Medium,
@@ -287,7 +287,7 @@ var IdentityChecks = []*model.Check{
 	// the easiest key-based backdoor
 	define.LinuxCheck("sshd-config", "sshd config", model.AspectIdentity,
 		readFilesCheck(sshdConfigPaths...),
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxSshdConfig,
 			Rules: []model.Matcher{
 				model.NewRule("sshd-authorized-keys-file", `^\s*AuthorizedKeysFile\b`, model.Medium,
@@ -302,7 +302,7 @@ var IdentityChecks = []*model.Check{
 	// command. The directive form matches sshd_config, so the lexer is the same.
 	define.LinuxCheck("ssh-client-config", "SSH client config", model.AspectIdentity,
 		readFilesCheck(sshClientConfigPaths...),
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxSshdConfig,
 			Rules: []model.Matcher{
 				model.NewRule("ssh-client-proxy-command", `^\s*ProxyCommand\b`, model.Medium,

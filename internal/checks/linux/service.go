@@ -28,7 +28,7 @@ var ServiceChecks = []*model.Check{
 			{{Label: "systemctl", Inv: model.NewCommand("systemctl", "list-units", "--type=service", "--all")}},
 			{{Label: "service", Inv: model.NewCommand("service", "--status-all")}},
 		},
-		define.CheckOpt{
+		model.Options{
 			// The systemd probe's header legend row does not match the keep pattern
 			// and is hidden by count
 			Filters: []model.LineFilter{
@@ -45,5 +45,5 @@ var ServiceChecks = []*model.Check{
 		// list-timers' date cells span several words, which the generic table
 		// styler would color word by word; the timers lexer paints each whole
 		// cell.
-		define.CheckOpt{Syntax: model.SyntaxTimers}),
+		model.Options{Syntax: model.SyntaxTimers}),
 }

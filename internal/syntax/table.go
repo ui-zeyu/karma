@@ -2,7 +2,7 @@
 // generic "table" syntax and the header-specific variants (listen, netstat,
 // df).
 
-package render
+package syntax
 
 import (
 	"iter"
@@ -36,7 +36,7 @@ var (
 
 	// lastlogHeader anchors lastlog's columns. Its header words are mixed case
 	// ("Username Port From Latest"), so the generic all-caps header test never
-	// recognizes the line and the panel would cycle word by word instead.
+	// recognizes the line and the styler would cycle word by word instead.
 	lastlogHeader = compile(`^(Username)\s+(Port)\s+(From)\s+(Latest)\s*$`)
 
 	// logTrailer is an accounting store's closing line: where its records begin

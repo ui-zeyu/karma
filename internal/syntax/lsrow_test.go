@@ -1,12 +1,12 @@
 // The ls -l row has one shape (script.LSBodyPrintf) and two readers: the
 // reading layers take a collection row apart with script.SplitLsBody (the
-// cluster normalizer's column lookup), and the panel paints one through the ls-l
-// lexer's own regex. They are separate mechanisms on purpose — the regex also
+// cluster normalizer's column lookup), and the ls-l lexer paints one through its
+// own regex. They are separate mechanisms on purpose — the regex also
 // anchors the date column, which the split does not need — so this test holds
 // them to the same reading of every row shape karma actually collects or meets
 // from GNU ls.
 
-package render
+package syntax
 
 import (
 	"slices"

@@ -248,12 +248,12 @@ var FilesystemChecks = []*model.Check{
 			{{Label: "df", Inv: model.Native{Body: native.Df}}},
 			{{Label: "df-sh", Inv: model.Sh("df -h")}},
 		},
-		define.CheckOpt{Form: dfTable, Normalize: shape.Df}),
+		model.Options{Form: dfTable, Normalize: shape.Df}),
 	define.LinuxCheck("fstab", "Filesystem mount config (fstab)", model.AspectFilesystem,
 		readFilesCheck("/etc/fstab"),
 		// The file's own shape: six fields per record, drawn as the table they
 		// are, and every comment as the remark it is (shape.Fstab).
-		define.CheckOpt{Form: form.Table{}, Normalize: shape.Fstab, Rules: []model.Matcher{mountRemoteFsRule}}),
+		model.Options{Form: form.Table{}, Normalize: shape.Fstab, Rules: []model.Matcher{mountRemoteFsRule}}),
 	define.LinuxCheck("mounts", "Mount points", model.AspectFilesystem,
 		[]model.Step{
 			{{Label: "findmnt", Inv: model.Native{Body: native.Findmnt}}},
@@ -261,7 +261,7 @@ var FilesystemChecks = []*model.Check{
 			{{Label: "mount", Inv: model.Native{Body: native.Mount}}},
 			{{Label: "mount-sh", Inv: model.Sh("mount")}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Filters: []model.LineFilter{
 				model.NewFilter("mount-noise", mountNoise, model.FilterDrop),
 			},
@@ -278,7 +278,7 @@ var FilesystemChecks = []*model.Check{
 			{{Label: "find", Inv: model.Native{Body: native.ModeBitScan(os.ModeSetuid, privFsTypes)}}},
 			{{Label: "find-sh", Inv: model.Sh(privilegeFind("-4000"))}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("suid-gtfobins", gtfobinsPattern, model.Critical,
 					"SUID privilege-escalation program in GTFOBins"),
@@ -293,7 +293,7 @@ var FilesystemChecks = []*model.Check{
 			{{Label: "find", Inv: model.Native{Body: native.ModeBitScan(os.ModeSetgid, privFsTypes)}}},
 			{{Label: "find-sh", Inv: model.Sh(privilegeFind("-2000"))}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("sgid-gtfobins", gtfobinsPattern, model.High,
 					"SGID of a GTFOBins privilege-escalation program (group escalation)"),
@@ -309,7 +309,7 @@ var FilesystemChecks = []*model.Check{
 			// needs no root list; the in-process tier walks the same vocabulary.
 			{{Label: "getcap", Inv: model.Native{Body: native.FileCaps(privFsTypes)}, Cap: model.Scan(openScanLines)}},
 			{{Label: "getcap-sh", Inv: model.Sh("getcap -r / 2>/dev/null"), Cap: model.Scan(openScanLines)}}},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				// Both rules span the whole `cap_...=value` assignment: the span is
 				// what the panel paints, and getcap's value (e, i, p) carries the
@@ -334,7 +334,7 @@ var FilesystemChecks = []*model.Check{
 			// in the ls -l row shape, which the reading layer draws as a tree.
 			{{Label: "find-sh", Inv: model.Sh(homeTreeFind)}},
 		},
-		define.CheckOpt{
+		model.Options{
 			// A target that has tree installed already drew a tree, and that body
 			// passes through; the walk's listing rows are drawn here. Either way
 			// the tree lexer colors the branches by nesting level.
@@ -352,7 +352,7 @@ var FilesystemChecks = []*model.Check{
 			})}, Cap: model.Scan(openScanLines)}},
 			{{Label: "find-sh", Inv: model.Sh(webScriptFind), Cap: model.Scan(openScanLines)}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("web-script", `\.(?:php[3-5]?|phtml|jsp|jspx|sh|py)$`, model.Medium,
 					"recently changed web script"),
@@ -371,7 +371,7 @@ var FilesystemChecks = []*model.Check{
 			})}, Cap: model.Scan(openScanLines)}},
 			{{Label: "grep-sh", Inv: model.Sh(webshellGrep), Cap: model.Scan(openScanLines)}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("webshell-direct", `(?i)`+webshellDirect, model.Critical,
 					"request parameter passed straight into an exec function (one-liner webshell shape)"),

@@ -7,7 +7,7 @@
 // timestamp is metadata, the verb is the action, the package or the program is
 // the subject, and an option is an argument.
 
-package render
+package syntax
 
 var (
 	// apt's history.log carries two lines per transaction — when it started and

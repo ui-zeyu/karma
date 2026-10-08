@@ -204,7 +204,7 @@ var PackageChecks = []*model.Check{
 			{{Label: "docker", Inv: model.Native{Body: native.Docker}}},
 			{{Label: "docker-sh", Inv: model.Sh(dockerScript)}},
 		},
-		define.CheckOpt{Syntax: model.SyntaxTable, Rules: []model.Matcher{define.KeywordRule}}),
+		model.Options{Syntax: model.SyntaxTable, Rules: []model.Matcher{define.KeywordRule}}),
 	define.LinuxCheck("pkg-verify", "Package integrity verification", model.AspectPackage,
 		[]model.Step{
 			{{Label: "dpkg", Inv: model.Native{Body: native.PkgVerify([]string{"dpkg", "-V"})}, Titles: pkgVerifyTitles}},
@@ -212,7 +212,7 @@ var PackageChecks = []*model.Check{
 			{{Label: "rpm", Inv: model.Native{Body: native.PkgVerify([]string{"rpm", "-Va"})}, Titles: pkgVerifyTitles}},
 			{{Label: "rpm-sh", Inv: model.Sh(verifyScript(pkgVerifyRpm)), Titles: pkgVerifyTitles}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				pkgChangedFileRule,
 				model.NewRule("pkg-checksum", `^..5`, model.High,
@@ -231,10 +231,10 @@ var PackageChecks = []*model.Check{
 			{{Label: "find", Inv: model.Native{Body: native.UnownedFiles(unownedDirs)}, Cap: model.Scan(openScanLines)}},
 			{{Label: "find-sh", Inv: model.Sh(script.UnownedScript(unownedDirs)), Cap: model.Scan(openScanLines)}},
 		},
-		define.CheckOpt{Rules: []model.Matcher{unownedFileRule}, Timeout: unownedTimeout}),
+		model.Options{Rules: []model.Matcher{unownedFileRule}, Timeout: unownedTimeout}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
 		pkgHistoryTier(),
-		define.CheckOpt{
+		model.Options{
 			Rules:     pkgHistoryRules,
 			Filters:   pkgHistoryKeep,
 			Syntax:    model.SyntaxPkgHistory,
@@ -242,7 +242,7 @@ var PackageChecks = []*model.Check{
 		}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
 		authBinTier(),
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxLsL,
 			Rules:  []model.Matcher{binNotElfRule, define.KeywordRule},
 		}),

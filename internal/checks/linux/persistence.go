@@ -143,13 +143,13 @@ var udevExecRe = regexp.MustCompile(udevExec)
 // at the same hit count.
 func udevTier() []model.Step {
 	return []model.Step{
-		{{Label: "find", Files: &model.Files{
+		{{Label: "find", Inv: model.FileList{
 			List: model.Native{Body: listDirs(udevDirs)},
 			Read: func(dir string) model.Invocation {
 				return model.Native{Body: native.UdevDir(dir, udevHead, udevExecMaxHits, udevExecRe)}
 			},
 		}}},
-		{{Label: "find-sh", Files: &model.Files{
+		{{Label: "find-sh", Inv: model.FileList{
 			List: model.Sh(script.ListDirs(udevDirs)),
 			Read: func(dir string) model.Invocation { return model.Sh(udevDirScript(dir)) },
 		}}},
@@ -208,11 +208,11 @@ var generatorsListScript = script.Lines(
 // list, then one listing section per directory.
 func generatorsTier() []model.Step {
 	return []model.Step{
-		{{Label: "find", Files: &model.Files{
+		{{Label: "find", Inv: model.FileList{
 			List: model.Native{Body: native.GeneratorDirs(generatorDirs)},
 			Read: func(dir string) model.Invocation { return model.Native{Body: dirListing(dir, generatorHead)} },
 		}}},
-		{{Label: "find-sh", Files: &model.Files{
+		{{Label: "find-sh", Inv: model.FileList{
 			List: model.Sh(generatorsListScript),
 			Read: func(dir string) model.Invocation { return model.Sh(script.ListingFind(dir, generatorHead)) },
 		}}},
@@ -235,7 +235,7 @@ var aliasShadowRule = model.NewRule("alias-command-shadow",
 var PersistenceChecks = []*model.Check{
 	define.LinuxCheck("cron", "Scheduled tasks", model.AspectPersistence,
 		cronTier(),
-		define.CheckOpt{
+		model.Options{
 			// pygments has no crontab lexer; the bash lexer approximates the command part well
 			// enough
 			Syntax: model.SyntaxBash,
@@ -248,11 +248,11 @@ var PersistenceChecks = []*model.Check{
 		}),
 	define.LinuxCheck("at", "at one-shot job queue", model.AspectPersistence,
 		[]model.Step{{{Label: "at", Inv: model.NewCommand("atq")}}},
-		define.CheckOpt{Syntax: model.SyntaxTable}),
+		model.Options{Syntax: model.SyntaxTable}),
 	define.LinuxCheck("enabled-units", "Units enabled at boot", model.AspectPersistence,
 		[]model.Step{{{Label: "systemctl",
 			Inv: model.NewCommand("systemctl", "list-unit-files", "--state=enabled")}}},
-		define.CheckOpt{
+		model.Options{
 			Filters: []model.LineFilter{
 				model.NewFilter("unit-files-header", `^UNIT FILE\b`, model.FilterDrop),
 				model.NewFilter("unit-files-listed", `^\d+ unit files listed`, model.FilterDrop),
@@ -267,14 +267,14 @@ var PersistenceChecks = []*model.Check{
 		unitDirs, 100, nil),
 	define.LinuxCheck("systemd-generators", "systemd generator directories", model.AspectPersistence,
 		generatorsTier(),
-		define.CheckOpt{
+		model.Options{
 			Syntax:    model.SyntaxLsL,
 			Normalize: listingNormalize,
 			Rules:     []model.Matcher{define.KeywordRule},
 		}),
 	define.LinuxCheck("rc-local", "Boot scripts (rc.local, init.sh)", model.AspectPersistence,
 		readFilesCheck(bootScriptPaths...),
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxBash,
 			Rules: []model.Matcher{
 				model.NewRule("rc-b64-shell", `\bbase64\b[^|\n]*\|\s*[^|\n]*\b(?:ba|z|da|k)?sh\b`,
@@ -295,7 +295,7 @@ var PersistenceChecks = []*model.Check{
 		[]string{"/etc/xinetd.d"}, 100, []model.Matcher{define.KeywordRule}),
 	define.LinuxCheck("udev-rules", "udev rules (writable layers)", model.AspectPersistence,
 		udevTier(),
-		define.CheckOpt{
+		model.Options{
 			Syntax:    model.SyntaxLsL,
 			Normalize: listingNormalize,
 			Rules: []model.Matcher{
@@ -312,7 +312,7 @@ var PersistenceChecks = []*model.Check{
 			{{Label: "cat", Inv: model.Native{Body: native.LdPreload}}},
 			{{Label: "cat-sh", Inv: model.Sh("cat /etc/ld.so.preload 2>/dev/null")}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("preload-entry", `^[^#\n]\S+`, model.Critical, "preloaded shared library configured"),
 			},
@@ -322,20 +322,20 @@ var PersistenceChecks = []*model.Check{
 	// CRITICAL rule does not flag the whole directory list.
 	define.LinuxCheck("ld-conf", "Dynamic library search path (ld.so.conf)", model.AspectPersistence,
 		readFilesCheck("/etc/ld.so.conf", "/etc/ld.so.conf.d/*"),
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("ld-conf-entry", `^[^#\n]\S+`, model.Low, "library search path entry"),
 			},
 		}),
 	define.LinuxCheck("shell-rc", "Shell startup files", model.AspectPersistence,
 		readFilesCheck(shellRcPaths...),
-		define.CheckOpt{
+		model.Options{
 			Rules:  []model.Matcher{aliasShadowRule, historyOffRule, define.KeywordRule},
 			Syntax: model.SyntaxBash,
 		}),
 	define.LinuxCheck("skel", "Home directory templates (/etc/skel)", model.AspectPersistence,
 		skelTier(),
-		define.CheckOpt{
+		model.Options{
 			Syntax:    model.SyntaxBash,
 			Normalize: listingNormalize,
 			Rules:     []model.Matcher{define.KeywordRule},
@@ -344,5 +344,5 @@ var PersistenceChecks = []*model.Check{
 		}),
 	define.LinuxCheck("motd", "motd login banner", model.AspectPersistence,
 		readFilesCheck("/etc/motd", "/etc/update-motd.d/*"),
-		define.CheckOpt{Syntax: model.SyntaxBash, Rules: []model.Matcher{define.KeywordRule}}),
+		model.Options{Syntax: model.SyntaxBash, Rules: []model.Matcher{define.KeywordRule}}),
 }

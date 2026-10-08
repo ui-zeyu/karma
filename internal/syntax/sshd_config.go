@@ -1,6 +1,6 @@
 // sshd-config pseudo-lexer: the directive name at line start is lit blue.
 
-package render
+package syntax
 
 var sshdDirm = compile(`^[ \t]*[A-Za-z][A-Za-z0-9-]*`)
 

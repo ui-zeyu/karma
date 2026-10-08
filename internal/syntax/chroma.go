@@ -1,6 +1,6 @@
 // chroma lexical surface: bash and powershell through alecthomas/chroma.
 
-package render
+package syntax
 
 import (
 	"github.com/alecthomas/chroma/v2"

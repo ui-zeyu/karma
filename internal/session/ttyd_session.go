@@ -82,16 +82,13 @@ func (s *TTYDSession) Close() error { return nil }
 
 // Run types one collection line into a fresh terminal and harvests the answer.
 func (s *TTYDSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return s.run(ctx, call)
+	return dispatch(ctx, call.Inv, call.Cap, s.shell)
 }
 
-func (s *TTYDSession) run(ctx context.Context, call model.Call) model.RunResult {
-	if script, ok := call.Inv.(model.Script); ok {
-		return runScript(ctx, s.run, script, call.Cap)
-	}
-	text, ok := shellText(call.Inv)
+func (s *TTYDSession) shell(ctx context.Context, inv model.Invocation, cap model.RowCap) model.RunResult {
+	text, ok := shellText(inv)
 	if !ok {
-		return noShellFor(call.Inv)
+		return noShellFor(inv)
 	}
 	conn, err := s.connect(ctx)
 	if err != nil {
@@ -104,7 +101,7 @@ func (s *TTYDSession) run(ctx context.Context, call model.Call) model.RunResult 
 		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
 	terminal := &ttydCall{conn: conn, spawned: make(chan struct{})}
-	return terminal.collect(ctx, text, call.Cap)
+	return terminal.collect(ctx, text, cap)
 }
 
 // connect dials the endpoint and sends the JSON handshake. ttyd spawns the

@@ -71,7 +71,7 @@ var NetworkChecks = []*model.Check{
 			{{Label: "ss-sh", Inv: model.Sh("ss -tunap")}},
 			{{Label: "netstat", Inv: model.NewCommand("netstat", "-tunap")}},
 		}, procNetTier()...),
-		define.CheckOpt{
+		model.Options{
 			Syntax: model.SyntaxListen,
 			Rules: []model.Matcher{
 				// Established connections are the normal-case listing (every SSH session is in
@@ -97,7 +97,7 @@ var NetworkChecks = []*model.Check{
 			{{Label: "hostname", Inv: model.Native{Body: native.HostnameIps}}},
 			{{Label: "hostname-sh", Inv: model.Sh("hostname -I")}},
 		},
-		define.CheckOpt{Syntax: model.SyntaxIPAddr}),
+		model.Options{Syntax: model.SyntaxIPAddr}),
 	define.LinuxCheck("arp", "ARP / neighbor table", model.AspectNetwork,
 		[]model.Step{
 			{{Label: "ip", Inv: model.Native{Body: native.IPNeigh}}},
@@ -107,7 +107,7 @@ var NetworkChecks = []*model.Check{
 		// ip neigh writes key-value rows; the reading layer aligns them into
 		// the table the panel shows (shape.NeighTable), and the arp -n fallback
 		// prints its own aligned table, which the shaper declines.
-		define.CheckOpt{Syntax: model.SyntaxTable, Normalize: shape.NeighTable}),
+		model.Options{Syntax: model.SyntaxTable, Normalize: shape.NeighTable}),
 	// Both address families: ip route dumps IPv4 alone, and the local tier's
 	// netlink dump covers both, so an IPv6 route — a C2's default route, a
 	// tunnel's — would otherwise show on one source only. The IPv6 dump runs
@@ -122,10 +122,10 @@ var NetworkChecks = []*model.Check{
 		},
 		// As arp: the shaper aligns ip's own rows and declines the route(8)
 		// and netstat tables, which come pre-aligned.
-		define.CheckOpt{Syntax: model.SyntaxTable, Normalize: shape.RouteTable}),
+		model.Options{Syntax: model.SyntaxTable, Normalize: shape.RouteTable}),
 	define.LinuxCheck("firewall", "Firewall rules", model.AspectNetwork,
 		firewallTier(),
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("firewall-active", `^-A `, model.Medium, "active firewall rule"),
 			},
@@ -135,7 +135,7 @@ var NetworkChecks = []*model.Check{
 	// line is worth a look.
 	define.LinuxCheck("tcp-wrappers", "TCP Wrappers (hosts.allow/deny)", model.AspectNetwork,
 		readFilesCheck("/etc/hosts.allow", "/etc/hosts.deny"),
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				model.NewRule("wrappers-exec", `\b(?:spawn|twist)\b`, model.High,
 					"command runs on match (backdoor vector)"),
@@ -145,7 +145,7 @@ var NetworkChecks = []*model.Check{
 		}),
 	define.LinuxCheck("hosts-file", "hosts and DNS config", model.AspectNetwork,
 		readFilesCheck("/etc/hosts", "/etc/resolv.conf"),
-		define.CheckOpt{
+		model.Options{
 			Rules: []model.Matcher{
 				// "maps to a non-loopback address" becomes an exclusion (RE2 has no lookahead).
 				// The span is the whole entry, names included and the trailing comment

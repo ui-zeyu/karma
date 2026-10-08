@@ -53,16 +53,13 @@ func (s *SSHSession) Lost() bool { return s.lost.Load() }
 // the session and handing it the command — go through setup, which is what puts
 // them inside the call's deadline.
 func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return s.run(ctx, call)
+	return dispatch(ctx, call.Inv, call.Cap, s.shell)
 }
 
-func (s *SSHSession) run(ctx context.Context, call model.Call) model.RunResult {
-	if script, ok := call.Inv.(model.Script); ok {
-		return runScript(ctx, s.run, script, call.Cap)
-	}
-	text, ok := shellText(call.Inv)
+func (s *SSHSession) shell(ctx context.Context, inv model.Invocation, cap model.RowCap) model.RunResult {
+	text, ok := shellText(inv)
 	if !ok {
-		return noShellFor(call.Inv)
+		return noShellFor(inv)
 	}
 	command := renderText(text)
 	sess, err := setup(ctx, "ssh channel open", sshTimeout, s.client.NewSession)
@@ -89,7 +86,7 @@ func (s *SSHSession) run(ctx context.Context, call model.Call) model.RunResult {
 		sess:   sess,
 		stdout: bufio.NewReader(stdout),
 		stderr: bufio.NewReader(stderrPipe),
-	}, call.Cap)
+	}, cap)
 }
 
 // setupResult reads a setup that did not finish. The call's deadline and the

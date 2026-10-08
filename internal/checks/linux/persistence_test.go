@@ -101,12 +101,13 @@ func TestBootScriptCheckCoversEveryBootScript(t *testing.T) {
 }
 
 // filesProbe is one probe's file list; the test fails when the probe is not one.
-func filesProbe(t *testing.T, probe model.Probe) *model.Files {
+func filesProbe(t *testing.T, probe model.Probe) model.FileList {
 	t.Helper()
-	if probe.Files == nil {
+	list, ok := probe.Inv.(model.FileList)
+	if !ok {
 		t.Fatalf("probe %s is not a file list: %+v", probe.Label, probe)
 	}
-	return probe.Files
+	return list
 }
 
 // listScript is a shell list's script text.

@@ -59,7 +59,7 @@ const sqlSchema = `^(?:CREATE|INDEX|TABLE|UNIQUE|PRAGMA|sqlite_|IN\s*\(|NOT\s+NU
 var TimelineChecks = []*model.Check{
 	define.WindowsCheck("activity-cache", "Activity Timeline (ActivitiesCache, String Extraction)", model.AspectTimeline,
 		[]model.Step{{stringsProbe("UTF8", 8, activityGlob)}},
-		define.CheckOpt{
+		model.Options{
 			Timeout: stringsTimeout,
 			Filters: []model.LineFilter{
 				model.NewFilter("activity-shape", activityShape, model.FilterKeep),
@@ -68,7 +68,7 @@ var TimelineChecks = []*model.Check{
 		}),
 	define.WindowsCheck("sticky-notes", "Sticky Notes Content (String Extraction)", model.AspectTimeline,
 		[]model.Step{{stringsProbe("UTF8", 6, stickyGlob)}},
-		define.CheckOpt{
+		model.Options{
 			Timeout: stringsTimeout,
 			Filters: []model.LineFilter{
 				model.NewFilter("sql-schema", sqlSchema, model.FilterDrop),

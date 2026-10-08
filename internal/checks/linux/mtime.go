@@ -204,18 +204,18 @@ func timeline(groups [][]*cluster.FindRow) []string {
 func HuntCheck(dirs []string) *model.Check {
 	return define.LinuxCheck(huntID, "Mtime clustering (user-specified directories)", model.AspectFilesystem,
 		[]model.Step{
-			{{Label: "find", Files: &model.Files{
+			{{Label: "find", Inv: model.FileList{
 				List: model.Native{Body: listDirs(dirs)},
 				Read: func(dir string) model.Invocation {
 					return model.Native{Body: native.HuntDir(dir, huntPruneDirs)}
 				},
 			}}},
-			{{Label: "find-sh", Files: &model.Files{
+			{{Label: "find-sh", Inv: model.FileList{
 				List: model.Sh(script.ListDirs(dirs)),
 				Read: func(dir string) model.Invocation { return model.Sh(huntFind(dir)) },
 			}}},
 		},
-		define.CheckOpt{
+		model.Options{
 			Normalize: huntNormalize(time.Now),
 			ScanBytes: scanBytes,
 			Timeout:   huntTimeout,
