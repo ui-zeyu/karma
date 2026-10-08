@@ -14,6 +14,7 @@ import (
 )
 
 func TestParseTTYDEndpoint(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in         string
 		endpoint   string
@@ -43,6 +44,7 @@ func TestParseTTYDEndpoint(t *testing.T) {
 }
 
 func TestParseTTYDEndpointRejects(t *testing.T) {
+	t.Parallel()
 	for _, target := range []string{
 		"",
 		"http://h",
@@ -62,6 +64,7 @@ func TestParseTTYDEndpointRejects(t *testing.T) {
 }
 
 func TestParsePin(t *testing.T) {
+	t.Parallel()
 	fingerprint, err := parsePin("sha256:" + strings.Repeat("ab", 32))
 	if err != nil {
 		t.Fatalf("prefixed pin: %v", err)
@@ -86,6 +89,7 @@ func parsePinOrFatal(t *testing.T, pin string) [32]byte {
 }
 
 func TestTtydPayloadShape(t *testing.T) {
+	t.Parallel()
 	payload := ttydPayload("exit 7", "deadbeef")
 	for _, want := range []string{
 		"export TERM=dumb",
@@ -103,6 +107,7 @@ func TestTtydPayloadShape(t *testing.T) {
 }
 
 func TestSplitTTYDRC(t *testing.T) {
+	t.Parallel()
 	if body, code, ok := splitTTYDRC("__KRM_deadbeef_R_127__", "__KRM_deadbeef_R_"); !ok || code != 127 || body != "" {
 		t.Fatalf("plain marker line: %q %d %v", body, code, ok)
 	}
@@ -121,6 +126,7 @@ func TestSplitTTYDRC(t *testing.T) {
 // shell, printf or the marker match reads: crypto/rand.Text's alphabet is
 // upper-case letters and digits.
 func TestTTYDMarkerSaltIsUniqueAndShellSafe(t *testing.T) {
+	t.Parallel()
 	seen := make(map[string]bool)
 	for range 100 {
 		token := markerSalt()
@@ -140,6 +146,7 @@ func TestTTYDMarkerSaltIsUniqueAndShellSafe(t *testing.T) {
 // as a substring of the encoded text (it can happen, letters inside base64)
 // must never read as the payload having come back.
 func TestTTYDProbeMarkerVersusEcho(t *testing.T) {
+	t.Parallel()
 	marker := []byte("__KRM_PROBE_deadbeef__")
 	echo := []byte(base64.StdEncoding.EncodeToString(append(marker, '\n')))
 	payload := !bytes.Contains(echo, echo) && bytes.Contains(echo, marker)
@@ -153,6 +160,7 @@ func TestTTYDProbeMarkerVersusEcho(t *testing.T) {
 // our own cancellation must not latch the channel lost, or the command line
 // would report a lost channel (exit 2) where the interrupt (130) is the truth.
 func TestTTYDCancelledDialDoesNotLoseTheChannel(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	sess := &TTYDSession{endpoint: "ws://127.0.0.1:1/ws"}
@@ -168,6 +176,7 @@ func TestTTYDCancelledDialDoesNotLoseTheChannel(t *testing.T) {
 // An endpoint nothing answers is latched: every later call would fail the same
 // way, so the runner stops queueing checks and the command line says so once.
 func TestTTYDUnreachableEndpointIsLost(t *testing.T) {
+	t.Parallel()
 	sess := &TTYDSession{endpoint: "ws://127.0.0.1:1/ws"}
 	runCall(context.Background(), sess,
 		model.Shell{Script: "true"}, time.Second, model.RowCap{})

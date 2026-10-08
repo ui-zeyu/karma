@@ -6,6 +6,7 @@ import (
 )
 
 func TestParseSSHDestination(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want SSHDestination
@@ -30,6 +31,7 @@ func TestParseSSHDestination(t *testing.T) {
 }
 
 func TestParseSSHDestinationErrors(t *testing.T) {
+	t.Parallel()
 	bad := []struct {
 		in      string
 		wantErr string
@@ -55,6 +57,7 @@ func TestParseSSHDestinationErrors(t *testing.T) {
 }
 
 func TestDestinationDisplay(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   SSHDestination
 		want string

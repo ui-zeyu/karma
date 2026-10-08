@@ -21,12 +21,14 @@ type shellTier func(ctx context.Context, inv model.Invocation, cap model.RowCap)
 // dispatch is the one statement of how an invocation kind becomes a run. The
 // kinds that run in process are the same on every channel (only the local one is
 // ever asked for them), and every other kind is shell text the channel carries.
-func dispatch(ctx context.Context, inv model.Invocation, cap model.RowCap, shell shellTier) model.RunResult {
+// p is the channel's own waiting, resolved: an in-process body gets its grace.
+func dispatch(ctx context.Context, inv model.Invocation, cap model.RowCap, p pace, shell shellTier) model.RunResult {
+	p = p.resolved()
 	switch kind := inv.(type) {
 	case model.Native:
-		return runNative(ctx, kind.Body, cap)
+		return runNative(ctx, kind.Body, cap, p)
 	case model.Fields:
-		return runFields(ctx, kind.Read, cap)
+		return runFields(ctx, kind.Read, cap, p)
 	case model.Script:
 		call := scriptCall(kind, cap)
 		return finishScript(shell(ctx, call.Inv, call.Cap), kind, cap)

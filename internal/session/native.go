@@ -27,19 +27,15 @@ import (
 	"karma/internal/textutil"
 )
 
-// bodyGrace is how long a body that is already unwinding (every walk checks the
-// context) has to hand back its partial answer before the caller abandons it.
-const bodyGrace = 250 * time.Millisecond
-
 // boundedCall runs one in-process body under the call's deadline. The body runs
 // on its own goroutine behind the fault boundary, so one broken tier fails
 // alone; the caller stops waiting when the deadline ends, because a body parked
 // in a syscall — a FIFO planted at a path it reads, a wedged mount, a blocked
-// device read — observes no context and no signal can end it: after bodyGrace
-// the call is reported as the cut and the goroutine is left where it is, holding
+// device read — observes no context and no signal can end it: after grace the
+// call is reported as the cut and the goroutine is left where it is, holding
 // nothing the report needs. A body that does respect the context gets the grace
 // to hand back the partial text it had already read.
-func boundedCall(ctx context.Context, body func(context.Context) model.RunResult) model.RunResult {
+func boundedCall(ctx context.Context, grace time.Duration, body func(context.Context) model.RunResult) model.RunResult {
 	// Buffered: an abandoned body must never block on its own send.
 	done := make(chan model.RunResult, 1)
 	go func() {
@@ -56,20 +52,20 @@ func boundedCall(ctx context.Context, body func(context.Context) model.RunResult
 		select {
 		case result := <-done:
 			return result
-		case <-time.After(bodyGrace):
+		case <-time.After(grace):
 			return model.RunResult{Verdict: cutVerdict(ctx), ExitCode: -1}
 		}
 	}
 }
 
-func runNative(ctx context.Context, fn func(context.Context) (string, error), cap model.RowCap) model.RunResult {
+func runNative(ctx context.Context, fn func(context.Context) (string, error), cap model.RowCap, p pace) model.RunResult {
 	if fn == nil {
 		// A Native with no body is a catalog mistake rather than a target's
 		// answer; it reads as a tier that cannot run here, which the chain in
 		// the runner falls through.
 		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
 	}
-	result := boundedCall(ctx, func(ctx context.Context) model.RunResult { return textResult(fn(ctx)) })
+	result := boundedCall(ctx, p.bodyGrace, func(ctx context.Context) model.RunResult { return textResult(fn(ctx)) })
 	if result.Verdict != model.VerdictAnswered {
 		return result
 	}
@@ -105,11 +101,11 @@ func textResult(text string, err error) model.RunResult {
 // fails one tier, the deadline abandons a body parked in a syscall), with the
 // records themselves as the answer. The row cap applies to the records, so a
 // capped body is capped before anything is rendered from it.
-func runFields(ctx context.Context, read func(context.Context) (*model.RecordSet, error), cap model.RowCap) model.RunResult {
+func runFields(ctx context.Context, read func(context.Context) (*model.RecordSet, error), cap model.RowCap, p pace) model.RunResult {
 	if read == nil {
 		return model.RunResult{Verdict: model.VerdictUnavailable, Stderr: model.ErrTierUnavailable.Error(), ExitCode: 127}
 	}
-	return finishFields(boundedCall(ctx, func(ctx context.Context) model.RunResult {
+	return finishFields(boundedCall(ctx, p.bodyGrace, func(ctx context.Context) model.RunResult {
 		set, err := read(ctx)
 		if err != nil {
 			return fieldFailure(err)

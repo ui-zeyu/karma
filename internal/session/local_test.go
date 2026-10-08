@@ -10,6 +10,7 @@ import (
 )
 
 func TestRunLocalCapturesFullOutput(t *testing.T) {
+	t.Parallel()
 	result := runCall(context.Background(), LocalSession{}, model.Shell{Script: "seq 1 500"}, 10*time.Second, model.RowCap{})
 	if result.Verdict != model.VerdictAnswered || result.ExitCode != 0 || result.Truncated {
 		t.Fatalf("should succeed completely: %+v", result)
@@ -20,6 +21,7 @@ func TestRunLocalCapturesFullOutput(t *testing.T) {
 }
 
 func TestRunLocalScanCapMarksTruncated(t *testing.T) {
+	t.Parallel()
 	result := runCall(context.Background(), LocalSession{}, model.Shell{Script: "seq 1 500"}, 10*time.Second, model.Scan(50))
 	if !result.Truncated || result.Verdict != model.VerdictAnswered {
 		t.Fatalf("stopping the source at enough lines should mark truncated: %+v", result)
@@ -33,6 +35,7 @@ func TestRunLocalScanCapMarksTruncated(t *testing.T) {
 }
 
 func TestRunLocalTimeoutKeepsPartialOutput(t *testing.T) {
+	t.Parallel()
 	result := runCall(context.Background(), LocalSession{}, model.Shell{Script: "echo first; sleep 5"}, 300*time.Millisecond, model.RowCap{})
 	if result.Verdict != model.VerdictTimedOut {
 		t.Fatalf("should time out: %+v", result)
@@ -44,6 +47,7 @@ func TestRunLocalTimeoutKeepsPartialOutput(t *testing.T) {
 
 // stdout and stderr get the same treatment: stray output from the target is replaced with U+FFFD, so the body carries no bad bytes.
 func TestRunLocalSanitizesBadBytes(t *testing.T) {
+	t.Parallel()
 	result := runCall(context.Background(), LocalSession{}, model.Shell{Script: `printf 'ok\n\377\376bad\n'`}, 5*time.Second, model.RowCap{})
 	if result.Verdict != model.VerdictAnswered {
 		t.Fatalf("should succeed: %+v", result)

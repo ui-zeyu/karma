@@ -15,6 +15,7 @@ import (
 )
 
 func TestCommandExitCode(t *testing.T) {
+	t.Parallel()
 	if got := commandExitCode(nil); got != 0 {
 		t.Fatalf("Wait returning nil means remote exit code 0, got %d", got)
 	}
@@ -32,6 +33,9 @@ func TestCommandExitCode(t *testing.T) {
 type fakeSSHD struct {
 	listener net.Listener
 	server   chan *ssh.ServerConn
+	// pace is handed to the transport this fake opens: a test that states a
+	// bound in milliseconds sets it here (see pace).
+	pace pace
 }
 
 func newFakeSSHD(t *testing.T) *fakeSSHD {
@@ -89,6 +93,7 @@ func (f *fakeSSHD) open(t *testing.T) *SSHSession {
 		Destination: SSHDestination{Host: host, Port: port},
 		HostKey:     HostKeyNo,
 		Password:    "unused: the fake server authenticates nobody",
+		pace:        f.pace,
 	}).Open(context.Background())
 	if err != nil {
 		t.Fatalf("open the channel: %v", err)
@@ -112,6 +117,7 @@ func (f *fakeSSHD) disconnect(t *testing.T) {
 // A refusal is the server answering, not the transport dying: the connection
 // survives it, so the run keeps collecting the checks still queued.
 func TestSSHRefusedChannelDoesNotLoseTheConnection(t *testing.T) {
+	t.Parallel()
 	fake := newFakeSSHD(t)
 	sess := fake.open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -130,6 +136,7 @@ func TestSSHRefusedChannelDoesNotLoseTheConnection(t *testing.T) {
 // The other half: a transport that goes away is latched, which is what stops
 // the runner from queueing the checks it would all fail.
 func TestSSHDisconnectedTransportIsLost(t *testing.T) {
+	t.Parallel()
 	fake := newFakeSSHD(t)
 	sess := fake.open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

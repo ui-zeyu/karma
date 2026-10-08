@@ -54,6 +54,7 @@ type TTYDSession struct {
 	header   http.Header
 	client   *http.Client
 	lost     atomic.Bool
+	pace     pace // this channel's own waiting; the zero value is the shipped one
 }
 
 // Name is the channel display name.
@@ -82,7 +83,7 @@ func (s *TTYDSession) Close() error { return nil }
 
 // Run types one collection line into a fresh terminal and harvests the answer.
 func (s *TTYDSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return dispatch(ctx, call.Inv, call.Cap, s.shell)
+	return dispatch(ctx, call.Inv, call.Cap, s.pace, s.shell)
 }
 
 func (s *TTYDSession) shell(ctx context.Context, inv model.Invocation, cap model.RowCap) model.RunResult {
@@ -101,7 +102,7 @@ func (s *TTYDSession) shell(ctx context.Context, inv model.Invocation, cap model
 		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
 	terminal := &ttydCall{conn: conn, spawned: make(chan struct{})}
-	return terminal.collect(ctx, text, cap)
+	return terminal.collect(ctx, text, cap, s.pace)
 }
 
 // connect dials the endpoint and sends the JSON handshake. ttyd spawns the
@@ -109,7 +110,7 @@ func (s *TTYDSession) shell(ctx context.Context, inv model.Invocation, cap model
 // layer when a credential is set (the Basic header on the upgrade is the
 // first), and the window size reaches the pty's winsize.
 func (s *TTYDSession) connect(ctx context.Context) (*websocket.Conn, error) {
-	dialCtx, cancel := context.WithTimeout(ctx, ttydDialTimeout)
+	dialCtx, cancel := context.WithTimeout(ctx, s.pace.resolved().ttydDial)
 	defer cancel()
 	conn, _, err := websocket.Dial(dialCtx, s.endpoint, &websocket.DialOptions{
 		HTTPClient:   s.client,
@@ -135,7 +136,8 @@ func (s *TTYDSession) connect(ctx context.Context) (*websocket.Conn, error) {
 // probe verifies the endpoint end to end on one throwaway connection. It runs
 // under the run's context, so Ctrl-C ends it like every other step.
 func (s *TTYDSession) probe(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, ttydProbeWindow)
+	window := s.pace.resolved().ttydProbe
+	ctx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
 	conn, err := s.connect(ctx)
 	if err != nil {
@@ -183,7 +185,7 @@ func (s *TTYDSession) probe(ctx context.Context) error {
 	select {
 	case <-call.spawned:
 	case <-ctx.Done():
-		return fmt.Errorf("ttyd at %s started no terminal within %s", s.endpoint, ttydProbeWindow)
+		return fmt.Errorf("ttyd at %s started no terminal within %s", s.endpoint, window)
 	}
 	if err := sleepCtx(ctx, ttydTypeaheadDelay); err != nil {
 		return err
@@ -248,7 +250,7 @@ func (c *ttydCall) markSpawned() {
 // the terminal's process on the target. The wait for the terminal to spawn and
 // the pause before typing belong to the call's deadline like everything else —
 // they are the channel's own setup.
-func (c *ttydCall) collect(ctx context.Context, script string, cap model.RowCap) model.RunResult {
+func (c *ttydCall) collect(ctx context.Context, script string, cap model.RowCap, p pace) model.RunResult {
 	marker := markerSalt()
 	encoded := base64.StdEncoding.EncodeToString([]byte(ttydPayload(script, marker)))
 	line := "printf %s " + encoded + " | base64 -d | /bin/sh"
@@ -282,7 +284,7 @@ func (c *ttydCall) collect(ctx context.Context, script string, cap model.RowCap)
 		}
 		return model.RunResult{Verdict: model.VerdictFailed, Stderr: fmt.Sprintf("ttyd channel error: %v", err), ExitCode: -1}
 	}
-	return harvest(ctx, stream, cap)
+	return harvest(ctx, stream, cap, p)
 }
 
 // sleepCtx is one of the channel's own pacing waits, ended early by the call's

@@ -18,7 +18,12 @@ import (
 
 // silentSSHD accepts the session channel and swallows every request: the shape
 // of a server that is still holding the connection but no longer answering.
-type silentSSHD struct{ listener net.Listener }
+type silentSSHD struct {
+	listener net.Listener
+	// pace is handed to the transport this fake opens: a test that states a
+	// bound in milliseconds sets it here (see pace).
+	pace pace
+}
 
 func newSilentSSHD(t *testing.T) *silentSSHD {
 	t.Helper()
@@ -78,6 +83,7 @@ func (f *silentSSHD) open(t *testing.T) *SSHSession {
 		t.Fatalf("read the listener port: %v", err)
 	}
 	sess, err := (&SSHTransport{
+		pace:        f.pace,
 		Destination: SSHDestination{Host: host, Port: port},
 		HostKey:     HostKeyNo,
 		Password:    "unused: the fake server authenticates nobody",
@@ -90,6 +96,7 @@ func (f *silentSSHD) open(t *testing.T) *SSHSession {
 }
 
 func TestSSHSetupIsBoundedByTheCallBudget(t *testing.T) {
+	t.Parallel()
 	sess := newSilentSSHD(t).open(t)
 	budget := 300 * time.Millisecond
 	started := time.Now()
@@ -108,13 +115,15 @@ func TestSSHSetupIsBoundedByTheCallBudget(t *testing.T) {
 // stops the runner from queueing the checks it would all fail — instead of
 // waiting for the next call to find out.
 func TestSSHUnansweredSetupLatchesTheChannelLost(t *testing.T) {
-	sess := newSilentSSHD(t).open(t)
+	t.Parallel()
+	silent := newSilentSSHD(t)
+	// The transport bound, not the call's: the goal is the channel deciding that
+	// a server past this bound stopped answering.
+	silent.pace = pace{sshSetup: 50 * time.Millisecond}
+	sess := silent.open(t)
 	if sess.Lost() {
 		t.Fatal("a fresh connection is not lost")
 	}
-	original := sshTimeout
-	sshTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { sshTimeout = original })
 	result := runCall(t.Context(), sess, model.NewCommand("id"), time.Minute, model.RowCap{})
 	if result.Verdict != model.VerdictFailed {
 		t.Fatalf("an unanswered setup is this call failing: %+v", result)

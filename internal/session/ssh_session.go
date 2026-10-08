@@ -26,6 +26,7 @@ type SSHSession struct {
 	agent  io.Closer
 	target string // the destination as the report header names it, empty in a bare test session
 	lost   atomic.Bool
+	pace   pace // this channel's own waiting; the zero value is the shipped one
 }
 
 // Name is the channel display name.
@@ -53,7 +54,7 @@ func (s *SSHSession) Lost() bool { return s.lost.Load() }
 // the session and handing it the command — go through setup, which is what puts
 // them inside the call's deadline.
 func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return dispatch(ctx, call.Inv, call.Cap, s.shell)
+	return dispatch(ctx, call.Inv, call.Cap, s.pace, s.shell)
 }
 
 func (s *SSHSession) shell(ctx context.Context, inv model.Invocation, cap model.RowCap) model.RunResult {
@@ -61,8 +62,9 @@ func (s *SSHSession) shell(ctx context.Context, inv model.Invocation, cap model.
 	if !ok {
 		return noShellFor(inv)
 	}
+	bound := s.pace.resolved().sshSetup
 	command := renderText(text)
-	sess, err := setup(ctx, "ssh channel open", sshTimeout, s.client.NewSession)
+	sess, err := setup(ctx, "ssh channel open", bound, s.client.NewSession)
 	if err != nil {
 		return s.setupResult(ctx, err)
 	}
@@ -75,7 +77,7 @@ func (s *SSHSession) shell(ctx context.Context, inv model.Invocation, cap model.
 	if err != nil {
 		return channelError(err)
 	}
-	if err := setupErr(ctx, "ssh exec request", sshTimeout, func() error { return sess.Start(command) }); err != nil {
+	if err := setupErr(ctx, "ssh exec request", bound, func() error { return sess.Start(command) }); err != nil {
 		return s.setupResult(ctx, err)
 	}
 	// The decoding strategy matches the local channel: line reads clean bad
@@ -86,7 +88,7 @@ func (s *SSHSession) shell(ctx context.Context, inv model.Invocation, cap model.
 		sess:   sess,
 		stdout: bufio.NewReader(stdout),
 		stderr: bufio.NewReader(stderrPipe),
-	}, cap)
+	}, cap, s.pace)
 }
 
 // setupResult reads a setup that did not finish. The call's deadline and the
@@ -146,7 +148,8 @@ func (c *sshCall) exitCode() int            { return commandExitCode(c.waitErr) 
 // session's umask, before the bytes: a partial upload cannot be taken for a
 // complete one.
 func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) error {
-	sess, err := setup(ctx, "ssh upload open", sshTimeout, s.client.NewSession)
+	p := s.pace.resolved()
+	sess, err := setup(ctx, "ssh upload open", p.sshSetup, s.client.NewSession)
 	if err != nil {
 		s.setupFailure(err)
 		return err
@@ -173,7 +176,7 @@ func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) er
 		// writer's own send: the channel is buffered, which keeps a panic from
 		// blocking whether or not the caller has already taken a value.
 		written <- fault.Catch("upload writer", func() error {
-			writeErr := writeUpload(stdin, content, &stalled, func() { _ = sess.Close() })
+			writeErr := writeUpload(stdin, content, &stalled, func() { _ = sess.Close() }, p.uploadStall)
 			// Closing the pipe is what tells the target's cat that the file is
 			// complete: without it the remote side waits for more bytes.
 			if closeErr := stdin.Close(); writeErr == nil {
@@ -190,7 +193,7 @@ func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) er
 		script.Join([]string{"mkdir", "-p", filepath.Dir(path)}) + "; " +
 		script.Join([]string{"cat"}) + " > " + script.Join([]string{path}) +
 		" && " + script.Join([]string{"chmod", "700", path})
-	if err := setupErr(ctx, "ssh upload command", sshTimeout, func() error {
+	if err := setupErr(ctx, "ssh upload command", p.sshSetup, func() error {
 		return sess.Start(RenderShell(model.Shell{Script: command}))
 	}); err != nil {
 		s.setupFailure(err)
@@ -203,7 +206,7 @@ func (s *SSHSession) Upload(ctx context.Context, path string, content []byte) er
 	}
 	if writeErr != nil {
 		if stalled.Load() {
-			return fmt.Errorf("no progress for %s: the target stopped reading", uploadStall)
+			return fmt.Errorf("no progress for %s: the target stopped reading", p.uploadStall)
 		}
 		return writeErr
 	}
@@ -221,14 +224,11 @@ const (
 	uploadChunk = 64 << 10
 )
 
-// uploadStall is the idle bound; a variable so tests can shorten it.
-var uploadStall = 60 * time.Second
-
 // writeUpload writes one payload in chunks, arming abort when a chunk has not
-// been handed over within uploadStall. stalled reports whether that happened,
-// so the caller can name the reason.
-func writeUpload(w io.Writer, content []byte, stalled *atomic.Bool, abort func()) error {
-	timer := time.AfterFunc(uploadStall, func() {
+// been handed over within the stall bound. stalled reports whether that
+// happened, so the caller can name the reason.
+func writeUpload(w io.Writer, content []byte, stalled *atomic.Bool, abort func(), stall time.Duration) error {
+	timer := time.AfterFunc(stall, func() {
 		stalled.Store(true)
 		abort()
 	})
@@ -238,7 +238,7 @@ func writeUpload(w io.Writer, content []byte, stalled *atomic.Bool, abort func()
 		if _, err := w.Write(content[offset:end]); err != nil {
 			return err
 		}
-		timer.Reset(uploadStall)
+		timer.Reset(stall)
 	}
 	return nil
 }
@@ -272,14 +272,15 @@ func commandExitCode(err error) int {
 	return -1
 }
 
-// Close closes the connection. A hung Close does not wait past closeGrace, so the whole collection does not stall on teardown.
+// Close closes the connection. A hung Close does not wait past the channel's own
+// close grace, so the whole collection does not stall on teardown.
 func (s *SSHSession) Close() error {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_ = fault.Catch("ssh channel close", func() error { return s.client.Close() })
 	}()
-	timer := time.NewTimer(closeGrace)
+	timer := time.NewTimer(s.pace.resolved().sshClose)
 	defer timer.Stop()
 	select {
 	case <-done:

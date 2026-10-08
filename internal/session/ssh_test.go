@@ -22,6 +22,7 @@ import (
 // Auth failure has no typed error, so recognition can only fall to the x/crypto
 // error text; this set of cases locks the recognition behavior, showing up here when the wording drifts.
 func TestIsAuthFailure(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		err  error
 		want bool
@@ -73,6 +74,7 @@ func knownHostsFile(t *testing.T, lines ...string) string {
 // host names, wildcard and negated patterns, the markers — belongs to
 // x/crypto/ssh/knownhosts, which the verifier hands the file to.
 func TestKnownHostsAcceptNewDecides(t *testing.T) {
+	t.Parallel()
 	recorded := testPublicKey(t, 1)
 	changed := testPublicKey(t, 2)
 	revoked := testPublicKey(t, 3)
@@ -232,14 +234,11 @@ func TestPublicKeyAuthReportsUnlockableKey(t *testing.T) {
 // command line's context only sees SIGINT: the idle bound is what ends such a
 // transfer with something the operator can read.
 func TestWriteUploadBoundsAStall(t *testing.T) {
-	previous := uploadStall
-	uploadStall = 20 * time.Millisecond
-	defer func() { uploadStall = previous }()
-
+	t.Parallel()
 	release := make(chan struct{})
 	var stalled atomic.Bool
 	err := writeUpload(blockingWriter{release}, make([]byte, uploadChunk), &stalled,
-		func() { close(release) })
+		func() { close(release) }, 20*time.Millisecond)
 	if err == nil {
 		t.Fatal("a write that never returns should end on the idle bound")
 	}
@@ -251,16 +250,13 @@ func TestWriteUploadBoundsAStall(t *testing.T) {
 // The bound measures the gap between chunks, so a slow link that keeps making
 // progress finishes.
 func TestWriteUploadProgressResetsTheBound(t *testing.T) {
-	previous := uploadStall
-	uploadStall = 100 * time.Millisecond
-	defer func() { uploadStall = previous }()
-
+	t.Parallel()
 	var stalled atomic.Bool
 	slow := writerFunc(func(p []byte) (int, error) {
 		time.Sleep(20 * time.Millisecond)
 		return len(p), nil
 	})
-	if err := writeUpload(slow, make([]byte, 3*uploadChunk), &stalled, func() {}); err != nil {
+	if err := writeUpload(slow, make([]byte, 3*uploadChunk), &stalled, func() {}, 100*time.Millisecond); err != nil {
 		t.Fatalf("a moving transfer should not be a stall: %v", err)
 	}
 	if stalled.Load() {

@@ -36,14 +36,6 @@ import (
 	"karma/internal/model"
 )
 
-// cutGrace is how long a stopped source has to finish before the harvest gives
-// up on it and keeps what the reads already had. Every channel's stop releases
-// its reads at once — the local one SIGKILLs the process group, the ssh one
-// closes the channel, ttyd closes the connection — so a source that outlives
-// this is a source that cannot be stopped, and the result then says so. A
-// variable so tests can shorten it.
-var cutGrace = time.Second
-
 // maxHarvestBytes is the output safety valve for a single call: past the limit,
 // stop the source and count as truncated. The reading layer caps by ScanBytes
 // anyway, so collecting more is pointless. A source can tighten it through
@@ -141,8 +133,9 @@ func (h *harvestState) snapshot() (string, string, bool) {
 // harvest waits for the call to end or for the context to end it, collecting the
 // two streams into the result: stdout is the body, stderr is where a call's own
 // diagnostics travel. The row cap, the byte valve, the deadline and the cancel
-// all work on the same source.
-func harvest(ctx context.Context, src source, cap model.RowCap) model.RunResult {
+// all work on the same source, and p states what a source stopped on purpose
+// is given to finish (see pace).
+func harvest(ctx context.Context, src source, cap model.RowCap, p pace) model.RunResult {
 	// Each reader owns one builder through the locked state, so a snapshot is
 	// safe at any point; the line-by-line path needs no extra ordering.
 	var state harvestState
@@ -214,7 +207,7 @@ func harvest(ctx context.Context, src source, cap model.RowCap) model.RunResult 
 		}
 		return model.RunResult{Verdict: verdict, Stdout: outText, Stderr: errText, ExitCode: exitCode, Truncated: trunc}
 	case <-ctx.Done():
-		return stopAndCollect(done, func() { stopSource(false) }, src, &state, ctx)
+		return stopAndCollect(done, func() { stopSource(false) }, src, &state, ctx, p.resolved().cutGrace)
 	}
 }
 
@@ -284,13 +277,15 @@ func cutVerdict(ctx context.Context) model.Verdict {
 }
 
 // stopAndCollect stops the data source and keeps what was read: the reads drain
-// within the grace period, or the snapshot lands on whatever arrived by then. A
-// source that outlives the grace is a source that could not be stopped, and the
-// result says so — the output that never arrived is missing from the evidence,
-// and a silent gap is the one thing a report must not have.
-func stopAndCollect(done <-chan struct{}, stopSource func(), src source, state *harvestState, ctx context.Context) model.RunResult {
+// within the grace period, or the snapshot lands on whatever arrived by then.
+// Every channel's stop releases its reads at once — the local one SIGKILLs the
+// process group, the ssh one closes the channel, ttyd closes the connection — so
+// a source that outlives the grace is a source that could not be stopped, and
+// the result says so: the output that never arrived is missing from the
+// evidence, and a silent gap is the one thing a report must not have.
+func stopAndCollect(done <-chan struct{}, stopSource func(), src source, state *harvestState, ctx context.Context, graceFor time.Duration) model.RunResult {
 	stopSource()
-	grace := time.NewTimer(cutGrace)
+	grace := time.NewTimer(graceFor)
 	defer grace.Stop()
 	stopped := false
 	select {
@@ -300,7 +295,7 @@ func stopAndCollect(done <-chan struct{}, stopSource func(), src source, state *
 	}
 	outText, errText, trunc := state.snapshot()
 	if !stopped {
-		errText += fmt.Sprintf("the call did not stop within %s: this is the output that arrived\n", cutGrace)
+		errText += fmt.Sprintf("the call did not stop within %s: this is the output that arrived\n", graceFor)
 		trunc = true
 	}
 	return model.RunResult{

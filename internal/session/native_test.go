@@ -11,6 +11,7 @@ import (
 )
 
 func TestRunNativeSuccess(t *testing.T) {
+	t.Parallel()
 	res := runCall(context.Background(), LocalSession{},
 		model.Native{Body: func(context.Context) (string, error) { return "hello\n", nil }}, 0, model.RowCap{})
 	if res.Verdict != model.VerdictAnswered || res.Stdout != "hello\n" || res.Truncated {
@@ -19,6 +20,7 @@ func TestRunNativeSuccess(t *testing.T) {
 }
 
 func TestRunNativeUnavailableFallsThroughLikeAMissingBinary(t *testing.T) {
+	t.Parallel()
 	res := runCall(context.Background(), LocalSession{},
 		model.Native{Body: func(context.Context) (string, error) { return "", model.ErrTierUnavailable }}, 0, model.RowCap{})
 	if res.Verdict != model.VerdictUnavailable || res.ExitCode != 127 {
@@ -27,6 +29,7 @@ func TestRunNativeUnavailableFallsThroughLikeAMissingBinary(t *testing.T) {
 }
 
 func TestRunNativeErrorReportsStderr(t *testing.T) {
+	t.Parallel()
 	res := runCall(context.Background(), LocalSession{},
 		model.Native{Body: func(context.Context) (string, error) { return "", errors.New("boom") }}, 0, model.RowCap{})
 	if res.Verdict != model.VerdictFailed || res.ExitCode != 1 || res.Stderr != "boom" {
@@ -38,6 +41,7 @@ func TestRunNativeErrorReportsStderr(t *testing.T) {
 // outside the runner's recover: an unrecovered panic there would end the
 // process and lose the whole report. It fails as one tier instead.
 func TestRunNativeSurvivesAPanickingBody(t *testing.T) {
+	t.Parallel()
 	res := runCall(context.Background(), LocalSession{},
 		model.Native{Body: func(context.Context) (string, error) {
 			var empty []byte
@@ -49,6 +53,7 @@ func TestRunNativeSurvivesAPanickingBody(t *testing.T) {
 }
 
 func TestRunNativeTimeoutKeepsPartialOutput(t *testing.T) {
+	t.Parallel()
 	res := runCall(context.Background(), LocalSession{},
 		model.Native{Body: func(ctx context.Context) (string, error) {
 			<-ctx.Done()
@@ -60,6 +65,7 @@ func TestRunNativeTimeoutKeepsPartialOutput(t *testing.T) {
 }
 
 func TestRunNativeCancelKeepsPartialOutput(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	time.AfterFunc(10*time.Millisecond, cancel)
@@ -77,6 +83,7 @@ func TestRunNativeCancelKeepsPartialOutput(t *testing.T) {
 // no context to observe, so the caller must stop waiting by itself. Before
 // this, such a body parked the whole collection — no signal could break it.
 func TestRunNativeAbandonsABodyThatIgnoresTheDeadline(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	started := time.Now()
@@ -96,6 +103,7 @@ func TestRunNativeAbandonsABodyThatIgnoresTheDeadline(t *testing.T) {
 // The same body under a cancelled run reads as interrupted, which is what
 // Ctrl-C must mean: the operator ended the run, not the target's clock.
 func TestRunNativeAbandonsABodyThatIgnoresTheCancel(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	release := make(chan struct{})
@@ -112,6 +120,7 @@ func TestRunNativeAbandonsABodyThatIgnoresTheCancel(t *testing.T) {
 }
 
 func TestRunNativeScanCapTruncates(t *testing.T) {
+	t.Parallel()
 	res := runCall(context.Background(), LocalSession{},
 		model.Native{Body: func(context.Context) (string, error) {
 			return "a\nb\nc\nd", nil
@@ -126,6 +135,7 @@ func TestRunNativeScanCapTruncates(t *testing.T) {
 // and a partial last line counts as content. The two channels therefore mark
 // the same body truncated and hand the reader the same text.
 func TestCapLinesMatchesTheHarvestBoundary(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		text      string
 		limit     int

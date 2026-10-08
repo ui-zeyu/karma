@@ -18,8 +18,10 @@ import (
 	"karma/internal/model"
 )
 
-// LocalSession is the local channel.
-type LocalSession struct{}
+// LocalSession is the local channel. Its pace states the channel's own waiting
+// (see pace); the zero value is the shipped one, which is what the transport
+// hands out.
+type LocalSession struct{ pace pace }
 
 // LocalTransport is the local channel factory: the directory follows the host OS (the Windows directory on Windows).
 type LocalTransport struct{}
@@ -53,13 +55,13 @@ func (LocalSession) Channel() model.Channel { return model.ChanLocal }
 // the chain in the runner falls to the next tier, which is what happens on every
 // other channel too.
 func (s LocalSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return dispatch(ctx, call.Inv, call.Cap, s.shell)
+	return dispatch(ctx, call.Inv, call.Cap, s.pace, s.shell)
 }
 
 // shell is the local channel's shell front: a Command execs without a shell,
 // everything else goes through /bin/sh -c.
 func (s LocalSession) shell(ctx context.Context, inv model.Invocation, cap model.RowCap) model.RunResult {
-	return runLocal(ctx, ArgvFor(inv), cap)
+	return runLocal(ctx, ArgvFor(inv), cap, s.pace)
 }
 
 // Close releases the local channel's resources: there are none.
@@ -86,7 +88,7 @@ func (c *localCall) exitCode() int {
 	return c.cmd.ProcessState.ExitCode()
 }
 
-func runLocal(ctx context.Context, argv []string, cap model.RowCap) model.RunResult {
+func runLocal(ctx context.Context, argv []string, cap model.RowCap, p pace) model.RunResult {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -108,7 +110,7 @@ func runLocal(ctx context.Context, argv []string, cap model.RowCap) model.RunRes
 		stdout:  bufio.NewReader(stdout),
 		stderr:  bufio.NewReader(stderrPipe),
 		process: process,
-	}, cap)
+	}, cap, p)
 }
 
 // validText replaces bad bytes with U+FFFD: stray output from the target must not blow up the whole check.

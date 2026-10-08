@@ -180,6 +180,7 @@ func openTTYD(t *testing.T, target, credential string) Session {
 }
 
 func TestTTYDSessionMeta(t *testing.T) {
+	t.Parallel()
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	if sess.Name() != "ttyd" {
 		t.Fatalf("name: %q", sess.Name())
@@ -190,6 +191,7 @@ func TestTTYDSessionMeta(t *testing.T) {
 }
 
 func TestTTYDRunCollectsBodyAndExitCode(t *testing.T) {
+	t.Parallel()
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	result := runCall(context.Background(), sess,
 		model.Shell{Script: "echo hello; echo oops 1>&2; exit 3"}, 10*time.Second, model.RowCap{})
@@ -215,6 +217,7 @@ func TestTTYDRunCollectsBodyAndExitCode(t *testing.T) {
 // fallback chain, so a missing binary keeps the ssh channel's shape: empty
 // stdout, the shell's complaint on stderr, exit 127.
 func TestTTYDRunSeparatesStderrFromStdout(t *testing.T) {
+	t.Parallel()
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	result := runCall(context.Background(), sess,
 		model.Shell{Script: "echo first; nosuchbinary-karma; echo last"}, 10*time.Second, model.RowCap{})
@@ -232,6 +235,7 @@ func TestTTYDRunSeparatesStderrFromStdout(t *testing.T) {
 }
 
 func TestTTYDRunTimesOutAndKeepsPartialOutput(t *testing.T) {
+	t.Parallel()
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	result := runCall(context.Background(), sess,
 		model.Shell{Script: "echo one; sleep 5; echo two"}, 1500*time.Millisecond, model.RowCap{})
@@ -244,6 +248,7 @@ func TestTTYDRunTimesOutAndKeepsPartialOutput(t *testing.T) {
 }
 
 func TestTTYDRunKeepsTrailingPartialLine(t *testing.T) {
+	t.Parallel()
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	result := runCall(context.Background(), sess,
 		model.Shell{Script: "printf tail"}, 10*time.Second, model.RowCap{})
@@ -253,6 +258,7 @@ func TestTTYDRunKeepsTrailingPartialLine(t *testing.T) {
 }
 
 func TestTTYDRunNormalizesCarriageReturns(t *testing.T) {
+	t.Parallel()
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	// The fake's pty already turns every \n into \r\n; the channel must put
 	// the plain line endings back so the reading layers see the ssh shape.
@@ -264,6 +270,7 @@ func TestTTYDRunNormalizesCarriageReturns(t *testing.T) {
 }
 
 func TestTTYDRunTypesLongLines(t *testing.T) {
+	t.Parallel()
 	sess := openTTYD(t, newFakeTTYD(t, "", false).url(), "")
 	script := strings.Repeat("# padding to push the typed line past one chunk\n", 120) + "echo done"
 	result := runCall(context.Background(), sess,
@@ -274,16 +281,18 @@ func TestTTYDRunTypesLongLines(t *testing.T) {
 }
 
 func TestTTYDProbeRejectsReadonlyServer(t *testing.T) {
-	oldWindow := ttydProbeWindow
-	ttydProbeWindow = 600 * time.Millisecond
-	t.Cleanup(func() { ttydProbeWindow = oldWindow })
-	_, err := (&TTYDTransport{Target: newFakeTTYD(t, "", true).url()}).Open(context.Background())
+	t.Parallel()
+	// The probe window, not the default ten seconds: a readonly server fails
+	// here once, and the test should not wait for the window to expire.
+	transport := &TTYDTransport{Target: newFakeTTYD(t, "", true).url(), pace: pace{ttydProbe: 600 * time.Millisecond}}
+	_, err := transport.Open(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "readonly") {
 		t.Fatalf("error: %v", err)
 	}
 }
 
 func TestTTYDAuthorization(t *testing.T) {
+	t.Parallel()
 	fake := newFakeTTYD(t, "u:p", false)
 	if _, err := (&TTYDTransport{Target: fake.url(), Credential: "u:wrong"}).Open(context.Background()); err == nil {
 		t.Fatal("a wrong credential must fail the connection")
@@ -297,6 +306,7 @@ func TestTTYDAuthorization(t *testing.T) {
 }
 
 func TestTTYDTargetUnreachable(t *testing.T) {
+	t.Parallel()
 	// Port 1 on the loopback refuses connections without needing a listener.
 	_, err := (&TTYDTransport{Target: "ws://127.0.0.1:1/ws"}).Open(context.Background())
 	if err == nil {
@@ -308,6 +318,7 @@ func TestTTYDTargetUnreachable(t *testing.T) {
 // terminal, head(1) reads it off the same stream, and the file lands with the
 // bytes and the mode the bootstrap mode expects.
 func TestTTYDUploadWritesTheFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "karma")
 	// Random bytes so the body cannot be typed from a pattern, and long enough
@@ -345,6 +356,7 @@ func TestTTYDUploadWritesTheFile(t *testing.T) {
 // server before this point — see the probe test — so the session is built
 // here the way a channel that got past the probe would be.)
 func TestTTYDUploadRefusedByReadonlyServer(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	target := filepath.Join(dir, "karma")
 	sess := &TTYDSession{endpoint: newFakeTTYD(t, "", true).url()}

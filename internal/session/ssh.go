@@ -31,16 +31,6 @@ import (
 	"karma/internal/model"
 )
 
-const (
-	closeGrace = 5 * time.Second
-)
-
-// sshTimeout bounds the ssh library's own answers: the dial, the handshake, and
-// one session's open plus exec request. A healthy server answers each in
-// milliseconds, so one number says the same thing about all three — past it, the
-// transport stopped answering. A variable so tests can shorten it.
-var sshTimeout = 30 * time.Second
-
 // defaultIdentities is the default private key locations when -i is not given,
 // matching OpenSSH's default search order (hardware-key variants included).
 func defaultIdentities() []string {
@@ -84,6 +74,9 @@ type SSHTransport struct {
 	Identities  []string
 	HostKey     HostKeyMode
 	Password    string // empty string uses only public keys; password comes from --password
+	// pace states this channel's own waiting (see pace); the zero value is the
+	// shipped one, so a caller never has to state it.
+	pace pace
 }
 
 // Platform is always the Linux directory: the SSH channel never targets Windows.
@@ -112,7 +105,7 @@ func (t *SSHTransport) Open(ctx context.Context) (Session, error) {
 		if err != nil {
 			return nil, err
 		}
-		opened = &SSHSession{client: client, agent: agentConn, target: t.Destination.Display()}
+		opened = &SSHSession{client: client, agent: agentConn, target: t.Destination.Display(), pace: t.pace}
 		return opened, nil
 	}
 	// The password comes only from --password; without it, use public keys only and error directly on auth failure
@@ -136,11 +129,12 @@ func (t *SSHTransport) connect(ctx context.Context, auth []ssh.AuthMethod, callb
 	// Keepalive on: a collection run holds the connection for minutes, and a
 	// NAT or firewall that silently drops idle TCP would otherwise leave the
 	// next command hanging until its deadline
-	dialer := &net.Dialer{Timeout: sshTimeout, KeepAlive: 30 * time.Second}
+	bound := t.pace.resolved().sshSetup
+	dialer := &net.Dialer{Timeout: bound, KeepAlive: 30 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		if isTimeout(err) {
-			return nil, fmt.Errorf("connection timed out (%gs): %s", sshTimeout.Seconds(), t.Destination.Display())
+			return nil, fmt.Errorf("connection timed out (%gs): %s", bound.Seconds(), t.Destination.Display())
 		}
 		return nil, err
 	}
@@ -148,7 +142,7 @@ func (t *SSHTransport) connect(ctx context.Context, auth []ssh.AuthMethod, callb
 	// ssh.Dial's own dial), so bound it on the connection: the earlier of the
 	// library's own bound and the run's deadline. A server that accepts the
 	// connection and then stalls would hang the whole run here.
-	_ = conn.SetDeadline(deadlineWithin(ctx, sshTimeout))
+	_ = conn.SetDeadline(deadlineWithin(ctx, bound))
 	client, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
 	if err != nil {
 		_ = conn.Close()
@@ -159,7 +153,7 @@ func (t *SSHTransport) connect(ctx context.Context, auth []ssh.AuthMethod, callb
 			return nil, ctx.Err()
 		}
 		if isTimeout(err) {
-			return nil, fmt.Errorf("handshake with %s timed out (%gs)", t.Destination.Display(), sshTimeout.Seconds())
+			return nil, fmt.Errorf("handshake with %s timed out (%gs)", t.Destination.Display(), bound.Seconds())
 		}
 		if isAuthFailure(err) {
 			return nil, fmt.Errorf("ssh authentication failed (use --password or allow a public key): %v", err)

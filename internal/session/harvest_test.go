@@ -73,8 +73,8 @@ func line(text string) fakeChunk { return fakeChunk{text: text, ok: true} }
 func tail(text string) fakeChunk { return fakeChunk{text: text, ok: false} } // last line without a newline
 
 // streamingSource produces lines until stopped and keeps readLine hanging after
-// the stop, so both stop paths run through the grace period. Callers shorten
-// cutGrace with shortGrace.
+// the stop, so both stop paths run through the grace period. Callers state a
+// short pace (quickPace).
 type streamingSource struct {
 	baseSource
 	stopped chan struct{}
@@ -131,13 +131,11 @@ func (s *stuckSource) readAll() string { return "" }
 
 func (s *stuckSource) exitCode() int { return -1 }
 
-// shortGrace shortens the grace period for the duration of one test: the real
-// second would turn every hung-source test into a slow one.
-func shortGrace(t *testing.T) {
-	t.Helper()
-	original := cutGrace
-	cutGrace = 50 * time.Millisecond
-	t.Cleanup(func() { cutGrace = original })
+// quickPace is the channel's waiting in milliseconds: the behavior these tests
+// state is the same, only the waiting is not. Nothing here mutates a package
+// variable, so the tests of this package run beside each other.
+func quickPace() pace {
+	return pace{cutGrace: 50 * time.Millisecond, bodyGrace: 10 * time.Millisecond}
 }
 
 // harvestFor is one harvest under a budget, stated the way the runner states it:
@@ -147,10 +145,11 @@ func harvestFor(t *testing.T, src source, budget time.Duration, cap model.RowCap
 	t.Helper()
 	ctx, cancel := Within(context.Background(), budget)
 	defer cancel()
-	return harvest(ctx, src, cap)
+	return harvest(ctx, src, cap, quickPace())
 }
 
 func TestHarvestScanCapCleanEOF(t *testing.T) {
+	t.Parallel()
 	src := fakeSourceOf(line("a\n"), line("b\n"), line("c\n"))
 	result := harvestFor(t, src, 2*time.Second, model.Scan(3))
 	if result.Truncated {
@@ -165,6 +164,7 @@ func TestHarvestScanCapCleanEOF(t *testing.T) {
 }
 
 func TestHarvestScanCapTruncated(t *testing.T) {
+	t.Parallel()
 	src := fakeSourceOf(line("a\n"), line("b\n"), line("c\n"), line("d\n"))
 	result := harvestFor(t, src, 2*time.Second, model.Scan(3))
 	if !result.Truncated {
@@ -177,6 +177,7 @@ func TestHarvestScanCapTruncated(t *testing.T) {
 
 // A trailing partial line has more=false but non-empty content: the truncated flag was once missed because the condition included more.
 func TestHarvestScanCapPartialTail(t *testing.T) {
+	t.Parallel()
 	src := fakeSourceOf(line("a\n"), line("b\n"), line("c\n"), tail("partial"))
 	result := harvestFor(t, src, 2*time.Second, model.Scan(3))
 	if !result.Truncated {
@@ -188,6 +189,7 @@ func TestHarvestScanCapPartialTail(t *testing.T) {
 }
 
 func TestHarvestByteCap(t *testing.T) {
+	t.Parallel()
 	src := fakeSourceCapped(8, []fakeChunk{line("12345678\n"), line("x\n")})
 	result := harvestFor(t, src, 2*time.Second, model.RowCap{})
 	if !result.Truncated {
@@ -202,6 +204,7 @@ func TestHarvestByteCap(t *testing.T) {
 // stopped process reported on its way out: the killed writer's status is not a
 // failure.
 func TestHarvestCapStopIsTheAnswer(t *testing.T) {
+	t.Parallel()
 	src := fakeSourceCapped(8, []fakeChunk{line("12345678\n"), line("x\n")})
 	result := harvestFor(t, src, 2*time.Second, model.RowCap{})
 	if result.Verdict != model.VerdictAnswered {
@@ -210,7 +213,7 @@ func TestHarvestCapStopIsTheAnswer(t *testing.T) {
 }
 
 func TestHarvestDeadlineKeepsPartialOutput(t *testing.T) {
-	shortGrace(t)
+	t.Parallel()
 	result := harvestFor(t, newStreamingSource(), 30*time.Millisecond, model.RowCap{})
 	if result.Verdict != model.VerdictTimedOut {
 		t.Fatalf("should end as a timeout: %+v", result)
@@ -221,11 +224,11 @@ func TestHarvestDeadlineKeepsPartialOutput(t *testing.T) {
 }
 
 func TestHarvestCancelKeepsPartialOutput(t *testing.T) {
-	shortGrace(t)
+	t.Parallel()
 	src := newStreamingSource()
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(30 * time.Millisecond); cancel() }()
-	result := harvest(ctx, src, model.RowCap{})
+	result := harvest(ctx, src, model.RowCap{}, quickPace())
 	cancel()
 	if result.Verdict != model.VerdictInterrupted {
 		t.Fatalf("should end as interrupted: %+v", result)
@@ -240,7 +243,7 @@ func TestHarvestCancelKeepsPartialOutput(t *testing.T) {
 // output that never arrived is missing from the evidence, and a silent gap is
 // the one thing a report must not have.
 func TestHarvestGraceExpiryKeepsReadOutput(t *testing.T) {
-	shortGrace(t)
+	t.Parallel()
 	src := newStuckSource()
 	t.Cleanup(func() { close(src.release) })
 	result := harvestFor(t, src, 30*time.Millisecond, model.RowCap{})
@@ -260,6 +263,7 @@ func TestHarvestGraceExpiryKeepsReadOutput(t *testing.T) {
 // marked truncated (a reader that died cannot have read everything) and the
 // reason lands in the source's stderr.
 func TestHarvestSurvivesAPanickingReader(t *testing.T) {
+	t.Parallel()
 	src := fakeSourceOf(line("a\n"), line("b\n"), line("c\n"))
 	reads := 0
 	src.read = func() (string, bool) {
@@ -297,6 +301,7 @@ func TestHarvestSurvivesAPanickingReader(t *testing.T) {
 // stdout is the missing-command answer the scripts self-guard with, an exit code
 // of 0 or any output is the tier's answer, and anything else is a failure.
 func TestVerdictForReadsTheExitCode(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		exitCode int
@@ -320,6 +325,7 @@ func TestVerdictForReadsTheExitCode(t *testing.T) {
 // cutVerdict is the one place a cut is named: the call's own deadline, or the
 // operator's cancellation.
 func TestCutVerdictReadsTheContext(t *testing.T) {
+	t.Parallel()
 	deadline, cancelDeadline := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancelDeadline()
 	<-deadline.Done()

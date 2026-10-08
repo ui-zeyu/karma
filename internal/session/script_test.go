@@ -31,6 +31,7 @@ func wordsParser(stdout string) (*model.RecordSet, error) {
 }
 
 func TestRunScriptAnswersWithRecords(t *testing.T) {
+	t.Parallel()
 	script := model.Script{Run: `printf 'a b\nc d\n'`, Parse: wordsParser}
 	result := runCall(context.Background(), LocalSession{}, script, 10*time.Second, model.RowCap{})
 	if result.Verdict != model.VerdictAnswered {
@@ -51,6 +52,7 @@ func TestRunScriptAnswersWithRecords(t *testing.T) {
 
 // A cap bounds the records after the parse, the way it bounds a Fields tier's.
 func TestRunScriptCapBoundsTheRecords(t *testing.T) {
+	t.Parallel()
 	script := model.Script{Run: `printf 'a b\nc d\ne f\n'`, Parse: wordsParser}
 	result := runCall(context.Background(), LocalSession{}, script, 10*time.Second, model.Scan(2))
 	if result.Verdict != model.VerdictAnswered || !result.Truncated {
@@ -76,6 +78,7 @@ func headedParser(stdout string) (*model.RecordSet, error) {
 // them. A shape cap is the tier's own answer: the panel is not told the body
 // was cut.
 func TestRunScriptCapCountsRecordsPastTheHeader(t *testing.T) {
+	t.Parallel()
 	script := model.Script{Run: `printf 'HEADER\na b\nc d\ne f\n'`, Parse: headedParser}
 	result := runCall(context.Background(), LocalSession{}, script, 10*time.Second, model.Shape(2))
 	if result.Verdict != model.VerdictAnswered || result.Truncated {
@@ -89,6 +92,7 @@ func TestRunScriptCapCountsRecordsPastTheHeader(t *testing.T) {
 // Text the parser does not recognize fails the tier rather than passing a
 // fragment off as an answer; a parser that panics fails it the same way.
 func TestRunScriptRefusesTextItCannotRead(t *testing.T) {
+	t.Parallel()
 	refusing := model.Script{Run: `printf 'one\n'`, Parse: wordsParser}
 	result := runCall(context.Background(), LocalSession{}, refusing, 10*time.Second, model.RowCap{})
 	if result.Verdict != model.VerdictFailed || !strings.Contains(result.Stderr, "two-word") {
@@ -107,6 +111,7 @@ func TestRunScriptRefusesTextItCannotRead(t *testing.T) {
 // A command the host does not have is the missing-binary 127: the tier is
 // unavailable, and its parser never runs.
 func TestRunScriptMissingCommandIsUnavailable(t *testing.T) {
+	t.Parallel()
 	script := model.Script{Run: "karma-there-is-no-such-command", Parse: func(string) (*model.RecordSet, error) {
 		t.Error("the parser should not run for a command that never started")
 		return nil, nil
@@ -124,6 +129,7 @@ func TestRunScriptMissingCommandIsUnavailable(t *testing.T) {
 // A remote channel cannot run an in-process body: it answers unavailable, which
 // is what falls through on a channel that drives the target's shell instead.
 func TestRemoteChannelsRefuseInProcessBodies(t *testing.T) {
+	t.Parallel()
 	call := model.Call{Inv: model.Fields{Read: func(context.Context) (*model.RecordSet, error) {
 		return &model.RecordSet{}, nil
 	}}}

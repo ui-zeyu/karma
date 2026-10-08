@@ -43,6 +43,7 @@ func newSilentTTYD(t *testing.T) string {
 }
 
 func TestTTYDSetupIsBoundedByTheCallBudget(t *testing.T) {
+	t.Parallel()
 	sess := &TTYDSession{endpoint: newSilentTTYD(t)}
 	budget := 300 * time.Millisecond
 	started := time.Now()

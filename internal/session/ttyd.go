@@ -24,22 +24,13 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"karma/internal/model"
 )
 
-const (
-	// ttydDefaultPort is ttyd's own listening default, used when a bare host
-	// is given without a port.
-	ttydDefaultPort = 7681
-	// ttydDialTimeout bounds one websocket dial.
-	ttydDialTimeout = 15 * time.Second
-)
-
-// ttydProbeWindow bounds the open-time probe: a broken endpoint fails once,
-// here, instead of silently in every check. A variable so tests can shorten it.
-var ttydProbeWindow = 10 * time.Second
+// ttydDefaultPort is ttyd's own listening default, used when a bare host is
+// given without a port.
+const ttydDefaultPort = 7681
 
 // ParseTTYDEndpoint turns the command-line target into the websocket URL and
 // the credential. Accepted forms: ws://[user:pass@]host[:port][/ws],
@@ -158,6 +149,9 @@ type TTYDTransport struct {
 	Credential string // user:pass; overrides any userinfo in the target
 	Insecure   bool   // wss: accept any server certificate
 	Pin        string // wss: hex SHA-256 of the leaf certificate, verified instead of the chain
+	// pace states this channel's own waiting (see pace); the zero value is the
+	// shipped one, so a caller never has to state it.
+	pace pace
 }
 
 // Platform is always the Linux directory: the ttyd channel never targets Windows.
@@ -184,6 +178,7 @@ func (t *TTYDTransport) Open(ctx context.Context) (Session, error) {
 		token:    base64.StdEncoding.EncodeToString([]byte(credential)),
 		header:   http.Header{},
 		client:   client,
+		pace:     t.pace,
 	}
 	if credential != "" {
 		sess.header.Set("Authorization", "Basic "+sess.token)
