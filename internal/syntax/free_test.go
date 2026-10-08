@@ -19,16 +19,16 @@ func TestFreeKeepsTheCellsColumns(t *testing.T) {
 	if spans := styler(header); spans != nil {
 		t.Fatalf("the header should only record anchors: %v", spans)
 	}
-	// free's own widths: the label in eight cells, every number in twelve.
-	mem := "Mem:         2012716      293844      138612        4312     1580260     1616996"
-	swap := "Swap:              0           0           0"
+	// free -h's own widths: the label in eight cells, every number in twelve.
+	mem := "Mem:           1.9Gi       287Mi       134Mi       4.2Mi       1.5Gi       1.6Gi"
+	swap := "Swap:              0B          0B          0B"
 	for _, row := range []struct {
 		line   string
 		cells  []string
 		column []int
 	}{
-		{mem, []string{"Mem:", "2012716", "293844", "138612", "4312", "1580260"}, []int{0, 1, 2, 3, 4, 0}},
-		{swap, []string{"Swap:", "0", "0", "0"}, []int{0, 1, 2, 3}},
+		{mem, []string{"Mem:", "1.9Gi", "287Mi", "134Mi", "4.2Mi", "1.5Gi"}, []int{0, 1, 2, 3, 4, 0}},
+		{swap, []string{"Swap:", "0B", "0B", "0B"}, []int{0, 1, 2, 3}},
 	} {
 		painted := form.PaintLine(row.line, styler(row.line))
 		for index, cell := range row.cells {

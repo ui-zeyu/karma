@@ -97,14 +97,16 @@ func (t Table) columnCount(block model.Block) int {
 // measure sizes the columns: each as wide as its widest cell (the headings
 // count), and the last one takes what is left of the panel. A panel too narrow
 // for those widths takes them back from the widest column first, so the rows
-// wrap in the columns that gave way.
+// wrap in the columns that gave way. A remark is not a row and states no cell,
+// so it does not size a column either: a long comment under a table would
+// otherwise push every column it does not belong to off the panel.
 func (t Table) measure(block model.Block, columns, width int) []int {
 	widths := make([]int, columns)
 	for index, name := range block.Header {
 		widths[index] = max(widths[index], displayWidth(name))
 	}
 	for _, item := range block.Items {
-		if item.Rec == nil {
+		if item.Rec == nil || remark(item.Rec, block.Header) {
 			continue
 		}
 		for index, field := range item.Rec.Fields {
@@ -160,7 +162,7 @@ func (t Table) dataRow(item model.BlockItem, header []string, widths []int, opts
 	// under it. It takes the line it is, at the table's left edge and under no
 	// column's tint — a comment drawn in the first column would read as a
 	// filesystem named "# …".
-	if len(item.Rec.Fields) == 1 && len(header) > 1 {
+	if remark(item.Rec, header) {
 		return t.remarkRow(item, widths, opts)
 	}
 	values := make([]string, len(widths))
@@ -172,6 +174,13 @@ func (t Table) dataRow(item model.BlockItem, header []string, widths []int, opts
 	rows := t.rowLines(header, values, item.Matches, widths, opts)
 	rows = append(rows, reasonLines(item.Matches, widths, opts)...)
 	return withReasonRows(rows, recordReason(item.Matches), opts)
+}
+
+// remark reports whether a record is drawn as the line it is rather than as a
+// row: one value among a table of several columns. Such a record states no cell
+// of any column, so it neither sizes one nor belongs to one.
+func remark(rec *model.Record, header []string) bool {
+	return len(rec.Fields) == 1 && len(header) > 1
 }
 
 // remarkRow draws one record that states a single value: the value as the line

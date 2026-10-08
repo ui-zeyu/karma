@@ -188,20 +188,23 @@ func Env(ctx context.Context) (string, error) {
 	return strings.Join(lines, "\n") + "\n", nil
 }
 
-// Free renders `free`'s table from /proc/meminfo: the header, the Mem row and the
-// Swap row, in the widths and the unit procps prints them in.
+// Free renders `free -h`'s table from /proc/meminfo: the header, the Mem row and
+// the Swap row, in the widths and the units procps prints them in.
 //
-// The numbers are procps' own reading of the file: buff/cache is Buffers +
-// Cached + SReclaimable, shared is Shmem, and used is the total minus the
-// MemAvailable figure. That last one is a definition the tool changed: procps 4
-// derives it from MemAvailable, while 3.3 subtracted free and buff/cache — so an
-// older target prints its own arithmetic on its row, and the header names the
-// column either way. A kernel that states no available figure, or an impossible
-// one, gets the second reading.
+// The numbers are procps' own reading of the file — its meminfo library's
+// arithmetic, which is what the target's own free does with the same bytes:
+// buff/cache is Buffers + Cached + SReclaimable, shared is Shmem, used is the
+// total minus the available figure, and a kernel that states none (pre-3.14) or
+// an impossible one has that figure taken from MemFree. The one figure procps 3.3
+// reads differently is used: it subtracted free and buff/cache instead, so an old
+// target prints its own arithmetic on its row, and the header names the column
+// either way.
 //
-// The unit is the file's own: KiB, the spelling plain `free` prints and the one
-// every procps carries, where free -h's scaling differs between 3.3 (which
-// truncates a cell to whole units) and 4.0 (which rounds it).
+// The human spelling is procps 4's (freeScale). procps 3.3's -h differs twice
+// over: it truncates the reading to whole mebibytes before scaling, so it prints
+// 0.0Ki for anything under one and drops the tenth of its mebibyte rows — a host
+// that old prints its own digits on its own row, which is the sh source's
+// evidence either way.
 func Free(ctx context.Context) (string, error) {
 	mi, err := procFS().Meminfo()
 	if err != nil {
@@ -214,9 +217,43 @@ func Free(ctx context.Context) (string, error) {
 	return table, nil
 }
 
-// freeTable renders free's table from one /proc/meminfo reading. An empty answer
-// is a reading without a total: a kernel that does not report the file's first
-// figure has no memory view to print.
+// freeUnits are the binary prefixes free -h scales through, in procps' order.
+var freeUnits = []string{"Ki", "Mi", "Gi", "Ti", "Pi", "Ei"}
+
+// freeScale renders one /proc/meminfo cell the way procps 4's free -h does: the
+// first spelling that fits the column, which is why the mebibyte count of a
+// large figure is an integer (976Mi) while a small one keeps its tenth (4.2Mi),
+// and why a value the largest unit cannot hold in five cells keeps the exbibyte
+// count. The scale is the tool's own — a float, not a double, before printing —
+// so a host running the same procps prints the same digits.
+//
+// The name is free's own: df's humanKiB above is coreutils' spelling, which
+// rounds up at the printed precision, where this one keeps the digits the tool
+// itself would print.
+func freeScale(kib int64) string {
+	bytes := float64(kib) * 1024
+	if bare := fmt.Sprintf("%dB", kib*1024); len(bare) <= 4 {
+		return bare
+	}
+	out := ""
+	scale := 1024.0
+	for _, unit := range freeUnits {
+		scaled := bytes / scale
+		if tenths := fmt.Sprintf("%.1f%s", float32(scaled), unit); len(tenths) <= 5 {
+			return tenths
+		}
+		out = fmt.Sprintf("%d%s", int64(scaled), unit)
+		if len(out) <= 5 {
+			return out
+		}
+		scale *= 1024
+	}
+	return out
+}
+
+// freeTable renders free -h's table from one /proc/meminfo reading. An empty
+// answer is a reading without a total: a kernel that does not report the file's
+// first figure has no memory view to print.
 func freeTable(mi *procfs.Meminfo) string {
 	kib := func(value *uint64) int64 {
 		if value == nil {
@@ -231,11 +268,10 @@ func freeTable(mi *procfs.Meminfo) string {
 	free, available := kib(mi.MemFree), kib(mi.MemAvailable)
 	cache := kib(mi.Buffers) + kib(mi.Cached) + kib(mi.SReclaimable)
 	if available <= 0 || available > total {
-		// A kernel that states no available figure (pre-3.14), or an impossible
-		// one, gets the reading the file does support: what is free plus what the
-		// page cache could give back. The subtraction below then lands on the
-		// definition procps 3.3 used, total minus free minus buff/cache.
-		available = free + cache
+		// No available figure (pre-3.14), or one the file cannot mean: the
+		// library reads MemFree in its place, the way a container's distorted
+		// figures are handled.
+		available = free
 	}
 	used := max(total-available, 0)
 	swapTotal, swapFree := kib(mi.SwapTotal), kib(mi.SwapFree)
@@ -244,9 +280,10 @@ func freeTable(mi *procfs.Meminfo) string {
 	// free's own layout, so the header words land over the columns they name.
 	fmt.Fprintf(&b, "%-8s%12s%12s%12s%12s%12s%12s\n",
 		"", "total", "used", "free", "shared", "buff/cache", "available")
-	fmt.Fprintf(&b, "%-8s%12d%12d%12d%12d%12d%12d\n", "Mem:",
-		total, used, free, kib(mi.Shmem), cache, available)
-	fmt.Fprintf(&b, "%-8s%12d%12d%12d\n", "Swap:",
-		swapTotal, swapTotal-swapFree, swapFree)
+	fmt.Fprintf(&b, "%-8s%12s%12s%12s%12s%12s%12s\n", "Mem:",
+		freeScale(total), freeScale(used), freeScale(free), freeScale(kib(mi.Shmem)),
+		freeScale(cache), freeScale(available))
+	fmt.Fprintf(&b, "%-8s%12s%12s%12s\n", "Swap:",
+		freeScale(swapTotal), freeScale(max(swapTotal-swapFree, 0)), freeScale(swapFree))
 	return b.String()
 }

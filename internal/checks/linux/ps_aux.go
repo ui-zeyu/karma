@@ -1,7 +1,7 @@
-// The sorted aux views' sh tier: the two `ps aux --sort` spellings top's
-// resource snapshot asks for, and the parser that reads them back into the aux
-// schema the native tiers state. Same shape as ps_ef.go: the command is the
-// schema, the parse is karma's code.
+// The sorted aux view's sh tier: the `ps aux --sort=-%cpu` spelling the ps
+// check runs, and the parser that reads it back into the aux schema the native
+// tier states. Same shape as ps_ef.go: the command is the schema, the parse is
+// karma's code.
 
 package linux
 
@@ -13,7 +13,7 @@ import (
 	"karma/internal/model"
 )
 
-// psAuxScript is one sorted aux view's sh tier. LC_ALL=C pins the field
+// psAuxScript is the CPU-sorted aux view's sh tier. LC_ALL=C pins the field
 // spellings, and ww keeps the command line whole on a pty channel (procps cuts
 // COMMAND at the terminal's width otherwise). The parser knows exactly this
 // wording and declines anything else.

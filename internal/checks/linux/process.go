@@ -24,8 +24,9 @@ var psInterpreter = regexp.MustCompile(`\b(?:(?:ba|z|da|k)?sh|python[0-9.]*|perl
 
 // psTable is the process listing's shape: a table, with the numeric columns
 // right-aligned the way ps prints them. The declaration is keyed by column name
-// because the checks that read it print different columns — ps -ef's eight,
-// top's aux rows of eleven — and all of them read right against one table.
+// because the checks that read it print different columns — the ps check's aux
+// rows of eleven, pstree's System V records of eight — and all of them read
+// right against one table.
 var psTable = form.Table{
 	Align: map[string]form.Alignment{
 		"PID": form.Right, "%CPU": form.Right, "%MEM": form.Right, "VSZ": form.Right,
@@ -251,11 +252,6 @@ const minerWalkDepth = 4
 // bound); the sh tier caps at 131072 because its interpreted loop probes at
 // ~10µs per pid, so a full sweep would outlast the tier's deadline.
 
-// psSortHead is the row shape the resource snapshot asks for: each of the two
-// sorted ps listings is a panel of its own, and ten rows answer "what is using
-// the box" without becoming the whole process table.
-const psSortHead = 10
-
 // hiddenPidsScript is the sh source's brute force over the same two views: kill
 // -0 is a shell builtin on every practical /bin/sh, so the loop forks nothing,
 // and the readdir views come from glob expansion — the getdents path a rootkit
@@ -357,17 +353,25 @@ var processRules = []model.Matcher{
 
 // ProcessChecks covers processes.
 var ProcessChecks = []*model.Check{
-	// One command, two sources: the native tier states `ps -ef`'s System V
-	// fields from /proc, and the sh tier runs the target's own ps and parses
-	// the same schema out of it. A run walks one of them (the source it was
-	// asked for), never both. The table is flat — one row per process —
-	// because the hierarchy is the pstree check's business.
-	define.LinuxCheck("ps", "Process table", model.AspectProcess,
+	// The process table is the CPU-ordered listing, and nothing else, on either
+	// source: procps' own top prints a near-zero %CPU delta on its first frame
+	// (it compares against a reading taken at startup), so the order that
+	// answers "what is using the box" comes from a ps listing — karma reads
+	// /proc itself on the local channel, and the sh source runs the target's own
+	// ps through the parser that states the same fields. The whole table is
+	// kept: the head is the answer, and the rows below it are the rest of the
+	// process list, which the panel's display budget trims rather than the tier.
+	define.LinuxCheck("ps", "Process table (busiest CPU first)", model.AspectProcess,
 		[]model.Step{
-			{{Label: "ps", Inv: model.Fields{Read: native.PsEf}}},
-			{{Label: "ps-ef", Inv: psEfScript}},
+			{{Label: "ps", Inv: model.Fields{Read: native.PsCPU}}},
+			{{Label: "ps-aux", Inv: psAuxScript("ps", "auxww", "--sort=-%cpu")}},
 		},
-		model.Options{Form: psTable, Rules: processRules}),
+		model.Options{
+			// Both sources state these rows as fields, so the table draws them
+			// the way it draws pstree's System V records.
+			Form:  psTable,
+			Rules: processRules,
+		}),
 	// The same records, drawn as the tree the ppid links make of them: either
 	// source hands the parent link over and the form nests the nodes.
 	define.LinuxCheck("pstree", "Process tree", model.AspectProcess,
@@ -376,30 +380,7 @@ var ProcessChecks = []*model.Check{
 			{{Label: "pstree-ef", Inv: psEfScript}},
 		},
 		model.Options{Form: pstreeTree, Rules: processRules}),
-	// The resource snapshot is the two sorted aux views, and nothing else, on
-	// either source: procps' own top prints a near-zero %CPU delta on its first
-	// frame (it compares against a reading taken at startup), so the order that
-	// answers the question comes from a ps listing — karma reads /proc itself on
-	// the local channel, and the sh source runs the target's own ps through the
-	// parser that states the same fields. Each source's two views are one step,
-	// so a panel carries the CPU order and then the memory order.
-	define.LinuxCheck("top", "Resource usage snapshot", model.AspectProcess,
-		[]model.Step{
-			{
-				{Label: "ps-cpu", Inv: model.Fields{Read: native.PsCPU}, Cap: model.Shape(psSortHead)},
-				{Label: "ps-mem", Inv: model.Fields{Read: native.PsMem}, Cap: model.Shape(psSortHead)},
-			},
-			{
-				{Label: "ps-cpu-sh", Inv: psAuxScript("ps", "auxww", "--sort=-%cpu"), Cap: model.Shape(psSortHead)},
-				{Label: "ps-mem-sh", Inv: psAuxScript("ps", "auxww", "--sort=-%mem"), Cap: model.Shape(psSortHead)},
-			},
-		},
-		model.Options{
-			// Both sources state these rows as fields, so the ps check's table
-			// draws them the way it draws ps -ef's.
-			Form:  psTable,
-			Rules: []model.Matcher{define.KeywordRule},
-		}),
+
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,
 		procCapsTier(),
 		model.Options{

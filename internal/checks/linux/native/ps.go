@@ -1,7 +1,7 @@
-// The ps-shaped tiers: the System V table `ps -ef` prints — the ps and pstree
-// checks' schema, read from /proc here and from the target's own ps by the sh
-// source's parser — plus the two sorted auxww views behind top. The /proc read
-// behind them is proctable.go.
+// The ps-shaped tiers: the System V table `ps -ef` prints — pstree's schema,
+// read from /proc here and from the target's own ps by the sh source's parser —
+// plus the CPU-ordered auxww view the ps check prints. The /proc read behind
+// them is proctable.go.
 //
 // Every tier here renders the in-process listing, so no userspace interposition
 // (an LD_PRELOAD hook in a wrapped ps, a PATH shadow) can reshape the evidence on
@@ -207,16 +207,16 @@ func PsEf(ctx context.Context) (*model.RecordSet, error) {
 	return set, snap.cutReason(ctx)
 }
 
-// nativePsSort reads aux rows sorted by a column, ps --sort's shape; the machine
-// facts arrive once, with the key computed once per row.
-func nativePsSort(ctx context.Context,
-	key func(e procEntry, uptime float64, memTotal int64) float64) (*model.RecordSet, error) {
+// PsCPU is `ps aux --sort=-%cpu`, the ps check's in-process tier: the whole
+// table, the busiest process first. ps --sort's shape, the machine facts
+// arriving once with the key computed once per row.
+func PsCPU(ctx context.Context) (*model.RecordSet, error) {
 	snap := procSnapshot(ctx)
 	if !snap.ok {
 		return nil, model.ErrTierUnavailable
 	}
 	entries := sortedByKey(snap.entries, func(e procEntry) float64 {
-		return key(e, snap.uptime, snap.memTotal)
+		return e.cpuPercent(snap.uptime)
 	})
 	now := time.Now()
 	rows := make([]model.Record, 0, len(entries))
@@ -226,18 +226,4 @@ func nativePsSort(ctx context.Context,
 		})
 	}
 	return &model.RecordSet{Header: PsAuxColumns, Rows: rows}, snap.cutReason(ctx)
-}
-
-// PsCPU is `ps aux --sort=-%cpu`.
-func PsCPU(ctx context.Context) (*model.RecordSet, error) {
-	return nativePsSort(ctx, func(e procEntry, uptime float64, _ int64) float64 {
-		return e.cpuPercent(uptime)
-	})
-}
-
-// PsMem is `ps aux --sort=-%mem`.
-func PsMem(ctx context.Context) (*model.RecordSet, error) {
-	return nativePsSort(ctx, func(e procEntry, _ float64, _ int64) float64 {
-		return float64(e.rss)
-	})
 }

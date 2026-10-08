@@ -134,6 +134,14 @@ func malformedRecordPattern(fields int) string {
 // the same window of the in-process wtmp read.
 const lastRows = 200
 
+// loginTrailer is the accounting store's closing line — "wtmp begins …",
+// "btmp begins …", "wtmpdb begins …" — which last(1) and lastb(1) print under
+// their rows. It names the window the file covers rather than a login, so the
+// panel drops it; the empty store's own notice ("… has no entries") is kept,
+// because that is the evidence that the file was read and holds nothing.
+var loginTrailer = model.NewFilter("login-trailer",
+	`^\s*(?:wtmp|wtmpdb|btmp) begins\b`, model.FilterDrop)
+
 // IdentityChecks covers identity.
 var IdentityChecks = []*model.Check{
 	// Raw files only: NSS (getent) is deliberately bypassed — it is the
@@ -228,7 +236,10 @@ var IdentityChecks = []*model.Check{
 			{{Label: "last", Inv: model.Native{Body: native.Last(lastRows)}}},
 			{{Label: "last-sh", Inv: model.Sh("last -n " + strconv.Itoa(lastRows))}},
 		},
-		model.Options{Syntax: model.SyntaxLast}),
+		model.Options{
+			Syntax:  model.SyntaxLast,
+			Filters: []model.LineFilter{loginTrailer},
+		}),
 	define.LinuxCheck("lastlog", "Last account login (lastlog)", model.AspectIdentity,
 		[]model.Step{
 			{{Label: "lastlog", Inv: model.Native{Body: native.Lastlog}}},

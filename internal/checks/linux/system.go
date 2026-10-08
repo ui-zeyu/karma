@@ -5,7 +5,9 @@ package linux
 import (
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
+	"karma/internal/form"
 	"karma/internal/model"
+	"karma/internal/shape"
 )
 
 // osReleaseSh is the sh source's reading of the distro and kernel facts: the
@@ -14,14 +16,14 @@ import (
 const osReleaseSh = `cat /etc/os-release 2>/dev/null || lsb_release -a 2>/dev/null; echo; uname -a`
 
 // freeCheck is the memory reading, from /proc/meminfo here and from the
-// target's own free over a channel: the plain KiB table, which is what every
-// procps carries and what busybox's free prints too. free -h is deliberately not
-// used — its scaling differs between procps 3.3 (a cell truncated to whole
-// units) and 4.0 (a cell rounded), so the two sources would not read alike.
+// target's own free -h over a channel. The human spelling is the tool's default
+// reading of the file — the same KiB figures scaled for the reader — so the sh
+// source runs the tool's own -h and the local tier scales the file itself
+// (native.Free states which procps version's digits an old host prints instead).
 func freeCheck() []model.Step {
 	return []model.Step{
 		{{Label: "free", Inv: model.Native{Body: native.Free}}},
-		{{Label: "free-sh", Inv: model.Sh("free")}},
+		{{Label: "free-sh", Inv: model.Sh("free -h")}},
 	}
 }
 
@@ -32,8 +34,9 @@ var SystemChecks = []*model.Check{
 			{{Label: "cat", Inv: model.Native{Body: native.OsRelease}}},
 			{{Label: "os-release-sh", Inv: model.Sh(osReleaseSh)}},
 		},
-		// os-release is KEY=VALUE, so the env pseudo-lexer is reused directly
-		model.Options{Syntax: model.SyntaxEnv}),
+		// The file's KEY=VALUE lines are its own two columns; the sh source's
+		// lsb_release fallback is not this table and stays the text it wrote.
+		model.Options{Form: form.Table{}, Normalize: shape.OsRelease}),
 	define.LinuxCheck("uptime", "Hostname and boot time", model.AspectSystem,
 		[]model.Step{
 			{{Label: "uptime", Inv: model.Native{Body: native.Uptime}}},

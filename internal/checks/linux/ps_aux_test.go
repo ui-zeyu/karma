@@ -1,6 +1,6 @@
 // The aux table's sh tier: the parser's reading of `ps aux --sort`, against a
 // real capture's shape. The row wording is procps's; the schema is the native
-// tier's PsAuxColumns, which top's two sorted views are drawn in.
+// tier's PsAuxColumns, which the ps check's rows are drawn in.
 
 package linux
 

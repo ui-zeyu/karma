@@ -67,7 +67,7 @@ type procSnapshotKey struct{}
 
 // procSnapshot returns the run's view of the process table, computed at the
 // first request and shared from then on: one entry costs three /proc reads
-// (stat, status, cmdline), and ps, top, miner, and w all want the whole
+// (stat, status, cmdline), and ps, miner, hidden-pids, and w all want the whole
 // table while their checks run together. Outside a run — a unit test calling a
 // body directly — each caller computes its own.
 func procSnapshot(ctx context.Context) processSnapshot {

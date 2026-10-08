@@ -402,3 +402,31 @@ func TestTablePaintsAFieldRegexHit(t *testing.T) {
 		t.Errorf("the reason should hang under the column: %q", lines[2])
 	}
 }
+
+// A remark states one value and belongs to no column, so it must not size one:
+// a long remark under a two-column table would otherwise take the whole panel
+// and squeeze the real columns to the wrap floor, one word per line.
+func TestTableSizesColumnsFromRowsNotRemarks(t *testing.T) {
+	table := Table{}
+	block := model.Block{
+		Header: []string{"Key", "Value"},
+		Items: []model.BlockItem{
+			{Rec: row("Key", "ID", "Value", "ubuntu")},
+			// The kernel line an os-release tier appends under the file's keys.
+			{Rec: &model.Record{Fields: []model.Field{{Value: strings.Repeat("kernel ", 30)}}}},
+		},
+	}
+	lines := render(t, table, block, 40, false)
+	if len(lines) != 3 {
+		t.Fatalf("head, row and remark = 3 lines, got %q", lines)
+	}
+	if want := "Key  Value"; lines[0] != want {
+		t.Errorf("the head = %q, want the columns sized by the rows: %q", lines[0], want)
+	}
+	if want := "ID   ubuntu"; lines[1] != want {
+		t.Errorf("the row = %q, want %q", lines[1], want)
+	}
+	if !strings.HasPrefix(lines[2], "kernel kernel ") {
+		t.Errorf("the remark is the line it is, unwrapped: %q", lines[2])
+	}
+}

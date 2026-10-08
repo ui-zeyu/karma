@@ -3,6 +3,8 @@ package linux
 import (
 	"strings"
 	"testing"
+
+	"karma/internal/model"
 )
 
 // collapseRepeats folds consecutive duplicate log lines into one `[xN]` line; the
@@ -37,5 +39,36 @@ func TestCollapseKey(t *testing.T) {
 	}
 	if strings.Contains(first, "1234") || strings.Contains(first, "4321") {
 		t.Fatalf("the key should erase pid and port: %q", first)
+	}
+}
+
+// The accounting stores' closing line names the window the file covers, not a
+// login: both dialects print it under last's and lastb's rows, with the space
+// some util-linux versions leave in front, and the panel drops it. The empty
+// store's own notice is a reading, so it stays.
+func TestLoginTrailerDropsTheClosingLineOnly(t *testing.T) {
+	record := func(line string) *model.Record {
+		rec := model.TextRecord(line)
+		return &rec
+	}
+	for _, line := range []string{
+		"wtmp begins Wed Jul 29 13:41:26 2026",
+		"btmp begins Thu Oct  8 07:17:01 2026",
+		"wtmpdb begins Thu Oct  8 16:08:04 2026",
+		" wtmp begins Mon Jan  1 00:00:00 1970",
+	} {
+		if !loginTrailer.Match(record(line)) {
+			t.Errorf("%q is the accounting store's closing line", line)
+		}
+	}
+	for _, line := range []string{
+		"lab      pts/44       10.211.55.2      Thu Oct  8 07:35 - 07:35  (00:00)",
+		"reboot   system boot  5.15.0-198-generic Thu Oct  8 07:14",
+		"/var/log/wtmp has no entries",
+		"wtmp",
+	} {
+		if loginTrailer.Match(record(line)) {
+			t.Errorf("%q is evidence, not the store's closing line", line)
+		}
 	}
 }

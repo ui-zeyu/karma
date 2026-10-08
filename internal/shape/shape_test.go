@@ -316,3 +316,84 @@ func TestTreeRootStopsAtTheFilesystemRoot(t *testing.T) {
 		t.Fatalf("paths with nothing in common root at the filesystem root:\n%s", tree.String())
 	}
 }
+
+// os-release's own lines are two columns — the file's key and the shell's
+// value — and the kernel line the tier appends under them is a remark, not a
+// setting of the distro file.
+func TestOsReleaseReadsTheKeysAndTheKernelLine(t *testing.T) {
+	body := "PRETTY_NAME=\"Ubuntu 22.04.5 LTS\"\n" +
+		"NAME=\"Ubuntu\"\n" +
+		"VERSION_ID=\"22.04\"\n" +
+		"ID=ubuntu\n" +
+		"\n" +
+		"Linux lab 5.15.0-198-generic #208-Ubuntu SMP Fri Sep 4 10:23:39 UTC 2026 aarch64 GNU/Linux\n"
+	got := OsRelease("", body)
+	if got == nil || got.Records == nil {
+		t.Fatal("an os-release body should be read into records")
+	}
+	if !slices.Equal(got.Records.Header, OsReleaseColumns) {
+		t.Fatalf("columns = %v, want %v", got.Records.Header, OsReleaseColumns)
+	}
+	// The text keeps every line the body had, one per record, and the quoting is
+	// the shell's to take off: a panel shows the value, not the file's syntax.
+	if want := "PRETTY_NAME=\"Ubuntu 22.04.5 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"22.04\"\nID=ubuntu\n\nLinux lab 5.15.0-198-generic #208-Ubuntu SMP Fri Sep 4 10:23:39 UTC 2026 aarch64 GNU/Linux\n"; got.Text != want {
+		t.Fatalf("text = %q, want %q", got.Text, want)
+	}
+	if len(got.Records.Rows) != 6 {
+		t.Fatalf("rows = %d, want the four settings, the blank and the kernel line", len(got.Records.Rows))
+	}
+	want := [][2]string{
+		{"PRETTY_NAME", "Ubuntu 22.04.5 LTS"},
+		{"NAME", "Ubuntu"},
+		{"VERSION_ID", "22.04"},
+		{"ID", "ubuntu"},
+	}
+	for index, pair := range want {
+		record := got.Records.Rows[index]
+		if len(record.Fields) != 2 {
+			t.Fatalf("row %d has %d fields, want key and value", index, len(record.Fields))
+		}
+		if record.Fields[0].Value != pair[0] || record.Fields[1].Value != pair[1] {
+			t.Errorf("row %d = %q/%q, want %q/%q", index,
+				record.Fields[0].Value, record.Fields[1].Value, pair[0], pair[1])
+		}
+	}
+	// The kernel line is one value, which the form draws as the line it is.
+	kernel := got.Records.Rows[5].Fields
+	if len(kernel) != 1 || !strings.HasPrefix(kernel[0].Value, "Linux lab 5.15.0-198-generic ") {
+		t.Errorf("the kernel line is one remark field, got %v", kernel)
+	}
+}
+
+// A single quote is the shell's too, and a setting the file leaves empty stays
+// empty rather than taking its neighbour's value.
+func TestOsReleaseUnquotesBothQuoteStyles(t *testing.T) {
+	got := OsRelease("", "NAME='Ubuntu'\nID=\n")
+	if got == nil {
+		t.Fatal("a body of two settings should be read")
+	}
+	values := []string{
+		got.Records.Rows[0].Fields[1].Value,
+		got.Records.Rows[1].Fields[1].Value,
+	}
+	if want := []string{"Ubuntu", ""}; !slices.Equal(values, want) {
+		t.Fatalf("values = %q, want %q", values, want)
+	}
+}
+
+func TestOsReleaseDeclinesWhatIsNotItsTable(t *testing.T) {
+	for name, body := range map[string]string{
+		// The sh source's fallback prints this when the file is absent; its
+		// colons are the tool's layout, not karma's columns.
+		"lsb_release": "Distributor ID:\tUbuntu\nDescription:\tUbuntu 22.04.5 LTS\nRelease:\t22.04\n",
+		"prose":       "there is no os-release here\nnor anything keyed\n",
+		"empty":       "",
+		// A commented-out setting is not one, and neither is a lowercase name.
+		"commented": "#NAME=Ubuntu\n",
+		"lowercase": "name=Ubuntu\n",
+	} {
+		if got := OsRelease("", body); got != nil {
+			t.Errorf("%s should decline, got %q", name, got.Text)
+		}
+	}
+}
