@@ -4,8 +4,9 @@
 // exec runs it directly, without a shell; the output encoding is switched to
 // UTF-8 (Windows PowerShell follows the OEM code page by default, which is GBK
 // on a Chinese system, and karma decoding it as UTF-8 would produce garbage).
-// The in-script `== ` section convention matches the Linux side and is emitted
-// by the script itself.
+// A script prints no section header: a section is the probe's own title
+// (model.BodySection), which is what keeps a registry value or a file's bytes
+// from being read as one.
 package powershell
 
 import "karma/internal/model"

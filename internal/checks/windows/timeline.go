@@ -10,10 +10,7 @@ package windows
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
-
-	"github.com/samber/lo"
 
 	"karma/internal/define"
 	"karma/internal/model"
@@ -35,22 +32,22 @@ const stringsTimeout = 60 * time.Second
 // not trail at line end: PS 5.1 treats a newline inside a statement as a
 // separator, and a trailing pipe is a straight parse error (hit on a real Server
 // 2025 box).
-func stringsScript(encoding string, minRun int, globs ...string) string {
-	quoted := strings.Join(lo.Map(globs, func(glob string, _ int) string { return "'" + glob + "'" }), ",")
-	extract := psSection(`"== " + $f.FullName`,
-		`[regex]::Matches($t, '[\x20-\x7E\u4E00-\u9FFF]{`+strconv.Itoa(minRun)+`,}') | ForEach-Object { $_.Value } | Select-Object -Unique`)
-	return fmt.Sprintf(`foreach ($f in Get-ChildItem %s -File -ErrorAction SilentlyContinue) {
-  try {
-    $fs = [IO.File]::Open($f.FullName, 'Open', 'Read', 'ReadWrite')
-    $ms = New-Object IO.MemoryStream
-    $fs.CopyTo($ms); $fs.Close()
-    $t = [Text.Encoding]%s.GetString($ms.ToArray())
-    %s
-  } catch {
-    "== " + $f.FullName
-    "read failed: " + $_.Exception.Message
-  }
-}`, quoted, encoding, extract)
+func stringsProbe(encoding string, minRun int, globs ...string) model.Probe {
+	extract := `[regex]::Matches($t, '[\x20-\x7E\u4E00-\u9FFF]{` + strconv.Itoa(minRun) + `,}') | ForEach-Object { $_.Value } | Select-Object -Unique`
+	return PSFilesProbe("strings", PSListPaths(globs, "", false), func(path string) string {
+		// The file is opened with the ReadWrite share mode, so a database a running
+		// process holds open can still be read; a read that fails says so on the
+		// section's own line rather than leaving a silent gap.
+		return fmt.Sprintf(`try {
+  $fs = [IO.File]::Open(%s, 'Open', 'Read', 'ReadWrite')
+  $ms = New-Object IO.MemoryStream
+  $fs.CopyTo($ms); $fs.Close()
+  $t = [Text.Encoding]%s.GetString($ms.ToArray())
+  %s
+} catch {
+  'read failed: ' + $_.Exception.Message
+}`, PSQuote(path), encoding, extract)
+	})
 }
 
 // What is forensically interesting in timeline databases is paths and URLs; schema words (table/column names) are suppressed.
@@ -61,7 +58,7 @@ const sqlSchema = `^(?:CREATE|INDEX|TABLE|UNIQUE|PRAGMA|sqlite_|IN\s*\(|NOT\s+NU
 // TimelineChecks is the timeline aspect.
 var TimelineChecks = []*model.Check{
 	define.WindowsCheck("activity-cache", "Activity Timeline (ActivitiesCache, String Extraction)", model.AspectTimeline,
-		[]model.Step{{PSProbe("strings", stringsScript("UTF8", 8, activityGlob))}},
+		[]model.Step{{stringsProbe("UTF8", 8, activityGlob)}},
 		define.CheckOpt{
 			Timeout: stringsTimeout,
 			Filters: []model.LineFilter{
@@ -70,7 +67,7 @@ var TimelineChecks = []*model.Check{
 			Rules: []model.Matcher{define.KeywordRule},
 		}),
 	define.WindowsCheck("sticky-notes", "Sticky Notes Content (String Extraction)", model.AspectTimeline,
-		[]model.Step{{PSProbe("strings", stringsScript("UTF8", 6, stickyGlob))}},
+		[]model.Step{{stringsProbe("UTF8", 6, stickyGlob)}},
 		define.CheckOpt{
 			Timeout: stringsTimeout,
 			Filters: []model.LineFilter{

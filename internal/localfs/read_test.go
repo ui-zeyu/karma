@@ -1,5 +1,5 @@
-// Tests for the section-shaped file read: one "== path" section per existing
-// regular file, the tail window, and the missing-file guard.
+// Tests for the in-process file read: the list a file-list tier answers with,
+// one file's body, the tail window, and the missing-file guard.
 
 package localfs
 
@@ -10,11 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"karma/internal/section"
 )
 
-func TestReadSectionsSkipsMissingAndTails(t *testing.T) {
+func TestListFilesSkipsMissingAndReadBodyTails(t *testing.T) {
 	dir := t.TempDir()
 	present := filepath.Join(dir, "present.conf")
 	missing := filepath.Join(dir, "missing.conf")
@@ -22,12 +20,13 @@ func TestReadSectionsSkipsMissingAndTails(t *testing.T) {
 		t.Fatal(err)
 	}
 	// the glob stays literal on no match and is dropped by the [ -f ] guard
-	got := ReadSections([]string{present, missing, dir + "/*.none"}, nil)
-	want := "== " + present + "\nl1\nl2\nl3\n"
-	if got != want {
-		t.Fatalf("ReadSections body mismatch:\ngot  %q\nwant %q", got, want)
+	if got, want := ListFiles([]string{present, missing, dir + "/*.none"}), present; got != want {
+		t.Fatalf("ListFiles = %q, want %q", got, want)
 	}
-	tailed := ReadSections([]string{present}, TailLines(2))
+	if got, want := ReadBody(present, nil), "l1\nl2\nl3\n"; got != want {
+		t.Fatalf("ReadBody = %q, want %q", got, want)
+	}
+	tailed := ReadBody(present, TailLines(2))
 	if !strings.HasSuffix(tailed, "l2\nl3\n") || strings.Contains(tailed, "l1") {
 		t.Fatalf("TailLines(2) kept the wrong window: %q", tailed)
 	}
@@ -58,27 +57,10 @@ func TestTailLinesMatchesTail(t *testing.T) {
 	}
 }
 
-// Cat is the reader form: the file's bytes, no section header.
-func TestCatReadsTheFileAsItIs(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "one")
-	if err := os.WriteFile(path, []byte("a\nb\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := Cat(path)
-	if err != nil || string(got) != "a\nb\n" {
-		t.Fatalf("Cat = %q, %v", got, err)
-	}
-	if _, err := Cat(filepath.Join(t.TempDir(), "gone")); err == nil {
-		t.Fatal("a missing file should surface its error")
-	}
-}
-
-// ReadSections prints one section per existing regular file, in word order with
-// the globs' results sorted: a path that is gone and a path that is a directory
-// print nothing, a glob expands the way the shell expands it, and a body whose
-// last line carries no newline is closed with one — without the terminator the
-// next "== path" header would glue onto that line.
-func TestReadSectionsPrintsOneSectionPerFile(t *testing.T) {
+// ListFiles names one path per existing regular file, in word order with the
+// globs' results sorted: a path that is gone and a path that is a directory name
+// nothing, and a word list repeats what it repeats.
+func TestListFilesNamesOnePathPerFile(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		t.Helper()
@@ -102,20 +84,27 @@ func TestReadSectionsPrintsOneSectionPerFile(t *testing.T) {
 	// same file again through the glob — a word list repeats what it repeats —
 	// and the glob itself.
 	patterns := []string{a, filepath.Join(dir, "gone.txt"), nested, dir + "/*.txt"}
-	want := section.Line(a) + "alpha\n" +
-		section.Line(a) + "alpha\n" +
-		section.Line(b) +
-		section.Line(c) + "x\ny\n" +
-		section.Line(e) + "unterminated\n"
-	if got := ReadSections(patterns, nil); got != want {
-		t.Fatalf("ReadSections body mismatch:\ngot  %q\nwant %q", got, want)
+	want := strings.Join([]string{a, a, b, c, e}, "\n")
+	if got := ListFiles(patterns); got != want {
+		t.Fatalf("ListFiles mismatch:\ngot  %q\nwant %q", got, want)
+	}
+	// Each path's body is the file as it stands: a body whose last line carries
+	// no newline keeps none here either, and the runner supplies the section's
+	// terminator.
+	if got := ReadBody(e, nil); got != "unterminated" {
+		t.Fatalf("ReadBody(unterminated) = %q", got)
+	}
+	if got := ReadBody(b, nil); got != "" {
+		t.Fatalf("ReadBody(empty) = %q", got)
+	}
+	if got := ReadBody(filepath.Join(dir, "gone.txt"), nil); got != "" {
+		t.Fatalf("a missing file reads as empty, got %q", got)
 	}
 }
 
-// The tail tier keeps the last n lines of each file and closes the section the
-// same way: a file whose last line carries no newline keeps none here either,
-// and the section's terminator is what the reader supplies.
-func TestTailSectionsKeepTheLastLines(t *testing.T) {
+// The tail window is per file, so a file-list tier of tail reads keeps the last
+// lines of each one.
+func TestReadBodyKeepsTheTailWindow(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		t.Helper()
@@ -128,21 +117,26 @@ func TestTailSectionsKeepTheLastLines(t *testing.T) {
 	a := write("a.txt", "alpha\n")
 	unterminated := write("unterminated.txt", "one\ntwo\nthree")
 	empty := write("empty.txt", "")
-	paths := []string{a, unterminated, empty}
 
 	cases := []struct {
 		n    int
 		want [3]string
 	}{
-		{1, [3]string{"alpha\n", "three\n", ""}},
-		{2, [3]string{"alpha\n", "two\nthree\n", ""}},
-		{3, [3]string{"alpha\n", "one\ntwo\nthree\n", ""}},
-		{400, [3]string{"alpha\n", "one\ntwo\nthree\n", ""}},
+		{1, [3]string{"alpha\n", "three", ""}},
+		{2, [3]string{"alpha\n", "two\nthree", ""}},
+		{3, [3]string{"alpha\n", "one\ntwo\nthree", ""}},
+		{400, [3]string{"alpha\n", "one\ntwo\nthree", ""}},
 	}
 	for _, c := range cases {
-		want := section.Line(a) + c.want[0] + section.Line(unterminated) + c.want[1] + section.Line(empty) + c.want[2]
-		if got := ReadSections(paths, TailLines(c.n)); got != want {
-			t.Errorf("at n=%d:\ngot  %q\nwant %q", c.n, got, want)
+		got := []string{
+			ReadBody(a, TailLines(c.n)),
+			ReadBody(unterminated, TailLines(c.n)),
+			ReadBody(empty, TailLines(c.n)),
+		}
+		for index, want := range c.want {
+			if got[index] != want {
+				t.Errorf("at n=%d, file %d: got %q, want %q", c.n, index, got[index], want)
+			}
 		}
 	}
 }

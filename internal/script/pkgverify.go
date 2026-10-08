@@ -6,6 +6,12 @@
 // attributes, and counts the rest per directory, noting how many of them are
 // gone rather than modified.
 //
+// The body is one section: the named rows, then their type and attribute rows,
+// then the counted remainder. Its parts are computed from one verifier run, and a
+// section boundary is the collection's own statement (model.BodySection) — a body
+// whose parts share one expensive computation stays one section rather than
+// running the verifier again to name each part.
+//
 // Two implementations render that body and must agree word for word: this
 // file's Go side (PkgVerifyBody, the local channel) and the awk pipeline the
 // sh source runs (PkgVerifyScript). PkgVerifyBody documents the
@@ -18,7 +24,6 @@ import (
 	"slices"
 	"strings"
 
-	"karma/internal/section"
 	"karma/internal/textutil"
 )
 
@@ -123,15 +128,13 @@ END {
     gkey[i] = g
     if (g != "") gcount[g]++
   }
-  if (named) print "%[3]s"
   for (i = 1; i <= n; i++) if (name[i]) print vline[i] (havefile && gone[vpath[i]] ? " (missing)" : "")
-  # Both sections keep the order their source printed: the F rows the argument
+  # Both parts keep the order their source printed: the F rows the argument
   # order file(1) reads, the L rows the order ls sorted its arguments into. The
   # local channel renders them the same way, so nothing is re-ordered here.
-  for (i = 1; i <= fn; i++) if (namedpath[fpath[i]] && !fseen[fpath[i]]) { if (!inf) { print "%[5]s"; inf = 1 }; fseen[fpath[i]] = 1; print fline[i] }
-  for (i = 1; i <= ln; i++) if (namedpath[lpath[i]] && !lseen[lpath[i]]) { if (!inl) { print "%[6]s"; inl = 1 }; lseen[lpath[i]] = 1; print lline[i] }
+  for (i = 1; i <= fn; i++) if (namedpath[fpath[i]] && !fseen[fpath[i]]) { fseen[fpath[i]] = 1; print fline[i] }
+  for (i = 1; i <= ln; i++) if (namedpath[lpath[i]] && !lseen[lpath[i]]) { lseen[lpath[i]] = 1; print lline[i] }
   if (!other) exit
-  print "%[4]s"
   for (i = 1; i <= n; i++) {
     if (name[i]) continue
     g = gkey[i]
@@ -151,18 +154,14 @@ END {
     else if (gmiss[g] > 0) print gpre[g] g "/  " gtot[g] " files differ, " gmiss[g] " missing"
     else print gpre[g] g "/  " gtot[g] " files differ"
   }
-}`, verifyMassFiles, verifyListedFiles, verifyKeyTitle, verifyOtherTitle, verifyFilesSection, verifyLsSection)
+}`, verifyMassFiles, verifyListedFiles)
 }
 
-// The mass and listing thresholds, and the two section titles. PkgVerifyScript
-// spells the same numbers in its awk program.
+// The mass and listing thresholds. PkgVerifyScript spells the same numbers in its
+// awk program.
 const (
-	verifyMassFiles    = 20
-	verifyListedFiles  = 3
-	verifyKeyTitle     = section.Marker + "executables, libraries and conffiles"
-	verifyOtherTitle   = section.Marker + "other changed files (grouped by directory)"
-	verifyFilesSection = section.Marker + "file"
-	verifyLsSection    = section.Marker + "ls"
+	verifyMassFiles   = 20
+	verifyListedFiles = 3
 )
 
 // VerifyRow is one verifier line split into the parts the body groups by: dpkg
@@ -198,13 +197,13 @@ func (r VerifyRow) Conffile() bool {
 
 // PkgVerifyBody renders the body of the package-verify check from the
 // verifier's own output. classify says what one path is, and forensics renders
-// the `== file` and `== ls` bodies for the paths the body names individually —
+// the type and attribute bodies for the paths the body names individually —
 // the local channel answers both from the filesystem in process, a remote tier
-// from file(1) and ls -l. A nil forensics renders no sections.
+// from file(1) and ls -l. A nil forensics renders neither.
 //
-// The shape, in output order: the named rows verbatim, their forensics, then
-// the other changed files — those whose directory holds few enough rows to
-// list one by one, then one counted row per directory, in path order.
+// The shape, in output order: the named rows verbatim, their type and attribute
+// rows, then the other changed files — those whose directory holds few enough
+// rows to list one by one, then one counted row per directory, in path order.
 func PkgVerifyBody(verify string, classify func(path string) VerifyFacts, forensics func(paths []string) (files, ls string)) string {
 	rows := parseVerify(verify)
 	if len(rows) == 0 {
@@ -244,24 +243,16 @@ func PkgVerifyBody(verify string, classify func(path string) VerifyFacts, forens
 	}
 
 	var b strings.Builder
-	if other < len(rows) {
-		b.WriteString(verifyKeyTitle + "\n")
-		for index, row := range rows {
-			if kept[index] {
-				b.WriteString(row.Line + missingNote(facts, row.Path) + "\n")
-			}
+	for index, row := range rows {
+		if kept[index] {
+			b.WriteString(row.Line + missingNote(facts, row.Path) + "\n")
 		}
 	}
-	if filesBody != "" {
-		b.WriteString(verifyFilesSection + "\n" + filesBody)
-	}
-	if lsBody != "" {
-		b.WriteString(verifyLsSection + "\n" + lsBody)
-	}
+	b.WriteString(filesBody)
+	b.WriteString(lsBody)
 	if other == 0 {
 		return b.String()
 	}
-	b.WriteString(verifyOtherTitle + "\n")
 
 	type group struct {
 		prefix  string

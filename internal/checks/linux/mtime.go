@@ -47,22 +47,22 @@ var huntPruneDirs = []string{"/proc", "/sys", "/dev"}
 // path, tab-separated. It is the row cluster.ParseFindRow reads.
 const findPrintf = `%T@\t%C@\t%TY-%Tm-%Td\t%TH:%TM:%TS\t%s\t%p\n`
 
-// huntScript is the sh source's reading of the same directories: one section per
-// directory, an absent or unreadable one yielding an empty body that the
-// normalizer explains. -xdev keeps the walk on the given directory's own
-// filesystem, and the virtual filesystems are pruned by name so a sweep from /
-// stays on the disk — the in-process walk's own decision, spelled for find.
-func huntScript(dirs []string) string {
-	words := make([]string, len(dirs))
-	for index, dir := range dirs {
-		words[index] = script.Quote(dir)
-	}
+// huntPruneArgs is the -path prunes the find pipeline applies, one argument list.
+func huntPruneArgs() string {
 	prunes := make([]string, len(huntPruneDirs))
 	for index, dir := range huntPruneDirs {
 		prunes[index] = "-path " + dir
 	}
-	return fmt.Sprintf("for d in %s; do\n  echo \"== $d\"\n  find \"$d\" -xdev \\( %s \\) -prune -o -type f -printf '%s' 2>/dev/null\ndone",
-		strings.Join(words, " "), strings.Join(prunes, " -o "), findPrintf)
+	return strings.Join(prunes, " -o ")
+}
+
+// huntFind is one directory's reading: -xdev keeps the walk on the given
+// directory's own filesystem, and the virtual filesystems are pruned by name so a
+// sweep from / stays on the disk — the in-process walk's own decision, spelled
+// for find.
+func huntFind(dir string) string {
+	return fmt.Sprintf("find %s -xdev \\( %s \\) -prune -o -type f -printf '%s' 2>/dev/null",
+		script.Quote(dir), huntPruneArgs(), findPrintf)
 }
 
 // huntNormalize turns one section body (a directory's find output) into a timeline
@@ -199,12 +199,21 @@ func timeline(groups [][]*cluster.FindRow) []string {
 }
 
 // HuntCheck builds an mtime-clustering check for the user's directories, appended
-// at the end of the catalog for this run.
+// at the end of the catalog for this run. One section per directory, an absent or
+// unreadable one yielding an empty body that the normalizer explains.
 func HuntCheck(dirs []string) *model.Check {
 	return define.LinuxCheck(huntID, "Mtime clustering (user-specified directories)", model.AspectFilesystem,
 		[]model.Step{
-			{{Label: "find", Inv: model.Native{Body: native.Hunt(dirs, huntPruneDirs)}}},
-			{{Label: "find-sh", Inv: model.Sh(huntScript(dirs))}},
+			{{Label: "find", Files: &model.Files{
+				List: model.Native{Body: listDirs(dirs)},
+				Read: func(dir string) model.Invocation {
+					return model.Native{Body: native.HuntDir(dir, huntPruneDirs)}
+				},
+			}}},
+			{{Label: "find-sh", Files: &model.Files{
+				List: model.Sh(script.ListDirs(dirs)),
+				Read: func(dir string) model.Invocation { return model.Sh(huntFind(dir)) },
+			}}},
 		},
 		define.CheckOpt{
 			Normalize: huntNormalize(time.Now),

@@ -43,16 +43,37 @@ func TestPowerShellScriptsAreOneStatementPerLine(t *testing.T) {
 	}
 }
 
-// String-extraction section titles are printed only with body text: a readable file with zero hits leaves no ghost section.
-func TestStringsScriptsTitleOnlyWithBody(t *testing.T) {
-	for _, script := range []string{stringsScript("UTF8", 8, activityGlob), stringsScript("Unicode", 5, `C:\Users\*\Recent\AutomaticDestinations\*`)} {
-		if !strings.Contains(script, `if ($o) { '== ' + "== " + $f.FullName; $o }`) {
-			t.Errorf("section title should be emitted conditionally with $o: %q", script)
+// A generated script never prints a section header: a section is a probe's own
+// title (model.BodySection), so no line the target read can become one.
+func TestScriptsCarryNoSectionHeader(t *testing.T) {
+	stringProbes := []model.Probe{
+		stringsProbe("UTF8", 8, activityGlob),
+		stringsProbe("Unicode", 5, `C:\Users\*\Recent\AutomaticDestinations\*`),
+		jumplistProbe,
+	}
+	for _, probe := range stringProbes {
+		names := []string{"list"}
+		scripts := []string{callScript(t, probe.Files.List)}
+		for _, path := range []string{`C:\Users\x\Recent\a.lnk`, `C:\Windows\AppCompat\Custom\b.sdb`} {
+			names = append(names, "read"+path)
+			scripts = append(scripts, callScript(t, probe.Files.Read(path)))
 		}
-		if strings.Count(script, `"== " + $f.FullName`) != 2 {
-			t.Errorf("title should appear only for a hit and a read failure: %q", script)
+		for index, script := range scripts {
+			if strings.Contains(script, "'== '") {
+				t.Errorf("%s %s still prints a section header: %q", names[index], names[0], script)
+			}
 		}
 	}
+}
+
+// callScript is the script text of one PowerShell invocation.
+func callScript(t *testing.T, inv model.Invocation) string {
+	t.Helper()
+	command, ok := inv.(model.Command)
+	if !ok || len(command.Argv) == 0 {
+		t.Fatalf("not a command invocation: %#v", inv)
+	}
+	return command.Argv[len(command.Argv)-1]
 }
 
 // TestUTF16Strings dual-phase extraction: odd-aligned names must also be recovered, and fake CJK

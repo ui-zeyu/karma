@@ -10,20 +10,16 @@ import (
 	"strings"
 
 	"karma/internal/localfs"
-	"karma/internal/section"
 )
 
-// Cron reads the crontab files and spool layers it hands in, then the invoking
-// user's own crontab.
-func Cron(paths []string) func(context.Context) (string, error) {
-	return func(ctx context.Context) (string, error) {
-		body := localfs.ReadSections(paths, nil)
-		return body + section.Line("crontab -l") + runHost(ctx, []string{"crontab", "-l"}, false).out, nil
-	}
+// Crontab reads the invoking user's own crontab, the one schedule surface
+// outside the crontab file list.
+func Crontab(ctx context.Context) (string, error) {
+	return runHost(ctx, []string{"crontab", "-l"}, false).out, nil
 }
 
-// LdPreload reads the preload list bare, exactly like the cat tier: a
-// `== path` section title would run the entry rule (titles meet the rules
+// LdPreload reads the preload list bare, exactly like the cat tier: a section
+// title would run the entry rule (titles meet the rules
 // too) and flag the file's mere existence.
 func LdPreload(ctx context.Context) (string, error) {
 	body, err := localfs.ReadRegular("/etc/ld.so.preload")
@@ -33,24 +29,13 @@ func LdPreload(ctx context.Context) (string, error) {
 	return string(body), nil
 }
 
-// Skel prints the clustered listing of the template directory, then the template
-// startup files themselves.
-func Skel(dir string, head int, templates []string) func(context.Context) (string, error) {
+// GeneratorDirs lists the generator directories, with the usrmerge dedup:
+// /lib and /usr/lib are one directory, and reading it twice would double the
+// whole section.
+func GeneratorDirs(dirs []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		var b strings.Builder
-		b.WriteString(localfs.ListingSection(dir, head, localfs.NewNameCache()))
-		b.WriteString(localfs.ReadSections(templates, nil))
-		return b.String(), nil
-	}
-}
-
-// Generators prints one clustered listing section per unique generator directory,
-// each capped at head.
-func Generators(dirs []string, head int) func(context.Context) (string, error) {
-	return func(ctx context.Context) (string, error) {
-		var b strings.Builder
+		var listed []string
 		seen := map[string]bool{}
-		names := localfs.NewNameCache()
 		for _, dir := range localfs.ExpandDirs(dirs) {
 			resolved, err := filepath.EvalSymlinks(dir)
 			if err != nil {
@@ -60,24 +45,21 @@ func Generators(dirs []string, head int) func(context.Context) (string, error) {
 				continue
 			}
 			seen[resolved] = true
-			b.WriteString(localfs.ListingSection(dir, head, names))
+			listed = append(listed, dir)
 		}
-		return b.String(), nil
+		return strings.Join(listed, "\n"), nil
 	}
 }
 
-// Udev reads, per writable layer it hands in, a clustered listing capped at head and
-// then the assignment keys that reference external programs, capped at maxHits.
-func Udev(dirs []string, head, maxHits int, pattern *regexp.Regexp) func(context.Context) (string, error) {
+// UdevDir reads one writable layer: its clustered listing capped at head, then
+// the assignment keys that reference external programs, capped at maxHits.
+func UdevDir(dir string, head, maxHits int, pattern *regexp.Regexp) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		var b strings.Builder
-		names := localfs.NewNameCache()
-		for _, dir := range dirs {
-			b.WriteString(localfs.ListingSection(dir, head, names))
-			for _, hit := range localfs.GrepWalk(ctx, dir, localfs.GrepScan{Pattern: pattern, MaxHits: maxHits}) {
-				b.WriteString(hit)
-				b.WriteByte('\n')
-			}
+		b.WriteString(localfs.ListingBody(dir, head))
+		for _, hit := range localfs.GrepWalk(ctx, dir, localfs.GrepScan{Pattern: pattern, MaxHits: maxHits}) {
+			b.WriteString(hit)
+			b.WriteByte('\n')
 		}
 		return b.String(), nil
 	}

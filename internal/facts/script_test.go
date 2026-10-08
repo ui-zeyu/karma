@@ -20,18 +20,15 @@ func TestFactShellScriptsParse(t *testing.T) {
 	}
 }
 
-func TestLabeledLines(t *testing.T) {
-	stdout := "== host\r\nWIN-XP\r\n\r\n== user\r\nBOX\\john\r\n== os\r\n\r\n \r\n== os\r\nWindows XP\r\n"
-	got := labeledLines(stdout)
-	if got["host"] != "WIN-XP" || got["user"] != `BOX\john` {
-		t.Fatalf("wrong section collapse: %+v", got)
-	}
-	// after empty sections are skipped, the next line of the same-name section is the first non-empty line
-	if got["os"] != "Windows XP" {
-		t.Fatalf("os section should take the first non-empty line: %q", got["os"])
-	}
-	// preamble (untitled) lines do not enter the map
-	if _, ok := labeledLines("preamble\n== host\nx")[""]; ok {
-		t.Fatal("preamble should not enter the map")
+// The Windows facts are one call each, and none of them prints a section header: a
+// fact is one value, and the call that asked for it already names it.
+func TestWindowsFactScriptsCarryNoSectionHeader(t *testing.T) {
+	for name, script := range windowsFactScripts {
+		if strings.Contains(script, "==") {
+			t.Errorf("%s script still prints a section header: %q", name, script)
+		}
+		if strings.Contains(script, "\n") {
+			t.Errorf("%s script spans lines, which PS 5.1 reads as separate statements: %q", name, script)
+		}
 	}
 }

@@ -18,30 +18,43 @@ import (
 	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/script"
-	"karma/internal/section"
 	"karma/internal/textutil"
 )
 
-// ProcCaps reads the session's capability set; the host's own container markers
-// decide the context line. A container session prints its whole set
-// (the standing escape surface), a host session stops at the context line.
-// cgroupMarkers is the check's container-scope pattern, the same string its
-// script greps for.
-func ProcCaps(cgroupMarkers *regexp.Regexp) func(context.Context) (string, error) {
+// CapsContext is the session's context line: the host's own container markers
+// decide it. cgroupMarkers is the check's container-scope pattern, the same
+// string its script greps for.
+func CapsContext(cgroupMarkers *regexp.Regexp) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		if !inContainer(ctx, cgroupMarkers) {
-			return "context: host\n", nil
+		if inContainer(ctx, cgroupMarkers) {
+			return "context: container\n", nil
 		}
-		var b strings.Builder
-		b.WriteString("context: container\n")
-		if haveBinary("capsh") {
-			b.WriteString(section.Line("capsh --print"))
-			b.WriteString(runHost(ctx, []string{"capsh", "--print"}, false).out)
-		} else {
-			b.WriteString(section.Line("/proc/self/status"))
-			b.WriteString(capStatusLines())
+		return "context: host\n", nil
+	}
+}
+
+// CapsCapsh is the capability set as capsh prints it: inside a container alone
+// (there the set is the standing escape surface), and only where capsh exists.
+// Outside one the surface is unavailable, the way a missing binary answers, and
+// its section is simply not there.
+func CapsCapsh(cgroupMarkers *regexp.Regexp) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		if !inContainer(ctx, cgroupMarkers) || !haveBinary("capsh") {
+			return "", model.ErrTierUnavailable
 		}
-		return b.String(), nil
+		return runHost(ctx, []string{"capsh", "--print"}, false).out, nil
+	}
+}
+
+// CapsStatus is the same masks read from /proc/self/status, the fallback where
+// capsh is absent — and unavailable wherever capsh answered instead, so one
+// table is drawn and not two.
+func CapsStatus(cgroupMarkers *regexp.Regexp) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		if !inContainer(ctx, cgroupMarkers) || haveBinary("capsh") {
+			return "", model.ErrTierUnavailable
+		}
+		return capStatusLines(), nil
 	}
 }
 
@@ -208,42 +221,53 @@ func minerPsLines(snap processSnapshot, now time.Time, pattern *regexp.Regexp) [
 	return out
 }
 
-// Miner hunts in place: matched process lines, the fixed drop-path attributes,
-// and the temp-name walk's ls -l batch. The ps scan reads
-// the /proc snapshot (an interposed ps cannot hide a miner), and the ls -l rows
-// come from lsBody in-process. The ps section drops the lines that carry "grep"
-// (the search's own noise), and the name walk crosses devices on purpose — a
-// service's PrivateTmp mounts a tmpfs inside /tmp.
-func Miner(scan MinerScan) func(context.Context) (string, error) {
+// MinerProcesses matches the hunt's pattern out of the /proc snapshot (an
+// interposed ps cannot hide a miner), dropping the lines that carry "grep" — the
+// search's own noise. The snapshot is the run store's, so the hunt's three
+// surfaces share one read.
+func MinerProcesses(scan MinerScan) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		snap := procSnapshot(ctx)
 		if !snap.ok {
 			return "", model.ErrTierUnavailable
 		}
-		names := localfs.NewNameCache()
-		now := time.Now()
 		var b strings.Builder
-		b.WriteString(section.Line("ps"))
-		for _, line := range minerPsLines(snap, now, scan.Pattern) {
+		for _, line := range minerPsLines(snap, time.Now(), scan.Pattern) {
 			b.WriteString(line)
 			b.WriteByte('\n')
 		}
-		b.WriteString(section.Line("drop paths"))
-		// The rows are sorted the way `LC_ALL=C ls -l` sorts its arguments, so a
-		// batch reads in a stable order.
+		return b.String(), snap.cutReason(ctx)
+	}
+}
+
+// MinerDropPaths reads the attributes of the classic fixed drop paths that exist,
+// in process, sorted the way `LC_ALL=C ls -l` sorts its arguments.
+func MinerDropPaths(scan MinerScan) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		names := localfs.NewNameCache()
 		var present []string
 		for _, path := range scan.DropPaths {
 			if _, err := os.Stat(path); err == nil {
 				present = append(present, path)
 			}
 		}
+		var b strings.Builder
 		for _, path := range script.LsSorted(present) {
 			if info, err := os.Stat(path); err == nil {
 				b.WriteString(localfs.LsBody(info, path, names))
 				b.WriteByte('\n')
 			}
 		}
-		b.WriteString(section.Line("temp names"))
+		return b.String(), nil
+	}
+}
+
+// MinerTempNames walks the temp directories by name, bounded by depth: the walk
+// crosses devices on purpose (a service's PrivateTmp mounts a tmpfs inside /tmp),
+// and the rows are sorted the way the shell's ls -l batch sorts its arguments.
+func MinerTempNames(scan MinerScan) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		names := localfs.NewNameCache()
 		var hits []string
 		for _, dir := range scan.TempDirs {
 			err := localfs.WalkTree(ctx, dir, scan.MaxDepth, false, nil, func(path string, info os.FileInfo) bool {
@@ -257,16 +281,17 @@ func Miner(scan MinerScan) func(context.Context) (string, error) {
 				return true
 			})
 			if err != nil {
-				return b.String(), err
+				return "", err
 			}
 		}
+		var b strings.Builder
 		for _, hit := range script.LsSorted(hits) {
 			if info, err := os.Stat(hit); err == nil {
 				b.WriteString(localfs.LsBody(info, hit, names))
 				b.WriteByte('\n')
 			}
 		}
-		return b.String(), snap.cutReason(ctx)
+		return b.String(), nil
 	}
 }
 
@@ -323,7 +348,6 @@ func (s hiddenPidScan) run(ctx context.Context) (string, error) {
 	if len(hidden) == 0 {
 		return b.String(), nil
 	}
-	b.WriteString(section.Line("hidden"))
 	for _, pid := range hidden {
 		fd := "no"
 		if s.fdExists(pid) {

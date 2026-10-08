@@ -43,33 +43,54 @@ const containerMarkers = `(docker|containerd|kubepods|libpod|lxc|kata)[/.-]`
 // containerCgroupRe is containerMarkers as the local read's pattern.
 var containerCgroupRe = regexp.MustCompile(`(?i)` + containerMarkers)
 
-// sessionCapsScript is the sh source's reading of the session's capability set.
-// Inside a container that set is the standing escape surface, so it prints in
-// full; on the host it is fixed by the login uid (root shows the full set by
-// definition), so the context line is the whole answer. Container detection
-// reads the host's own markers: /.dockerenv (Docker), /run/.containerenv
-// (Podman), the PID 1 cgroup path (the runtimes containerMarkers names), and
-// systemd-detect-virt. capsh (libcap2-bin, near-universal) decodes the names;
-// the fallback reads the /proc/self/status masks, which the check's own adapt
-// (native.DecodeCapMasks) decodes — the same two section titles the in-process
-// body prints.
-const sessionCapsScript = `
-if [ -f /.dockerenv ] || [ -f /run/.containerenv` +
+// containerCheck is the shell's own container test: /.dockerenv (Docker),
+// /run/.containerenv (Podman), the PID 1 cgroup path (the runtimes
+// containerMarkers names), and systemd-detect-virt. It is one constant because
+// every surface of the capability tier asks it for itself.
+const containerCheck = `[ -f /.dockerenv ] || [ -f /run/.containerenv` +
 	` || grep -qaE "` + containerMarkers + `" /proc/1/cgroup 2>/dev/null` +
-	` || systemd-detect-virt --container >/dev/null 2>&1; then
+	` || systemd-detect-virt --container >/dev/null 2>&1`
+
+// capsContextScript is the session's context line: inside a container the
+// capability set is the standing escape surface, on the host it is fixed by the
+// login uid (root shows the full set by definition), so the line is the whole
+// answer there.
+const capsContextScript = `
+if ` + containerCheck + `; then
   echo "context: container"
 else
   echo "context: host"
-  exit 0
-fi
-if command -v capsh >/dev/null 2>&1; then
-  echo "== capsh --print"
-  capsh --print 2>/dev/null
-else
-  echo "== /proc/self/status"
-  grep "^Cap" /proc/self/status 2>/dev/null
 fi
 `
+
+// capsCapshScript is the capability table as capsh prints it, inside a container
+// alone: outside one the surface answers 127, the way a missing binary does, and
+// the section is simply not there. capsh (libcap2-bin, near-universal) decodes
+// the names.
+const capsCapshScript = `
+` + containerCheck + ` || exit 127
+command -v capsh >/dev/null 2>&1 || exit 127
+capsh --print 2>/dev/null
+`
+
+// capsStatusScript is the same set read from the /proc/self/status masks, which
+// the check's own adapt (native.DecodeCapMasks) decodes — the fallback where
+// capsh is absent.
+const capsStatusScript = `
+` + containerCheck + ` || exit 127
+command -v capsh >/dev/null 2>&1 && exit 127
+grep "^Cap" /proc/self/status 2>/dev/null
+`
+
+// procCapsTier is the capability check's surfaces: the context line, then
+// whichever table the session can answer with.
+func procCapsTier() []model.Step {
+	return surfacesTier("caps", native.DecodeCapMasks, []surface{
+		{Title: "", Native: native.CapsContext(containerCgroupRe), Script: capsContextScript},
+		{Title: "capsh --print", Native: native.CapsCapsh(containerCgroupRe), Script: capsCapshScript},
+		{Title: "/proc/self/status", Native: native.CapsStatus(containerCgroupRe), Script: capsStatusScript},
+	})
+}
 
 // tmpGlobs is tmpDirs as the shell case pattern the cwd walk matches: every temp
 // directory and everything below it.
@@ -131,27 +152,45 @@ const hiddenProcsScript = `command -v ps >/dev/null 2>&1 || exit 127
 ` + `{ ls /proc | grep -E '^[0-9]+$'; ps -eo pid= | tr -d ' '; } | sort -n | uniq -u` +
 	` | while read -r p; do [ -d "/proc/$p" ] && echo "$p"; done`
 
-// minerScript hunts cryptominers in place: process lines matched out of a ps
-// snapshot (grep -v drops this pipeline's own lines, which carry the pattern),
-// attributes of the classic fixed drop paths, and a bounded name walk of the
-// temp directories. That walk crosses devices — a service's PrivateTmp mounts a
-// tmpfs inside /tmp — and is bounded by depth instead. Every arm is quiet when
-// nothing matches; the deep time-clustered hunt stays with the mtime subcommand.
+// minerTier is the hunt's three surfaces: the process lines matched out of a ps
+// snapshot, the attributes of the classic fixed drop paths, and the bounded name
+// walk of the temp directories. Every arm is quiet when nothing matches; the deep
+// time-clustered hunt stays with the mtime subcommand.
 //
 // The pattern and the three lists are the same ones the in-process tier walks, so
 // both sources hunt for identical things instead of two spellings of the same
-// list drifting apart. The section titles are the ones the in-process body
-// prints, which is what the check's per-section syntax reads.
-var minerScript = `
-pat='` + minerPsSource + `'
-echo "== ps"
+// list drifting apart. The section titles are what the check's per-section syntax
+// reads, so each surface keeps its own.
+func minerTier() []model.Step {
+	scan := native.MinerScan{
+		Pattern:   minerPsPattern,
+		DropPaths: minerDropPaths,
+		NameGlobs: minerNameGlobs,
+		TempDirs:  tmpDirs,
+		MaxDepth:  minerWalkDepth,
+	}
+	return surfacesTier("scan", nil, []surface{
+		{Title: "ps", Native: native.MinerProcesses(scan), Script: minerPsScript, Cap: model.Scan(openScanLines)},
+		{Title: "drop paths", Native: native.MinerDropPaths(scan), Script: minerDropPathsScript, Cap: model.Scan(openScanLines)},
+		{Title: "temp names", Native: native.MinerTempNames(scan), Script: minerTempNamesScript, Cap: model.Scan(openScanLines)},
+	})
+}
+
+// minerPsScript matches the process lines out of a ps snapshot; grep -v drops
+// this pipeline's own lines, which carry the pattern.
+var minerPsScript = `pat='` + minerPsSource + `'
 ps auxwwf | grep -aE "$pat" | grep -av grep
-echo "== drop paths"
-LC_ALL=C ls -l ` + strings.Join(minerDropPaths, " ") + ` 2>/dev/null
-echo "== temp names"
-find ` + strings.Join(tmpDirs, " ") + ` -maxdepth ` + strconv.Itoa(minerWalkDepth) + ` -type f \( ` +
-	findNameArgs("-iname", minerNameGlobs) + ` \) -exec ls -l {} + 2>/dev/null
 `
+
+// minerDropPathsScript reads the attributes of the fixed drop paths.
+var minerDropPathsScript = "LC_ALL=C ls -l " + strings.Join(minerDropPaths, " ") + " 2>/dev/null\n"
+
+// minerTempNamesScript walks the temp directories by name, bounded by depth:
+// the walk crosses devices on purpose — a service's PrivateTmp mounts a tmpfs
+// inside /tmp.
+var minerTempNamesScript = "find " + strings.Join(tmpDirs, " ") +
+	" -maxdepth " + strconv.Itoa(minerWalkDepth) + " -type f \\( " +
+	findNameArgs("-iname", minerNameGlobs) + " \\) -exec ls -l {} + 2>/dev/null\n"
 
 // findNameArgs renders a find name test alternation: one -name/-iname word per
 // pattern, joined by -o.
@@ -205,13 +244,12 @@ var minerNameGlobs = []string{
 const minerWalkDepth = 4
 
 // hidden-pids (atrk-style brute force): a rootkit that filters the /proc
-// filters the /proc readdir path still cannot hide from the kernel's own
-// kill(pid, 0) existence check, so the two views are crossed. Both tiers
-// print the same text: one scan context line, then a "hidden" section with
-// one row per confirmed PID, so the rules fire on either tier. The native
-// tier sweeps the whole pid space (pid_max is the kernel's own bound); the
-// sh tier caps at 131072 because its interpreted loop probes at ~10µs per
-// pid, so a full sweep would outlast the tier's deadline.
+// readdir path still cannot hide from the kernel's own kill(pid, 0) existence
+// check, so the two views are crossed. Both tiers print the same text: one scan
+// context line, then one row per confirmed PID, so the rules fire on either
+// tier. The native tier sweeps the whole pid space (pid_max is the kernel's own
+// bound); the sh tier caps at 131072 because its interpreted loop probes at
+// ~10µs per pid, so a full sweep would outlast the tier's deadline.
 
 // topHead and psSortHead are the row shapes the resource snapshot asks for:
 // top's own table, and the two ps listings sorted by CPU and by memory.
@@ -276,10 +314,7 @@ for i in $cand; do
   out="$out
 PID $i  fd=$fd  comm=$comm  cmd='$cmd'"
 done
-[ -n "$out" ] && {
-  echo "== hidden"
-  echo "$out"
-}
+[ -n "$out" ] && echo "$out"
 exit 0
 `
 
@@ -365,10 +400,7 @@ var ProcessChecks = []*model.Check{
 			Rules: []model.Matcher{define.KeywordRule},
 		}),
 	define.LinuxCheck("proc-caps", "Session capability set (container escape surface)", model.AspectProcess,
-		[]model.Step{
-			{{Label: "caps", Inv: model.Native{Body: native.ProcCaps(containerCgroupRe)}, Adapt: native.DecodeCapMasks}},
-			{{Label: "caps-sh", Inv: model.Sh(sessionCapsScript), Adapt: native.DecodeCapMasks}},
-		},
+		procCapsTier(),
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				model.NewRule("cap-container-context", `^context: container`, model.Medium,
@@ -442,16 +474,7 @@ var ProcessChecks = []*model.Check{
 			},
 		}),
 	define.LinuxCheck("miner", "Cryptominer hunt (processes and drop paths)", model.AspectProcess,
-		[]model.Step{
-			{{Label: "scan", Inv: model.Native{Body: native.Miner(native.MinerScan{
-				Pattern:   minerPsPattern,
-				DropPaths: minerDropPaths,
-				NameGlobs: minerNameGlobs,
-				TempDirs:  tmpDirs,
-				MaxDepth:  minerWalkDepth,
-			})}, Cap: model.Scan(openScanLines)}},
-			{{Label: "scan-sh", Inv: model.Sh(minerScript), Cap: model.Scan(openScanLines)}},
-		},
+		minerTier(),
 		define.CheckOpt{
 			Syntax: model.SyntaxTable,
 			// The drop-path and temp-name sections are ls -l shape, the ps section a

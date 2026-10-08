@@ -8,9 +8,20 @@ import (
 	"karma/internal/reader"
 )
 
-// readDocument is the reading shortcut the tests use.
+// readDocument is the reading shortcut for a body of one untitled section.
 func readDocument(text string, rules []model.Matcher, filters []model.LineFilter, normalize model.Normalizer) model.Document {
 	return reader.Analyze(text, rules, filters, 0, model.FloorAll, normalize)
+}
+
+// readSections reads a body the collection states: the pairs are
+// (title, text), in order, exactly as the tiers hand them over.
+func readSections(rules []model.Matcher, filters []model.LineFilter, normalize model.Normalizer, parts ...string) model.Document {
+	body := model.Body{}
+	for index := 0; index+1 < len(parts); index += 2 {
+		body.Sections = append(body.Sections, model.BodySection{Title: parts[index], Text: parts[index+1]})
+	}
+	check := &model.Check{Rules: rules, Filters: filters, Normalize: normalize}
+	return reader.Read(model.ReadRequest{Check: check, Body: body, Floor: model.FloorAll})
 }
 
 func rule(id, pattern string, severity model.Severity) model.Rule {
@@ -24,10 +35,11 @@ func keep(pattern string) model.LineFilter {
 	return model.NewFilter("keep-"+pattern, pattern, model.FilterKeep)
 }
 
-func TestAnalyzeMatchesAndSections(t *testing.T) {
-	text := "== /etc/passwd\nroot:x:0:0:root:/root:/bin/bash\nplain line\n== beyond preamble\nanother\n"
+func TestReadKeepsTheSectionsTheCollectionStated(t *testing.T) {
 	rules := []model.Matcher{rule("root-line", `^root:`, model.High)}
-	document := readDocument(text, rules, nil, nil)
+	document := readSections(rules, nil, nil,
+		"/etc/passwd", "root:x:0:0:root:/root:/bin/bash\nplain line\n",
+		"beyond preamble", "another\n")
 	if len(document.Sections) != 2 {
 		t.Fatalf("section count: %d, want 2", len(document.Sections))
 	}
@@ -47,10 +59,22 @@ func TestAnalyzeMatchesAndSections(t *testing.T) {
 	}
 }
 
-func TestAnalyzeTitleMatches(t *testing.T) {
-	text := "== /root/authorized_keys\nssh-ed25519 AAAA comment\n"
+// A line of a section's own text opens nothing: the boundary is the collection's
+// statement, so a file that contains the header spelling stays one section.
+func TestReadDoesNotSplitOnContent(t *testing.T) {
+	document := readSections(nil, nil, nil,
+		"crontab", "MAILTO=root\n== /etc/passwd\n0 * * * * curl x\n")
+	if len(document.Sections) != 1 {
+		t.Fatalf("a body line never opens a section: %+v", document.Sections)
+	}
+	if got := len(document.Sections[0].Lines); got != 3 {
+		t.Fatalf("the section keeps its three lines, got %d", got)
+	}
+}
+
+func TestReadMatchesOnTheTitle(t *testing.T) {
 	rules := []model.Matcher{rule("authkeys", `authorized_keys`, model.Medium)}
-	document := readDocument(text, rules, nil, nil)
+	document := readSections(rules, nil, nil, "/root/authorized_keys", "ssh-ed25519 AAAA comment\n")
 	if len(document.Sections) != 1 || len(document.Sections[0].TitleMatches) != 1 {
 		t.Fatalf("title should match the rule: %+v", document.Sections)
 	}
@@ -115,7 +139,7 @@ func TestNormalizeProducesNotes(t *testing.T) {
 			},
 		}
 	}
-	document := readDocument("== section\noriginal\n", nil, nil, normalize)
+	document := readSections(nil, nil, normalize, "section", "original\n")
 	lines := document.Sections[0].Lines
 	if len(lines) != 1 || lines[0].Text != "rewritten" {
 		t.Fatalf("normalize should rewrite the body: %+v", lines)
@@ -132,7 +156,7 @@ func TestNormalizePanicFallsBackToRawSection(t *testing.T) {
 		}
 		return &model.Shaped{Text: "rewritten"}
 	}
-	document := readDocument("== ok\nfine\n== bad\nboom line\n", nil, nil, normalize)
+	document := readSections(nil, nil, normalize, "ok", "fine\n", "bad", "boom line\n")
 	if len(document.Sections) != 2 {
 		t.Fatalf("both sections should be kept: %d", len(document.Sections))
 	}
@@ -145,8 +169,7 @@ func TestNormalizePanicFallsBackToRawSection(t *testing.T) {
 }
 
 func TestEmptySectionsDropped(t *testing.T) {
-	text := "== empty\n\n\n== full\ncontent\n"
-	document := readDocument(text, nil, []model.LineFilter{drop(`^\s*$`)}, nil)
+	document := readSections(nil, []model.LineFilter{drop(`^\s*$`)}, nil, "empty", "\n\n", "full", "content\n")
 	if len(document.Sections) != 1 || document.Sections[0].Title != "full" {
 		t.Fatalf("empty sections should be dropped: %+v", document.Sections)
 	}

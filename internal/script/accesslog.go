@@ -23,8 +23,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-
-	"karma/internal/section"
 )
 
 // AccessLogWindow is how much of a log file the summary is built from: the tail
@@ -60,7 +58,6 @@ NF == 0 { next }
   if (nh < hits && tolower($0) ~ /%s/) hit[++nh] = $0
 }
 END {
-  printf "== %%s\n", path
   print "clients"
   top(c, clients)
   print "minutes"
@@ -71,27 +68,23 @@ END {
   }
 }`
 
-// AccessLogScript is the sh source's tier: one summary per existing log file,
-// built from the file's tail by the target's own awk. keep is the Go side's
-// pattern; its slashes are escaped for the awk regex literal it becomes, and
-// awk reads the line lowercased, the mirror of AccessLogBody's (?i). The two
+// AccessLogRead is the sh source's per-file call: one log file's summary, built
+// from the file's tail by the target's own awk. The section it answers with is
+// titled with the path, so the summary itself carries no header. keep is the Go
+// side's pattern; its slashes are escaped for the awk regex literal it becomes,
+// and awk reads the line lowercased, the mirror of AccessLogBody's (?i). The two
 // must agree byte for byte, which the check's test pins over one fixture log.
-func AccessLogScript(paths []string, keep string) string {
+func AccessLogRead(path, keep string) string {
 	program := fmt.Sprintf(accessLogAwk, strings.ReplaceAll(keep, "/", `\/`))
-	var b strings.Builder
-	b.WriteString("for f in " + Join(paths) + "; do\n")
-	b.WriteString("  [ -f \"$f\" ] || continue\n")
-	fmt.Fprintf(&b, "  LC_ALL=C tail -c %d \"$f\" 2>/dev/null | LC_ALL=C awk -v path=\"$f\"", AccessLogWindow)
-	fmt.Fprintf(&b, " -v hits=%d -v clients=%d -v minutes=%d '%s'\n",
-		accessLogHits, accessLogTopClients, accessLogTopMinutes, program)
-	b.WriteString("done")
-	return b.String()
+	return fmt.Sprintf("LC_ALL=C tail -c %d %s 2>/dev/null | LC_ALL=C awk"+
+		" -v hits=%d -v clients=%d -v minutes=%d '%s'",
+		AccessLogWindow, Quote(path), accessLogHits, accessLogTopClients, accessLogTopMinutes, program)
 }
 
-// AccessLogBody renders one log file's summary from its tail, the Go side of
+// AccessLogBody renders one log file's summary from its lines, the Go side of
 // accessLogAwk. A file with no lines (or only blank ones) renders nothing, so
 // an absent log leaves no section behind.
-func AccessLogBody(path string, lines []string, keep *regexp.Regexp) string {
+func AccessLogBody(lines []string, keep *regexp.Regexp) string {
 	clients := map[string]int{}
 	minutes := map[string]int{}
 	var hits []string
@@ -118,7 +111,6 @@ func AccessLogBody(path string, lines []string, keep *regexp.Regexp) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(section.Line(path))
 	b.WriteString("clients\n")
 	writeTop(&b, clients, accessLogTopClients)
 	b.WriteString("minutes\n")

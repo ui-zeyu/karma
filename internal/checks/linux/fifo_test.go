@@ -72,10 +72,13 @@ func TestAuthorizedKeysSkipsPlantedFifos(t *testing.T) {
 	}
 	plantFifo(t, filepath.Join(configDir, "zz-planted.conf"))
 
-	out := runBodyBounded(t, native.AuthorizedKeys([]string{filepath.Join(root, "home", "*")}, authorizedKeysDepth,
+	out := runBodyBounded(t, native.AuthorizedKeyFiles([]string{filepath.Join(root, "home", "*")}, authorizedKeysDepth,
 		[]string{config, filepath.Join(configDir, "zz-planted.conf")}))
-	if !strings.Contains(out, "AAAAfixture") {
-		t.Errorf("the real key file should still be read, got %q", out)
+	if !strings.Contains(out, key) {
+		t.Errorf("the real key file should be listed, got %q", out)
+	}
+	if strings.Contains(out, "zz-planted.conf") {
+		t.Errorf("a FIFO is not a file to read, got %q", out)
 	}
 }
 
@@ -90,8 +93,8 @@ func TestAuthorizedKeysSkipsAFifoNamedByTheConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out := runBodyBounded(t, native.AuthorizedKeys([]string{filepath.Join(root, "home", "*")}, authorizedKeysDepth, []string{config}))
-	if strings.Contains(out, "named-keys") && strings.Contains(out, "ssh-") {
-		t.Errorf("the FIFO the config named should carry no key, got %q", out)
+	out := runBodyBounded(t, native.AuthorizedKeyFiles([]string{filepath.Join(root, "home", "*")}, authorizedKeysDepth, []string{config}))
+	if strings.Contains(out, "named-keys") {
+		t.Errorf("a FIFO the config named is nothing to read, got %q", out)
 	}
 }

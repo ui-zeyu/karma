@@ -12,9 +12,15 @@ import (
 	"karma/internal/reader"
 )
 
-// floor reads one text at a given floor.
-func floor(text string, rules []model.Matcher, filters []model.LineFilter, at model.SeverityFloor) model.Document {
-	return reader.Analyze(text, rules, filters, 0, at, nil)
+// floor reads one body at a given floor: the pairs are (title, text), as the
+// collection states them.
+func floor(rules []model.Matcher, filters []model.LineFilter, at model.SeverityFloor, parts ...string) model.Document {
+	body := model.Body{}
+	for index := 0; index+1 < len(parts); index += 2 {
+		body.Sections = append(body.Sections, model.BodySection{Title: parts[index], Text: parts[index+1]})
+	}
+	check := &model.Check{Rules: rules, Filters: filters}
+	return reader.Read(model.ReadRequest{Check: check, Body: body, Floor: at})
 }
 
 // hiddenBelow is the count the floor hides, from the document's own counter.
@@ -39,7 +45,7 @@ func keptText(document model.Document) []string {
 }
 
 func TestSeverityFloorKeepsOnlyTheLevelsAbove(t *testing.T) {
-	text := "== body\nhigh hit\nquiet row\n"
+	parts := []string{"body", "high hit\nquiet row\n"}
 	rules := []model.Matcher{rule("high", `^high`, model.High)}
 	cases := []struct {
 		name   string
@@ -58,7 +64,7 @@ func TestSeverityFloorKeepsOnlyTheLevelsAbove(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			document := floor(text, rules, nil, tc.at)
+			document := floor(rules, nil, tc.at, parts...)
 			if got := keptText(document); len(got) != len(tc.kept) {
 				t.Fatalf("kept %q, want %q", got, tc.kept)
 			}
@@ -78,15 +84,15 @@ func TestSeverityFloorKeepsOnlyTheLevelsAbove(t *testing.T) {
 // filter does not rescue a row below it, and a drop filter does not hide a row
 // above it.
 func TestSeverityFloorOutranksTheChecksOwnFilters(t *testing.T) {
-	text := "== body\nlow hit\nquiet row\n"
+	parts := []string{"body", "low hit\nquiet row\n"}
 	rules := []model.Matcher{rule("low", `^low`, model.Low)}
 
-	kept := floor(text, rules, []model.LineFilter{keep(`^quiet`)}, model.FloorAbove(model.Medium))
+	kept := floor(rules, []model.LineFilter{keep(`^quiet`)}, model.FloorAbove(model.Medium), parts...)
 	if got := keptText(kept); len(got) != 0 {
 		t.Fatalf("a keep filter must not rescue a row below the floor: %q", got)
 	}
 
-	dropped := floor(text, rules, []model.LineFilter{drop(`^low`)}, model.FloorAbove(model.Low))
+	dropped := floor(rules, []model.LineFilter{drop(`^low`)}, model.FloorAbove(model.Low), parts...)
 	if got := keptText(dropped); len(got) != 1 || got[0] != "low hit" {
 		t.Fatalf("the floor keeps the finding the drop filter would hide: %q", got)
 	}
@@ -95,8 +101,8 @@ func TestSeverityFloorOutranksTheChecksOwnFilters(t *testing.T) {
 // A section whose every row is below the floor carries no information: it goes
 // the way of a section the filters emptied, so the check stays silent.
 func TestSeverityFloorDropsAnEmptiedSection(t *testing.T) {
-	text := "== /etc\nquiet row\n== /tmp\nquiet row\n"
-	document := floor(text, nil, nil, model.FloorAbove(model.Low))
+	document := floor(nil, nil, model.FloorAbove(model.Low),
+		"/etc", "quiet row\n", "/tmp", "quiet row\n")
 	if len(document.Sections) != 0 {
 		t.Fatalf("every section was below the floor: %+v", document.Sections)
 	}
@@ -108,9 +114,8 @@ func TestSeverityFloorDropsAnEmptiedSection(t *testing.T) {
 // A section title is structure, not a row: the floor leaves it alone even when
 // the title itself matched a rule below it.
 func TestSeverityFloorKeepsSectionTitles(t *testing.T) {
-	text := "== /tmp/.hidden\nlow hit\n"
 	rules := []model.Matcher{rule("hidden", `^/tmp/\.`, model.Low), rule("low", `^low`, model.Low)}
-	document := floor(text, rules, nil, model.FloorAbove(model.High))
+	document := floor(rules, nil, model.FloorAbove(model.High), "/tmp/.hidden", "low hit\n")
 	if len(document.Sections) != 1 {
 		t.Fatalf("the title keeps its section: %+v", document.Sections)
 	}

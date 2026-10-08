@@ -73,11 +73,12 @@ func TestVerifyNamesProgramsAndCountsTheRest(t *testing.T) {
 	fakeVerifier(t, body.String())
 
 	out := verify(t)
+	// The body is one section: the named rows, their type and attribute rows,
+	// then the counted remainder, in that order.
 	for _, want := range []string{
-		"== executables, libraries and conffiles\n??5??????   " + tool + "\n",
-		"== file\n" + tool + ": ",
-		"== ls\n",
-		"== other changed files (grouped by directory)\n??5??????   " + readme + "\n",
+		"??5??????   " + tool + "\n",
+		tool + ": ",
+		readme + "\n",
 		"??5??????   " + mass + "/  4 files missing\n",
 	} {
 		if !strings.Contains(out, want) {

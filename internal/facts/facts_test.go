@@ -100,13 +100,14 @@ func TestCollectWindowsPowershellPresent(t *testing.T) {
 		switch {
 		case strings.Contains(script, "Get-Command"):
 			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "powershell\nreg\n"}
+		case strings.Contains(script, "COMPUTERNAME"):
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "WS2019\n"}
 		case strings.Contains(script, "USERDOMAIN"):
-			return model.RunResult{Stdout: strings.Join([]string{
-				"== host", "WS2019",
-				"== user", `CORP\admin`,
-				"== os", "Windows Server 2019 Datacenter 1809",
-				"== kernel", "10.0.17763.4252",
-			}, "\n") + "\n"}
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: `CORP\admin` + "\n"}
+		case strings.Contains(script, "ProductName"):
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "Windows Server 2019 Datacenter 1809\n"}
+		case strings.Contains(script, "CurrentBuildNumber"):
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "10.0.17763.4252\n"}
 		default:
 			t.Errorf("unexpected call: %+v", inv)
 			return model.RunResult{Verdict: model.VerdictFailed, ExitCode: 1}
@@ -122,9 +123,10 @@ func TestCollectWindowsPowershellPresent(t *testing.T) {
 	if got.OsPretty != "Windows Server 2019 Datacenter 1809" {
 		t.Fatalf("wrong OS name: %q", got.OsPretty)
 	}
-	// PS cold start is expensive: capability probe + facts are two paths, the other four are merged into one sectioned output
-	if calls := strings.Count(fake.joinedCalls(), "powershell -NoProfile"); calls != 2 {
-		t.Fatalf("with PS present there should be exactly 2 PS calls: %d", calls)
+	// Each fact is one call of its own, so no fact's output can carry another
+	// fact's name: the capability probe plus the four facts.
+	if calls := strings.Count(fake.joinedCalls(), "powershell -NoProfile"); calls != 5 {
+		t.Fatalf("with PS present there should be 5 PS calls: %d", calls)
 	}
 	first := strings.Split(fake.joinedCalls(), "\n")[0]
 	if !strings.HasPrefix(first, "powershell -NoProfile") || !strings.Contains(first, powershell.UTF8Prefix[:10]) {
@@ -139,8 +141,13 @@ func TestCollectWindowsPowershellDegraded(t *testing.T) {
 		switch {
 		case strings.Contains(script, "Get-Command"):
 			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "powershell\n"}
+		case strings.Contains(script, "COMPUTERNAME"):
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "WIN-XP\n"}
 		case strings.Contains(script, "USERDOMAIN"):
-			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "== host\nWIN-XP\n== user\nBOX\\john\n"}
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: `BOX\john` + "\n"}
+		case strings.Contains(script, "ProductName"), strings.Contains(script, "CurrentBuildNumber"):
+			// the CurrentVersion key cannot be read on this target
+			return model.RunResult{Verdict: model.VerdictAnswered, Stdout: "\n"}
 		default:
 			t.Errorf("unexpected call: %+v", inv)
 			return model.RunResult{Verdict: model.VerdictFailed, ExitCode: 1}

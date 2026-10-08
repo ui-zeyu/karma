@@ -12,6 +12,7 @@ import (
 
 	"karma/internal/define"
 	"karma/internal/model"
+	"karma/internal/powershell"
 	"karma/internal/script"
 )
 
@@ -36,27 +37,36 @@ const (
 )
 
 // winlogQuery is one Get-WinEvent probe fragment: filter by log and id, project
-// each event, and carry the `== title` header through psSection's
-// only-when-non-empty convention.
-func winlogQuery(log string, id, maxEvents int, title, project string) string {
-	return psSection("'"+title+"'",
-		fmt.Sprintf("Get-WinEvent -FilterHashtable @{LogName='%s'; Id=%d} -MaxEvents %d -ErrorAction SilentlyContinue | ForEach-Object { %s }",
-			log, id, maxEvents, project))
+// each event. The section it answers with is titled by the probe that runs it.
+func winlogQuery(log string, id, maxEvents int, project string) string {
+	return fmt.Sprintf("Get-WinEvent -FilterHashtable @{LogName='%s'; Id=%d} -MaxEvents %d -ErrorAction SilentlyContinue | ForEach-Object { %s }",
+		log, id, maxEvents, project)
+}
+
+// winlogProbe is one event query as its own probe, its section titled with the
+// event it reads: the helper the projection uses travels with every probe, since
+// each one is a PowerShell call of its own.
+func winlogProbe(log string, id, maxEvents int, title, project string) model.Probe {
+	return model.Probe{
+		Label: "event",
+		Title: title,
+		Inv:   powershell.PowerShell(script.Lines(winlogHelper, winlogQuery(log, id, maxEvents, project))),
+	}
 }
 
 const eventLine = "Fmt-Ev $_"
 const messageLine = `$_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + '  ' + $_.Message`
 
-var secLogScript = script.Lines(winlogHelper,
-	winlogQuery(secLogName, logonFailedEvent, 15, "4625 Logon Failed", eventLine),
-	winlogQuery(secLogName, userCreatedEvent, 15, "4720 User Created", eventLine),
-	winlogQuery(systemLogName, serviceInstallEvt, 15, "7045 Service Installed", eventLine),
-	winlogQuery(secLogName, auditClearedEvent, 5, "1102 Audit Log Cleared", messageLine),
-)
+var secLogProbes = []model.Probe{
+	winlogProbe(secLogName, logonFailedEvent, 15, "4625 Logon Failed", eventLine),
+	winlogProbe(secLogName, userCreatedEvent, 15, "4720 User Created", eventLine),
+	winlogProbe(systemLogName, serviceInstallEvt, 15, "7045 Service Installed", eventLine),
+	winlogProbe(secLogName, auditClearedEvent, 5, "1102 Audit Log Cleared", messageLine),
+}
 
 const logClearedRule = `^1102\s`
 
-var scriptBlockScript = winlogQuery(scriptBlockLogName, scriptBlockEvent, 25, "4104 Script Block",
+var scriptBlockProbe = winlogProbe(scriptBlockLogName, scriptBlockEvent, 25, "4104 Script Block",
 	"$m = $_.Message -replace '\\r?\\n', ' '; $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') + '  ' + $m.Substring(0, [Math]::Min(240, $m.Length))")
 
 // scriptBlockSelf: karma's own probe scripts also get logged by 4104 on the target; filter lines by
@@ -73,7 +83,7 @@ var scriptBlockSelf = model.NewFilter("scriptblock-self",
 // WinLogChecks is the log aspect.
 var WinLogChecks = []*model.Check{
 	define.WindowsCheck("sec-log", "Key Security Log Events (Logon Failure/Account Creation/Service Install/Log Cleared)", model.AspectLog,
-		[]model.Step{{PSProbe("event", secLogScript)}},
+		[]model.Step{secLogProbes},
 		define.CheckOpt{
 			Timeout: winlogTimeout,
 			Rules: []model.Matcher{
@@ -83,7 +93,7 @@ var WinLogChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("scriptblock-log", "PowerShell Script Block Log (4104)", model.AspectLog,
-		[]model.Step{{PSProbe("event", scriptBlockScript)}},
+		[]model.Step{{scriptBlockProbe}},
 		define.CheckOpt{
 			Timeout: winlogTimeout,
 			Filters: []model.LineFilter{scriptBlockSelf},

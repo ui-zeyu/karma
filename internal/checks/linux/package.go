@@ -10,6 +10,7 @@ import (
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
+	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/script"
 	"karma/internal/shape"
@@ -17,20 +18,33 @@ import (
 
 const dockerScript = "docker ps -a 2>/dev/null; echo; docker images 2>/dev/null"
 
-// forensicsBlock gathers in-place forensics for one file list: file (type) and
-// ls -l (attributes and mtime) for the files the shell variable names. The
-// section titles are the ones the in-process body prints.
-func forensicsBlock(variable string) string {
-	return fmt.Sprintf(`
-if [ -n "$%[1]s" ]; then
-  if command -v file >/dev/null 2>&1; then
-    echo "== file"
-    file $%[1]s 2>/dev/null
-  fi
-  echo "== ls"
-  LC_ALL=C ls -l $%[1]s 2>/dev/null
-fi
-`, variable)
+// authBinList is the shell's list of the existing programs among the paths: the
+// same list the in-process side expands.
+var authBinList = `
+list=
+for f in ` + strings.Join(authBinPaths, " ") + `; do
+  [ -f "$f" ] && list="$list $f"
+done
+[ -n "$list" ] || exit 0
+`
+
+// authBinTypeScript types the listed programs; a host without file(1) answers
+// 127, so the surface is simply not there — the same guard the in-process side
+// answers with.
+var authBinTypeScript = authBinList + `command -v file >/dev/null 2>&1 || exit 127
+file $list 2>/dev/null
+`
+
+// authBinAttrScript lists the same programs' attributes.
+var authBinAttrScript = authBinList + "LC_ALL=C ls -l $list 2>/dev/null\n"
+
+// authBinTier is the check's two forensics surfaces over the same list: the file
+// types, then the ls -l attributes, one section each.
+func authBinTier() []model.Step {
+	return surfacesTier("file", nil, []surface{
+		{Title: "file", Native: native.AuthBinTypes(authBinPaths), Script: authBinTypeScript},
+		{Title: "ls", Native: native.AuthBinAttrs(authBinPaths), Script: authBinAttrScript},
+	})
 }
 
 // verifyScript is the sh source's tier for one verifier: the body both sources
@@ -73,15 +87,22 @@ var pkgHistoryPaths = []string{"/var/log/apt/history.log", "/var/log/dpkg.log"}
 // pkgHistoryLines is the window both readings take of either surface.
 const pkgHistoryLines = 300
 
-// pkgHistoryScript is the sh source's reading of the same surfaces: the text
-// logs both families write, then the transaction database the RedHat family
-// answers from instead (the empty branch on the other family is an empty
-// section the reader drops).
-var pkgHistoryScript = script.Lines(
-	script.ReadFiles(pkgHistoryPaths, fmt.Sprintf(`tail -n %d "$f"`, pkgHistoryLines), true),
-	fmt.Sprintf(`echo "== dnf history"; dnf history 2>/dev/null || yum history 2>/dev/null | head -n %d`,
-		pkgHistoryLines),
-)
+// dnfHistoryScript is the sh source's reading of the transaction database: dnf's
+// own answer, or yum's head-capped at the same window when dnf is not there.
+var dnfHistoryScript = fmt.Sprintf(`dnf history 2>/dev/null || yum history 2>/dev/null | head -n %d`,
+	pkgHistoryLines)
+
+// pkgHistoryTier is the check's surfaces in one step: the text logs both families
+// write, then the transaction database the RedHat family answers from instead.
+func pkgHistoryTier() []model.Step {
+	steps := filesTier("log", fmt.Sprintf(`tail -n %d "$f"`, pkgHistoryLines),
+		localfs.TailLines(pkgHistoryLines), nil, pkgHistoryPaths)
+	steps[0] = append(steps[0], model.Probe{Label: "log", Title: "dnf history",
+		Inv: model.Native{Body: native.DnfHistory(pkgHistoryLines)}})
+	steps[1] = append(steps[1], model.Probe{Label: "log-sh", Title: "dnf history",
+		Inv: model.Sh(dnfHistoryScript)})
+	return steps
+}
 
 // pkgHistoryRules is what can be a finding in the history: the keyword rule,
 // which catches a secret written into a package manager's command line. The
@@ -126,15 +147,8 @@ var authBinPaths = []string{
 	"/usr/lib*/security/pam_unix.so", "/lib*/security/pam_unix.so",
 }
 
-// authBinScript is the sh source's reading of that list: the readable files,
-// then the same two forensics sections the in-process body renders.
-var authBinScript = `
-list=
-for f in ` + strings.Join(authBinPaths, " ") + `; do
-  [ -f "$f" ] && list="$list $f"
-done
-` + forensicsBlock("list")
-
+// binNotElfRule is a file whose type is a script or text where an ELF object is
+// expected.
 var binNotElfRule = model.NewRule("bin-not-elf",
 	`(?i)^.*(?:\bscript\b|\b(?:ASCII|Unicode) text\b)`, model.High,
 	"script/text where ELF expected").WithExclude(`^/etc/`)
@@ -214,10 +228,7 @@ var PackageChecks = []*model.Check{
 		},
 		define.CheckOpt{Rules: []model.Matcher{unownedFileRule}, Timeout: unownedTimeout}),
 	define.LinuxCheck("pkg-history", "Recent Package Activity (apt/dpkg/dnf)", model.AspectPackage,
-		[]model.Step{
-			{{Label: "log", Inv: model.Native{Body: native.PkgHistory(pkgHistoryPaths, pkgHistoryLines)}}},
-			{{Label: "log-sh", Inv: model.Sh(pkgHistoryScript)}},
-		},
+		pkgHistoryTier(),
 		define.CheckOpt{
 			Rules:     pkgHistoryRules,
 			Filters:   pkgHistoryKeep,
@@ -225,10 +236,7 @@ var PackageChecks = []*model.Check{
 			Normalize: shape.AptHistory,
 		}),
 	define.LinuxCheck("auth-binaries", "Auth-chain binaries (type and attributes)", model.AspectPackage,
-		[]model.Step{
-			{{Label: "file", Inv: model.Native{Body: native.AuthBinaries(authBinPaths)}}},
-			{{Label: "file-sh", Inv: model.Sh(authBinScript)}},
-		},
+		authBinTier(),
 		define.CheckOpt{
 			Syntax: model.SyntaxLsL,
 			Rules:  []model.Matcher{binNotElfRule, define.KeywordRule},

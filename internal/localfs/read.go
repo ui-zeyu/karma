@@ -1,5 +1,4 @@
-// File reads: the cat and tail tiers, in the section shape the collection
-// scripts print.
+// File reads: the cat and tail tiers, as one file's body at a time.
 
 package localfs
 
@@ -8,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-
-	"karma/internal/section"
 )
 
 // ErrNotRegular is what a reader reports for a path that holds no bytes to give
@@ -18,8 +15,8 @@ import (
 // the operand), so the kind travels as a value rather than as text to parse.
 var ErrNotRegular = errors.New("not a regular file")
 
-// Cat is the reader form of the file read: the bytes ReadSections prints per
-// section, without the "== path" header — the file exactly as the kernel
+// Cat is the reader form of the file read: the bytes a file section carries —
+// the file exactly as the kernel
 // returned it, from karma's own read rather than the host's cat, so a preload
 // hook on the host binary cannot reshape the answer.
 //
@@ -86,38 +83,40 @@ func Tail(path string, n int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(file, n))
 }
 
-// ReadSections is the read-a-file-list tier: one "== path" section per existing
-// regular file, in word-list order with glob results sorted; transform shapes
-// the body (nil keeps the file as read). An unreadable file still prints its
-// section with an empty body, like `cat "$f" 2>/dev/null`.
-//
-// A body that does not end with a newline gets one, which is what the shell
-// loop's `awk '{print}'` does: without the terminator the next `== path` header
-// glues onto the last line and that section loses its title.
-func ReadSections(patterns []string, transform func(string) string) string {
-	var b strings.Builder
-	for _, path := range ExpandFiles(patterns) {
-		b.WriteString(section.Line(path))
-		text := ""
-		// ReadRegular rather than os.ReadFile: these paths are host files, and
-		// the shell counterpart skips a non-regular name outright.
-		if body, err := ReadRegular(path); err == nil {
-			text = string(body)
-		}
-		if transform != nil {
-			text = transform(text)
-		}
-		b.WriteString(text)
-		if text != "" && !strings.HasSuffix(text, "\n") {
-			b.WriteByte('\n')
-		}
+// ListFiles is a file list's own answer: the existing regular files of a path
+// and glob word list, one path per line, in the collection's order. It is the
+// in-process spelling of the sh source's `for f in …; do [ -f "$f" ] && echo
+// "$f"; done`, so both sources name the same files in the same order.
+func ListFiles(patterns []string) string {
+	return strings.Join(ExpandFiles(patterns), "\n")
+}
+
+// ListDirs is a directory list's own answer: the directories the word list
+// names, one path per line, globs expanded the way the target shell expands
+// them.
+func ListDirs(dirs []string) string {
+	return strings.Join(ExpandDirs(dirs), "\n")
+}
+
+// ReadBody is one file's body for a file-list section: the file whole, or the
+// transform's window over it (nil keeps it as read). A path that cannot be read
+// is an empty body, the way the sh source's own read drops its error text.
+func ReadBody(path string, transform func(string) string) string {
+	text := ""
+	// ReadRegular rather than os.ReadFile: these paths are host files, and the
+	// shell counterpart skips a non-regular name outright.
+	if body, err := ReadRegular(path); err == nil {
+		text = string(body)
 	}
-	return b.String()
+	if transform != nil {
+		text = transform(text)
+	}
+	return text
 }
 
 // TailLines keeps the last n lines of a body: the sh source's `tail -n N`,
 // byte for byte, so a body whose last line carries no newline keeps none here
-// either (ReadSections supplies the section's terminator). The window is found
+// either (the runner supplies the section's terminator). The window is found
 // by scanning back for n line breaks, so a log that has grown for years costs
 // the window rather than a line slice of the whole body.
 func TailLines(n int) func(string) string {

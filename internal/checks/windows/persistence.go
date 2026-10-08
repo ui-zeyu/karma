@@ -5,11 +5,11 @@ package windows
 import (
 	"karma/internal/define"
 	"karma/internal/model"
+	"karma/internal/powershell"
 )
 
 // run-keys: five registry autoruns plus two startup folders, produced by one script.
-var startupFolderFragment = psSection("'Startup Folder'",
-	`Get-ChildItem "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup","$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }`)
+var startupFolderFragment = ExtraFragment{Title: "Startup Folder", Pipeline: `Get-ChildItem "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup","$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup" -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }`}
 
 const autorunTempRule = `(?i)\\(?:Temp|Users\\Public)\\[^\s]*\.(?:exe|bat|ps1|vbs|js|hta)\b`
 const autorunPayloadRule = `(?i)(?:\bmshta\b|-enc(?:odedcommand)?\b|\b-iex\b|invoke-expression|downloadstring|-w\s+hidden\b|rundll32\b[^\n]*(?:javascript|vbscript))`
@@ -26,9 +26,15 @@ const serviceUnquotedRule = `(?i)\s[A-Za-z]:\\(?:Program Files|Program Files \(x
 // (the schtasks CSV only has task name and state).
 const tasksScript = `Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object { $a = ($_.Actions | ForEach-Object { $_.Execute + ' ' + $_.Arguments }) -join ' ; '; $_.TaskPath + $_.TaskName + '  ' + $_.State + '  ' + $a }`
 
-var wmiSubscriptionScript = `foreach ($c in '__EventFilter','CommandLineEventConsumer','ActiveScriptEventConsumer','__FilterToConsumerBinding') { ` +
-	psSection("$c", `Get-CimInstance -Namespace root\subscription -Class $c -ErrorAction SilentlyContinue | Format-List Name,Query,CommandLineTemplate,ScriptText`) +
-	` }`
+// wmiSubscriptionProbe reads the four subscription classes, one call each, its
+// section titled with the class.
+var wmiSubscriptionProbe = model.Probe{Label: "cim", Files: &model.Files{
+	List: powershell.PowerShell(`'__EventFilter','CommandLineEventConsumer','ActiveScriptEventConsumer','__FilterToConsumerBinding'`),
+	Read: func(class string) model.Invocation {
+		return powershell.PowerShell("Get-CimInstance -Namespace root\\subscription -Class " + PSQuote(class) +
+			" -ErrorAction SilentlyContinue | Format-List Name,Query,CommandLineTemplate,ScriptText")
+	},
+}}
 
 // Non-empty CommandLineTemplate or ScriptText means subscription persistence; on a default machine
 // these three are all empty.
@@ -87,8 +93,7 @@ var (
 // fragment that is not a plain reg query.
 const appcompatLayersKey = `HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers`
 
-var appPatchFragment = psSection("'AppPatch Custom'",
-	`Get-ChildItem 'C:\Windows\AppPatch\Custom','C:\Windows\AppPatch\Custom64' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName + '  ' + $_.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') }`)
+var appPatchFragment = ExtraFragment{Title: "AppPatch Custom", Pipeline: `Get-ChildItem 'C:\Windows\AppPatch\Custom','C:\Windows\AppPatch\Custom64' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName + '  ' + $_.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') }`}
 
 var (
 	appcompatLayerRule = model.NewRule("appcompat-layer", `(?i)^\s+[A-Za-z]:\\\S*\s+REG_\w+\s+~`, model.Low,
@@ -162,7 +167,7 @@ var PersistenceChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("wmi-subscription", "WMI Event Subscriptions (Persistence)", model.AspectPersistence,
-		[]model.Step{{PSProbe("cim", wmiSubscriptionScript)}},
+		[]model.Step{{wmiSubscriptionProbe}},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				model.NewRule("wmi-consumer", wmiConsumerRule, model.High,

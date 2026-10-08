@@ -702,13 +702,43 @@ type Call struct {
 // host that lacks it, or declared missing by a probe that misread.
 type Probe struct {
 	Label string
+	// Title is the section title the probe's body carries in the report. The
+	// empty title is the untitled leading section, which is what a tier with one
+	// output has; a step that answers with several sections names each one here,
+	// so the reading never has to recognize a boundary in the bytes it read.
+	Title string
 	Inv   Invocation
+	// Files makes the probe a file list: List answers with the paths, one per
+	// line, and Read builds the call that reads one of them. Each path becomes
+	// one section, titled with the path.
+	Files *Files
 	// Assemble is the tier's own join: the body emits a marked record stream
 	// (records the join can also explain, not only render), and this one
 	// function reduces it to rows.
 	Assemble Transformer
 	Adapt    Normalizer
 	Cap      RowCap
+}
+
+// Files is a probe's file list: the call that names the paths, and the call that
+// reads one of them. It is how a tier reads a directory or a glob without a
+// marker line in the body: the list is a body of its own, and every path is
+// asked for separately.
+//
+// Read must build a call for any path the list answered with; the runner walks
+// the answer in order.
+type Files struct {
+	List Invocation
+	Read func(path string) Invocation
+}
+
+// Runs reports whether a run in this source walks the probe: the probe's own
+// invocation decides, or the listing call when the probe reads a file list.
+func (p Probe) Runs(source Source) bool {
+	if p.Files != nil {
+		return source.Runs(p.Files.List)
+	}
+	return source.Runs(p.Inv)
 }
 
 // Step is one step of a check's walk: the probes that answer as a whole. One
@@ -762,7 +792,7 @@ func (c *Check) StepsFor(source Source) []Step {
 	for _, step := range c.Steps {
 		members := make(Step, 0, len(step))
 		for _, probe := range step {
-			if source.Runs(probe.Inv) {
+			if probe.Runs(source) {
 				members = append(members, probe)
 			}
 		}
@@ -807,12 +837,32 @@ type CheckResult struct {
 	Document Document
 }
 
-// Body is what a collection read: the text of a tool's own output, or the
-// fields a tier read instead of one. It is the input the reading takes and the
-// shape the result stream carries; exactly one field is set.
-type Body struct {
-	Text    string
-	Records *RecordSet
+// Body is what a collection read: the sections of the tier's answer, in the
+// order the tier produced them. A body of one output is one untitled section.
+type Body struct{ Sections []BodySection }
+
+// BodySection is one part of a body: the title the report shows above it (empty
+// for the untitled leading part) and the text or fields under it. Exactly one of
+// Text and Records is set.
+//
+// The title is carried here rather than recognized in the text: a section
+// boundary is the collection's own statement about what it read, so no byte of
+// file content or tool output can become one.
+//
+// Adapt is the producing tier's dialect alignment over this section (nil for
+// none): a tier declares it once, and the reading runs it on every section that
+// tier answered with, before the check's own normalization.
+//
+// Assemble is the producing tier's own join (nil for none): the section's text is
+// a marked record stream rather than the body itself, and the join reduces it to
+// rows before the reading sees them. The stream stays the evidence — what the
+// target sent — while the rows are what is read and shown.
+type BodySection struct {
+	Title    string
+	Text     string
+	Records  *RecordSet
+	Adapt    Normalizer
+	Assemble Transformer
 }
 
 // ReadRequest is one body's reading: the check the body belongs to (its rules,

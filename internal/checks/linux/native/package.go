@@ -15,7 +15,6 @@ import (
 	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/script"
-	"karma/internal/section"
 	"karma/internal/textutil"
 )
 
@@ -27,20 +26,6 @@ func Docker(ctx context.Context) (string, error) {
 	ps := runHost(ctx, []string{"docker", "ps", "-a"}, false)
 	images := runHost(ctx, []string{"docker", "images"}, false)
 	return ps.out + "\n" + images.out, nil
-}
-
-// forensics appends the in-place forensics sections for one file list —
-// forensics the type rows, then the ls -l rows; an empty list
-// appends nothing. Both sections are built in process, so no hooked libc or
-// PATH shadow stands between the evidence and this process.
-func forensics(b *strings.Builder, files []string) {
-	if len(files) == 0 {
-		return
-	}
-	b.WriteString(section.Line("file"))
-	b.WriteString(localfs.FileRows(files))
-	b.WriteString(section.Line("ls"))
-	b.WriteString(localfs.LsRows(files))
 }
 
 // verifyFacts classifies one verifier-listed path the way the sh source's
@@ -55,10 +40,13 @@ func verifyFacts(path string) script.VerifyFacts {
 	return script.VerifyFacts{Key: localfs.ProgramFile(path)}
 }
 
-// verifyDetail renders the `== file` and `== ls` forensics for the paths the
-// body names, built in process by localfs rather than through the target's
-// binaries.
+// verifyDetail renders the type and attribute rows for the paths the body names,
+// built in process by localfs rather than through the target's binaries; an empty
+// list renders neither.
 func verifyDetail(paths []string) (string, string) {
+	if len(paths) == 0 {
+		return "", ""
+	}
 	return localfs.FileRows(paths), localfs.LsRows(paths)
 }
 
@@ -77,27 +65,21 @@ func PkgVerify(argv []string) func(context.Context) (string, error) {
 	}
 }
 
-// PkgHistory reads the apt/dpkg log tails it hands in, then the dnf/yum transaction
-// history — dnf's output uncapped and yum's head-capped at the same window.
-func PkgHistory(paths []string, lines int) func(context.Context) (string, error) {
+// DnfHistory reads the transaction database: dnf's own answer, or yum's
+// head-capped at the same window when dnf is not there.
+func DnfHistory(lines int) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		return pkgHistoryBody(ctx, paths, lines), nil
-	}
-}
-
-func pkgHistoryBody(ctx context.Context, paths []string, lines int) string {
-	body := localfs.ReadSections(paths, localfs.TailLines(lines))
-	body += section.Line("dnf history")
-	// The script's `dnf history || yum history | head` keeps dnf's own output
-	// either way and only runs yum when dnf failed.
-	dnf := runHost(ctx, []string{"dnf", "history"}, false)
-	body += dnf.out
-	if !dnf.ok {
-		if yum := runHost(ctx, []string{"yum", "history"}, false); yum.out != "" {
-			body += headLines(yum.out, lines)
+		// The script's `dnf history || yum history | head` keeps dnf's own output
+		// either way and only runs yum when dnf failed.
+		dnf := runHost(ctx, []string{"dnf", "history"}, false)
+		if dnf.ok {
+			return dnf.out, nil
 		}
+		if yum := runHost(ctx, []string{"yum", "history"}, false); yum.out != "" {
+			return headLines(yum.out, lines), nil
+		}
+		return "", nil
 	}
-	return body
 }
 
 // headLines caps a body at n lines the way `| head -n` does: the first n lines,
@@ -110,13 +92,18 @@ func headLines(text string, n int) string {
 	return head
 }
 
-// AuthBinaries names the existing programs among the paths it hands in, then the
-// shared forensics block.
-func AuthBinaries(paths []string) func(context.Context) (string, error) {
-	return func(ctx context.Context) (string, error) {
-		var b strings.Builder
-		forensics(&b, localfs.ExpandFiles(paths))
-		return b.String(), nil
+// AuthBinTypes types the existing programs among the paths it hands in, in
+// process — nothing stands between the answer and this process.
+func AuthBinTypes(paths []string) func(context.Context) (string, error) {
+	return func(context.Context) (string, error) {
+		return localfs.FileRows(localfs.ExpandFiles(paths)), nil
+	}
+}
+
+// AuthBinAttrs lists the same programs' attributes, in process.
+func AuthBinAttrs(paths []string) func(context.Context) (string, error) {
+	return func(context.Context) (string, error) {
+		return localfs.LsRows(localfs.ExpandFiles(paths)), nil
 	}
 }
 

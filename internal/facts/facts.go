@@ -25,7 +25,6 @@ import (
 	"karma/internal/model"
 	"karma/internal/powershell"
 	"karma/internal/regout"
-	"karma/internal/section"
 	"karma/internal/session"
 	"karma/internal/textutil"
 )
@@ -57,18 +56,20 @@ var (
 	prettyNameRe = regexp.MustCompile(`(?m)^PRETTY_NAME="?([^"\n]+)"?`)
 )
 
-// windowsFactsScript brings back all host facts in one cold start when PS is present:
-// sectioned output; when CurrentVersion cannot be read the os/kernel sections emit no
-// headings and fall back to their own defaults.
-var windowsFactsScript = strings.Join([]string{
-	"$v = Get-ItemProperty '" + currentVersionPS + "' -ErrorAction SilentlyContinue",
-	"'== host'; $env:COMPUTERNAME",
-	`'== user'; "$env:USERDOMAIN\$env:USERNAME"`,
-	"if ($v) {",
-	"  '== os'; $v.ProductName + ' ' + $v.DisplayVersion",
-	"  '== kernel'; $v.CurrentVersion + '.' + $v.CurrentBuildNumber + '.' + $v.UBR",
-	"}",
-}, "\n")
+// windowsFactScripts are the four host facts PowerShell answers with, one small
+// script each: host and user come from the environment, the OS name and the
+// kernel build from the CurrentVersion key. None of them has to carry a section
+// header in its output — a fact is one value, and the call that asked for it
+// already names it. A key that cannot be read leaves its fact at the caller's
+// own default, which is what the empty-bodied branch below answers with.
+var windowsFactScripts = map[string]string{
+	"host": "$env:COMPUTERNAME",
+	"user": `"$env:USERDOMAIN\$env:USERNAME"`,
+	"os": "$v = Get-ItemProperty '" + currentVersionPS + "' -ErrorAction SilentlyContinue;" +
+		" if ($v) { $v.ProductName + ' ' + $v.DisplayVersion }",
+	"kernel": "$v = Get-ItemProperty '" + currentVersionPS + "' -ErrorAction SilentlyContinue;" +
+		" if ($v) { $v.CurrentVersion + '.' + $v.CurrentBuildNumber + '.' + $v.UBR }",
+}
 
 // CollectFor dispatches fact collection: Windows always collects through a
 // session (its facts come from PowerShell and the registry); Linux collects
@@ -123,14 +124,24 @@ func CollectWindows(ctx context.Context, sess session.Session) model.HostFacts {
 	available := availableBins(probe.Stdout, names)
 
 	if available["powershell"] {
-		// one PS cold start brings back all facts; the four paths are evaluated eagerly, 15s is the grace
-		values := labeledLines(runPS(ctx, sess, windowsFactsScript, factProbeBudget).Stdout)
+		// Each fact is its own small PS call, the way the registry path below
+		// reads them: a value that carries a blank line or a word that looks like
+		// a header is only ever that fact's own text, because no fact's output
+		// carries another fact's name.
+		jobs := make(map[string]func(context.Context) model.RunResult, len(windowsFactScripts))
+		for name, script := range windowsFactScripts {
+			jobs[name] = func(ctx context.Context) model.RunResult {
+				return runPS(ctx, sess, script, factProbeBudget)
+			}
+		}
+		values := gather(ctx, jobs)
+		fact := func(name string) string { return strings.TrimSpace(values[name].Stdout) }
 		return model.HostFacts{
-			Hostname: cmp.Or(values["host"], "unknown"),
-			Kernel:   values["kernel"],
-			OsPretty: cmp.Or(values["os"], "unknown version"),
+			Hostname: cmp.Or(fact("host"), "unknown"),
+			Kernel:   fact("kernel"),
+			OsPretty: cmp.Or(fact("os"), "unknown version"),
 			UID:      -1,
-			User:     values["user"],
+			User:     fact("user"),
 			ProbeCut: probe.Verdict == model.VerdictTimedOut,
 		}
 	}
@@ -237,30 +248,6 @@ func availableBins(stdout string, wanted []string) map[string]bool {
 		}
 	}
 	return set
-}
-
-// labeledLines collapses `== title` sectioned output into a map: each section
-// takes its first non-empty line. The split is the section package's, the
-// selection is this one's — a fact is one line of the header, and a section that
-// answers with more (a version followed by a build line) shows its first.
-func labeledLines(stdout string) map[string]string {
-	out := map[string]string{}
-	for sec := range section.Parse(stdout) {
-		if !sec.Marked {
-			continue
-		}
-		title := strings.TrimSpace(sec.Title)
-		if title == "" {
-			continue
-		}
-		for _, line := range sec.Lines {
-			if text := strings.TrimSpace(line); text != "" {
-				out[title] = text
-				break
-			}
-		}
-	}
-	return out
 }
 
 // regValueMap collapses `name type data` value lines in reg query output into a map.

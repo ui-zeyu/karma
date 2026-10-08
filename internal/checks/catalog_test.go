@@ -74,18 +74,31 @@ func TestCatalogInvariants(t *testing.T) {
 			labels := map[string]bool{}
 			for _, step := range check.Steps {
 				// A step with no probe has nothing to run and no label to name; a
-				// probe with no invocation is a walk that would stop in silence.
+				// probe with neither an invocation nor a file list is a walk that
+				// would stop in silence.
 				if len(step) == 0 {
 					t.Errorf("check %s has an empty step", check.ID)
 				}
+				// One step is one tier, so its parts share a label on purpose; two
+				// steps that shared one would present two indistinguishable tiers in
+				// the skip chain.
+				stepLabels := map[string]bool{}
 				for _, probe := range step {
-					if probe.Inv == nil {
+					switch {
+					case probe.Inv == nil && probe.Files == nil:
 						t.Errorf("check %s probe %s carries no invocation", check.ID, probe.Label)
+					case probe.Inv != nil && probe.Files != nil:
+						t.Errorf("check %s probe %s carries both an invocation and a file list", check.ID, probe.Label)
+					case probe.Files != nil && (probe.Files.List == nil || probe.Files.Read == nil):
+						t.Errorf("check %s probe %s has an incomplete file list", check.ID, probe.Label)
 					}
-					if labels[probe.Label] {
-						t.Errorf("check %s has a duplicate probe label: %s", check.ID, probe.Label)
+					stepLabels[probe.Label] = true
+				}
+				for label := range stepLabels {
+					if labels[label] {
+						t.Errorf("check %s has a duplicate probe label: %s", check.ID, label)
 					}
-					labels[probe.Label] = true
+					labels[label] = true
 				}
 			}
 			rules := map[string]bool{}
@@ -106,28 +119,28 @@ func TestCatalogInvariants(t *testing.T) {
 	}
 }
 
-// A check's walk is one step per probe, and the only steps that hold several are
-// the Windows registry fallbacks, where one process per key has to answer as a
-// whole. A chain that quietly became an answer set would run its tiers together
-// and present the first answer as the check's — dropping every later tier's
-// evidence — which is exactly what a bulk edit of the catalog got wrong once.
-func TestOnlyTheRegistryFallbacksShareAStep(t *testing.T) {
-	for _, check := range checks.ChecksFor(model.Linux) {
-		for index, step := range check.Steps {
-			if len(step) != 1 {
-				t.Errorf("%s step %d holds %d probes: a Linux chain is one probe per step", check.ID, index, len(step))
-			}
-		}
-	}
-	for _, check := range checks.ChecksFor(model.Windows) {
-		for index, step := range check.Steps {
-			if len(step) == 1 {
-				continue
-			}
-			for _, probe := range step {
-				argv, ok := probe.Inv.(model.Command)
-				if !ok || len(argv.Argv) < 2 || argv.Argv[0] != "reg" || argv.Argv[1] != "query" {
-					t.Errorf("%s step %d: %s shares a step with other probes (%+v)", check.ID, index, probe.Label, probe.Inv)
+// A step is one tier: its probes answer as a whole, so they belong to the same
+// source, and a step that mixed the two would run one source's tier beside the
+// other's and present the pair as one answer. A chain that quietly became an
+// answer set would run its tiers together and present the first answer as the
+// check's — dropping every later tier's evidence — which is what the label
+// uniqueness above and this source rule pin together.
+func TestEachStepIsOneTiersSet(t *testing.T) {
+	for _, catalog := range [][]*model.Check{checks.ChecksFor(model.Linux), checks.ChecksFor(model.Windows)} {
+		for _, check := range catalog {
+			for index, step := range check.Steps {
+				if len(step) == 0 {
+					continue
+				}
+				source := model.SourceNative
+				if step[0].Runs(model.SourceSh) && !step[0].Runs(model.SourceNative) {
+					source = model.SourceSh
+				}
+				for _, probe := range step {
+					if !probe.Runs(source) {
+						t.Errorf("%s step %d mixes sources: %s does not run in %q",
+							check.ID, index, probe.Label, source)
+					}
 				}
 			}
 		}
@@ -163,7 +176,7 @@ func TestKnownWalksKeepTheirSteps(t *testing.T) {
 		{model.Linux, "lsmod", []int{1, 1, 1, 1}},
 		{model.Linux, "modules-load", []int{1, 1}},
 		{model.Linux, "accounts", []int{1, 1}},
-		{model.Windows, "run-keys", []int{1, 5}},
+		{model.Windows, "run-keys", []int{6, 5}},
 	}
 	for _, c := range cases {
 		check := testkit.CheckByID(t, checks.ChecksFor(c.platform), c.id)

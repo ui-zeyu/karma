@@ -1,12 +1,14 @@
-// Package script builds the fragments the collection speaks in: the `== `
-// section header the loops below echo (internal/section owns the convention, and
-// the reader cuts on it so every section is filtered and counted on its own),
-// shell word quoting for the pinned spellings and the bootstrap command line,
-// the ls -l row shape (LSBodyPrintf, with SplitLsBody and AlignLsBodies in
-// lsbody.go) that the listings print and the reading side reads, the per-file
-// read and per-directory listing loops the sh source runs where karma's own
-// body cannot, and the joins that turn this catalog's own marked record streams
-// into rows.
+// Package script builds the fragments the sh source speaks in: shell word
+// quoting for the pinned spellings and the bootstrap command line, the ls -l row
+// shape (LSBodyPrintf, with SplitLsBody and AlignLsBodies in lsbody.go) that the
+// listings print and the reading side reads, the file-list and directory-list
+// calls the sh source runs where karma's own body cannot, and the joins that turn
+// this catalog's own marked record streams into rows.
+//
+// Sections are not this package's: a section boundary is the collection's own
+// statement (model.BodySection), so the sh source names its sections by
+// declaring one call per section rather than by printing a header its reader
+// would have to recognize.
 package script
 
 import (
@@ -82,26 +84,29 @@ func LsSorted(paths []string) []string {
 	return sorted
 }
 
-// ReadFiles generates a per-file read for loop: one section per file (`== path`
-// header), missing ones skipped. command is the read command for a single file,
-// referencing the current file as $f; paths and globs are spliced verbatim into the
-// word list and expanded by the target shell; quiet discards the read's standard error
-// (files with insufficient permissions produce no noise, and unreadable facts are
-// shown by an empty section).
-//
-// The body is piped through `awk '{print}'`, which terminates a file whose last
-// line carries no newline. Without it the next `== path` header glues onto that
-// line and the section loses its title and its own body. awk rather than sed:
-// GNU sed's `-n p` adds the missing newline but BSD sed passes the line through
-// unchanged (both engines of awk terminate it). localfs.ReadSections gives the
-// in-process tier the same guarantee.
-func ReadFiles(paths []string, command string, quiet bool) string {
-	redirect := ""
-	if quiet {
-		redirect = " 2>/dev/null"
-	}
-	return fmt.Sprintf("for f in %s; do\n  [ -f \"$f\" ] && { echo \"== $f\"; %s%s | awk '{print}'; }\ndone",
-		WordList(paths), command, redirect)
+// ReadFile builds the per-file call of a file-list tier: the current file bound
+// to f, then the read command the tier pins, with the read's own error text
+// dropped (files with insufficient permissions produce no noise, and unreadable
+// facts are shown by an empty section). The command references the file as $f,
+// the same spelling the per-file loop used.
+func ReadFile(path, command string) string {
+	return "f=" + Quote(path) + "; " + command + " 2>/dev/null"
+}
+
+// ListFiles is a file list's own answer: the existing regular files of a path and
+// glob word list, one path per line, in the order the per-file loop read them.
+// paths and globs are spliced verbatim into the word list and expanded by the
+// target shell.
+func ListFiles(paths []string) string {
+	return fmt.Sprintf("for f in %s; do\n  [ -f \"$f\" ] && echo \"$f\"\ndone", WordList(paths))
+}
+
+// ListDirs is a directory list's own answer: the words the list names, one path
+// per line, globs expanded by the target shell. A word that names nothing still
+// answers with itself, and its (empty) section body is dropped by the reading
+// layer, the same way the find pipeline's own silence is.
+func ListDirs(dirs []string) string {
+	return fmt.Sprintf("for d in %s; do\n  echo \"$d\"\ndone", WordList(dirs))
 }
 
 // ListingFind is the collection row for a single directory: the directory expression
@@ -112,22 +117,6 @@ func ReadFiles(paths []string, command string, quiet bool) string {
 func ListingFind(dirExpr string, head int) string {
 	return fmt.Sprintf("LC_ALL=C find \"%s\" -maxdepth 1 -mindepth 1 -printf '%s' 2>/dev/null | sort -rn | head -n %d",
 		dirExpr, ListingPrintf, head)
-}
-
-// ListingSections is the per-directory sectioned collection script: one section per
-// directory `== $d`, with the line count capped uniformly by head. The directory word
-// list is spliced verbatim and globs are expanded by the target shell; when a
-// directory does not exist the section body is empty and dropped by the reading
-// layer. The remote head is the line cap: the script caps itself, so the probe need
-// not carry a line cap to align.
-func ListingSections(dirs []string, head int) string {
-	lines := []string{
-		"for d in " + strings.Join(dirs, " ") + "; do",
-		`  echo "== $d"`,
-		"  " + ListingFind("$d", head),
-		"done",
-	}
-	return strings.Join(lines, "\n")
 }
 
 // WordList wraps the word list: globs must stay unescaped, and continuations use backslashes.

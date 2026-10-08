@@ -1,11 +1,10 @@
-// The listing tier and its reader form: one "== dir" section per directory,
-// rows in find -printf shape sorted by mtime descending. Ls is the
-// single-directory reader the `karma local ls` command prints.
+// The listing tier and its reader form: one section body per directory, rows in
+// find -printf shape sorted by mtime descending. Ls is the single-directory
+// reader the `karma local ls` command prints.
 
 package localfs
 
 import (
-	"context"
 	"os"
 	"strings"
 
@@ -13,13 +12,12 @@ import (
 	"karma/internal/section"
 )
 
-// ListingSection renders one "== dir" section with its ListingFind rows. An
-// unreadable directory leaves the section empty, the way the find pipeline
-// drops its stderr.
-func ListingSection(dir string, head int, names *NameCache) string {
+// ListingBody is one directory's section body: rows in find -printf shape
+// sorted by mtime descending, head-capped. An unreadable directory leaves the
+// body empty, the way the find pipeline drops its stderr.
+func ListingBody(dir string, head int) string {
 	var b strings.Builder
-	b.WriteString(section.Line(dir))
-	rows, _ := listingRows(dir, head, names)
+	rows, _ := listingRows(dir, head, NewNameCache())
 	for _, row := range rows {
 		b.WriteString(row)
 		b.WriteByte('\n')
@@ -27,32 +25,14 @@ func ListingSection(dir string, head int, names *NameCache) string {
 	return b.String()
 }
 
-// Listing is the listing tier's in-process branch: one section per
-// directory, rows in find -printf shape sorted by mtime descending,
-// head-capped per section — exactly the rows ListingSections' find pipeline
-// prints.
-func Listing(dirs []string, head int) func(context.Context) (string, error) {
-	return func(ctx context.Context) (string, error) {
-		var b strings.Builder
-		names := NewNameCache()
-		for _, dir := range ExpandDirs(dirs) {
-			if ctx.Err() != nil {
-				return b.String(), ctx.Err()
-			}
-			b.WriteString(ListingSection(dir, head, names))
-		}
-		return b.String(), nil
-	}
-}
-
 // Ls is the reader form of listingRows over a path list. A directory operand
 // is that function with no head cap, and the epoch prefix cut off by rowBody,
 // so the rows are the ones the panels display. A path that is not a directory
 // prints its own LsBody row, the way ls does; a symlink operand follows to
 // its target for the directory decision and keeps the link row on a file.
-// Several paths print one "== path" section per path — the collection
-// sections' own header — so the directories read apart, while a single path
-// prints its rows alone, the way ls itself drops the header. A path that
+// Several paths print one "== path" header per path — the report's own section
+// spelling — so the directories read apart, while a single path prints its rows
+// alone, the way ls itself drops the header. A path that
 // fails leaves its section out and its error with the caller while the rest
 // still print. Nothing here runs a host binary, so a preload hook on ls
 // cannot reshape the answer.

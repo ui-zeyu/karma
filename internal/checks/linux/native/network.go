@@ -14,9 +14,7 @@ import (
 
 	"github.com/samber/lo"
 
-	"karma/internal/localfs"
 	"karma/internal/model"
-	"karma/internal/section"
 	"karma/internal/textutil"
 )
 
@@ -37,31 +35,6 @@ func HostnameIps(ctx context.Context) (string, error) {
 		return "", model.ErrTierUnavailable
 	}
 	return strings.Join(ips, " ") + "\n", nil
-}
-
-// ProcNet turns each /proc/net socket table it hands in into one section;
-// ParseProcNet (the probe's Adapt) restores the
-// hex endpoints.
-func ProcNet(paths []string) func(context.Context) (string, error) {
-	return func(context.Context) (string, error) { return localfs.ReadSections(paths, nil), nil }
-}
-
-// Firewall reads every family and table it hands in, then the nft ruleset — one
-// section per surface, so rules cite what they
-// fired on.
-func Firewall(families, tables []string) func(context.Context) (string, error) {
-	return func(ctx context.Context) (string, error) {
-		var b strings.Builder
-		for _, binary := range families {
-			for _, table := range tables {
-				b.WriteString(section.Line(binary + " " + table))
-				b.WriteString(runHost(ctx, []string{binary, "-t", table, "-S"}, false).out)
-			}
-		}
-		b.WriteString(section.Line("nft"))
-		b.WriteString(runHost(ctx, []string{"nft", "list", "ruleset"}, false).out)
-		return b.String(), nil
-	}
 }
 
 // procNetStates: /proc/net state codes (uppercase hex). UDP state translation

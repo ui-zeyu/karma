@@ -30,9 +30,6 @@ var modulesLoadPaths = []string{
 	"/usr/local/lib/modules-load.d/*.conf",
 }
 
-// modulesLoadScript is the sh source's reading of the same list.
-var modulesLoadScript = script.ReadFiles(modulesLoadPaths, `cat "$f"`, true)
-
 // rootkitSyms: the symbol families /proc/kallsyms leaks. Two halves: the
 // program names of the public catalog (define.RootkitNames — a kit usually names
 // its functions after itself, so `rkduck_init` and `singularity_hook` carry the
@@ -128,13 +125,10 @@ var moduleImagesRe = regexp.MustCompile(`\b(?:` + define.RootkitNames + `)(?:[_-
 // KernelChecks covers the kernel.
 var KernelChecks = []*model.Check{
 	define.LinuxCheck("modules-load", "Boot-loaded modules (/etc/modules, modules-load.d)", model.AspectKernel,
-		[]model.Step{
-			{{Label: "cat", Inv: model.Native{Body: native.ModulesLoad(modulesLoadPaths)}}},
-			{{Label: "cat-sh", Inv: model.Sh(modulesLoadScript)}},
-		},
+		readFilesCheck(modulesLoadPaths...),
 		define.CheckOpt{
 			Rules: []model.Matcher{
-				// Exclude a leading /: an == section title is a file path and should not light
+				// Exclude a leading /: a section title is a file path and should not light
 				// up as a module entry, otherwise a comment-only /etc/modules would produce an
 				// empty box by matching the title
 				model.NewRule("modules-boot-entry", `^[^#\n/]\S+`, model.Low,

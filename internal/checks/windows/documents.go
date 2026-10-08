@@ -14,6 +14,7 @@ import (
 
 	"karma/internal/define"
 	"karma/internal/model"
+	"karma/internal/powershell"
 	"karma/internal/regout"
 	"karma/internal/script"
 )
@@ -37,34 +38,36 @@ const winrarKey = `HKCU\Software\WinRAR\ArcHistory`
 
 // officeScript enumerates File/Place MRU per app under version directories (16.0 etc.); User MRU
 // (Microsoft account paths) alongside.
-var officeScript = script.Lines(
-	`foreach ($ver in Get-ChildItem 'HKCU:\SOFTWARE\Microsoft\Office' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d' }) {`,
-	`  foreach ($app in 'Word','Excel','PowerPoint') {`,
-	`    foreach ($mru in 'File MRU','Place MRU','User MRU') {`,
-	`      $p = 'HKCU:\SOFTWARE\Microsoft\Office\' + $ver.PSChildName`,
-	`      $p = $p + '\' + $app + '\' + $mru`,
-	"      "+psSection(`"== " + $ver.PSChildName + "\" + $app + "\" + $mru`, `reg query $p /s 2>$null`),
-	`    }`,
-	`  }`,
-	`}`)
+var officeProbe = model.Probe{Label: "reg", Files: &model.Files{
+	List: powershell.PowerShell(
+		`foreach ($ver in Get-ChildItem 'HKCU:\SOFTWARE\Microsoft\Office' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d' }) { ` +
+			`foreach ($app in 'Word','Excel','PowerPoint') { ` +
+			`foreach ($mru in 'File MRU','Place MRU','User MRU') { ` +
+			`$ver.PSChildName + '\' + $app + '\' + $mru } } }`),
+	Read: func(mru string) model.Invocation {
+		return powershell.PowerShell(`reg query ` + PSQuote(`HKCU:\SOFTWARE\Microsoft\Office\`+mru) + ` /s 2>$null`)
+	},
+}}
 
 // lnkScript reads shortcut targets via COM: TargetPath/Arguments/WorkingDirectory cover the
 // initial-access lure (mshta+URL) shape; deeper blocks like tracker/MAC need an LNK parser, phase two.
-const lnkScript = `$sh = New-Object -ComObject WScript.Shell
-foreach ($f in Get-ChildItem 'C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\*.lnk' -File -ErrorAction SilentlyContinue) {
-  try {
-    $l = $sh.CreateShortcut($f.FullName)
-    "== " + $f.Name
-    "Target: " + $l.TargetPath
-    if ($l.Arguments) { "Arguments: " + $l.Arguments }
-    if ($l.WorkingDirectory) { "Working Directory: " + $l.WorkingDirectory }
-  } catch {}
-}`
+var lnkProbe = PSFilesProbe("com",
+	PSListPaths([]string{`C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\*.lnk`}, "", false),
+	func(path string) string {
+		return script.Lines(
+			"$sh = New-Object -ComObject WScript.Shell",
+			"try {",
+			"  $l = $sh.CreateShortcut("+PSQuote(path)+")",
+			`  "Target: " + $l.TargetPath`,
+			`  if ($l.Arguments) { "Arguments: " + $l.Arguments }`,
+			`  if ($l.WorkingDirectory) { "Working Directory: " + $l.WorkingDirectory }`,
+			"} catch {}")
+	})
 
 // jumplistScript extracts strings from the whole OLE compound document as UTF-16: paths and file
 // names are stored as UTF-16LE, with a minimum length of 5 to filter noise. The globs cover the
 // files of both destination directories in one probe.
-var jumplistScript = stringsScript("Unicode", 5,
+var jumplistProbe = stringsProbe("Unicode", 5,
 	`C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations\*`,
 	`C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations\*`)
 
@@ -190,13 +193,13 @@ var DocumentsChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("office-mru", "Office Recent Files (File/Place MRU)", model.AspectDocuments,
-		[]model.Step{{PSProbe("reg", officeScript)}},
+		[]model.Step{{officeProbe}},
 		define.CheckOpt{Normalize: officeMruNormalize, Rules: []model.Matcher{define.KeywordRule}}),
 	RegCheck("adobe-recent", "Adobe Recent PDFs (cRecentFiles)", model.AspectDocuments,
 		adobeKeys,
 		define.CheckOpt{Syntax: model.SyntaxReg, Rules: []model.Matcher{define.KeywordRule}}),
 	define.WindowsCheck("lnk-recent", "Shortcut Targets (Recent LNK)", model.AspectDocuments,
-		[]model.Step{{PSProbe("com", lnkScript)}},
+		[]model.Step{{lnkProbe}},
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				model.NewRule("lnk-mshta", lnkMshta, model.Critical,
@@ -213,6 +216,6 @@ var DocumentsChecks = []*model.Check{
 		},
 		define.CheckOpt{Normalize: archiveNormalize, Rules: []model.Matcher{define.KeywordRule}}),
 	define.WindowsCheck("jumplists", "Jump Lists (JumpLists, String Extraction)", model.AspectDocuments,
-		[]model.Step{{PSProbe("strings", jumplistScript)}},
+		[]model.Step{{jumplistProbe}},
 		define.CheckOpt{Timeout: stringsTimeout, Rules: []model.Matcher{define.KeywordRule}}),
 }

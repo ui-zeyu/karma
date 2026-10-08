@@ -20,7 +20,6 @@ import (
 // find prints (single spaces), with one hidden entry in a temp directory.
 func listingBody(base int64) string {
 	var body strings.Builder
-	body.WriteString("== /tmp\n")
 	for i := 0; i < 40; i++ {
 		fmt.Fprintf(&body, "%d.000\t%d.000\t-rw-r--r-- 1 root root 100 Jan 01 00:00 /tmp/file%d\n",
 			base+int64(i), base+int64(i), i)
@@ -35,7 +34,7 @@ func TestTempListingAlignsRowsAndNamesTheHiddenEntry(t *testing.T) {
 	check := testkit.CheckByID(t, All, "tmp-listing")
 	base := time.Now().Add(-90 * 24 * time.Hour).Unix()
 	body := listingBody(base)
-	document := reader.Analyze(body, check.Rules, check.Filters, 0, model.FloorAll, check.Normalize)
+	document := readOneSection(check, "/tmp", body)
 	if len(document.Sections) != 1 {
 		t.Fatalf("one section expected: %+v", document.Sections)
 	}
@@ -84,7 +83,6 @@ func TestEtcListingFlagsAnIsolatedEntry(t *testing.T) {
 	check := testkit.CheckByID(t, All, "etc-listing")
 	base := time.Now().Add(-31 * 24 * time.Hour).Unix()
 	var body strings.Builder
-	body.WriteString("== /etc\n")
 	for i := 0; i < 40; i++ {
 		fmt.Fprintf(&body, "%d.000\t%d.000\t-rw-r--r-- 1 root root 100 Jan 01 00:00 /etc/conf%d\n",
 			base+int64(i), base+int64(i), i)
@@ -93,7 +91,7 @@ func TestEtcListingFlagsAnIsolatedEntry(t *testing.T) {
 	fmt.Fprintf(&body, "%d.000\t%d.000\t-rw-r--r-- 1 root root 100 Jan 01 00:00 /etc/.backdoor\n",
 		base+30*86400, base+30*86400)
 
-	document := reader.Analyze(body.String(), check.Rules, check.Filters, 0, model.FloorAll, check.Normalize)
+	document := readOneSection(check, "/etc", body.String())
 	if len(document.Sections) != 1 || len(document.Sections[0].Lines) != 41 {
 		t.Fatalf("every row should survive: %+v", document.Sections)
 	}
@@ -129,4 +127,14 @@ func joined(lines []model.Line) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// readOneSection reads one section the collection stated: the title it carries
+// and the rows under it.
+func readOneSection(check *model.Check, title, body string) model.Document {
+	return reader.Read(model.ReadRequest{
+		Check: check,
+		Body:  model.Body{Sections: []model.BodySection{{Title: title, Text: body}}},
+		Floor: model.FloorAll,
+	})
 }

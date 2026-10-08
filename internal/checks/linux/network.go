@@ -6,24 +6,23 @@
 package linux
 
 import (
-	"strings"
-
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
-	"karma/internal/script"
 	"karma/internal/shape"
 )
 
-// procNetPaths are the four socket tables the check renders, one section each.
-// ReadFiles' `== path` header is what tells them apart: native.ParseProcNet reads
-// the section title to tell TCP from UDP state semantics, which a plain cat merge
-// cannot distinguish.
+// procNetPaths are the four socket tables the check renders, one section each,
+// titled with the path: native.ParseProcNet reads the section title to tell TCP
+// from UDP state semantics, which a merged body cannot distinguish. The tier's
+// own adapt carries that reading, and every section keeps its own title.
 var procNetPaths = []string{"/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", "/proc/net/udp6"}
 
-// procNetScript is the sh source's reading of those four tables: the same one
-// `== path` section per file, which is what the tier's own adapt reads.
-var procNetScript = script.ReadFiles(procNetPaths, `cat "$f"`, true)
+// procNetTier is that list as a tier pair: the four tables read in process, and
+// the same four through the target's own cat.
+func procNetTier() []model.Step {
+	return filesTier("proc-net", `cat "$f"`, nil, native.ParseProcNet, procNetPaths)
+}
 
 // routeScript is the sh source's route reading: the IPv4 table, then the IPv6
 // one (the in-process tier dumps both families in one pass).
@@ -37,36 +36,37 @@ var (
 	firewallTables   = []string{"filter", "nat", "mangle", "raw"}
 )
 
-// firewallScript is that shape as a shell script: one script lays out every
-// surface and adds the nft ruleset (with the iptables compat layer present, that
-// ruleset is not skipped by the fallback either). The section titles are the
-// ones the in-process body prints.
-var firewallScript = firewallScriptText()
-
-func firewallScriptText() string {
-	var b strings.Builder
+// firewallTier is the check's surfaces as a tier pair, one section each: every
+// family and table pair, then the nft ruleset (with the iptables compat layer
+// present, that ruleset is not skipped by the fallback either). The section
+// titles are the surfaces' own names.
+func firewallTier() []model.Step {
+	parts := make([]surface, 0, len(firewallFamilies)*len(firewallTables)+1)
 	for _, binary := range firewallFamilies {
-		b.WriteString("for t in " + strings.Join(firewallTables, " ") + "; do\n")
-		b.WriteString("  echo \"== " + binary + " $t\"\n")
-		b.WriteString("  " + binary + " -t \"$t\" -S 2>/dev/null\n")
-		b.WriteString("done\n")
+		for _, table := range firewallTables {
+			parts = append(parts, surface{
+				Title:  binary + " " + table,
+				Native: native.Host(binary, "-t", table, "-S"),
+				Script: binary + " -t " + table + " -S 2>/dev/null",
+			})
+		}
 	}
-	b.WriteString("echo \"== nft\"\nnft list ruleset 2>/dev/null\n")
-	return b.String()
+	parts = append(parts, surface{
+		Title:  "nft",
+		Native: native.Host("nft", "list", "ruleset"),
+		Script: "nft list ruleset 2>/dev/null",
+	})
+	return surfacesTier("iptables", nil, parts)
 }
 
 // NetworkChecks covers networking.
 var NetworkChecks = []*model.Check{
 	define.LinuxCheck("listen", "Listening and established connections", model.AspectNetwork,
-		[]model.Step{
+		append([]model.Step{
 			{{Label: "ss", Inv: model.Native{Body: native.Ss}}},
 			{{Label: "ss-sh", Inv: model.Sh("ss -tunap")}},
 			{{Label: "netstat", Inv: model.NewCommand("netstat", "-tunap")}},
-			{ // The proc-net hex address restore is this probe's own dialect (adapt carries the
-				// section title to tell TCP/UDP); ss and netstat already output the target shape.
-				{Label: "proc-net", Inv: model.Native{Body: native.ProcNet(procNetPaths)}, Adapt: native.ParseProcNet}},
-			{{Label: "proc-net-sh", Inv: model.Sh(procNetScript), Adapt: native.ParseProcNet}},
-		},
+		}, procNetTier()...),
 		define.CheckOpt{
 			Syntax: model.SyntaxListen,
 			Rules: []model.Matcher{
@@ -120,11 +120,9 @@ var NetworkChecks = []*model.Check{
 		// and netstat tables, which come pre-aligned.
 		define.CheckOpt{Syntax: model.SyntaxTable, Normalize: shape.RouteTable}),
 	define.LinuxCheck("firewall", "Firewall rules", model.AspectNetwork,
-		[]model.Step{
-			{{Label: "iptables", Inv: model.Native{Body: native.Firewall(firewallFamilies, firewallTables)}}},
-			{{Label: "iptables-sh", Inv: model.Sh(firewallScript)}},
-			{{Label: "nft", Inv: model.NewCommand("nft", "list", "ruleset")}},
-		},
+		append(firewallTier(),
+			model.Step{{Label: "nft", Inv: model.NewCommand("nft", "list", "ruleset")}},
+		),
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				model.NewRule("firewall-active", `^-A `, model.Medium, "active firewall rule"),

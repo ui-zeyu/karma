@@ -5,6 +5,7 @@
 package reader_test
 
 import (
+	"strings"
 	"testing"
 
 	"karma/internal/model"
@@ -24,14 +25,15 @@ func TestReadAlignsTheDialectThenNormalizes(t *testing.T) {
 			return &model.Shaped{Text: "normalized"}
 		},
 	}
-	step := model.Step{{Label: "tier", Adapt: func(_, body string) *model.Shaped {
+	adapt := func(_, body string) *model.Shaped {
 		if body != "raw" {
 			t.Fatalf("the tier's alignment reads the raw body, got %q", body)
 		}
 		return &model.Shaped{Text: "aligned"}
-	}}}
+	}
 	document := reader.Read(model.ReadRequest{
-		Check: check, Step: step, Body: model.Body{Text: "raw"},
+		Check: check,
+		Body:  model.Body{Sections: []model.BodySection{{Text: "raw", Adapt: adapt}}},
 		Floor: model.FloorAll, Truncated: true,
 	})
 	if got := keptText(document); len(got) != 1 || got[0] != "normalized" {
@@ -42,18 +44,18 @@ func TestReadAlignsTheDialectThenNormalizes(t *testing.T) {
 	}
 }
 
-// The tier's own join runs before the reading caps or splits anything, so a
-// marked stream the join explains is not cut in half first.
-func TestReadJoinsTheTierStreamFirst(t *testing.T) {
-	step := model.Step{{Label: "tier", Assemble: func(text string) string {
-		return "== joined\n" + text
+// The tier's own join runs before the reading shapes anything, so a marked stream
+// the join explains is read as the rows it states.
+func TestReadJoinsTheSectionStreamFirst(t *testing.T) {
+	body := model.Body{Sections: []model.BodySection{{
+		Text:     "HIDDEN x\n",
+		Assemble: func(text string) string { return strings.TrimSpace(text) + " rows\n" },
 	}}}
 	document := reader.Read(model.ReadRequest{
-		Check: &model.Check{ID: "probe"}, Step: step,
-		Body: model.Body{Text: "one\ntwo\n"}, Floor: model.FloorAll,
+		Check: &model.Check{ID: "probe"}, Body: body, Floor: model.FloorAll,
 	})
-	if len(document.Sections) != 1 || document.Sections[0].Title != "joined" {
-		t.Fatalf("the join's title should carry the section: %+v", document.Sections)
+	if got := keptText(document); len(got) != 1 || got[0] != "HIDDEN x rows" {
+		t.Fatalf("the join runs before the reading: %q", got)
 	}
 }
 
@@ -75,7 +77,8 @@ func fieldsRead(t *testing.T, floor model.SeverityFloor) model.Document {
 			rule("shell", `/bin/sh$`, model.Low),
 		},
 	}
-	return reader.Read(model.ReadRequest{Check: check, Body: model.Body{Records: &set}, Floor: floor})
+	return reader.Read(model.ReadRequest{Check: check,
+		Body: model.Body{Sections: []model.BodySection{{Records: &set}}}, Floor: floor})
 }
 
 // A body that arrived as fields takes the records path: one section, the set's

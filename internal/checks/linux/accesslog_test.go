@@ -37,8 +37,7 @@ func TestAccessLogSummaryTables(t *testing.T) {
 
 	// The tables are the context and the four request lines are the findings:
 	// an ordinary request is counted and never listed.
-	want := "== " + path + "\n" +
-		"clients\n" +
+	want := "clients\n" +
 		"     4 192.168.17.21\n" +
 		"     3 10.0.0.9\n" +
 		"minutes\n" +
@@ -50,7 +49,7 @@ func TestAccessLogSummaryTables(t *testing.T) {
 		accessLogFixture[1] + "\n" + accessLogFixture[3] + "\n" +
 		accessLogFixture[4] + "\n" + accessLogFixture[5] + "\n"
 
-	body, err := native.AccessLog([]string{path}, accessLogKeepRe)(context.Background())
+	body, err := native.AccessLogFile(path, accessLogKeepRe)(context.Background())
 	if err != nil {
 		t.Fatalf("the tier failed: %v", err)
 	}
@@ -67,12 +66,14 @@ func TestAccessLogBodySkipsEmptyAndAbsentFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	absent := filepath.Join(t.TempDir(), "access.log")
-	body, err := native.AccessLog([]string{empty, absent}, accessLogKeepRe)(context.Background())
-	if err != nil {
-		t.Fatalf("the local tier failed: %v", err)
-	}
-	if body != "" {
-		t.Errorf("an empty log rendered %q, want nothing", body)
+	for _, path := range []string{empty, absent} {
+		body, err := native.AccessLogFile(path, accessLogKeepRe)(context.Background())
+		if err != nil {
+			t.Fatalf("the local tier failed: %v", err)
+		}
+		if body != "" {
+			t.Errorf("%s rendered %q, want nothing", path, body)
+		}
 	}
 }
 

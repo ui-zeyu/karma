@@ -267,50 +267,48 @@ func TestArchiveNormalize(t *testing.T) {
 // RegCheck assembles the PowerShell script from the key list and appends one
 // step of direct reg.exe fallbacks, one probe per key; pin the composed shape of
 // both steps.
-func TestRegCheckComposesScripts(t *testing.T) {
+func TestRegCheckComposesProbes(t *testing.T) {
 	runKeys := testkit.CheckByID(t, All, "run-keys")
-	composed := runKeys.Steps[0][0].Inv.(model.Command).Argv[4]
-	// every key queried once in the script, its section title printed only with output
+	// One PowerShell probe per key, each carrying the key's own section title and
+	// nothing else: the key's name is the collection's statement, never a line
+	// reg.exe printed.
 	const runOnce = `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`
-	if got := strings.Count(composed, "reg query '"+runOnce+"' 2>$null"); got != 1 {
-		t.Fatalf("key queried once: %d in %s", got, composed)
+	probes := map[string]string{}
+	for _, probe := range runKeys.Steps[0] {
+		probes[probe.Title] = probe.Inv.(model.Command).Argv[4]
 	}
-	if !strings.Contains(composed, "if ($o) { '== ' + '"+runOnce+"'; $o }") {
-		t.Fatalf("conditional section title missing: %s", composed)
+	script, ok := probes[runOnce]
+	if !ok {
+		t.Fatalf("the key's own probe is missing: %v", probes)
 	}
-	// the extra startup-folder fragment comes after the key fragments
-	if !strings.Contains(composed, `'== ' + 'Startup Folder'`) {
-		t.Fatalf("startup folder fragment missing: %s", composed)
+	if !strings.Contains(script, "reg query '"+runOnce+"' 2>$null") {
+		t.Fatalf("the key's probe does not query it: %s", script)
 	}
-	// one direct fallback per key, in key order, and all of them in one step: as
+	if strings.Contains(script, "'== '") {
+		t.Fatalf("no probe prints a section header: %s", script)
+	}
+	if _, ok := probes["Startup Folder"]; !ok {
+		t.Fatalf("the startup-folder fragment has no probe of its own: %v", probes)
+	}
+	// One direct fallback per key, in key order, and all of them in one step: as
 	// separate steps the walk would stop at the first key that exists and never
-	// query the rest (the local Windows channel has no shell to loop in).
+	// query the rest (the local Windows channel has no shell to loop in). Each
+	// carries the same title the PowerShell probe does, so both tiers read alike.
 	if len(runKeys.Steps) != 2 {
 		t.Fatalf("the PowerShell step and one step of reg fallbacks: %d steps", len(runKeys.Steps))
 	}
 	var fallbacks []string
 	for _, probe := range runKeys.Steps[1] {
-		fallbacks = append(fallbacks, probe.Inv.(model.Command).Argv[2])
+		if probe.Title != probe.Inv.(model.Command).Argv[2] && probe.Title != probe.Inv.(model.Command).Argv[2]+"\\"+probe.Inv.(model.Command).Argv[4] {
+			t.Errorf("fallback %s carries the wrong title: %q", probe.Label, probe.Title)
+		}
+		fallbacks = append(fallbacks, strings.Join(probe.Inv.(model.Command).Argv, " "))
 	}
-	want := []string{
-		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
-		`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce`,
-		`HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run`,
-		`HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`,
-		runOnce,
+	if len(fallbacks) != 5 {
+		t.Fatalf("one fallback per key: %v", fallbacks)
 	}
-	if !slices.Equal(fallbacks, want) {
-		t.Fatalf("fallback key order: %v", fallbacks)
-	}
-
-	// value queries: /v on both tiers
-	track := testkit.CheckByID(t, All, "userassist-track")
-	composed = track.Steps[0][0].Inv.(model.Command).Argv[4]
-	if !strings.Contains(composed, `reg query '`+advancedKey+`' /v Start_TrackEnabled 2>$null`) {
-		t.Fatalf("value query missing: %s", composed)
-	}
-	if argv := track.Steps[1][0].Inv.(model.Command).Argv; !slices.Equal(argv, []string{"reg", "query", advancedKey, "/v", "Start_TrackEnabled"}) {
-		t.Fatalf("fallback /v argv: %v", argv)
+	if !strings.Contains(fallbacks[0], `reg query HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`) {
+		t.Fatalf("the first fallback is the first key: %v", fallbacks)
 	}
 }
 

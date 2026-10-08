@@ -98,13 +98,13 @@ func TestHiddenPidScan(t *testing.T) {
 			kill1: map[int]bool{1: true, 2: true, 300: true},
 			list1: []int{1, 2, 300}, list2: []int{1, 2, 300},
 			want: []string{"scan: pid_max=100 scanned=1-100"},
-			ban:  []string{"== hidden", "PID "},
+			ban:  []string{"PID "},
 		},
 		{
 			name: "hidden pid survives confirmation", pidMax: 200,
 			kill1: map[int]bool{1: true, 2: true, 42: true},
 			list1: []int{1, 2}, list2: []int{1, 2},
-			want: []string{"== hidden", "PID 42  fd=yes  comm=bash  cmd='/bin/bash -i'"},
+			want: []string{"PID 42  fd=yes  comm=bash  cmd='/bin/bash -i'"},
 		},
 		{
 			name: "exit between passes is dropped", pidMax: 200,

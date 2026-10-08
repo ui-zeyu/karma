@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"karma/internal/model"
 	"os"
 	"os/exec"
 	"strconv"
@@ -44,6 +45,20 @@ func defaultRunHost(ctx context.Context, argv []string, cLocale bool) hostResult
 // karma's own error stream.
 func runHostQuiet(ctx context.Context, argv []string, cLocale bool) hostResult {
 	return execHost(ctx, argv, cLocale, true)
+}
+
+// Host runs one host command as a tier body of its own: a surface the sh source
+// spells as a shell command and the in-process source runs directly. A binary the
+// host lacks reports the tier unavailable, the way a missing command's 127 does
+// on the other side, so the section simply is not there.
+func Host(argv ...string) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		result := runHostQuiet(ctx, argv, false)
+		if !result.ok {
+			return "", model.ErrTierUnavailable
+		}
+		return result.out, nil
+	}
 }
 
 func execHost(ctx context.Context, argv []string, cLocale, quiet bool) hostResult {

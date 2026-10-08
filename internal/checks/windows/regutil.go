@@ -33,17 +33,59 @@ import (
 	"karma/internal/regout"
 )
 
-// PSProbe turns a PowerShell script into a probe; requires is derived from argv[0],
-// i.e. powershell.
+// PSProbe turns a PowerShell script into a probe whose body is one unnamed
+// section; requires is derived from argv[0], i.e. powershell.
 func PSProbe(label string, script string) model.Probe {
 	return model.Probe{Label: label, Inv: powershell.PowerShell(script)}
 }
 
+// PSKeyProbe is one registry key's PowerShell probe: the query alone, under the
+// key's own section title, so the key's name is the collection's statement and
+// never a line reg.exe happened to print.
+func PSKeyProbe(label, title, pipeline string) model.Probe {
+	return model.Probe{Label: label, Title: title, Inv: powershell.PowerShell(pipeline)}
+}
+
+// PSFilesProbe is a per-file probe: list answers with the paths, one per line,
+// and read builds the script that reads one of them. It is the Windows spelling
+// of the Linux catalog's file list, and it keeps every file's section titled with
+// its path.
+func PSFilesProbe(label, list string, read func(path string) string) model.Probe {
+	return model.Probe{Label: label, Files: &model.Files{
+		List: powershell.PowerShell(list),
+		Read: func(path string) model.Invocation { return powershell.PowerShell(read(path)) },
+	}}
+}
+
+// PSQuote renders one path as a PowerShell single-quoted string: the path the
+// target answered with is spliced verbatim, with its own quotes doubled.
+func PSQuote(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", "''") + "'"
+}
+
+// PSListPaths is the listing half of a per-file probe: every file of the globs,
+// one full path per line. A path that cannot be read is not listed.
+func PSListPaths(roots []string, filter string, recurse bool) string {
+	quoted := make([]string, len(roots))
+	for index, root := range roots {
+		quoted[index] = PSQuote(root)
+	}
+	flags := " -File -ErrorAction SilentlyContinue"
+	if filter != "" {
+		flags = " -Filter '" + filter + "'" + flags
+	}
+	if recurse {
+		flags = " -Recurse" + flags
+	}
+	return "Get-ChildItem " + strings.Join(quoted, ",") + flags +
+		" | ForEach-Object { $_.FullName }"
+}
+
 // RegDirectProbe is the no-PowerShell fallback probe: reg.exe is exec'd directly, without any shell.
 //
-// Spaces in the key are preserved by argv boundaries (local exec does not reorder arguments), and
-// the output has no `== ` section header, so the whole body is handed to normalize as the preamble
-// section. An empty value means a recursive or whole-key query.
+// Spaces in the key are preserved by argv boundaries (local exec does not reorder arguments). The
+// key's section title travels on the probe, so the body is that key's lines and nothing else. An
+// empty value means a recursive or whole-key query.
 func RegDirectProbe(label string, key string, recurse bool, value string) model.Probe {
 	argv := []string{"reg", "query", key}
 	if value != "" {
@@ -51,36 +93,31 @@ func RegDirectProbe(label string, key string, recurse bool, value string) model.
 	} else if recurse {
 		argv = append(argv, "/s")
 	}
-	return model.Probe{Label: label, Inv: model.NewCommand(argv...)}
+	return model.Probe{Label: label, Title: regTitle(key, value), Inv: model.NewCommand(argv...)}
 }
 
-// psSection wraps one pipeline in the `== ` section convention: assign the
-// pipeline's output, then print the header only when it is non-empty. Printing a
-// title unconditionally would leave a "title-only ghost section" for a key or
-// event id with no output, and title-matching rules (like remote-ctrl-registry)
-// would light up an empty box. title is the PowerShell expression holding the
-// title (usually a quoted literal, sometimes a variable).
-func psSection(title, pipeline string) string {
-	return fmt.Sprintf("$o = %s; if ($o) { '== ' + %s; $o }", pipeline, title)
+// regTitle is the section title of one registry surface: the key, and the value
+// name when the query names one.
+func regTitle(key, value string) string {
+	if value == "" {
+		return key
+	}
+	return key + "\\" + value
 }
 
-// RegQuery is a reg query fragment for one key.
-func RegQuery(key string, recurse bool) string {
+// RegPipeline is the PowerShell pipeline of one key's query: the command alone.
+// The probe that runs it carries the key's section title.
+func RegPipeline(key string, recurse bool) string {
 	flag := ""
 	if recurse {
 		flag = " /s"
 	}
-	return psSection("'"+key+"'", fmt.Sprintf("reg query '%s'%s 2>$null", key, flag))
+	return fmt.Sprintf("reg query '%s'%s 2>$null", key, flag)
 }
 
-// RegValueQuery is a single-value reg query fragment.
-func RegValueQuery(key string, value string) string {
-	return psSection("'"+key+"\\"+value+"'", fmt.Sprintf("reg query '%s' /v %s 2>$null", key, value))
-}
-
-// RegScript joins multiple fragments into one script; the exit code of the last fragment is the script's exit code.
-func RegScript(fragments ...string) string {
-	return strings.Join(fragments, "; ")
+// RegValuePipeline is the pipeline of a single-value reg query.
+func RegValuePipeline(key string, value string) string {
+	return fmt.Sprintf("reg query '%s' /v %s 2>$null", key, value)
 }
 
 // RegKey is one registry key a check reads: the PowerShell probe queries it inside
@@ -93,31 +130,37 @@ type RegKey struct {
 	Label   string // fallback probe label, shown in the panel's probe chain
 }
 
-// fragment is the key's slice of the composed PowerShell script.
+// fragment is the key's query pipeline.
 func (k RegKey) fragment() string {
 	if k.Value != "" {
-		return RegValueQuery(k.Path, k.Value)
+		return RegValuePipeline(k.Path, k.Value)
 	}
-	return RegQuery(k.Path, k.Recurse)
+	return RegPipeline(k.Path, k.Recurse)
 }
 
-// RegCheck builds a registry check: one PowerShell step over all keys (plus any
-// extra fragments that are not plain reg queries), then one step of direct
-// reg.exe probes, one per key, all of them answering together. The key list is
-// written once and feeds both steps, so a key cannot end up in the PowerShell
-// script without its fallback or the other way around.
+// title is the section this key answers with.
+func (k RegKey) title() string { return regTitle(k.Path, k.Value) }
+
+// RegCheck builds a registry check: one PowerShell probe per key (plus one per
+// extra fragment), then one step of direct reg.exe probes, one per key, all of
+// them answering together. The key list is written once and feeds both steps, so
+// a key cannot end up in the PowerShell step without its fallback or the other way
+// around, and both tiers title their sections with the same key.
 //
-// The reg.exe probes are one step of several (model.Step): a target without
+// The reg.exe step is one step of several probes (model.Step): a target without
 // PowerShell gets every key, one process each, because reg.exe takes one key and
 // the local Windows channel has no shell to loop in — while one step per key
-// would let the walk stop at the first key that exists and silently drop the
-// rest of the evidence.
-func RegCheck(id, title string, aspect model.Aspect, keys []RegKey, opt define.CheckOpt, extra ...string) *model.Check {
-	fragments := make([]string, 0, len(keys)+len(extra))
+// would let the walk stop at the first key that exists and silently drop the rest
+// of the evidence.
+func RegCheck(id, title string, aspect model.Aspect, keys []RegKey, opt define.CheckOpt, extra ...ExtraFragment) *model.Check {
+	inProcess := make(model.Step, 0, len(keys)+len(extra))
 	for _, key := range keys {
-		fragments = append(fragments, key.fragment())
+		inProcess = append(inProcess, PSKeyProbe("reg", key.title(), key.fragment()))
 	}
-	steps := []model.Step{{PSProbe("reg", RegScript(append(fragments, extra...)...))}}
+	for _, fragment := range extra {
+		inProcess = append(inProcess, PSKeyProbe("reg", fragment.Title, fragment.Pipeline))
+	}
+	steps := []model.Step{inProcess}
 	fallbacks := make(model.Step, 0, len(keys))
 	for _, key := range keys {
 		fallbacks = append(fallbacks, RegDirectProbe(key.Label, key.Path, key.Recurse, key.Value))
@@ -126,6 +169,14 @@ func RegCheck(id, title string, aspect model.Aspect, keys []RegKey, opt define.C
 		steps = append(steps, fallbacks)
 	}
 	return define.WindowsCheck(id, title, aspect, steps, opt)
+}
+
+// ExtraFragment is one further named surface of a registry check: a section the
+// check reads with its own PowerShell pipeline (something that is not a plain reg
+// query).
+type ExtraFragment struct {
+	Title    string
+	Pipeline string
 }
 
 var printable = regexp.MustCompile(`[\x20-\x7E\x{4E00}-\x{9FFF}]{3,}`)

@@ -215,14 +215,31 @@ var LogsChecks = []*model.Check{
 	// request lines it carries are the findings, so the keep pattern and the
 	// rules are one vocabulary.
 	define.LinuxCheck("access-log", "Web access log summary (clients, minutes, probes)", model.AspectLog,
-		[]model.Step{
-			{{Label: "log", Inv: model.Native{Body: native.AccessLog(accessLogPaths, accessLogKeepRe)}, Cap: model.Scan(accessLogLines)}},
-			{{Label: "log-sh", Inv: model.Sh(script.AccessLogScript(accessLogPaths, accessLogKeep)), Cap: model.Scan(accessLogLines)}},
-		},
+		accessLogTier(),
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				logScanToolRule, logTraversalRule, logExecParamRule, logSensitiveFileRule,
 			},
 			Timeout: accessLogTimeout,
 		}),
+}
+
+// accessLogTier is the check's reading of the log files: one summary per existing
+// log, titled with the path, counted in process on the local channel and by the
+// target's own awk through the channel — the same summary either way.
+func accessLogTier() []model.Step {
+	return withCap([]model.Step{
+		{{Label: "log", Files: &model.Files{
+			List: model.Native{Body: listFiles(accessLogPaths)},
+			Read: func(path string) model.Invocation {
+				return model.Native{Body: native.AccessLogFile(path, accessLogKeepRe)}
+			},
+		}}},
+		{{Label: "log-sh", Files: &model.Files{
+			List: model.Sh(script.ListFiles(accessLogPaths)),
+			Read: func(path string) model.Invocation {
+				return model.Sh(script.AccessLogRead(path, accessLogKeep))
+			},
+		}}},
+	}, model.Scan(accessLogLines))
 }

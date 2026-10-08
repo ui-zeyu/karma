@@ -15,16 +15,9 @@ import (
 	"strconv"
 	"strings"
 
-	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/script"
 )
-
-// ModulesLoad reads the /etc/modules file and the load layers it hands in, one
-// section each.
-func ModulesLoad(paths []string) func(context.Context) (string, error) {
-	return func(context.Context) (string, error) { return localfs.ReadSections(paths, nil), nil }
-}
 
 // ModuleAttr is one sysfs attribute a hidden module's evidence line carries: the
 // label the line prints and the attribute's name under /sys/module/<module>/.

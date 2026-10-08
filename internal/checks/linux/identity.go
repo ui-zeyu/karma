@@ -10,6 +10,7 @@ import (
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
 	"karma/internal/model"
+	"karma/internal/script"
 )
 
 // sudoersPaths are the surfaces the check covers. The ssh loop prints each
@@ -18,15 +19,14 @@ import (
 // current user may run.
 var sudoersPaths = []string{"/etc/sudoers", "/etc/sudo.conf", "/etc/sudoers.d/*"}
 
-// sudoersScript is the sh source's reading of those paths: one `== path` section
-// per readable file, and a non-zero status when none was — which is what hands
-// the walk to sudo -n -l.
-var sudoersScript = `
+// sudoersListScript is the sh source's list of those paths: the readable ones,
+// and a non-zero status when none was — that status is what hands the walk to
+// sudo -n -l, which only answers what the current user may run.
+var sudoersListScript = `
 ok=1
 for f in ` + strings.Join(sudoersPaths, " ") + `; do
   [ -f "$f" ] && [ -r "$f" ] || continue
-  echo "== $f"
-  cat "$f"
+  echo "$f"
   ok=0
 done
 exit "$ok"
@@ -47,9 +47,9 @@ var sshdConfigPaths = []string{"/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d/*
 // depth the walk of that search passes to find.
 const authorizedKeysDepth = 3
 
-// authorizedKeysScript is the sh source's reading of the same stack: the find
+// authorizedKeysListScript is the sh source's list of the same stack: the find
 // under the homes plus the AuthorizedKeysFile directives of the config, read
-// with the target's own tools. Paths named by the directive are read too: %u
+// with the target's own tools. Paths named by the directive are listed too: %u
 // expands to the user name, %h to the home directory, and a relative path lands
 // in that user's home. Default names find already reports are skipped to avoid
 // duplicate sections.
@@ -59,12 +59,12 @@ const authorizedKeysDepth = 3
 // FIFO as empty), and the sh reading would park in open(2) if it opened one —
 // the walk's deadline would cut the check and spend its budget on a private
 // door.
-var authorizedKeysScript = authorizedKeysScriptAt(sshdConfigPaths, homeGlobs)
+var authorizedKeysListScript = authorizedKeysListAt(sshdConfigPaths, homeGlobs)
 
-// authorizedKeysScriptAt is the same script over given surfaces, which is how a
+// authorizedKeysListAt is the same list over given surfaces, which is how a
 // test drives the whole pipeline — the find under the homes, the config stack,
 // the directive expansion — over a fixture.
-func authorizedKeysScriptAt(configPaths, homes []string) string {
+func authorizedKeysListAt(configPaths, homes []string) string {
 	homeWords := strings.Join(homes, " ")
 	return `
 seen=
@@ -72,8 +72,7 @@ pseen=
 for d in ` + homeWords + `; do
   [ -d "$d" ] || continue
   find "$d" -maxdepth ` + strconv.Itoa(authorizedKeysDepth) + ` -name 'authorized_keys*' -type f 2>/dev/null | while read -r f; do
-    echo "== $f"
-    cat "$f" 2>/dev/null
+    echo "$f"
   done
 done
 for f in ` + strings.Join(configPaths, " ") + `; do
@@ -96,8 +95,7 @@ while read -r spec; do
     case " $pseen " in *" $p "*) continue;; esac
     pseen="$pseen $p"
     [ -f "$p" ] || continue
-    echo "== $p"
-    cat "$p" 2>/dev/null
+    echo "$p"
   done
 done
 `
@@ -125,8 +123,8 @@ var pamDirs = []string{
 // separator at all, or one carrying more of them than the table has fields.
 // Neither shape comes out of the account tools, so the line was written by
 // hand — a stray line, an appended field. A comment or an NIS marker (#, +, -)
-// starts no record, a line starting with / is a path (the `== path` section
-// title these checks are built from), and a blank-first-character line belongs
+// starts no record, a line starting with / is a path (a section title is a
+// file path), and a blank-first-character line belongs
 // to the blank filter.
 func malformedRecordPattern(fields int) string {
 	return `^\s*[^#/:+\s-][^:\n]*$` + fmt.Sprintf(`|^[^#/\n][^:\n]*(?::[^:\n]*){%d,}$`, fields)
@@ -246,8 +244,14 @@ var IdentityChecks = []*model.Check{
 		}),
 	define.LinuxCheck("sudoers", "Sudo grants", model.AspectIdentity,
 		[]model.Step{
-			{{Label: "cat", Inv: model.Native{Body: native.Sudoers(sudoersPaths)}}},
-			{{Label: "cat-sh", Inv: model.Sh(sudoersScript)}},
+			{{Label: "cat", Files: &model.Files{
+				List: model.Native{Body: native.SudoersFiles(sudoersPaths)},
+				Read: func(path string) model.Invocation { return model.Native{Body: readFile(path, nil)} },
+			}}},
+			{{Label: "cat-sh", Files: &model.Files{
+				List: model.Sh(sudoersListScript),
+				Read: func(path string) model.Invocation { return model.Sh(script.ReadFile(path, `cat "$f"`)) },
+			}}},
 			{{Label: "sudo", Inv: model.NewCommand("sudo", "-n", "-l")}},
 		},
 		define.CheckOpt{
@@ -262,8 +266,14 @@ var IdentityChecks = []*model.Check{
 		[]model.Matcher{define.KeywordRule}),
 	define.LinuxCheck("authorized-keys", "SSH authorized keys", model.AspectIdentity,
 		[]model.Step{
-			{{Label: "find", Inv: model.Native{Body: native.AuthorizedKeys(homeGlobs, authorizedKeysDepth, sshdConfigPaths)}}},
-			{{Label: "find-sh", Inv: model.Sh(authorizedKeysScript)}},
+			{{Label: "find", Files: &model.Files{
+				List: model.Native{Body: native.AuthorizedKeyFiles(homeGlobs, authorizedKeysDepth, sshdConfigPaths)},
+				Read: func(path string) model.Invocation { return model.Native{Body: readFile(path, nil)} },
+			}}},
+			{{Label: "find-sh", Files: &model.Files{
+				List: model.Sh(authorizedKeysListScript),
+				Read: func(path string) model.Invocation { return model.Sh(script.ReadFile(path, `cat "$f"`)) },
+			}}},
 		},
 		define.CheckOpt{
 			Syntax: model.SyntaxSSHPubkey,

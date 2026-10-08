@@ -11,7 +11,6 @@ import (
 	"karma/internal/define"
 	"karma/internal/model"
 	"karma/internal/regout"
-	"karma/internal/script"
 )
 
 const userassistKey = `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist`
@@ -50,13 +49,14 @@ var runmruKeys = []RegKey{
 	{Path: runmruKey, Label: "reg-direct"},
 }
 
-// The script is fed wholesale into powershell -Command: a newline inside a statement is a statement
-// separator for PS 5.1, so a foreach header must stay on one line and pipeline continuation must
-// be avoided. An empty history file gets no section header, avoiding a ghost section.
-var psHistoryScript = script.Lines(
-	"foreach ($f in Get-ChildItem '"+psHistoryGlob+"' -File -ErrorAction SilentlyContinue) {",
-	"  "+psSection(`"== " + $f.FullName`, "Get-Content -LiteralPath $f.FullName -ErrorAction SilentlyContinue"),
-	"}")
+// The history is read one file per call, its section titled with the path: a
+// newline inside a statement is a statement separator for PS 5.1, so each script
+// stays a single statement. An empty history file leaves an empty section, which
+// the reading drops.
+var psHistoryProbe = PSFilesProbe("type", PSListPaths([]string{psHistoryGlob}, "", false),
+	func(path string) string {
+		return "Get-Content -LiteralPath " + PSQuote(path) + " -ErrorAction SilentlyContinue"
+	})
 
 const clipboardScript = "Get-Clipboard -Raw -ErrorAction SilentlyContinue"
 
@@ -165,7 +165,7 @@ var ExecutionChecks = []*model.Check{
 			},
 		}),
 	define.WindowsCheck("psreadline", "PowerShell Command History", model.AspectExecution,
-		[]model.Step{{PSProbe("type", psHistoryScript)}},
+		[]model.Step{{psHistoryProbe}},
 		define.CheckOpt{
 			Syntax: model.SyntaxPowerShell,
 			Rules: []model.Matcher{

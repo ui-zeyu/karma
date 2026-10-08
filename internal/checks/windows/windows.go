@@ -4,8 +4,10 @@
 //
 // The artifact list and live-collection mapping come from the digest of HTB Academy module 248
 // "User Behavior Forensics" and from common Chinese incident-response lists. All probes are one
-// PowerShell argument vector (a few use native commands), and output carries its own `== ` sections;
-// decoding (ROT-13, UTF-16 extraction, FILETIME, MRUListEx lists) happens locally in normalize.
+// PowerShell argument vector (a few use native commands); a probe that answers with several parts
+// declares one section title each, and a file list is read one call per path, so a section boundary
+// is never a line in the output. Decoding (ROT-13, UTF-16 extraction, FILETIME, MRUListEx lists)
+// happens locally in normalize.
 //
 // Design boundary: HKCU checks cover only the collecting identity's own user; other users' hives
 // would need reg load (which writes system state), violating read-only, so it degrades to file

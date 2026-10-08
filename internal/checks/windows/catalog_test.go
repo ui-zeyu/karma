@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"karma/internal/model"
+	"karma/internal/reader"
 	"karma/internal/testkit"
 )
 
@@ -107,9 +108,19 @@ func TestSystemCheckRules(t *testing.T) {
 // Rule on section titles: 1102 log clearing is a title hit, not a body-line hit.
 func TestSecLogClearedTitleRule(t *testing.T) {
 	check := testkit.CheckByID(t, All, "sec-log")
-	text := "== 1102 Audit Log Cleared\n2025-06-01 03:00:00  已清除审计日志。\n"
-	if !slices.Contains(testkit.HitIDs(t, text, check), "log-cleared") {
-		t.Fatalf("1102 section title should match log-cleared: %q", text)
+	body := model.Body{Sections: []model.BodySection{{
+		Title: "1102 Audit Log Cleared",
+		Text:  "2025-06-01 03:00:00  已清除审计日志。\n",
+	}}}
+	document := reader.Read(model.ReadRequest{Check: check, Body: body, Floor: model.FloorAll})
+	var ids []string
+	for _, section := range document.Sections {
+		for _, match := range section.TitleMatches {
+			ids = append(ids, match.ID)
+		}
+	}
+	if !slices.Contains(ids, "log-cleared") {
+		t.Fatalf("the 1102 section title should match log-cleared: %q", ids)
 	}
 }
 

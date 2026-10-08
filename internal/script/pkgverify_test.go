@@ -44,10 +44,10 @@ func TestPkgVerifyBodyNamesKeyFiles(t *testing.T) {
 	files := "/usr/lib/x/libevil.so: ELF 64-bit LSB shared object\n"
 	ls := "-rw-r--r-- 1 root root 8600 May 18 07:20 /usr/lib/x/libevil.so\n"
 	got := PkgVerifyBody(verify, factsOf(facts), detailOf(files, ls))
-	want := "== executables, libraries and conffiles\n" +
+	want :=
 		"??5??????   /usr/lib/x/libevil.so\n" +
-		"== file\n" + files +
-		"== ls\n" + ls
+			files +
+			ls
 	if got != want {
 		t.Errorf("the key files rendered as\n%q\nwant\n%q", got, want)
 	}
@@ -60,7 +60,7 @@ func TestPkgVerifyBodyMarksMissingFiles(t *testing.T) {
 	verify := "??5??????   /opt/x/a.conf\n??5??????   /opt/x/b.conf\n"
 	facts := map[string]VerifyFacts{"/opt/x/a.conf": {Missing: true}}
 	got := PkgVerifyBody(verify, factsOf(facts), nil)
-	want := "== other changed files (grouped by directory)\n" +
+	want :=
 		"??5??????   /opt/x/a.conf (missing)\n??5??????   /opt/x/b.conf\n"
 	if got != want {
 		t.Errorf("a named missing file rendered as\n%q\nwant\n%q", got, want)
@@ -72,7 +72,7 @@ func TestPkgVerifyBodyMarksMissingFiles(t *testing.T) {
 func TestPkgVerifyBodyNamesConffiles(t *testing.T) {
 	verify := "??5?????? c /etc/ssh/sshd_config\n"
 	got := PkgVerifyBody(verify, noFacts, nil)
-	want := "== executables, libraries and conffiles\n??5?????? c /etc/ssh/sshd_config\n"
+	want := "??5?????? c /etc/ssh/sshd_config\n"
 	if got != want {
 		t.Errorf("a changed conffile rendered as %q, want %q", got, want)
 	}
@@ -83,7 +83,7 @@ func TestPkgVerifyBodyNamesConffiles(t *testing.T) {
 func TestPkgVerifyBodyListsSmallDirectories(t *testing.T) {
 	verify := "??5??????   /opt/x/a.conf\n??5??????   /opt/x/b.conf\n??5??????   /opt/y/c.conf\n"
 	got := PkgVerifyBody(verify, noFacts, nil)
-	want := "== other changed files (grouped by directory)\n" +
+	want :=
 		"??5??????   /opt/x/a.conf\n??5??????   /opt/x/b.conf\n??5??????   /opt/y/c.conf\n"
 	if got != want {
 		t.Errorf("small directories rendered as\n%q\nwant\n%q", got, want)
@@ -100,7 +100,7 @@ func TestPkgVerifyBodyCountsBigDirectories(t *testing.T) {
 	}
 	facts := map[string]VerifyFacts{"/usr/share/doc/a": {Missing: true}}
 	got := PkgVerifyBody(strings.Join(lines, "\n")+"\n", factsOf(facts), nil)
-	want := "== other changed files (grouped by directory)\n" +
+	want :=
 		"??5??????   /usr/share/doc/  5 files differ, 1 missing\n"
 	if got != want {
 		t.Errorf("a big directory rendered as\n%q\nwant\n%q", got, want)
@@ -116,7 +116,7 @@ func TestPkgVerifyBodyRollsSmallDirectoriesUp(t *testing.T) {
 	}
 	lines = append(lines, "??5??????   /usr/share/doc/tiny/readme")
 	got := PkgVerifyBody(strings.Join(lines, "\n")+"\n", noFacts, nil)
-	want := "== other changed files (grouped by directory)\n" +
+	want :=
 		"??5??????   /usr/share/doc/  26 files differ\n"
 	if got != want {
 		t.Errorf("a rolled-up directory rendered as\n%q\nwant\n%q", got, want)

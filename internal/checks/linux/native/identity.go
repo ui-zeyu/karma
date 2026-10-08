@@ -11,25 +11,23 @@ import (
 
 	"karma/internal/localfs"
 	"karma/internal/model"
-	"karma/internal/section"
 )
 
-// Sudoers reads every readable surface it hands in, one section each; none readable
-// means this tier cannot answer and the sudo -n -l tier is next. An unreadable
-// file fails its read and is skipped, which is what a [ -r ] guard would do.
-func Sudoers(paths []string) func(context.Context) (string, error) {
-	return func(ctx context.Context) (string, error) {
-		var b strings.Builder
+// SudoersFiles lists the readable surfaces it hands in; none readable means this
+// tier cannot answer and the sudo -n -l tier is next. An unreadable file is left
+// out of the list, which is what a [ -r ] guard would do.
+func SudoersFiles(paths []string) func(context.Context) (string, error) {
+	return func(context.Context) (string, error) {
+		var readable []string
 		for _, path := range localfs.ExpandFiles(paths) {
-			if body, err := localfs.ReadRegular(path); err == nil {
-				b.WriteString(section.Line(path))
-				b.WriteString(string(body))
+			if _, err := localfs.ReadRegular(path); err == nil {
+				readable = append(readable, path)
 			}
 		}
-		if b.Len() == 0 {
+		if len(readable) == 0 {
 			return "", model.ErrTierUnavailable
 		}
-		return b.String(), nil
+		return strings.Join(readable, "\n"), nil
 	}
 }
 
@@ -39,32 +37,28 @@ func expandHomes(homeGlobs []string) []string {
 	return localfs.ExpandGlobs(homeGlobs, func(info os.FileInfo) bool { return info.IsDir() })
 }
 
-// printBody appends one "== path" section with the file's best-effort body. The
-// read goes through the non-blocking open: sshd's AuthorizedKeysFile can name any
-// path, a FIFO planted at one must read as empty rather than hang.
-func printBody(b *strings.Builder, path string) {
-	b.WriteString(section.Line(path))
-	if body, err := localfs.ReadRegular(path); err == nil {
-		b.WriteString(string(body))
-	}
-}
-
-// AuthorizedKeys finds keys by name under the home globs the check hands in,
-// then the paths sshd_config's AuthorizedKeysFile directives name — %u the user,
-// %h the home directory, a relative path inside it — skipping the default names
-// the walk already covered. depth bounds the walk under each home.
-func AuthorizedKeys(homeGlobs []string, depth int, sshdConfigPaths []string) func(context.Context) (string, error) {
+// AuthorizedKeyFiles lists the key files: the ones found by name under the home
+// globs the check hands in, then the paths sshd_config's AuthorizedKeysFile
+// directives name — %u the user, %h the home directory, a relative path inside
+// it — skipping the default names the walk already covered. depth bounds the
+// walk under each home. The files themselves are read one call each, so a FIFO
+// planted at a path the directive names cannot hang the tier: the read is
+// localfs's non-blocking one.
+func AuthorizedKeyFiles(homeGlobs []string, depth int, sshdConfigPaths []string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		homes := expandHomes(homeGlobs)
-		var b strings.Builder
+		var files []string
 		printed := map[string]bool{}
+		add := func(path string) {
+			if !printed[path] {
+				printed[path] = true
+				files = append(files, path)
+			}
+		}
 		for _, home := range homes {
 			_ = localfs.WalkTree(ctx, home, depth, false, nil, func(path string, info os.FileInfo) bool {
 				if info.Mode().IsRegular() && strings.HasPrefix(filepath.Base(path), "authorized_keys") {
-					if !printed[path] {
-						printed[path] = true
-						printBody(&b, path)
-					}
+					add(path)
 				}
 				return true
 			})
@@ -87,12 +81,11 @@ func AuthorizedKeys(homeGlobs []string, depth int, sshdConfigPaths []string) fun
 					continue
 				}
 				if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-					printed[path] = true
-					printBody(&b, path)
+					add(path)
 				}
 			}
 		}
-		return b.String(), nil
+		return strings.Join(files, "\n"), nil
 	}
 }
 

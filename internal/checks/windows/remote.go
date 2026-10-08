@@ -17,8 +17,7 @@ const rdpKey = `HKCU\Software\Microsoft\Terminal Server Client`
 // Common remote-control tools in Chinese incident response: registry traces plus service list, two
 // lines of evidence. Each fragment prints a section header only when it has output, so a missing key
 // or no match leaves no ghost section.
-var remoteCtrlServicesFragment = psSection("'services'",
-	`Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'sunlogin|todesk|rustdesk|teamviewer|gotohttp|vnc' } | ForEach-Object { $_.Name + '  ' + $_.Status }`)
+var remoteCtrlServicesFragment = ExtraFragment{Title: "services", Pipeline: `Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'sunlogin|todesk|rustdesk|teamviewer|gotohttp|vnc' } | ForEach-Object { $_.Name + '  ' + $_.Status }`}
 
 var remoteCtrlKeys = []RegKey{
 	{Path: `HKLM\SOFTWARE\Oray\SunLogin`, Recurse: true, Label: "sunlogin"},
@@ -41,15 +40,18 @@ const sunloginRoots = `'C:\Program Files\Oray\SunLogin\SunloginClient','C:\Progr
 // the panel keeps only the lines that carry a fact.
 const sunloginTail = 2000
 
-var sunloginScript = script.Lines(
-	"foreach ($f in Get-ChildItem "+sunloginRoots+" -Filter 'config.ini' -ErrorAction SilentlyContinue) {",
-	"  "+psSection(`"== " + $f.FullName`, "Get-Content -LiteralPath $f.FullName -ErrorAction SilentlyContinue"),
-	"}",
-	"foreach ($f in Get-ChildItem "+sunloginRoots+" -Filter '*.log' -Recurse -ErrorAction SilentlyContinue) {",
-	"  "+psSection(`"== " + $f.FullName`,
-		"Get-Content -LiteralPath $f.FullName -Tail "+strconv.Itoa(sunloginTail)+" -ErrorAction SilentlyContinue"),
-	"}",
-)
+// The config is read whole and each log from its tail, one call per file, its
+// section titled with the path.
+var sunloginProbe = PSFilesProbe("log",
+	script.Lines(
+		"Get-ChildItem "+sunloginRoots+" -Filter 'config.ini' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }",
+		"Get-ChildItem "+sunloginRoots+" -Filter '*.log' -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }",
+	),
+	func(path string) string {
+		return "if (" + PSQuote(path) + " -like '*.ini') { Get-Content -LiteralPath " + PSQuote(path) +
+			" -ErrorAction SilentlyContinue } else { Get-Content -LiteralPath " + PSQuote(path) +
+			" -Tail " + strconv.Itoa(sunloginTail) + " -ErrorAction SilentlyContinue }"
+	})
 
 // sunloginKeep is the allowlist the panel reads the log through: the client's own acceptor and
 // request lines, and the config keys that say who can reach it.
@@ -79,7 +81,7 @@ var RemoteChecks = []*model.Check{
 		},
 		remoteCtrlServicesFragment),
 	define.WindowsCheck("sunlogin", "Sunlogin Client Logs and Access Code", model.AspectRemote,
-		[]model.Step{{PSProbe("log", sunloginScript)}},
+		[]model.Step{{sunloginProbe}},
 		define.CheckOpt{
 			Filters: []model.LineFilter{
 				model.NewFilter("sunlogin-keep", sunloginKeep, model.FilterKeep),

@@ -4,11 +4,11 @@
 // grep and file from the tools.
 //
 // Every function reproduces its shell counterpart's text exactly — a file read
-// keeps the ReadFiles section shape, a listing keeps the find -printf row shape
+// answers with the file's own bytes, a listing keeps the find -printf row shape
 // the ls-l lexer speaks, a content scan keeps grep's `path:line:text` rows — so
 // a check's rules, filters and lexers apply to either source's output
 // unchanged. What becomes Go here is the shell-level plumbing: globs, word
-// lists, loops and pipes.
+// lists, loops and pipes, and the list a file-list tier answers with.
 //
 // Nothing here knows about checks or the report. The Linux catalog composes
 // these primitives for the tiers that read the filesystem in process, the tiers

@@ -28,14 +28,15 @@ var cronPaths = []string{
 	"/var/spool/cron/atjobs/*",
 }
 
-// cronScript is the sh source's reading of the same schedule: the file list
-// above, then the invoking user's own crontab, which is the one surface outside
-// those directories.
-var cronScript = script.Lines(
-	script.ReadFiles(cronPaths, `cat "$f"`, true),
-	`echo "== crontab -l"`,
-	"crontab -l 2>/dev/null",
-)
+// cronTier is the sh source's reading of the same schedule: the file list above,
+// then the invoking user's own crontab, which is the one surface outside those
+// directories — one section per file and one for the crontab, all in one step.
+func cronTier() []model.Step {
+	steps := filesTier("cat", `cat "$f"`, nil, nil, cronPaths)
+	steps[0] = append(steps[0], model.Probe{Label: "cat", Title: "crontab -l", Inv: model.Native{Body: native.Crontab}})
+	steps[1] = append(steps[1], model.Probe{Label: "cat-sh", Title: "crontab -l", Inv: model.Sh("crontab -l 2>/dev/null")})
+	return steps
+}
 
 // bootScriptPaths are the boot-time scripts the rc-local check reads: the classic
 // SysV hook at both of its locations (Debian and RedHat families) and the
@@ -96,14 +97,17 @@ var skelTemplates = []string{
 	skelDir + "/.zshrc",
 }
 
-// skelScript is the sh source's reading of the same shape: the directory
-// listing first (the section the check's own syntax override names), then the
-// template files.
-var skelScript = script.Lines(
-	`echo "== `+skelDir+`"`,
-	script.ListingFind(skelDir+"/", skelHead),
-	script.ReadFiles(skelTemplates, `cat "$f"`, true),
-)
+// skelTier is the sh source's reading of the same shape: the directory listing
+// first (the section the check's own syntax override names), then the template
+// files.
+func skelTier() []model.Step {
+	steps := filesTier("cat", `cat "$f"`, nil, nil, skelTemplates)
+	steps[0] = append([]model.Probe{{Label: "cat", Title: skelDir,
+		Inv: model.Native{Body: dirListing(skelDir, skelHead)}}}, steps[0]...)
+	steps[1] = append([]model.Probe{{Label: "cat-sh", Title: skelDir,
+		Inv: model.Sh(script.ListingFind(skelDir+"/", skelHead))}}, steps[1]...)
+	return steps
+}
 
 // unitDirs: a freshly dropped malicious unit floats to the top; /run is tmpfs and
 // is cleared on reboot, so malware likes it for volatile persistence. A glob with
@@ -134,16 +138,32 @@ const (
 
 var udevExecRe = regexp.MustCompile(udevExec)
 
-// udevScript is the sh source's reading of the same two layers: the listing,
-// then the assignment keys that reference an external program, capped at the
-// same hit count.
-var udevScript = script.Lines(
-	"for d in "+strings.Join(udevDirs, " ")+"; do",
-	`  echo "== $d"`,
-	"  "+script.ListingFind("$d", udevHead),
-	"  grep -rnIE '"+udevExec+`' "$d" 2>/dev/null | head -n `+strconv.Itoa(udevExecMaxHits),
-	"done",
-)
+// udevTier is the sh source's reading of the same two layers: per layer, the
+// listing and then the assignment keys that reference an external program, capped
+// at the same hit count.
+func udevTier() []model.Step {
+	return []model.Step{
+		{{Label: "find", Files: &model.Files{
+			List: model.Native{Body: listDirs(udevDirs)},
+			Read: func(dir string) model.Invocation {
+				return model.Native{Body: native.UdevDir(dir, udevHead, udevExecMaxHits, udevExecRe)}
+			},
+		}}},
+		{{Label: "find-sh", Files: &model.Files{
+			List: model.Sh(script.ListDirs(udevDirs)),
+			Read: func(dir string) model.Invocation { return model.Sh(udevDirScript(dir)) },
+		}}},
+	}
+}
+
+// udevDirScript is one udev layer's reading: the listing, then the assignment
+// keys that reference an external program.
+func udevDirScript(dir string) string {
+	return script.Lines(
+		script.ListingFind(dir, udevHead),
+		"grep -rnIE '"+udevExec+`' `+script.Quote(dir)+" 2>/dev/null | head -n "+strconv.Itoa(udevExecMaxHits),
+	)
+}
 
 // motd: motd and update-motd.d are script surfaces run as root on login
 // (mainly Ubuntu).
@@ -170,20 +190,34 @@ var generatorDirs = []string{
 
 const generatorHead = 100
 
-// generatorsScript is the sh source's reading of the same directories, with the
+// generatorsListScript is the sh source's list of the same directories, with the
 // usrmerge dedup the in-process walk also does: /lib and /usr/lib are one
 // directory, and reading it twice would double the whole section.
-var generatorsScript = script.Lines(
+var generatorsListScript = script.Lines(
 	"seen=",
 	"for d in "+strings.Join(generatorDirs, " ")+"; do",
 	`  [ -d "$d" ] || continue`,
 	`  r=$(readlink -f "$d")`,
 	`  case " $seen " in *" $r "*) continue;; esac`,
 	`  seen="$seen $r"`,
-	`  echo "== $d"`,
-	"  "+script.ListingFind("$d", generatorHead),
+	`  echo "$d"`,
 	"done",
 )
+
+// generatorsTier is the generator check's tier pair: the de-duplicated directory
+// list, then one listing section per directory.
+func generatorsTier() []model.Step {
+	return []model.Step{
+		{{Label: "find", Files: &model.Files{
+			List: model.Native{Body: native.GeneratorDirs(generatorDirs)},
+			Read: func(dir string) model.Invocation { return model.Native{Body: dirListing(dir, generatorHead)} },
+		}}},
+		{{Label: "find-sh", Files: &model.Files{
+			List: model.Sh(generatorsListScript),
+			Read: func(dir string) model.Invocation { return model.Sh(script.ListingFind(dir, generatorHead)) },
+		}}},
+	}
+}
 
 // aliasShadowRule marks an alias that redefines a tool the analyst reads the
 // host with. `alias netstat=…` makes the connection table whatever the line
@@ -200,10 +234,7 @@ var aliasShadowRule = model.NewRule("alias-command-shadow",
 // PersistenceChecks covers persistence.
 var PersistenceChecks = []*model.Check{
 	define.LinuxCheck("cron", "Scheduled tasks", model.AspectPersistence,
-		[]model.Step{
-			{{Label: "cat", Inv: model.Native{Body: native.Cron(cronPaths)}}},
-			{{Label: "cat-sh", Inv: model.Sh(cronScript)}},
-		},
+		cronTier(),
 		define.CheckOpt{
 			// pygments has no crontab lexer; the bash lexer approximates the command part well
 			// enough
@@ -235,10 +266,7 @@ var PersistenceChecks = []*model.Check{
 	listingCheck("unit-dirs", "systemd unit directories (by mtime)", model.AspectPersistence,
 		unitDirs, 100, nil),
 	define.LinuxCheck("systemd-generators", "systemd generator directories", model.AspectPersistence,
-		[]model.Step{
-			{{Label: "find", Inv: model.Native{Body: native.Generators(generatorDirs, generatorHead)}}},
-			{{Label: "find-sh", Inv: model.Sh(generatorsScript)}},
-		},
+		generatorsTier(),
 		define.CheckOpt{
 			Syntax:    model.SyntaxLsL,
 			Normalize: listingNormalize,
@@ -266,10 +294,7 @@ var PersistenceChecks = []*model.Check{
 	listingCheck("xinetd", "xinetd service directory", model.AspectPersistence,
 		[]string{"/etc/xinetd.d"}, 100, []model.Matcher{define.KeywordRule}),
 	define.LinuxCheck("udev-rules", "udev rules (writable layers)", model.AspectPersistence,
-		[]model.Step{
-			{{Label: "find", Inv: model.Native{Body: native.Udev(udevDirs, udevHead, udevExecMaxHits, udevExecRe)}}},
-			{{Label: "find-sh", Inv: model.Sh(udevScript)}},
-		},
+		udevTier(),
 		define.CheckOpt{
 			Syntax:    model.SyntaxLsL,
 			Normalize: listingNormalize,
@@ -309,10 +334,7 @@ var PersistenceChecks = []*model.Check{
 			Syntax: model.SyntaxBash,
 		}),
 	define.LinuxCheck("skel", "Home directory templates (/etc/skel)", model.AspectPersistence,
-		[]model.Step{
-			{{Label: "cat", Inv: model.Native{Body: native.Skel(skelDir, skelHead, skelTemplates)}}},
-			{{Label: "cat-sh", Inv: model.Sh(skelScript)}},
-		},
+		skelTier(),
 		define.CheckOpt{
 			Syntax:    model.SyntaxBash,
 			Normalize: listingNormalize,

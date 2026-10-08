@@ -408,20 +408,27 @@ func TestRunCheckStepRunsEveryMember(t *testing.T) {
 	}
 }
 
-// A body that lost its trailing newline does not glue onto the next member's
-// first line: the joined body is what one tier would have printed.
-func TestJoinStepSeparatesBodiesWithoutATrailingNewline(t *testing.T) {
+// A step's members answer with their own sections, so a body that lost its
+// trailing newline can never glue onto the next one: the boundary is stated, not
+// inferred from the bytes.
+func TestJoinStepKeepsEachMembersBodyItsOwnSection(t *testing.T) {
 	check := &model.Check{ID: "regs", Aspect: model.AspectSystem, Steps: []model.Step{{
-		{Label: "a", Inv: model.NewCommand("tool-a")},
-		{Label: "b", Inv: model.NewCommand("tool-b")},
+		{Label: "a", Title: "a", Inv: model.NewCommand("tool-a")},
+		{Label: "b", Title: "b", Inv: model.NewCommand("tool-b")},
 	}}}
 	sess := &scriptSession{reply: []model.RunResult{
 		{Verdict: model.VerdictAnswered, Stdout: "last line of a"},
 		{Verdict: model.VerdictAnswered, Stdout: "b\n"},
 	}}
 	result := runCheck(context.Background(), sess, check, model.RunOptions{Timeout: time.Second})
-	if result.Raw != "last line of a\nb\n" {
-		t.Fatalf("raw = %q, want the two bodies on their own lines", result.Raw)
+	if len(result.Document.Sections) != 2 {
+		t.Fatalf("one section per member: %+v", result.Document.Sections)
+	}
+	if got := result.Document.Sections[0].Lines[0].Text; got != "last line of a" {
+		t.Fatalf("the first section keeps its own body: %q", got)
+	}
+	if got := result.Document.Sections[1].Title; got != "b" {
+		t.Fatalf("the second section keeps the member's title: %q", got)
 	}
 }
 
