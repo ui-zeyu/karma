@@ -3,7 +3,7 @@
 # test passes.
 
 GO ?= go
-VERSION ?= 0.38.0
+VERSION ?= 0.38.1
 .PHONY: all fmt vet test race staticcheck build linux-arm64 dist clean
 
 all: fmt vet test
