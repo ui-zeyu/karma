@@ -154,10 +154,106 @@ func readSection(body model.BodySection, capped string, check *model.Check,
 	if check.Normalize != nil {
 		shapers = append(shapers, check.Normalize)
 	}
-	if body.Records != nil {
-		return readRecords(body.Title, body.Records, check.Rules, check.Filters, floor, number)
+	// One walk for both ways a section arrives: the gates below judge a record
+	// and keep a line whichever the walk hands out, so the floor-then-filters
+	// order has one statement rather than one per path.
+	walk := newSectionWalk(body, body.Title, capped, shapers)
+	titleRecord := model.TextRecord(body.Title)
+	titleMatches := judgeRecord(&titleRecord, check.Rules)
+	if body.Title != "" {
+		number++
 	}
-	return readText(body.Title, capped, check.Rules, check.Filters, floor, shapers, number)
+	keepFilters, dropFilters := splitFilters(check.Filters)
+	kept := make([]model.Line, 0, walk.count)
+	var filtered counter
+	for index := range walk.count {
+		line := walk.line(index)
+		number++
+		matches := append(judgeRecord(line.record, check.Rules), line.notes...)
+		severity, hid := gate(line.record, matches, floor, keepFilters, dropFilters)
+		if hid != "" {
+			filtered = filtered.add(hid)
+			continue
+		}
+		kept = append(kept, model.Line{
+			Number:   number,
+			Text:     line.text,
+			Severity: severity,
+			Matches:  matches,
+			Record:   line.keep,
+		})
+	}
+	if len(kept) == 0 && len(titleMatches) == 0 {
+		return model.Section{}, filtered, number, false
+	}
+	return model.Section{
+		Title:        body.Title,
+		TitleMatches: titleMatches,
+		Lines:        kept,
+		Columns:      walk.columns,
+	}, filtered, number, true
+}
+
+// sectionLine is one line of a section as the reading walks it: the record the
+// rules judge, the text a panel draws, and the record the presentation keeps —
+// nil for a body of plain text, whose panel reads the line rather than a record
+// of one field. notes are the shaping notes that landed on this line.
+type sectionLine struct {
+	record *model.Record
+	text   string
+	keep   *model.Record
+	notes  []model.Match
+}
+
+// sectionWalk is one section's lines in reading order, whichever way the section
+// arrived: the records the collection stated, or the text the shapers produced.
+// Only the shaping that produced the lines knows the column names the section's
+// form draws by and how many lines there are.
+type sectionWalk struct {
+	columns []string
+	count   int
+	// Exactly one of set and text is set. set is the records path. text, notes
+	// and records are the text path's shaped body: records is non-nil when a
+	// shaper recognized the lines and stated the fields behind them, which is
+	// what lets a text tier reach the form.
+	set     *model.RecordSet
+	text    []string
+	notes   map[int][]model.Match
+	records *model.RecordSet
+	// scratch is the one record a body of plain text is judged as, line by
+	// line: a body with no fields of its own is a series of one-field records.
+	scratch model.Record
+}
+
+// line is the index'th line as the reading walks it.
+func (w *sectionWalk) line(index int) sectionLine {
+	if w.set != nil {
+		rec := &w.set.Rows[index]
+		return sectionLine{record: rec, text: rec.LineText(), keep: rec}
+	}
+	text := w.text[index]
+	return sectionLine{
+		record: textRecord(w.records, index, text, &w.scratch),
+		text:   text,
+		keep:   structured(w.records, index),
+		notes:  w.notes[index],
+	}
+}
+
+// newSectionWalk builds the walk for one section: the records the collection
+// stated, or the text the shapers produced.
+func newSectionWalk(body model.BodySection, title, capped string, shapers []model.Normalizer) *sectionWalk {
+	if set := body.Records; set != nil {
+		return &sectionWalk{set: set, columns: set.Header, count: len(set.Rows)}
+	}
+	text, notes, records := shape(title, capped, shapers)
+	return &sectionWalk{
+		text:    text,
+		notes:   notes,
+		records: records,
+		columns: columns(records),
+		count:   len(text),
+	}
 }
 
 // Evidence is one body as the record of what the target sent: the title of each
@@ -206,94 +302,6 @@ func scanBudget(scanBytes int) int {
 		return MaxScanBytes
 	}
 	return scanBytes
-}
-
-// readText reads one text section: it shapes the body, judges every line, and
-// gates it. A section that kept no line and matched no rule on its title is not
-// part of the document.
-func readText(title, text string, rules []model.Matcher, filters []model.LineFilter,
-	floor model.SeverityFloor, shapers []model.Normalizer, number int) (model.Section, counter, int, bool) {
-	lines, notes, records := shape(title, text, shapers)
-	titleRecord := model.TextRecord(title)
-	titleMatches := judgeRecord(&titleRecord, rules)
-	if title != "" {
-		number++
-	}
-	keepFilters, dropFilters := splitFilters(filters)
-	kept := make([]model.Line, 0, len(lines))
-	var filtered counter
-	// One scratch record serves every line of text: a body with no fields of
-	// its own is judged as a series of one-field records.
-	var textLine model.Record
-	for index, line := range lines {
-		number++
-		rec := textRecord(records, index, line, &textLine)
-		matches := append(judgeRecord(rec, rules), notes[index]...)
-		severity, hid := gate(rec, matches, floor, keepFilters, dropFilters)
-		if hid != "" {
-			filtered = filtered.add(hid)
-			continue
-		}
-		kept = append(kept, model.Line{
-			Number:   number,
-			Text:     line,
-			Severity: severity,
-			Matches:  matches,
-			Record:   structured(records, index),
-		})
-	}
-	if len(kept) == 0 && len(titleMatches) == 0 {
-		return model.Section{}, filtered, number, false
-	}
-	return model.Section{
-		Title:        title,
-		TitleMatches: titleMatches,
-		Lines:        kept,
-		Columns:      columns(records),
-	}, filtered, number, true
-}
-
-// readRecords reads one section that arrived as fields: the records are the
-// lines, their fields are what every rule reads, and there is no text to cap or
-// shape — the collection already bounded the rows and the shape is the form's
-// business.
-func readRecords(title string, set *model.RecordSet, rules []model.Matcher, filters []model.LineFilter,
-	floor model.SeverityFloor, number int) (model.Section, counter, int, bool) {
-	titleRecord := model.TextRecord(title)
-	titleMatches := judgeRecord(&titleRecord, rules)
-	if title != "" {
-		number++
-	}
-	keepFilters, dropFilters := splitFilters(filters)
-	kept := make([]model.Line, 0, len(set.Rows))
-	var filtered counter
-	for index := range set.Rows {
-		number++
-		rec := &set.Rows[index]
-		line := rec.LineText()
-		matches := judgeRecord(rec, rules)
-		severity, hid := gate(rec, matches, floor, keepFilters, dropFilters)
-		if hid != "" {
-			filtered = filtered.add(hid)
-			continue
-		}
-		kept = append(kept, model.Line{
-			Number:   number,
-			Text:     line,
-			Severity: severity,
-			Matches:  matches,
-			Record:   rec,
-		})
-	}
-	if len(kept) == 0 && len(titleMatches) == 0 {
-		return model.Section{}, filtered, number, false
-	}
-	return model.Section{
-		Title:        title,
-		TitleMatches: titleMatches,
-		Lines:        kept,
-		Columns:      set.Header,
-	}, filtered, number, true
 }
 
 // splitFilters separates the filters by mode once per section.

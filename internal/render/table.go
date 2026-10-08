@@ -34,11 +34,6 @@ var (
 	// column colors.
 	uptimeBanner = compile(`^\s*\d{1,2}:\d{2}(?::\d{2})?\s+up\b`)
 
-	// dfHeader anchors df's columns. The capture groups make "Mounted on" one
-	// column instead of two words; the middle groups take the variants (GNU
-	// df -h is Size/Used/Avail/Use%, busybox and df -P have one fewer column).
-	dfHeader = compile(`^(Filesystem)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\S+))?\s+(Mounted on)\s*$`)
-
 	// lastlogHeader anchors lastlog's columns. Its header words are mixed case
 	// ("Username Port From Latest"), so the generic all-caps header test never
 	// recognizes the line and the panel would cycle word by word instead.

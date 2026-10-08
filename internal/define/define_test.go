@@ -81,7 +81,7 @@ func TestWindowsCheckCarriesNoLinuxPack(t *testing.T) {
 // the walk, the presentation, and the run parameters.
 func TestCheckOptLandsOnTheCheck(t *testing.T) {
 	steps := []model.Step{{{Label: "probe", Inv: model.NewCommand("true")}}}
-	sections := []model.SectionSyntax{{Title: "/etc/*", Syntax: model.SyntaxFstab}}
+	sections := []model.SectionSyntax{{Title: "/etc/*", Syntax: model.SyntaxSshdConfig}}
 	shaped := func(string, string) *model.Shaped { return nil }
 	check := LinuxCheck("probe", "Probe", model.AspectFilesystem, steps, CheckOpt{
 		Syntax:        model.SyntaxTable,

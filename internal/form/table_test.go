@@ -81,6 +81,53 @@ func TestTableRendersHeadAndRows(t *testing.T) {
 	}
 }
 
+// A record that states one value is a remark among the rows, not a row: it takes
+// the line it is, at the table's left edge and under no column's tint, with its
+// hits painted on it and their reasons below.
+func TestTableDrawsAOneValueRecordAsALine(t *testing.T) {
+	table := Table{}
+	block := model.Block{
+		Header: []string{"Device", "Mount point", "Type"},
+		Items: []model.BlockItem{
+			{Rec: row("Device", "/dev/sda1", "Mount point", "/", "Type", "ext4")},
+			{Rec: &model.Record{Fields: []model.Field{{Value: "# a comment on its own"}}},
+				Matches: []model.Match{hit("nfs", model.Low, "network filesystem", 0, 2, 5)}},
+		},
+	}
+	lines := render(t, table, block, 60, false)
+	if len(lines) != 4 {
+		t.Fatalf("head, row, remark and reason = 4 lines: %q", lines)
+	}
+	if lines[2] != "# a comment on its own" {
+		t.Errorf("a remark is the value it states, unpadded: %q", lines[2])
+	}
+	if lines[3] != "⟨network filesystem⟩" {
+		t.Errorf("the reason follows the remark: %q", lines[3])
+	}
+
+	// Painted, the remark takes the hit's color and no column's.
+	painted := render(t, table, block, 60, true)[2]
+	if !strings.Contains(painted, SeverityPaint(model.Low).Render("a c")) {
+		t.Errorf("the remark's hit paints the bytes it named: %q", painted)
+	}
+	if strings.Contains(painted, ColumnPaint(0).Render("# a comment on its own")) {
+		t.Errorf("a remark takes no column's tint: %q", painted)
+	}
+}
+
+// A table of one column still draws rows: the rule is about a record that does
+// not fill the head, not about a narrow table.
+func TestTableDrawsAOneColumnTableAsRows(t *testing.T) {
+	block := model.Block{
+		Header: []string{"Name"},
+		Items:  []model.BlockItem{{Rec: &model.Record{Fields: []model.Field{{Value: "one"}}}}},
+	}
+	lines := render(t, Table{}, block, 40, false)
+	if len(lines) != 2 || lines[1] != "one" {
+		t.Fatalf("a one-column table draws its rows: %q", lines)
+	}
+}
+
 // A rule that states its hit in a field paints that field, and only the bytes it
 // named: the rest of the cell keeps the column's own tint.
 func TestTablePaintsTheBytesTheHitNamed(t *testing.T) {

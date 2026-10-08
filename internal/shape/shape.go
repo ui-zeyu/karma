@@ -1,7 +1,8 @@
 // Package shape holds the body shapers that turn a tool's own wording into the
 // table the panel reads: ip's key-value rows become columns, fstab's six
 // fields are padded to a grid, apt's transaction records become a two-column
-// history, and the home walk's listing rows become the tree tree(1) draws.
+// history, df's table becomes the records its form draws, and the home walk's
+// listing rows become the tree tree(1) draws.
 //
 // Every shaper is a model.Normalizer the reading pipeline runs per section,
 // before rules and filters — so the tokens the rules look for survive the
@@ -9,6 +10,11 @@
 // declines the body it does not recognize by returning nil, which keeps the text
 // exactly as the tool wrote it; the collection's raw text is never touched by any
 // of this.
+//
+// A shaper that pads its columns into text states the layout once and lets the
+// panel print the lines; one that returns records (shapedRecords) hands the
+// layout to the check's form instead, which is what lets a rule point at a field
+// rather than at a byte range in a line.
 //
 // Two types carry the mechanics so no shaper hand-rolls alignment: Table pads
 // columns, Tree draws branch glyphs. Determinism is the contract — same input,
@@ -218,6 +224,15 @@ func parentDir(path string) string {
 
 // shaped is the one-line wrapper every shaper here ends with.
 func shaped(text string) *model.Shaped { return &model.Shaped{Text: text} }
+
+// shapedRecords is shaped's counterpart for a shaper that also states the fields
+// behind its lines — the shape a check draws with a form rather than with a
+// lexer. The reading layer pairs each record with one line of the text and
+// drops the records when the two do not line up, so text must hold exactly one
+// line per record.
+func shapedRecords(text string, set *model.RecordSet) *model.Shaped {
+	return &model.Shaped{Text: text, Records: set}
+}
 
 // lines splits a body the way the reading pipeline counts it, dropping the
 // terminator so a trailing blank never becomes a phantom row.

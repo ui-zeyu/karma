@@ -14,9 +14,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"karma/internal/checks"
 	"karma/internal/form"
 	"karma/internal/model"
+	"karma/internal/reader"
 	"karma/internal/shape"
+	"karma/internal/testkit"
 )
 
 var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -1031,27 +1034,40 @@ func TestSkelPanelKeepsLsColorsForTheListing(t *testing.T) {
 	}
 }
 
-// df's header ends in the two-word "Mounted on": the capture-group header
-// regex keeps it one column, so data rows line up and the mount point (the
-// last column) stays plain.
-func TestDfHeaderAnchorsMultiWordLastColumn(t *testing.T) {
-	styler := newLineStyler("df")
-	header := "Filesystem      Size  Used Avail Use% Mounted on"
-	if spans := styler(header); spans != nil {
-		t.Fatalf("the header should only record anchors: %v", spans)
+// df is drawn by the check's form rather than by a lexer: the reading turns the
+// tool's table into records and the form lays the six columns out — the header
+// printed once, the numeric cells at their column's right edge — so a body of
+// aligned columns reaches the panel as the table it is.
+func TestDfPanelDrawsTheTable(t *testing.T) {
+	check := testkit.CheckByID(t, checks.ChecksFor(model.Linux), "df")
+	document := reader.Read(model.ReadRequest{
+		Check: check,
+		Body: model.Body{Sections: []model.BodySection{{Text: "Filesystem      Size  Used Avail Use% Mounted on\n" +
+			"/dev/vda1        40G   15G   25G  38% /\n" +
+			"tmpfs           391M     0  391M   0% /dev/shm\n"}}},
+		Floor: model.FloorAll,
+	})
+	rows := bodyRows(&model.CheckResult{Check: check, Outcome: model.Collected, Document: document}, 400, 100, false)
+	if len(rows) != 3 {
+		t.Fatalf("a header and one row per filesystem: %q", rows)
 	}
-	row := "/dev/vda1        40G   15G   25G  38% /"
-	spans := styler(row)
-	painted := paintLine(row, spans)
-	for i, want := range []string{"40G", "15G", "25G", "38%"} {
-		if !strings.Contains(painted, tableColumnStyles[i+1].Style().Render(want)) {
-			t.Fatalf("column %d should have its column color (%q): %q", i+1, want, plain(painted))
-		}
+	if !strings.HasPrefix(rows[0], "Filesystem") {
+		t.Fatalf("the form prints the header: %q", rows)
 	}
-	for _, span := range spans {
-		if span.Start <= len(row)-1 && span.End > len(row)-1 {
-			t.Fatalf("the mount point (last column) should stay plain: %+v", spans)
-		}
+	if strings.Count(strings.Join(rows, "\n"), "Filesystem") != 1 {
+		t.Fatalf("the header is printed once, not as a row too: %q", rows)
+	}
+	// The right edge is the alignment the check declares for the numeric cells:
+	// both rows' sizes end in one column, and so do their percentages.
+	end := func(row, token string) int { return strings.Index(row, token) + len(token) }
+	if a, b := end(rows[1], "40G"), end(rows[2], "391M"); a != b {
+		t.Fatalf("the size column should be right-aligned: %q", rows)
+	}
+	if a, b := end(rows[1], "38%"), end(rows[2], "0%"); a != b {
+		t.Fatalf("the use column should be right-aligned: %q", rows)
+	}
+	if !strings.HasSuffix(rows[1], "/") || !strings.HasSuffix(rows[2], "/dev/shm") {
+		t.Fatalf("the mount point is the last column: %q", rows)
 	}
 }
 
@@ -1153,35 +1169,40 @@ func TestTableStylerKeepsThePIDColumnAtEveryWidth(t *testing.T) {
 	}
 }
 
-// fstab rows are colored by column: device blue, mount point green, filesystem// type magenta, options default, dump and pass dimmed; comments stay with the
-// reader's comment muting.
-func TestFstabColumns(t *testing.T) {
-	styler := newLineStyler("fstab")
-	if spans := styler("# <file system> <mount point> <type> <options> <dump> <pass>"); spans != nil {
-		t.Fatalf("a comment should not be painted here: %v", spans)
+// fstab is drawn by the check's form: the six fields become the table's columns,
+// and a comment — one value, no row to fill — keeps its own bytes as the remark
+// it is rather than landing in the Device column under the head.
+func TestFstabPanelDrawsRecordsAndRemarks(t *testing.T) {
+	check := testkit.CheckByID(t, checks.ChecksFor(model.Linux), "fstab")
+	body := "# /etc/fstab: static file system information.\n" +
+		"LABEL=cloudimg-rootfs  /  ext4  discard,errors=remount-ro  0 1\n"
+	document := reader.Read(model.ReadRequest{
+		Check: check,
+		Body:  model.Body{Sections: []model.BodySection{{Title: "/etc/fstab", Text: body}}},
+		Floor: model.FloorAll,
+	})
+	rows := plainAll(bodyRows(&model.CheckResult{Check: check, Outcome: model.Collected, Document: document}, 400, 100, false))
+	if len(rows) != 4 {
+		t.Fatalf("title, head, remark and row: %q", rows)
 	}
-	row := "UUID=1a2b  /  ext4  errors=remount-ro  0  1"
-	painted := paintLine(row, styler(row))
-	if !strings.Contains(painted, style{FG: "4"}.Style().Render("UUID=1a2b")) {
-		t.Fatalf("the device should be blue: %q", plain(painted))
+	if rows[0] != "/etc/fstab" || !strings.HasPrefix(rows[1], "Device") || !strings.HasSuffix(rows[1], "Pass") {
+		t.Fatalf("the head names the file's six fields: %q", rows[:2])
 	}
-	if !strings.Contains(painted, style{FG: "2"}.Style().Render("/")) {
-		t.Fatalf("the mount point should be green: %q", plain(painted))
+	if rows[2] != "# /etc/fstab: static file system information." {
+		t.Fatalf("a comment is the line it is: %q", rows[2])
 	}
-	if !strings.Contains(painted, style{FG: "5"}.Style().Render("ext4")) {
-		t.Fatalf("the filesystem type should be magenta: %q", plain(painted))
+	if got := strings.Join(strings.Fields(rows[3]), " "); got != "LABEL=cloudimg-rootfs / ext4 discard,errors=remount-ro 0 1" {
+		t.Fatalf("the record is the table's row: %q", rows[3])
 	}
-	if !strings.Contains(painted, dimStyle.Style().Render("0")) ||
-		!strings.Contains(painted, dimStyle.Style().Render("1")) {
-		t.Fatalf("dump and pass should be dimmed: %q", plain(painted))
+}
+
+// plainAll is rows with the panel's own escapes stripped.
+func plainAll(rows []string) []string {
+	out := make([]string, len(rows))
+	for index, row := range rows {
+		out[index] = plain(row)
 	}
-	if at := strings.Index(row, "errors=remount-ro"); at >= 0 {
-		for _, span := range styler(row) {
-			if span.Start <= at && span.End >= at+len("errors=remount-ro") {
-				t.Fatalf("options should stay default: %+v", span)
-			}
-		}
-	}
+	return out
 }
 
 // The tree lexer colors a drawn lead by nesting: each bar the hue of the level

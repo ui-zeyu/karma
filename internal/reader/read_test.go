@@ -1,10 +1,11 @@
 // Read is the pipeline's entry point: one body in, one document out. It picks
-// the path the body's shape deserves, runs the tier's own join over the text
-// before anything caps it, and carries the channel's cut into the document.
+// the path the body's shape deserves, caps the text before joining it, and
+// carries the channel's cut into the document.
 
 package reader_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -112,5 +113,92 @@ func TestReadAppliesTheFloorToFields(t *testing.T) {
 	}
 	if got := hiddenBelow(document); got != 1 {
 		t.Fatalf("the floor hid %d rows, want the quiet one", got)
+	}
+}
+
+// stepLog is the reading's hooks noting what they read, in the order they read
+// it. A hook that ran out of turn, or over another step's text, fails here
+// rather than in a panel that quietly drew the wrong rows.
+type stepLog []string
+
+func (l *stepLog) note(step, text string) {
+	*l = append(*l, step+"("+strings.ReplaceAll(text, "\n", `\n`)+")")
+}
+
+// loggingRule is a rule that states nothing and notes the record it judged.
+type loggingRule struct{ log *stepLog }
+
+func (loggingRule) Name() string { return "probe" }
+
+func (r loggingRule) Judge(rec *model.Record) []model.Match {
+	r.log.note("rule", rec.LineText())
+	return nil
+}
+
+// The reading's order, pinned: the tier's join runs once over the whole body,
+// then the body splits at its own titles, then each part is aligned and
+// normalized under its own title, and only then do the rules read it. The
+// title's own judgment comes with its part, after that part's shaping.
+func TestReadRunsItsHooksInOrder(t *testing.T) {
+	var log stepLog
+	align := func(title, text string) *model.Shaped {
+		log.note("align "+title, text)
+		return &model.Shaped{Text: text}
+	}
+	body := model.Body{Sections: []model.BodySection{{
+		Title:  "file",
+		Titles: []string{"== part"},
+		Text:   "raw\n",
+		Assemble: func(text string) string {
+			log.note("join", text)
+			return text + "== part\n"
+		},
+		Adapt: align,
+	}}}
+	check := &model.Check{
+		ID: "probe",
+		Normalize: func(title, text string) *model.Shaped {
+			log.note("normalize "+title, text)
+			return &model.Shaped{Text: text}
+		},
+		Rules: []model.Matcher{loggingRule{&log}},
+	}
+	document := reader.Read(model.ReadRequest{Check: check, Body: body, Floor: model.FloorAll})
+	want := []string{
+		`join(raw\n)`,
+		`align file(raw\n)`,
+		`normalize file(raw\n)`,
+		`rule(file)`,
+		`rule(raw)`,
+		`align == part()`,
+		`normalize == part()`,
+		`rule(== part)`,
+	}
+	if !slices.Equal(log, want) {
+		t.Fatalf("the reading ran:\n%v\nwant:\n%v", log, want)
+	}
+	if got := keptText(document); len(got) != 1 || got[0] != "raw" {
+		t.Fatalf("read body: %q", got)
+	}
+}
+
+// The byte cap runs before the join, and a body the cap cut is not joined at
+// all: the marked stream the join explains is the evidence, and half of a
+// stream explains nothing.
+func TestReadCapsBeforeJoining(t *testing.T) {
+	var log stepLog
+	body := model.Body{Sections: []model.BodySection{{
+		Text:     strings.Repeat("x", 40) + "\n",
+		Assemble: func(text string) string { log.note("join", text); return text },
+	}}}
+	document := reader.Read(model.ReadRequest{
+		Check: &model.Check{ID: "probe", ScanBytes: 20},
+		Body:  body, Floor: model.FloorAll,
+	})
+	if len(log) != 0 {
+		t.Fatalf("a cut body is not joined: %v", log)
+	}
+	if !document.Truncated {
+		t.Fatal("the cap marks the document cut")
 	}
 }

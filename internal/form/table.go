@@ -155,6 +155,14 @@ func (t Table) headRow(header []string, widths []int, opts model.RenderOptions) 
 // under the column the hit fell in. The hits that belong to the record itself
 // state their reason at the row's end.
 func (t Table) dataRow(item model.BlockItem, header []string, widths []int, opts model.RenderOptions) []string {
+	// A record that states one value has no columns to fill, so it is a remark
+	// among the rows rather than a row: a comment in a file's table, a trailer
+	// under it. It takes the line it is, at the table's left edge and under no
+	// column's tint — a comment drawn in the first column would read as a
+	// filesystem named "# …".
+	if len(item.Rec.Fields) == 1 && len(header) > 1 {
+		return t.remarkRow(item, widths, opts)
+	}
 	values := make([]string, len(widths))
 	for index := range widths {
 		if index < len(item.Rec.Fields) {
@@ -162,6 +170,15 @@ func (t Table) dataRow(item model.BlockItem, header []string, widths []int, opts
 		}
 	}
 	rows := t.rowLines(header, values, item.Matches, widths, opts)
+	rows = append(rows, reasonLines(item.Matches, widths, opts)...)
+	return withReasonRows(rows, recordReason(item.Matches), opts)
+}
+
+// remarkRow draws one record that states a single value: the value as the line
+// it is, with its hits painted on it and their reasons below.
+func (t Table) remarkRow(item model.BlockItem, widths []int, opts model.RenderOptions) []string {
+	value := item.Rec.Fields[0].Value
+	rows := []string{paintValue(value, cellHits(item.Matches, 0, len(value)), Paint{}, opts.Color)}
 	rows = append(rows, reasonLines(item.Matches, widths, opts)...)
 	return withReasonRows(rows, recordReason(item.Matches), opts)
 }

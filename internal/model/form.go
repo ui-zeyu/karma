@@ -5,6 +5,21 @@
 // hits it paints were located by the rules that judged the records (see
 // Matcher), so a rule reads the same in a table and in prose and the form never
 // has to infer which cell a byte range was meant for.
+//
+// A form is for a body whose columns are the check's own vocabulary — a table
+// the rules name fields in, so a finding points at a field instead of at a byte
+// range in a line. Everything else — a file's contents, a tool's banner, a
+// listing whose columns drift with the target — is prose: it declares a Syntax
+// and the panel draws the lines it read. The line is not "table or not" but
+// "whose columns are they": df's Size/Used/Avail are karma's to name, while a
+// config file's columns are the file's own.
+//
+// Declaring a form does not by itself produce records. A section reaches the
+// form only when every one of its lines carries a record, so a check that
+// declares a form also has to give the reading a way to state one: a Fields
+// tier whose body is records from the start, or a Normalizer that reads the
+// tool's own text into them. A form without either is a shape that never
+// appears, which is what the catalog test refuses.
 
 package model
 

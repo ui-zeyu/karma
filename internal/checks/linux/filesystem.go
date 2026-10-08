@@ -13,6 +13,7 @@ import (
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/define"
+	"karma/internal/form"
 	"karma/internal/localfs"
 	"karma/internal/model"
 	"karma/internal/script"
@@ -230,20 +231,29 @@ var tunnelToolRule = model.NewRule("tunnel-tool",
 // are what the analyst reads the listing for.
 var keyDirRules = []model.Matcher{sshMaterialRule, tunnelToolRule, define.KeywordRule}
 
+// dfTable is df's shape: the four numeric cells sit at their column's right
+// edge the way df prints them, and the mount point — the last column — takes
+// what is left of the row.
+var dfTable = form.Table{Align: map[string]form.Alignment{
+	"Size": form.Right, "Used": form.Right, "Avail": form.Right, "Use%": form.Right,
+}}
+
 // FilesystemChecks covers disks and files.
 var FilesystemChecks = []*model.Check{
 	// Locally df reads /proc/self/mounts and statfs in-process (native_fs).
+	// Both sources print the same table, and shape.Df reads either one into the
+	// columns the form draws, so the panel lays the numbers out itself.
 	define.LinuxCheck("df", "Disk usage", model.AspectFilesystem,
 		[]model.Step{
 			{{Label: "df", Inv: model.Native{Body: native.Df}}},
 			{{Label: "df-sh", Inv: model.Sh("df -h")}},
 		},
-		define.CheckOpt{Syntax: model.SyntaxDf}),
+		define.CheckOpt{Form: dfTable, Normalize: shape.Df}),
 	define.LinuxCheck("fstab", "Filesystem mount config (fstab)", model.AspectFilesystem,
 		readFilesCheck("/etc/fstab"),
-		// The six fields are padded to the body's widest cell (shape.Fstab) so
-		// the panel reads the grid; comments keep their own bytes.
-		define.CheckOpt{Syntax: model.SyntaxFstab, Normalize: shape.Fstab, Rules: []model.Matcher{mountRemoteFsRule}}),
+		// The file's own shape: six fields per record, drawn as the table they
+		// are, and every comment as the remark it is (shape.Fstab).
+		define.CheckOpt{Form: form.Table{}, Normalize: shape.Fstab, Rules: []model.Matcher{mountRemoteFsRule}}),
 	define.LinuxCheck("mounts", "Mount points", model.AspectFilesystem,
 		[]model.Step{
 			{{Label: "findmnt", Inv: model.Native{Body: native.Findmnt}}},

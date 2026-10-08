@@ -24,8 +24,8 @@ func TestChannelNamesItsSource(t *testing.T) {
 }
 
 func TestSourceRuns(t *testing.T) {
-	// The kind states the side: in-process bodies exist where karma runs, a
-	// Script tier is the sh source's, and a command runs wherever the session
+	// Each kind states its own side: in-process bodies exist where karma runs,
+	// a Script tier is the sh source's, and a command runs wherever the session
 	// points.
 	fields := Fields{Read: func(context.Context) (*RecordSet, error) { return nil, nil }}
 	native := Native{Body: func(context.Context) (string, error) { return "", nil }}
@@ -41,8 +41,8 @@ func TestSourceRuns(t *testing.T) {
 		{SourceNative, script, false}, {SourceSh, script, true},
 		{SourceNative, command, true}, {SourceSh, command, true},
 	} {
-		if got := c.source.Runs(c.inv); got != c.want {
-			t.Errorf("%q.Runs(%T) = %v, want %v", c.source, c.inv, got, c.want)
+		if got := c.inv.RunsOn(c.source); got != c.want {
+			t.Errorf("%T.RunsOn(%q) = %v, want %v", c.inv, c.source, got, c.want)
 		}
 	}
 }

@@ -124,11 +124,7 @@ func sharedPrivWalk(ctx context.Context, fsTypes []string) privWalk {
 		lists, caps, err := scanPrivFiles(ctx, privilegeWalkRoots(fsTypes), os.ModeSetuid, os.ModeSetgid)
 		return privWalk{lists: lists, caps: caps, err: err}
 	}
-	store := runstate.From(ctx)
-	if store == nil {
-		return scan()
-	}
-	walk := runstate.Memo(ctx, store, privWalkKey{}, scan)
+	walk := runstate.Memo(ctx, runstate.From(ctx), privWalkKey{}, scan)
 	if walkCut(walk.err) && ctx.Err() == nil {
 		// Another check's deadline cut the shared walk while this one still has
 		// time: read our own rather than inherit the fragment, the rule

@@ -1,63 +1,50 @@
-// fstab shaping: the six fields of a mount record padded to the body's own
-// widest cell, so the panel reads the file as the table it is. Comments and
-// blank lines keep their own bytes, and a record that is not six fields wide
-// (a hand-edited, half-finished line) passes through untouched rather than
-// being padded into a shape the file does not carry.
+// fstab shaping: the six fields of a mount record become the columns the check's
+// form draws, and every other line — a comment, a blank, a record a hand edit
+// left half-written — becomes a record that states the line itself, which the
+// form prints as the remark it is.
 
 package shape
 
 import (
-	"fmt"
 	"strings"
 
 	"karma/internal/model"
 )
 
-// fstabFields is the record fstab(5) describes: spec, mount point, type,
-// options, dump frequency, pass number.
-const fstabFields = 6
+// FstabColumns is fstab(5)'s record as karma spells it: spec, mount point,
+// filesystem type, options, dump frequency, pass number.
+var FstabColumns = []string{"Device", "Mount point", "Type", "Options", "Dump", "Pass"}
 
-// Fstab aligns an fstab body's records into columns. Both channels read the
-// same file, so one shaping serves them both.
+// Fstab reads an fstab body into records. Both channels read the same file, so
+// one shaping serves them both.
+//
+// A line that is not a six-field record keeps its own bytes as a one-value
+// record: the file's comments are part of what it says, and the form draws such
+// a record as the line it is rather than as a row with one cell filled. '#'
+// opens a comment in fstab(5)'s own syntax — a comment may well split into six
+// words, and those words are not a mount. A body with no record at all is
+// declined whole, and the section stays the text as the file wrote it.
 func Fstab(title, body string) *model.Shaped {
-	split := lines(body)
-	var widths [fstabFields]int
-	type record struct {
-		line   int
-		fields []string
-	}
-	var records []record
-	for i, line := range split {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+	rows := lines(body)
+	set := &model.RecordSet{Header: FstabColumns}
+	records := 0
+	for _, row := range rows {
+		fields := strings.Fields(row)
+		if len(fields) == len(FstabColumns) && !strings.HasPrefix(fields[0], "#") {
+			record := model.Record{Fields: make([]model.Field, len(FstabColumns))}
+			for index, name := range FstabColumns {
+				record.Fields[index] = model.Field{Name: name, Value: fields[index]}
+			}
+			set.Rows = append(set.Rows, record)
+			records++
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) != fstabFields {
-			continue
-		}
-		for col, field := range fields {
-			widths[col] = max(widths[col], len(field))
-		}
-		records = append(records, record{line: i, fields: fields})
+		set.Rows = append(set.Rows, model.Record{
+			Fields: []model.Field{{Value: strings.TrimSuffix(row, "\r")}},
+		})
 	}
-	if len(records) == 0 {
+	if records == 0 {
 		return nil
 	}
-	var b strings.Builder
-	next := 0
-	for i, line := range split {
-		if next < len(records) && records[next].line == i {
-			fields := records[next].fields
-			next++
-			for col := 0; col < fstabFields-1; col++ {
-				fmt.Fprintf(&b, "%-*s", widths[col]+columnGap, fields[col])
-			}
-			b.WriteString(fields[fstabFields-1])
-		} else {
-			b.WriteString(line)
-		}
-		b.WriteByte('\n')
-	}
-	return shaped(b.String())
+	return shapedRecords(strings.Join(rows, "\n")+"\n", set)
 }

@@ -214,7 +214,6 @@ var syntaxStylers = map[model.Syntax]func() lineStyler{
 	// prose, not columns. The process table anchors on its all-caps header;
 	// everything before it stays plain.
 	model.SyntaxTop:       func() lineStyler { return newTableStyler(nil, false).style },
-	model.SyntaxDf:        func() lineStyler { return newTableStyler([]*regexp.Regexp{dfHeader}, true).style },
 	model.SyntaxLastlog:   func() lineStyler { return newTableStyler([]*regexp.Regexp{lastlogHeader}, true).style },
 	model.SyntaxUnits:     func() lineStyler { return newUnitStyler().style },
 	model.SyntaxUnitFiles: func() lineStyler { return styleUnitFiles },
@@ -226,9 +225,8 @@ var syntaxStylers = map[model.Syntax]func() lineStyler{
 	model.SyntaxPkgHistory: func() lineStyler {
 		return stylePkgHistory
 	},
-	model.SyntaxFstab: func() lineStyler { return styleFstab },
-	model.SyntaxReg:   func() lineStyler { return styleReg },
-	model.SyntaxPipe:  func() lineStyler { return stylePipeTable },
+	model.SyntaxReg:  func() lineStyler { return styleReg },
+	model.SyntaxPipe: func() lineStyler { return stylePipeTable },
 	model.SyntaxPowerShell: func() lineStyler {
 		return chromaLineStyler(chromaLexers["powershell"])
 	},

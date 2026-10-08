@@ -59,33 +59,108 @@ func TestTableKeepsARowWiderThanItsHeader(t *testing.T) {
 	}
 }
 
-func TestFstabAlignsTheSixFields(t *testing.T) {
+// fstab's six-field records become the columns the check's form draws, and every
+// other line keeps its own bytes as a one-value record — the remark the form
+// prints as a line rather than as a row with one cell filled.
+func TestFstabReadsTheSixFieldsAndKeepsTheRemarks(t *testing.T) {
 	body := "# /etc/fstab: static file system information.\n" +
 		"LABEL=cloudimg-rootfs    /     ext4    discard,errors=remount-ro    0 1\n" +
 		"LABEL=UEFI    /boot/efi    vfat    umask=0077    0 1\n"
 	got := Fstab("/etc/fstab", body)
-	if got == nil {
-		t.Fatal("an fstab body with records should be shaped")
+	if got == nil || got.Records == nil {
+		t.Fatal("an fstab body with records should be read into them")
 	}
-	want := "# /etc/fstab: static file system information.\n" +
-		"LABEL=cloudimg-rootfs  /          ext4  discard,errors=remount-ro  0  1\n" +
-		"LABEL=UEFI             /boot/efi  vfat  umask=0077                 0  1\n"
-	if got.Text != want {
-		t.Fatalf("aligned fstab:\n%q\nwant:\n%q", got.Text, want)
+	if !slices.Equal(got.Records.Header, FstabColumns) {
+		t.Fatalf("columns = %v, want %v", got.Records.Header, FstabColumns)
+	}
+	if got.Text != body {
+		t.Fatalf("the text is the file's own bytes:\n%q\nwant:\n%q", got.Text, body)
+	}
+	if len(got.Records.Rows) != 3 {
+		t.Fatalf("one record per line: %d", len(got.Records.Rows))
+	}
+	if comment := got.Records.Rows[0]; len(comment.Fields) != 1 || comment.Fields[0].Value != "# /etc/fstab: static file system information." {
+		t.Fatalf("a comment is one value: %+v", comment.Fields)
+	}
+	want := []string{"LABEL=cloudimg-rootfs", "/", "ext4", "discard,errors=remount-ro", "0", "1"}
+	for index, value := range want {
+		if got := got.Records.Rows[1].Fields[index].Value; got != value {
+			t.Errorf("cell %d = %q, want %q", index, got, value)
+		}
 	}
 }
 
-func TestFstabKeepsCommentsAndOddRecords(t *testing.T) {
-	if got := Fstab("", "# a comment\nhalf a record\n"); got != nil {
-		t.Fatalf("a body with no complete record should decline, got %q", got.Text)
+// A body with no complete record has no table to draw, so it is declined whole
+// and reaches the panel as the file wrote it.
+func TestFstabDeclinesABodyWithNoRecord(t *testing.T) {
+	for name, body := range map[string]string{
+		"comments only": "# a comment\nhalf a record\n",
+		"empty":         "",
+	} {
+		if got := Fstab("", body); got != nil {
+			t.Errorf("%s should decline, got %q", name, got.Text)
+		}
 	}
-	got := Fstab("", "# a comment\none two three four five six\nhalf a record\n")
-	if got == nil {
-		t.Fatal("one record is enough to shape")
+}
+
+// df's table is read from whichever df printed it: the columns are karma's own,
+// the mount point takes the rest of the row, and a body that is not df's table
+// is declined whole rather than read as a fragment of one.
+func TestDfReadsTheTableFromEitherDf(t *testing.T) {
+	gnu := "Filesystem      Size  Used Avail Use% Mounted on\n" +
+		"/dev/vda1        40G   15G   25G  38% /\n" +
+		"tmpfs           391M     0  391M   0% /dev/shm\n"
+	got := Df("", gnu)
+	if got == nil || got.Records == nil {
+		t.Fatal("a df body should be read into records")
 	}
-	for _, want := range []string{"# a comment\n", "one  two  three  four  five  six\n", "half a record\n"} {
-		if !strings.Contains(got.Text, want) {
-			t.Fatalf("the shaped body should keep %q verbatim, got %q", want, got.Text)
+	if !slices.Equal(got.Records.Header, DfColumns) {
+		t.Fatalf("columns = %v, want %v", got.Records.Header, DfColumns)
+	}
+	// The header line is the form's to draw, so the text holds the rows alone —
+	// one line per record, which is what the reading pairs them by.
+	if want := "/dev/vda1        40G   15G   25G  38% /\ntmpfs           391M     0  391M   0% /dev/shm\n"; got.Text != want {
+		t.Fatalf("text = %q, want the rows alone %q", got.Text, want)
+	}
+	if len(got.Records.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(got.Records.Rows))
+	}
+	want := []string{"/dev/vda1", "40G", "15G", "25G", "38%", "/"}
+	for index, value := range want {
+		if got := got.Records.Rows[0].Fields[index].Value; got != value {
+			t.Errorf("cell %d = %q, want %q", index, got, value)
+		}
+	}
+	if name := got.Records.Rows[0].Fields[5].Name; name != "Mounted on" {
+		t.Errorf("the last cell is named %q, want the two-word column", name)
+	}
+
+	// Every df spells the cells between the two names differently: busybox has
+	// Available for Avail, and df -P prints 1024-blocks/Used/Available/Capacity.
+	for _, header := range []string{
+		"Filesystem      Size  Used Available Use% Mounted on",
+		"Filesystem     1024-blocks  Used Available Capacity Mounted on",
+	} {
+		if got := Df("", header+"\n/dev/vda1 40G 15G 25G 38% /\n"); got == nil {
+			t.Errorf("the header %q is df's", header)
+		}
+	}
+}
+
+func TestDfDeclinesWhatIsNotItsTable(t *testing.T) {
+	for name, body := range map[string]string{
+		"another table":  "Filesystem  Type  Size  Used  Avail  Use%\n/dev/vda1 ext4 40G 15G 25G 38%\n",
+		"no header":      "/dev/vda1  40G  15G  25G  38%  /\n",
+		"a header alone": "Filesystem  Size  Used Avail Use% Mounted on\n",
+		"a short row":    "Filesystem  Size  Used Avail Use% Mounted on\n/dev/vda1  40G  15G\n",
+		"a blank row":    "Filesystem  Size  Used Avail Use% Mounted on\n/dev/vda1  40G  15G  25G  38%  /\n\n",
+		// BSD's own df -h names ten cells: its rows carry three columns karma
+		// does not draw, so the table is not this one.
+		"bsd df -h": "Filesystem  Size  Used  Avail  Capacity  iused  ifree  %iused  Mounted on\n" +
+			"/dev/disk1s5s1  234G  12G  100G  11%  1234567  0  0%  /\n",
+	} {
+		if got := Df("", body); got != nil {
+			t.Errorf("%s should decline, got %q", name, got.Text)
 		}
 	}
 }

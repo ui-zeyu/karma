@@ -58,6 +58,37 @@ func TestChecksForUnknownPlatformPanics(t *testing.T) {
 	checks.ChecksFor("plan9")
 }
 
+// A check that declares a form draws its body as records, and a section with no
+// records is drawn as text — the form is simply not reached. So a form without
+// anything to fill it is a shape that never appears: the check must have a tier
+// that answers records, or a normalizer that reads the tool's own text into
+// them. The pairing is the catalog's to keep, since nothing validates at run
+// time and a silent fallback looks like a check with nothing to report.
+func TestEveryFormHasRecordsToDraw(t *testing.T) {
+	for _, check := range checks.AllChecks() {
+		if check.Form == nil {
+			continue
+		}
+		if check.Normalize != nil || hasFieldsTier(check) {
+			continue
+		}
+		t.Errorf("%s declares a form but no tier answers records and no normalizer reads any", check.ID)
+	}
+}
+
+// hasFieldsTier reports whether any step of the check walks a Fields tier, the
+// one invocation kind whose body is records from the start.
+func hasFieldsTier(check *model.Check) bool {
+	for _, step := range check.Steps {
+		for _, probe := range step {
+			if _, ok := probe.Inv.(model.Fields); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Catalog invariants, locked here instead of in an init(): probe labels are
 // unique within one chain (the fallback note joins `skipped → current`, and a
 // repeated label would present two indistinguishable tiers), and rule and filter
@@ -142,14 +173,13 @@ func TestEachStepIsOneTiersSet(t *testing.T) {
 				if len(step) == 0 {
 					continue
 				}
-				source := model.SourceNative
-				if step[0].Runs(model.SourceSh) && !step[0].Runs(model.SourceNative) {
-					source = model.SourceSh
-				}
-				for _, probe := range step {
-					if !probe.Runs(source) {
-						t.Errorf("%s step %d mixes sources: %s does not run in %q",
-							check.ID, index, probe.Label, source)
+				// Asking each probe whether the native source walks it settles
+				// the question for both sources, since every invocation kind
+				// runs on at least one of them (model.TestSourceRuns).
+				for _, probe := range step[1:] {
+					if probe.Runs(model.SourceNative) != step[0].Runs(model.SourceNative) {
+						t.Errorf("%s step %d mixes sources: %s and %s are walked by different sources",
+							check.ID, index, step[0].Label, probe.Label)
 					}
 				}
 			}

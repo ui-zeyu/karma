@@ -71,11 +71,7 @@ type procSnapshotKey struct{}
 // table while their checks run together. Outside a run — a unit test calling a
 // body directly — each caller computes its own.
 func procSnapshot(ctx context.Context) processSnapshot {
-	store := runstate.From(ctx)
-	if store == nil {
-		return scanProcesses(ctx)
-	}
-	snap := runstate.Memo(ctx, store, procSnapshotKey{}, func() processSnapshot {
+	snap := runstate.Memo(ctx, runstate.From(ctx), procSnapshotKey{}, func() processSnapshot {
 		return scanProcesses(ctx)
 	})
 	if !snap.complete && ctx.Err() == nil {

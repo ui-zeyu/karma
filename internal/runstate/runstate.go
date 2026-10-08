@@ -58,7 +58,14 @@ func From(ctx context.Context) *Store {
 // whenever — and if ever — its read returns. A slot that already holds its
 // value is always used, even for a caller whose context has just ended: only a
 // computation still in flight can be given up on.
+//
+// A nil store — a check reached outside a run, as a unit test reaching a body
+// directly — computes on its own and caches nothing, so the caller writes the
+// same one line whether or not a run is in progress.
 func Memo[T any](ctx context.Context, s *Store, key any, compute func() T) T {
+	if s == nil {
+		return compute()
+	}
 	s.mu.Lock()
 	slot, shared := s.entries[key]
 	if !shared {
