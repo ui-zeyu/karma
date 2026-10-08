@@ -58,8 +58,7 @@ func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
 
 func (s *SSHSession) run(ctx context.Context, call model.Call) model.RunResult {
 	if script, ok := call.Inv.(model.Script); ok {
-		text := s.run(ctx, scriptCall(script, call.Cap))
-		return finishScript(text, script, call.Cap)
+		return runScript(ctx, s.run, script, call.Cap)
 	}
 	text, ok := shellText(call.Inv)
 	if !ok {

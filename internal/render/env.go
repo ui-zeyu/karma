@@ -8,7 +8,7 @@ func styleEnv(line string) []paintSpan {
 	if matched := envName.FindStringIndex(line); matched != nil {
 		// Paint only the = separating key and value and keep both sides at the
 		// default color — painting the whole line reads as an alert
-		return []paintSpan{{Start: matched[1] - 1, End: matched[1], Style: style{fg: "5"}}}
+		return []paintSpan{{Start: matched[1] - 1, End: matched[1], Style: style{FG: "5"}}}
 	}
 	return nil
 }

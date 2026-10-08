@@ -13,11 +13,11 @@ import "slices"
 // keeps the cycling column color — it is a word, not a verdict; the rules
 // decide what a row means.
 var unitStateStyles = map[string]style{
-	"active":   {fg: "2"},
-	"running":  {fg: "2"},
+	"active":   {FG: "2"},
+	"running":  {FG: "2"},
 	"exited":   dimStyle,
 	"inactive": dimStyle,
-	"dead":     {fg: "3"},
+	"dead":     {FG: "3"},
 }
 
 // sysvServiceLine matches one `service --status-all` row: the bracketed state
@@ -30,7 +30,7 @@ var sysvServiceLine = compile(`^\s*(?P<marker>\[\s*(?P<sign>[+?-])\s*\])(?P<gap>
 // unitStateStyles: `+` (running) dark green, `-` and `?` (stopped, unknown)
 // faint.
 var sysvServiceStyles = map[string]style{
-	"+": {fg: "2"},
+	"+": {FG: "2"},
 	"-": dimStyle,
 	"?": dimStyle,
 }
@@ -99,7 +99,7 @@ func (u *unitStyler) style(line string) []paintSpan {
 // faint. A row then reads at a glance which units boot and which were talked
 // out of it.
 var unitFileStateStyles = map[string]style{
-	"enabled":   {fg: "2"},
+	"enabled":   {FG: "2"},
 	"disabled":  dimStyle,
 	"masked":    dimStyle,
 	"static":    dimStyle,

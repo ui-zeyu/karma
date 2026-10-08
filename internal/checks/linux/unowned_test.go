@@ -18,7 +18,6 @@ import (
 
 	"karma/internal/checks/linux/native"
 	"karma/internal/model"
-	"karma/internal/reader"
 	"karma/internal/testkit"
 )
 
@@ -186,7 +185,7 @@ func TestUnownedFileGrades(t *testing.T) {
 		{`/usr/lib/.inject.so`, model.High, "unowned-file"},
 	}
 	for _, tc := range cases {
-		document := reader.Analyze(tc.text, check.Rules, check.Filters, 0, model.FloorAll, check.Normalize)
+		document := testkit.Analyze(tc.text, check)
 		line := document.Sections[0].Lines[0]
 		if line.Severity != tc.severity {
 			t.Errorf("%q should be graded %v, got %v", tc.text, tc.severity, line.Severity)

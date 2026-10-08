@@ -89,34 +89,35 @@ func (r resolved) matches(c *model.Check) bool {
 	return r.ids[c.ID] || r.aspects[c.Aspect] || r.platforms[c.Platform]
 }
 
-// resolveWords parses selector or exclusion words against the catalog, with
-// the same comma/space equivalence and the same unknown-word error (labeled
-// with what, so a typo says which list it came from).
-func resolveWords(tokens []string, catalog []*model.Check, what string) (resolved, error) {
+// resolveWords parses selector or exclusion words against the catalog, with the
+// same unknown-word error for both (labeled with what, so a typo says which list
+// it came from). The words arrive already expanded — SelectorTokens ran once, in
+// SelectChecks.
+func resolveWords(words []string, catalog []*model.Check, what string) (resolved, error) {
 	knownIDs := lo.SliceToMap(catalog, func(c *model.Check) (string, bool) { return c.ID, true })
 	catalogAspects := lo.SliceToMap(catalog, func(c *model.Check) (model.Aspect, bool) { return c.Aspect, true })
 	catalogPlatforms := lo.SliceToMap(catalog, func(c *model.Check) (model.Platform, bool) { return c.Platform, true })
 	names := slices.Concat(model.PlatformNames(), model.AspectNames(), slices.Collect(maps.Keys(knownIDs)))
 	slices.Sort(names)
 
-	words := resolved{
+	parsed := resolved{
 		ids:       map[string]bool{},
 		aspects:   map[model.Aspect]bool{},
 		platforms: map[model.Platform]bool{},
 	}
-	for _, word := range SelectorTokens(tokens) {
+	for _, word := range words {
 		aspect, isAspect := model.AspectByName(word)
 		platform, isPlatform := model.PlatformByName(word)
 		switch {
 		case isPlatform && catalogPlatforms[platform]:
-			words.platforms[platform] = true
+			parsed.platforms[platform] = true
 		case isAspect && catalogAspects[aspect]:
-			words.aspects[aspect] = true
+			parsed.aspects[aspect] = true
 		case knownIDs[word]:
-			words.ids[word] = true
+			parsed.ids[word] = true
 		default:
 			return resolved{}, fmt.Errorf("unknown %s %q%s", what, word, closeMatches(word, names))
 		}
 	}
-	return words, nil
+	return parsed, nil
 }

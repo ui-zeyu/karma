@@ -14,7 +14,7 @@ import (
 func spansOf(line string, spans []paintSpan) string {
 	out := make([]string, 0, len(spans))
 	for _, span := range spans {
-		out = append(out, line[span.Start:span.End]+"="+string(span.Style.fg))
+		out = append(out, line[span.Start:span.End]+"="+span.Style.FG)
 	}
 	return strings.Join(out, " ")
 }

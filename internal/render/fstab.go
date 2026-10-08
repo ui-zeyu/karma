@@ -17,9 +17,9 @@ func styleFstab(line string) []paintSpan {
 		return nil
 	}
 	spans := []paintSpan{
-		{Start: fields[0].start, End: fields[0].end, Style: style{fg: "4"}},
-		{Start: fields[1].start, End: fields[1].end, Style: style{fg: "2"}},
-		{Start: fields[2].start, End: fields[2].end, Style: style{fg: "5"}},
+		{Start: fields[0].start, End: fields[0].end, Style: style{FG: "4"}},
+		{Start: fields[1].start, End: fields[1].end, Style: style{FG: "2"}},
+		{Start: fields[2].start, End: fields[2].end, Style: style{FG: "5"}},
 	}
 	if len(fields) > 4 {
 		spans = append(spans, paintSpan{Start: fields[4].start, End: fields[4].end, Style: dimStyle})

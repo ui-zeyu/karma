@@ -67,8 +67,7 @@ func (s LocalSession) run(ctx context.Context, call model.Call) model.RunResult 
 		return runNative(ctx, native.Body, call.Cap)
 	}
 	if script, ok := call.Inv.(model.Script); ok {
-		text := s.run(ctx, scriptCall(script, call.Cap))
-		return finishScript(text, script, call.Cap)
+		return runScript(ctx, s.run, script, call.Cap)
 	}
 	return runLocal(ctx, ArgvFor(call.Inv), call.Cap)
 }

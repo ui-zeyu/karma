@@ -55,7 +55,7 @@ func checkPanel(result *model.CheckResult, maxLines, term int, color bool) strin
 // failed check and a failed render.
 func thinRailPanel(result *model.CheckResult, note string, maxLines, term int) string {
 	head := bandHead(subBandFill, subBandStyle.Render(strings.ToUpper(result.Check.ID)), note,
-		style{fg: "9", bold: true, bg: subBandColor}, railInner(term))
+		style{FG: "9", Bold: true, BG: string(subBandColor)}, railInner(term))
 	return checkBlock(model.Info, head, plainRows(result.Raw, result.Stderr, maxLines), term)
 }
 
@@ -64,7 +64,7 @@ func thinRailPanel(result *model.CheckResult, note string, maxLines, term int) s
 // the right.
 func checkHead(result *model.CheckResult, term int) []string {
 	return bandHead(subBandFill, subBandStyle.Render(strings.ToUpper(result.Check.ID)), metaParts(result),
-		style{fg: bandMetaColor, bg: subBandColor}, railInner(term))
+		style{FG: string(bandMetaColor), BG: string(subBandColor)}, railInner(term))
 }
 
 // renderPanel renders one check panel, falling back step by step on a
@@ -255,7 +255,7 @@ func sectionSyntax(check *model.Check, title string) model.Syntax {
 // their severity color, the reason ⟨…⟩ at the end, moved to its own line
 // aligned with the body when it does not fit.
 func sectionTitle(section model.Section, width int) []string {
-	spans := []paintSpan{{Start: 0, End: len(section.Title), Style: style{bold: true}}}
+	spans := []paintSpan{{Start: 0, End: len(section.Title), Style: style{Bold: true}}}
 	spans = append(spans, hitSpans(section.Title, section.TitleMatches)...)
 	return withReason(paintLine(section.Title, spans), section.TitleMatches, width)
 }
@@ -269,7 +269,7 @@ func plannedRows(lines []model.Line, sequence []linePlan, lineStyler lineStyler,
 			rows = append(rows, lineRows(lines[item.index], lineStyler, width)...)
 			continue
 		}
-		rows = append(rows, style{faint: true, italic: true}.seq().Render(
+		rows = append(rows, style{Faint: true, Italic: true}.Render(
 			fmt.Sprintf("… %d lines", item.count)))
 	}
 	return rows
@@ -388,7 +388,7 @@ func withReason(row string, matches []model.Match, width int) []string {
 	if reason == "" {
 		return []string{row}
 	}
-	reasonSt := style{faint: true}.seq().Render(reason)
+	reasonSt := style{Faint: true}.Render(reason)
 	if lipgloss.Width(row)+2+lipgloss.Width(reason) <= width {
 		return []string{row + "  " + reasonSt}
 	}

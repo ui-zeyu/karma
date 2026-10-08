@@ -64,35 +64,12 @@ func (m lineMatch) span(name string) (start, end int, ok bool) {
 	return m.index[2*group], m.index[2*group+1], true
 }
 
-// style is the smallest description of one painting; it turns into lipgloss
-// SGR output.
-type style struct {
-	fg     lipgloss.Color
-	bg     lipgloss.Color
-	bold   bool
-	faint  bool
-	italic bool
-}
-
-func (s style) seq() lipgloss.Style {
-	out := lipgloss.NewStyle()
-	if s.bold {
-		out = out.Bold(true)
-	}
-	if s.faint {
-		out = out.Faint(true)
-	}
-	if s.italic {
-		out = out.Italic(true)
-	}
-	if s.fg != "" {
-		out = out.Foreground(s.fg)
-	}
-	if s.bg != "" {
-		out = out.Background(s.bg)
-	}
-	return out
-}
+// style is the palette's paint (form.Paint) under this package's shorter name:
+// the lexers here are tables of color rules, and a span's own field reads best
+// beside them. It is that type and not a second one — the colors, the
+// sequences around a run and the way a run is painted are the palette's, so the
+// line lexers and the forms paint a run the same way.
+type style = form.Paint
 
 var (
 	// MutedColor is the palette's grey, stated with the rest of the colors in
@@ -104,13 +81,13 @@ var (
 	// The severity colors and the quiet marks, in the span machinery's own
 	// style: form states them once, and the line-span lexers build their styles
 	// from the same values.
-	criticalStyle = styleOf(form.SeverityPaint(model.Critical)) // bold white on red
-	highStyle     = styleOf(form.SeverityPaint(model.High))     // bold bright_red
-	mediumStyle   = styleOf(form.SeverityPaint(model.Medium))   // bold bright_yellow
-	lowStyle      = styleOf(form.SeverityPaint(model.Low))      // bright_cyan
-	mutedStyle    = styleOf(form.MutedPaint())                  // grey50
-	accentStyle   = styleOf(form.AccentPaint())                 // bright_cyan
-	dimStyle      = styleOf(form.DimPaint())
+	criticalStyle = form.SeverityPaint(model.Critical) // bold white on red
+	highStyle     = form.SeverityPaint(model.High)     // bold bright_red
+	mediumStyle   = form.SeverityPaint(model.Medium)   // bold bright_yellow
+	lowStyle      = form.SeverityPaint(model.Low)      // bright_cyan
+	mutedStyle    = form.MutedPaint()                  // grey50
+	accentStyle   = form.AccentPaint()                 // bright_cyan
+	dimStyle      = form.DimPaint()
 
 	// listIDColor: the catalog's id column (karma list), plain blue so the
 	// listing's selector vocabulary stands out from the titles without taking
@@ -134,17 +111,6 @@ var (
 	bandMetaColor = lipgloss.Color("246")
 )
 
-// styleOf is one palette paint as the span machinery's own style.
-func styleOf(paint form.Paint) style {
-	return style{
-		fg:     lipgloss.Color(paint.FG),
-		bg:     lipgloss.Color(paint.BG),
-		bold:   paint.Bold,
-		faint:  paint.Faint,
-		italic: paint.Italic,
-	}
-}
-
 // bandStyle is the level-one heading band: the report's masthead and its aspect
 // banners, and the listing's platform bands. subBandStyle is the level-two band
 // behind the listing's aspect headings and the report's check titles — the same
@@ -163,7 +129,7 @@ var (
 
 // severityStyle is shared by hit spans and the legend; it covers the four
 // signal severities only.
-func severityStyle(severity model.Severity) style { return styleOf(form.SeverityPaint(severity)) }
+func severityStyle(severity model.Severity) style { return form.SeverityPaint(severity) }
 
 // severityBorder is the rail hue. A critical hit span is white on red, so the
 // border takes the red itself.
@@ -182,9 +148,9 @@ var (
 // spans (syntax < hits); bright magenta reads like the severity red in a light
 // terminal, so keywords use dark magenta.
 var (
-	commentColor = style{faint: true}
-	keywordColor = style{fg: "5"} // magenta
-	stringColor  = style{fg: "4"} // blue, same as Number
+	commentColor = style{Faint: true}
+	keywordColor = style{FG: "5"} // magenta
+	stringColor  = style{FG: "4"} // blue, same as Number
 )
 
 // paintSpan is one stretch of a line to paint: its byte range and the style it
@@ -316,14 +282,14 @@ func paintLine(text string, spans []paintSpan) string {
 			continue
 		}
 		if winner >= 0 {
-			out.WriteString(spans[winner].Style.seq().Render(text[runStart:start]))
+			out.WriteString(spans[winner].Style.Render(text[runStart:start]))
 		} else {
 			out.WriteString(text[runStart:start])
 		}
 		winner, runStart = next, start
 	}
 	if winner >= 0 {
-		return out.String() + spans[winner].Style.seq().Render(text[runStart:])
+		return out.String() + spans[winner].Style.Render(text[runStart:])
 	}
 	return out.String() + text[runStart:]
 }

@@ -48,7 +48,7 @@ type HeaderInfo struct {
 // this run covers.
 func RenderHeader(w io.Writer, facts model.HostFacts, info HeaderInfo, term int) {
 	head := bandHead(subBandFill, subBandStyle.Render(info.Version), clock(info.Started),
-		style{fg: bandMetaColor, bg: subBandColor}, railInner(term))
+		style{FG: string(bandMetaColor), BG: string(subBandColor)}, railInner(term))
 	body := factGrid(mastheadFacts(facts, info), textWidth(term))
 	fmt.Fprintln(w, mastheadBand(term))
 	fmt.Fprintln(w, checkBlock(model.Info, head, body, term))
@@ -72,7 +72,7 @@ func clock(started time.Time) string {
 // the left of every row, the run that collected it on the right.
 func mastheadFacts(facts model.HostFacts, info HeaderInfo) []fact {
 	rows := []fact{
-		{label: "host", value: cmp.Or(facts.Hostname, "unknown"), styl: style{bold: true}},
+		{label: "host", value: cmp.Or(facts.Hostname, "unknown"), styl: style{Bold: true}},
 		{label: "channel", value: info.Channel},
 		{label: "distro", value: cmp.Or(facts.OsPretty, "unknown distro")},
 		{label: "account", value: accountCell(facts)},
@@ -118,10 +118,10 @@ func legendChips(floor model.SeverityFloor) []string {
 		if !floor.Keeps(level) {
 			st = mutedStyle
 		}
-		chips = append(chips, st.seq().Render("● "+level.String()))
+		chips = append(chips, st.Render("● "+level.String()))
 	}
 	if floor != model.FloorAll {
-		chips = append(chips, mutedStyle.seq().Render("showing ≥ "+floor.String()))
+		chips = append(chips, mutedStyle.Render("showing ≥ "+floor.String()))
 	}
 	return chips
 }
@@ -194,7 +194,7 @@ func factGrid(facts []fact, width int) []string {
 		for index, line := range f.lines(max(inner-labelWidth-factGap, 1)) {
 			label := ""
 			if index == 0 {
-				label = mutedStyle.seq().Render(padRight(f.label, labelWidth)) + strings.Repeat(" ", factGap)
+				label = mutedStyle.Render(padRight(f.label, labelWidth)) + strings.Repeat(" ", factGap)
 			} else {
 				label = strings.Repeat(" ", labelWidth+factGap)
 			}
@@ -211,7 +211,7 @@ func factCell(label string, labelWidth int, lines []string, index int) string {
 		return ""
 	}
 	if index == 0 {
-		return mutedStyle.seq().Render(padRight(label, labelWidth)) +
+		return mutedStyle.Render(padRight(label, labelWidth)) +
 			strings.Repeat(" ", factGap) + lines[0]
 	}
 	return strings.Repeat(" ", labelWidth+factGap) + lines[index]
@@ -261,7 +261,7 @@ func (f fact) lines(width int) []string {
 	}
 	lines := strings.Split(boundRow(f.value, width), "\n")
 	for index, line := range lines {
-		lines[index] = f.styl.seq().Render(line)
+		lines[index] = f.styl.Render(line)
 	}
 	return lines
 }

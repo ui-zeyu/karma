@@ -156,8 +156,8 @@ func TestCheckPanelNoteBlock(t *testing.T) {
 	if !strings.HasPrefix(plain(lines[0]), "▌ DMESG") || !strings.Contains(plain(lines[0]), "timeout (30s), partial output kept") {
 		t.Fatalf("the first line should carry the id and the note: %q", plain(lines[0]))
 	}
-	noteStyle := style{fg: "9", bold: true, bg: subBandColor}
-	if !strings.Contains(lines[0], noteStyle.seq().Render("timeout (30s), partial output kept")) {
+	noteStyle := style{FG: "9", Bold: true, BG: string(subBandColor)}
+	if !strings.Contains(lines[0], noteStyle.Style().Render("timeout (30s), partial output kept")) {
 		t.Fatalf("the note should be lit on the band: %q", lines[0])
 	}
 	if body := plain(strings.Join(lines[1:], "\n")); !strings.Contains(body, "line one") ||
@@ -177,7 +177,7 @@ func TestCheckPanelQuietRailAndSkippedLine(t *testing.T) {
 		}},
 	}
 	lines := strings.Split(checkPanel(quiet, 40, 80, true), "\n")
-	quietRail := mutedStyle.seq().Render("▌")
+	quietRail := mutedStyle.Style().Render("▌")
 	for i, line := range lines {
 		if !strings.HasPrefix(plain(line), "▌ ") {
 			t.Fatalf("a quiet panel should start with the grey rail (line %d): %q", i, plain(line))
@@ -397,13 +397,13 @@ func TestPaintLineOverlaysLaterSpans(t *testing.T) {
 		{Start: 0, End: 10, Style: mutedStyle},
 		{Start: 2, End: 4, Style: highStyle},
 	})
-	if want := highStyle.seq().Render("23"); !strings.Contains(got, want) {
+	if want := highStyle.Style().Render("23"); !strings.Contains(got, want) {
 		t.Fatalf("a later span should cover an earlier one: %q", plain(got))
 	}
-	if want := mutedStyle.seq().Render("01"); !strings.Contains(got, want) {
+	if want := mutedStyle.Style().Render("01"); !strings.Contains(got, want) {
 		t.Fatalf("the leading part should keep the base color: %q", plain(got))
 	}
-	if want := mutedStyle.seq().Render("456789"); !strings.Contains(got, want) {
+	if want := mutedStyle.Style().Render("456789"); !strings.Contains(got, want) {
 		t.Fatalf("the trailing part should return to the base color: %q", plain(got))
 	}
 }
@@ -411,15 +411,15 @@ func TestPaintLineOverlaysLaterSpans(t *testing.T) {
 func TestLsLPermissionBitsPaintedOverMutedBase(t *testing.T) {
 	line := "-rw-r--r-- 1 root root 4096 Jan 01 12:34 /tmp/notes.txt"
 	painted := paintLine(line, styleLsL(line))
-	wBit := style{fg: "3"}.seq().Render("w")
+	wBit := style{FG: "3"}.Style().Render("w")
 	if !strings.Contains(painted, wBit) {
 		t.Fatalf("permission bits should be lit one by one (w yellow): %q", painted)
 	}
-	clock := style{fg: "2"}.seq().Render("Jan 01 12:34")
+	clock := style{FG: "2"}.Style().Render("Jan 01 12:34")
 	if !strings.Contains(painted, clock) {
 		t.Fatalf("a date with a time should be green: %q", painted)
 	}
-	owners := mutedStyle.seq().Render("-- 1 root root ")
+	owners := mutedStyle.Style().Render("-- 1 root root ")
 	if !strings.Contains(painted, owners) {
 		t.Fatalf("owner and group should be muted: %q", painted)
 	}
@@ -442,7 +442,7 @@ func TestLsmodKeepsUsedByTailPlain(t *testing.T) {
 		}
 	}
 	for i, want := range []string{"nvidia_uvm", "1310720", "2"} {
-		if !strings.Contains(paintLine(row, spans), tableColumnStyles[i].seq().Render(want)) {
+		if !strings.Contains(paintLine(row, spans), tableColumnStyles[i].Style().Render(want)) {
 			t.Fatalf("column %d should have its column color: %+v", i, spans)
 		}
 	}
@@ -629,10 +629,10 @@ func TestBodyRowsSectionBlocks(t *testing.T) {
 	if got := plain(rows[0]); got != "/etc/cron.d/evil  ⟨reboot trigger⟩" {
 		t.Fatalf("the section title should come before the body, with the trailing reason: %q", got)
 	}
-	if !strings.Contains(rows[0], style{bold: true}.seq().Render("/etc/")) {
+	if !strings.Contains(rows[0], style{Bold: true}.Style().Render("/etc/")) {
 		t.Fatalf("the section title should be bold plain text: %q", rows[0])
 	}
-	if strings.Contains(rows[0], mutedStyle.seq().Render("/etc/")) {
+	if strings.Contains(rows[0], mutedStyle.Style().Render("/etc/")) {
 		t.Fatalf("the section title should no longer be muted: %q", rows[0])
 	}
 	if got := plain(rows[1]); got != "@reboot cmd  ⟨reboot trigger⟩" {
@@ -697,15 +697,15 @@ func TestRegStyler(t *testing.T) {
 		text   string
 		Styler style
 	}{
-		{"url1", style{fg: "4"}},
+		{"url1", style{FG: "4"}},
 		{"REG_SZ", keywordColor},
 	} {
-		if !strings.Contains(paintLine(row, spans), want.Styler.seq().Render(want.text)) {
+		if !strings.Contains(paintLine(row, spans), want.Styler.Style().Render(want.text)) {
 			t.Fatalf("the value row should light up %q: %q", want.text, plain(paintLine(row, spans)))
 		}
 	}
 	hexRow := `    0    REG_BINARY    0C,00,00,00`
-	if spans := styler(hexRow); !strings.Contains(paintLine(hexRow, spans), dimStyle.seq().Render("0C,00,00,00")) {
+	if spans := styler(hexRow); !strings.Contains(paintLine(hexRow, spans), dimStyle.Style().Render("0C,00,00,00")) {
 		t.Fatalf("hex data should be dimmed: %q", plain(paintLine(hexRow, styler(hexRow))))
 	}
 	cont := `        00,00,00,00`
@@ -722,13 +722,13 @@ func TestUSBStyler(t *testing.T) {
 		t.Fatal("a usb row should be painted")
 	}
 	painted := paintLine(row, spans)
-	if !strings.Contains(painted, style{fg: "4"}.seq().Render("win2k25-0 SSD")) {
+	if !strings.Contains(painted, style{FG: "4"}.Style().Render("win2k25-0 SSD")) {
 		t.Fatalf("the device name should be blue: %q", plain(painted))
 	}
-	if !strings.Contains(painted, style{fg: "2"}.seq().Render("2025-01-02 03:04:05")) {
+	if !strings.Contains(painted, style{FG: "2"}.Style().Render("2025-01-02 03:04:05")) {
 		t.Fatalf("a timestamp should be green: %q", plain(painted))
 	}
-	if !strings.Contains(painted, mutedStyle.seq().Render("Last Connected")) {
+	if !strings.Contains(painted, mutedStyle.Style().Render("Last Connected")) {
 		t.Fatalf("a label should be muted: %q", plain(painted))
 	}
 	bare := `MacBook Pro Camera | 6&3b8d32a8&0&0000`
@@ -763,10 +763,10 @@ func TestPowershellStyler(t *testing.T) {
 		t.Fatal("a PowerShell command line should be painted")
 	}
 	painted := paintLine(line, spans)
-	if !strings.Contains(painted, keywordColor.seq().Render("Invoke-Expression")) {
+	if !strings.Contains(painted, keywordColor.Style().Render("Invoke-Expression")) {
 		t.Fatalf("a cmdlet should get the keyword color: %q", plain(painted))
 	}
-	if !strings.Contains(painted, stringColor.seq().Render(`'http://x/y.ps1'`)) {
+	if !strings.Contains(painted, stringColor.Style().Render(`'http://x/y.ps1'`)) {
 		t.Fatalf("a URL string should be blue: %q", plain(painted))
 	}
 	for _, span := range spans {
@@ -808,15 +808,15 @@ func TestUnitStateCellsPaintedByMeaning(t *testing.T) {
 	running := pad("nginx.service", 16) + pad("loaded", 7) + pad("active", 9) + pad("running", 11) +
 		"A high performance web server"
 	spans := styler(running)
-	if !hasSpan(spans, running, "active", style{fg: "2"}) ||
-		!hasSpan(spans, running, "running", style{fg: "2"}) {
+	if !hasSpan(spans, running, "active", style{FG: "2"}) ||
+		!hasSpan(spans, running, "running", style{FG: "2"}) {
 		t.Fatalf("active/running should be painted green: %+v", spans)
 	}
 	exited := pad("certbot.service", 16) + pad("loaded", 7) + pad("active", 9) + pad("exited", 11) +
 		"Certbot renewal"
 	spans = styler(exited)
-	if !hasSpan(spans, exited, "active", style{fg: "2"}) || !hasSpan(spans, exited, "exited", dimStyle) {
-		t.Fatalf("active should stay green and exited should go faint: %+v", spans)
+	if !hasSpan(spans, exited, "active", style{FG: "2"}) || !hasSpan(spans, exited, "exited", dimStyle) {
+		t.Fatalf("active should stay green and exited should go Faint: %+v", spans)
 	}
 	desc := pad("sshd.service", 16) + pad("loaded", 7) + pad("active", 9) + pad("running", 11) +
 		"daemon that keeps users running"
@@ -862,12 +862,12 @@ func TestUnitFileStateWordsPaintedByValue(t *testing.T) {
 		return false
 	}
 	enabled := pad("ssh.service", 32) + pad("enabled", 16) + "enabled"
-	if !hasSpan(styler(enabled), enabled, "enabled", style{fg: "2"}) {
+	if !hasSpan(styler(enabled), enabled, "enabled", style{FG: "2"}) {
 		t.Fatalf("enabled should be painted green: %+v", styler(enabled))
 	}
 	disabled := pad("ufw.service", 32) + pad("disabled", 16) + "enabled"
 	if !hasSpan(styler(disabled), disabled, "disabled", dimStyle) {
-		t.Fatalf("disabled should be faint: %+v", styler(disabled))
+		t.Fatalf("disabled should be Faint: %+v", styler(disabled))
 	}
 	if unitFileStateStyles["enabled"] == unitFileStateStyles["disabled"] {
 		t.Fatal("enabled and disabled wear one color")
@@ -945,10 +945,10 @@ func TestUnitsPanelPaintsStateCells(t *testing.T) {
 		}}}},
 	}
 	panel := checkPanel(result, 40, 120, true)
-	if !strings.Contains(panel, style{fg: "2"}.seq().Render("running")) {
+	if !strings.Contains(panel, style{FG: "2"}.Style().Render("running")) {
 		t.Fatalf("running should be green in the panel:\n%s", plain(panel))
 	}
-	if !strings.Contains(panel, dimStyle.seq().Render("exited")) {
+	if !strings.Contains(panel, dimStyle.Style().Render("exited")) {
 		t.Fatalf("exited should be faint in the panel:\n%s", plain(panel))
 	}
 }
@@ -968,14 +968,14 @@ func TestUnitsPanelPaintsSysvStateMarkers(t *testing.T) {
 		}}}},
 	}
 	panel := checkPanel(result, 40, 120, true)
-	if !strings.Contains(panel, style{fg: "2"}.seq().Render("[ + ]")) {
+	if !strings.Contains(panel, style{FG: "2"}.Style().Render("[ + ]")) {
 		t.Fatalf("a running marker should be green as one field:\n%s", plain(panel))
 	}
-	if !strings.Contains(panel, dimStyle.seq().Render("[ - ]")) ||
-		!strings.Contains(panel, dimStyle.seq().Render("[ ? ]")) {
-		t.Fatalf("stopped and unknown markers should be faint:\n%s", plain(panel))
+	if !strings.Contains(panel, dimStyle.Style().Render("[ - ]")) ||
+		!strings.Contains(panel, dimStyle.Style().Render("[ ? ]")) {
+		t.Fatalf("stopped and unknown markers should be Faint:\n%s", plain(panel))
 	}
-	if !strings.Contains(panel, tableColumnStyles[0].seq().Render("apache2")) {
+	if !strings.Contains(panel, tableColumnStyles[0].Style().Render("apache2")) {
 		t.Fatalf("the service name should take the first column color:\n%s", plain(panel))
 	}
 }
@@ -993,7 +993,7 @@ func TestLineTextMostSevereSpanWins(t *testing.T) {
 		{match("caps-present", model.Low), match("caps-setuid", model.Critical)},
 	} {
 		got := lineText(model.Line{Text: text, Severity: model.Critical, Matches: matches}, nil)
-		if !strings.Contains(got, criticalStyle.seq().Render(text)) {
+		if !strings.Contains(got, criticalStyle.Style().Render(text)) {
 			t.Fatalf("the critical span should paint over the lower one (order %v): %q", matches[0].ID, got)
 		}
 	}
@@ -1019,10 +1019,10 @@ func TestSkelPanelKeepsLsColorsForTheListing(t *testing.T) {
 		}},
 	}
 	panel := checkPanel(result, 40, 120, true)
-	if !strings.Contains(panel, style{fg: "2"}.seq().Render("Jan 01 12:34")) {
+	if !strings.Contains(panel, style{FG: "2"}.Style().Render("Jan 01 12:34")) {
 		t.Fatalf("the listing should keep the ls -l colors:\n%s", plain(panel))
 	}
-	if !strings.Contains(panel, keywordColor.seq().Render("export")) {
+	if !strings.Contains(panel, keywordColor.Style().Render("export")) {
 		t.Fatalf("the shell section should keep the bash lexer:\n%s", plain(panel))
 	}
 }
@@ -1040,7 +1040,7 @@ func TestDfHeaderAnchorsMultiWordLastColumn(t *testing.T) {
 	spans := styler(row)
 	painted := paintLine(row, spans)
 	for i, want := range []string{"40G", "15G", "25G", "38%"} {
-		if !strings.Contains(painted, tableColumnStyles[i+1].seq().Render(want)) {
+		if !strings.Contains(painted, tableColumnStyles[i+1].Style().Render(want)) {
 			t.Fatalf("column %d should have its column color (%q): %q", i+1, want, plain(painted))
 		}
 	}
@@ -1091,7 +1091,7 @@ func TestLastlogStylerAnchorsOnItsHeader(t *testing.T) {
 	spans := styler(row)
 	painted := paintLine(row, spans)
 	for i, want := range []string{"root", "pts/0", "117.67.231.246"} {
-		if !strings.Contains(painted, tableColumnStyles[i].seq().Render(want)) {
+		if !strings.Contains(painted, tableColumnStyles[i].Style().Render(want)) {
 			t.Fatalf("column %d should have its column color (%q): %q", i, want, plain(painted))
 		}
 	}
@@ -1137,11 +1137,11 @@ func TestTableStylerKeepsThePIDColumnAtEveryWidth(t *testing.T) {
 		for _, pid := range []string{"1", "9", "10", "99", "123", "1234", "12345", "123456", "1234567"} {
 			row := tc.row(pid)
 			painted := paintLine(row, styler(row))
-			if !strings.Contains(painted, tableColumnStyles[tc.column].seq().Render(pid)) {
+			if !strings.Contains(painted, tableColumnStyles[tc.column].Style().Render(pid)) {
 				t.Errorf("%s: the pid %q should carry column %d's color: %q",
 					tc.syntax, pid, tc.column, plain(painted))
 			}
-			next := tableColumnStyles[(tc.column+1)%len(tableColumnStyles)].seq().Render(pid)
+			next := tableColumnStyles[(tc.column+1)%len(tableColumnStyles)].Style().Render(pid)
 			if strings.Contains(painted, next) {
 				t.Errorf("%s: the pid %q took the next column's color: %q", tc.syntax, pid, plain(painted))
 			}
@@ -1158,17 +1158,17 @@ func TestFstabColumns(t *testing.T) {
 	}
 	row := "UUID=1a2b  /  ext4  errors=remount-ro  0  1"
 	painted := paintLine(row, styler(row))
-	if !strings.Contains(painted, style{fg: "4"}.seq().Render("UUID=1a2b")) {
+	if !strings.Contains(painted, style{FG: "4"}.Style().Render("UUID=1a2b")) {
 		t.Fatalf("the device should be blue: %q", plain(painted))
 	}
-	if !strings.Contains(painted, style{fg: "2"}.seq().Render("/")) {
+	if !strings.Contains(painted, style{FG: "2"}.Style().Render("/")) {
 		t.Fatalf("the mount point should be green: %q", plain(painted))
 	}
-	if !strings.Contains(painted, style{fg: "5"}.seq().Render("ext4")) {
+	if !strings.Contains(painted, style{FG: "5"}.Style().Render("ext4")) {
 		t.Fatalf("the filesystem type should be magenta: %q", plain(painted))
 	}
-	if !strings.Contains(painted, dimStyle.seq().Render("0")) ||
-		!strings.Contains(painted, dimStyle.seq().Render("1")) {
+	if !strings.Contains(painted, dimStyle.Style().Render("0")) ||
+		!strings.Contains(painted, dimStyle.Style().Render("1")) {
 		t.Fatalf("dump and pass should be dimmed: %q", plain(painted))
 	}
 	if at := strings.Index(row, "errors=remount-ro"); at >= 0 {
@@ -1202,12 +1202,12 @@ func TestTreeStylerColorsTheLeadByLevel(t *testing.T) {
 	if spans := styleTree(nest[0]); spans != nil {
 		t.Errorf("a root's own line has no branch to color: %v", spans)
 	}
-	first := paintSpan{Start: 0, End: len("└── "), Style: styleOf(form.LevelPaint(1))}
+	first := paintSpan{Start: 0, End: len("└── "), Style: form.LevelPaint(1)}
 	if spans := styleTree(nest[1]); len(spans) != 1 || spans[0] != first {
 		t.Errorf("a first-level glyph takes the cycle's first tint: %v", spans)
 	}
 	// A gap segment paints nothing, so the second-level glyph starts four bytes late.
-	under := paintSpan{Start: len("    "), End: len("    ") + len("└── "), Style: styleOf(form.LevelPaint(2))}
+	under := paintSpan{Start: len("    "), End: len("    ") + len("└── "), Style: form.LevelPaint(2)}
 	if spans := styleTree(nest[2]); len(spans) != 1 || spans[0] != under {
 		t.Errorf("the glyph under a closed branch takes its own level's hue: %v", spans)
 	}
@@ -1226,16 +1226,16 @@ func TestTreeStylerColorsTheLeadByLevel(t *testing.T) {
 	// bar, a gap, then its glyph.
 	sibling := "│   ├── [-rw------- lab lab 1929 Jul 29 17:49]  /home/lab/.bash_history"
 	adjacent := []paintSpan{
-		{Start: 0, End: len("│   "), Style: styleOf(form.LevelPaint(1))},
-		{Start: len("│   "), End: len("│   ") + len("├── "), Style: styleOf(form.LevelPaint(2))},
+		{Start: 0, End: len("│   "), Style: form.LevelPaint(1)},
+		{Start: len("│   "), End: len("│   ") + len("├── "), Style: form.LevelPaint(2)},
 	}
 	if spans := styleTree(sibling); len(spans) != 2 || spans[0] != adjacent[0] || spans[1] != adjacent[1] {
 		t.Errorf("a bar keeps its level's hue and the glyph takes the node's: %v", spans)
 	}
 	deep := "│       └── [-rw------- lab lab 99 Jul 29 13:41]  /home/lab/.ssh/authorized_keys"
 	third := []paintSpan{
-		{Start: 0, End: len("│   "), Style: styleOf(form.LevelPaint(1))},
-		{Start: len("│   ") + len("    "), End: len("│   ") + len("    ") + len("└── "), Style: styleOf(form.LevelPaint(3))},
+		{Start: 0, End: len("│   "), Style: form.LevelPaint(1)},
+		{Start: len("│   ") + len("    "), End: len("│   ") + len("    ") + len("└── "), Style: form.LevelPaint(3)},
 	}
 	if spans := styleTree(deep); len(spans) != 2 || spans[0] != third[0] || spans[1] != third[1] {
 		t.Errorf("a gap paints nothing and the third level's glyph takes its hue: %v", spans)

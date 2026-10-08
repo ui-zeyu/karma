@@ -17,7 +17,7 @@ var (
 // default color.
 func styleReg(line string) []paintSpan {
 	if strings.HasPrefix(line, "HKEY_") {
-		return []paintSpan{{Start: 0, End: len(line), Style: style{fg: "4"}}}
+		return []paintSpan{{Start: 0, End: len(line), Style: style{FG: "4"}}}
 	}
 	if regContin.MatchString(line) {
 		return []paintSpan{{Start: 0, End: len(line), Style: dimStyle}}
@@ -30,7 +30,7 @@ func styleReg(line string) []paintSpan {
 	typeStart, typeEnd, _ := matched.span("type")
 	dataStart, dataEnd, _ := matched.span("data")
 	spans := []paintSpan{
-		{Start: nameStart, End: nameEnd, Style: style{fg: "4"}},
+		{Start: nameStart, End: nameEnd, Style: style{FG: "4"}},
 		{Start: typeStart, End: typeEnd, Style: keywordColor},
 	}
 	if regHexData.MatchString(line[dataStart:dataEnd]) {

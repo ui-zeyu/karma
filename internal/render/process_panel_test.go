@@ -14,7 +14,7 @@ import (
 	"karma/internal/checks"
 	"karma/internal/checks/linux/native"
 	"karma/internal/model"
-	"karma/internal/reader"
+	"karma/internal/testkit"
 )
 
 // psPanel is the ps check's result over the given rows; each row is written as
@@ -43,7 +43,7 @@ func psPanel(t *testing.T, rows ...map[string]string) *model.CheckResult {
 		Check: check, Outcome: model.Collected, ProbeLabel: "ps",
 		Raw:      model.RecordsText(set.Rows),
 		Records:  &set,
-		Document: reader.AnalyzeRecords(&set, check.Rules, check.Filters, model.FloorAll),
+		Document: testkit.RecordsDocument(&set, check),
 	}
 }
 
@@ -87,7 +87,7 @@ func pstreePanel(t *testing.T, procs ...[3]string) *model.CheckResult {
 		Check: check, Outcome: model.Collected, ProbeLabel: "pstree",
 		Raw:      model.RecordsText(set.Rows),
 		Records:  &set,
-		Document: reader.AnalyzeRecords(&set, check.Rules, check.Filters, model.FloorAll),
+		Document: testkit.RecordsDocument(&set, check),
 	}
 }
 
@@ -128,10 +128,10 @@ func TestPstreePanelPaintsTheNodeThatMatched(t *testing.T) {
 	}
 	medium := severityStyle(model.Medium)
 	node := rowWith(painted, "2210")
-	if !strings.Contains(node, medium.seq().Render("/tmp/x")) {
+	if !strings.Contains(node, medium.Style().Render("/tmp/x")) {
 		t.Errorf("the matched bytes should be painted on the node:\n%q", node)
 	}
-	if strings.Contains(rowWith(painted, "/sbin/init"), medium.seq().Render("/sbin/init")) {
+	if strings.Contains(rowWith(painted, "/sbin/init"), medium.Style().Render("/sbin/init")) {
 		t.Errorf("a quiet node should stay plain:\n%q", rowWith(painted, "/sbin/init"))
 	}
 }
@@ -182,19 +182,19 @@ func TestProcessPanelPaintsTheFieldsTheRuleNamed(t *testing.T) {
 	}
 	medium := severityStyle(model.Medium)
 	row := rowWith(painted, "2210")
-	if !strings.Contains(row, medium.seq().Render("www-data")) {
+	if !strings.Contains(row, medium.Style().Render("www-data")) {
 		t.Errorf("the account field the rule named should be painted:\n%q", row)
 	}
-	if !strings.Contains(row, medium.seq().Render("sh")) {
+	if !strings.Contains(row, medium.Style().Render("sh")) {
 		t.Errorf("the interpreter word the pattern matched should be painted:\n%q", row)
 	}
-	if strings.Contains(row, medium.seq().Render("2210")) {
+	if strings.Contains(row, medium.Style().Render("2210")) {
 		t.Errorf("a column between the two fields keeps its own color:\n%q", row)
 	}
 	if !strings.Contains(plain(row), "-c id") {
 		t.Errorf("the command line's arguments should still be printed:\n%q", row)
 	}
-	if strings.Contains(row, medium.seq().Render("-c id")) {
+	if strings.Contains(row, medium.Style().Render("-c id")) {
 		t.Errorf("the hit should stop at the word the pattern matched:\n%q", row)
 	}
 	// The same row read from a text body instead of a record: a field-shaped
@@ -202,9 +202,8 @@ func TestProcessPanelPaintsTheFieldsTheRuleNamed(t *testing.T) {
 	const asText = "www-data 2210 0.0 0.1 22452 9120 ? Ss Sep30 0:03 /bin/sh\n"
 	plainRow := checkPanel(&model.CheckResult{
 		Check: result.Check, Outcome: model.Collected, ProbeLabel: "ps",
-		Raw: asText,
-		Document: reader.Analyze(asText, result.Check.Rules, result.Check.Filters, 0,
-			model.FloorAll),
+		Raw:      asText,
+		Document: testkit.Analyze(asText, result.Check),
 	}, 400, 100, true)
 	if strings.Contains(plainRow, "⟨") {
 		t.Errorf("a field rule should stay quiet on a body with no fields:\n%s", plain(plainRow))

@@ -41,7 +41,10 @@ func shout(_ string, body string) *model.Shaped {
 	return &model.Shaped{Text: strings.ToUpper(body)}
 }
 
-func FuzzAnalyze(f *testing.F) {
+// FuzzRead drives the whole reading of one text body, cap, shapers and all: the
+// section it keeps must carry a line or a matched title, and every severity it
+// states has to be a level the domain knows.
+func FuzzRead(f *testing.F) {
 	rules := []model.Matcher{
 		model.NewRule("root-line", `root`, model.High, "root line"),
 		model.NewRule("deleted-binary", `\(deleted\)`, model.Critical, "deleted"),
@@ -52,7 +55,12 @@ func FuzzAnalyze(f *testing.F) {
 	f.Add("== a\n== b\ndeleted\n", -1)
 	f.Fuzz(func(t *testing.T, text string, scanBytes int) {
 		for _, normalize := range []model.Normalizer{nil, shout} {
-			doc := Analyze(text, rules, filters, scanBytes, model.FloorAll, normalize)
+			check := &model.Check{Rules: rules, Filters: filters, Normalize: normalize, ScanBytes: scanBytes}
+			doc := Read(model.ReadRequest{
+				Check: check,
+				Body:  model.Body{Sections: []model.BodySection{{Text: text}}},
+				Floor: model.FloorAll,
+			})
 			for _, section := range doc.Sections {
 				// a section survives with an empty body only when its title matched a rule
 				if len(section.Lines) == 0 && len(section.TitleMatches) == 0 {

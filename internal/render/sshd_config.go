@@ -9,7 +9,7 @@ func styleSshdConfig(line string) []paintSpan {
 	// (blue) and the value stays at the default color — a field of bright
 	// magenta would read as the severity red
 	if matched := sshdDirm.FindStringIndex(line); matched != nil {
-		return []paintSpan{{Start: matched[0], End: matched[1], Style: style{fg: "4"}}}
+		return []paintSpan{{Start: matched[0], End: matched[1], Style: style{FG: "4"}}}
 	}
 	return nil
 }

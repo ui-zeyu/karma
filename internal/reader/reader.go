@@ -1,10 +1,10 @@
 // Package reader is the reading pipeline: shape each section the collection
 // produced, and decide per-line visibility, producing the Document the
 // presentation layer renders. Read is the entry point — one body in, one
-// document out — with Analyze (text) and AnalyzeRecords (fields) as its two
-// engines. Pure functions, with no dependency on the executor or terminal.
-// Checks compose rules and filters at construction time; this consumes only the
-// already-assembled slices. Filtered lines are not shown but are counted per
+// document out, whether a section arrived as text or as fields. Pure functions,
+// with no dependency on the executor or terminal. Checks compose rules and
+// filters at construction time; this consumes only the already-assembled
+// slices. Filtered lines are not shown but are counted per
 // filter. The evidence stays elsewhere: CheckResult.Raw is the body as the
 // collection stated it, which nothing here reads back — Evidence renders a body
 // as that text for the runner.
@@ -179,30 +179,9 @@ func Evidence(body model.Body) string {
 	return b.String()
 }
 
-// Analyze reads one text as one untitled section: the text engine, for a body of
-// a single output.
-//
-// Order is fixed: byte-cap by the check's scan limit (0 uses MaxScanBytes), shape
-// the body (with the section title), rule matches, then line filtering decides
-// whether a body line stays. The title runs rules but is not filtered. transforms
-// shape the body in the order given — a tier's dialect alignment first, the
-// check's own normalization after — and either may be absent. floor is the run's
-// severity floor: a row below it is counted and left out before the filters are
-// consulted, so a triage run drops it whichever filter would have kept it.
-// model.FloorAll keeps every row.
-func Analyze(text string, rules []model.Matcher, filters []model.LineFilter, scanBytes int, floor model.SeverityFloor, transforms ...model.Normalizer) model.Document {
-	capped, truncated := capBytes(text, scanBytes)
-	section, filtered, _, ok := readText("", capped, rules, filters, floor, transforms, 0)
-	document := model.Document{Truncated: truncated, Filtered: filtered}
-	if ok {
-		document.Sections = []model.Section{section}
-	}
-	return document
-}
-
 // capBytes truncates by UTF-8 bytes when over the reading limit, dropping the
 // partial character at the cut point. A limit of zero or less (a catalog
-// construction bug) uses MaxScanBytes, so Analyze is total over any int.
+// construction bug) uses MaxScanBytes, so the reading is total over any int.
 func capBytes(text string, limit int) (string, bool) {
 	if limit <= 0 {
 		limit = MaxScanBytes
@@ -479,34 +458,28 @@ func judgeRecord(rec *model.Record, matchers []model.Matcher) []model.Match {
 	return matches
 }
 
-// AnalyzeRecords reads a body that arrived as fields as one untitled section.
-func AnalyzeRecords(set *model.RecordSet, rules []model.Matcher, filters []model.LineFilter,
-	floor model.SeverityFloor) model.Document {
-	section, filtered, _, ok := readRecords("", set, rules, filters, floor, 0)
-	document := model.Document{Filtered: filtered}
-	if ok {
-		document.Sections = []model.Section{section}
-	}
-	return document
-}
-
 // counter is a filter hit count that preserves insertion order. Value semantics: add returns the updated count table.
 type counter []model.FilterCount
 
+// add counts one more line hidden by filter id.
 func (c counter) add(id string) counter {
-	if i := slices.IndexFunc(c, func(fc model.FilterCount) bool { return fc.ID == id }); i >= 0 {
-		c[i].Count++
-		return c
-	}
-	return append(c, model.FilterCount{ID: id, Count: 1})
+	return c.bump(model.FilterCount{ID: id, Count: 1})
 }
 
-// merge folds another counter into this one, keeping this one's order.
+// merge folds another counter into this one, keeping this one's order: an id
+// already counted keeps its place, and one this table has not seen is appended.
 func (c counter) merge(other counter) counter {
 	for _, fc := range other {
-		for i := 0; i < fc.Count; i++ {
-			c = c.add(fc.ID)
-		}
+		c = c.bump(fc)
 	}
 	return c
+}
+
+// bump folds one filter's count into the table.
+func (c counter) bump(fc model.FilterCount) counter {
+	if i := slices.IndexFunc(c, func(entry model.FilterCount) bool { return entry.ID == fc.ID }); i >= 0 {
+		c[i].Count += fc.Count
+		return c
+	}
+	return append(c, fc)
 }

@@ -30,10 +30,10 @@ func styleLsL(line string) []paintSpan {
 	spans := make([]paintSpan, 0, len(perms)+4)
 	spans = append(spans, paintSpan{Start: 0, End: nameAt, Style: mutedStyle})
 	spans = append(spans, permissionSpans(perms)...)
-	spans = append(spans, paintSpan{Start: sizeStart, End: sizeEnd, Style: style{fg: "247"}})
-	dateStyle := style{fg: "2"} // dark_green: with a time it is a recent change
+	spans = append(spans, paintSpan{Start: sizeStart, End: sizeEnd, Style: style{FG: "247"}})
+	dateStyle := style{FG: "2"} // dark_green: with a time it is a recent change
 	if !strings.Contains(line[dateStart:dateEnd], ":") {
-		dateStyle = style{fg: "6"} // year only, cyan
+		dateStyle = style{FG: "6"} // year only, cyan
 	}
 	spans = append(spans, paintSpan{Start: dateStart, End: dateEnd, Style: dateStyle})
 	if kind, ok := lsKindStyle(perms); ok {
@@ -68,13 +68,13 @@ func permissionSpans(perms string) []paintSpan {
 func lsFlagStyle(flag byte) (style, bool) {
 	switch flag {
 	case 'r':
-		return style{fg: "2"}, true
+		return style{FG: "2"}, true
 	case 'w':
-		return style{fg: "3"}, true
+		return style{FG: "3"}, true
 	case 'x':
-		return style{fg: "1"}, true
+		return style{FG: "1"}, true
 	case 's', 'S', 't', 'T':
-		return style{fg: "5", bold: true}, true
+		return style{FG: "5", Bold: true}, true
 	}
 	return style{}, false
 }
@@ -84,11 +84,11 @@ func lsFlagStyle(flag byte) (style, bool) {
 func lsTypeStyle(flag byte) (style, bool) {
 	switch flag {
 	case 'd':
-		return style{fg: "4"}, true
+		return style{FG: "4"}, true
 	case 'l':
-		return style{fg: "6"}, true
+		return style{FG: "6"}, true
 	case 'b', 'c', 'p', 's':
-		return style{fg: "5"}, true
+		return style{FG: "5"}, true
 	}
 	return style{}, false
 }
@@ -96,14 +96,14 @@ func lsTypeStyle(flag byte) (style, bool) {
 func lsKindStyle(perms string) (style, bool) {
 	switch {
 	case perms[0] == 'd':
-		return style{fg: "4", bold: true}, true
+		return style{FG: "4", Bold: true}, true
 	case perms[0] == 'l':
-		return style{fg: "6"}, true
+		return style{FG: "6"}, true
 	case strings.ContainsRune("bcps", rune(perms[0])) ||
 		strings.ContainsAny(perms, "sS"):
-		return style{fg: "5", bold: true}, true
+		return style{FG: "5", Bold: true}, true
 	case strings.Contains(perms, "x"):
-		return style{fg: "2", bold: true}, true
+		return style{FG: "2", Bold: true}, true
 	}
 	return style{}, false
 }

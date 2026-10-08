@@ -207,6 +207,26 @@ func TestVersionFlag(t *testing.T) {
 	}
 }
 
+// The catalog is drawn on the command's own stream, like every other mode: a
+// caller that captured the stream gets it, and nothing is written to the
+// process's own handle behind the caller's back.
+func TestListDrawsOnTheCommandsStream(t *testing.T) {
+	root := newRootCmd("test")
+	root.SetArgs([]string{"list", "uptime"})
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("list should succeed: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "uptime") {
+		t.Fatalf("the catalog should be on the command's out stream: %q", got)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("list should stay off stderr: %q", errOut.String())
+	}
+}
+
 // reportError's two shapes: a usage error appends the usage block and returns 0
 // (a typo is not a failed run, so the shell's status stays quiet), a coded error
 // returns its own code, and anything else returns 0 with the message only.

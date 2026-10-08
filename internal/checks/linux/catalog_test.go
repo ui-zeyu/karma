@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"karma/internal/model"
-	"karma/internal/reader"
 	"karma/internal/testkit"
 )
 
@@ -427,7 +426,7 @@ func TestLinuxRuleSpansCoverTheToken(t *testing.T) {
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.check)
-		document := reader.Analyze(tc.text, check.Rules, check.Filters, 0, model.FloorAll, check.Normalize)
+		document := testkit.Analyze(tc.text, check)
 		spans := 0
 		for _, section := range document.Sections {
 			for _, line := range section.Lines {
@@ -461,7 +460,7 @@ func TestPreloadSurfacesAreCritical(t *testing.T) {
 	}
 	for _, tc := range cases {
 		check := testkit.CheckByID(t, All, tc.check)
-		document := reader.Analyze(tc.text, check.Rules, check.Filters, 0, model.FloorAll, check.Normalize)
+		document := testkit.Analyze(tc.text, check)
 		line := document.Sections[0].Lines[0]
 		if line.Severity != model.Critical {
 			t.Errorf("%s: %q should be critical, got %v", tc.check, tc.text, line.Severity)
@@ -485,7 +484,7 @@ func TestPkgVerifyGradesTheVerifierRows(t *testing.T) {
 			`-rwxr-xr-x 1 root root 8600 May 18 07:20 /bin/ls`},
 	}
 	for _, tc := range cases {
-		document := reader.Analyze(tc.text, check.Rules, check.Filters, 0, model.FloorAll, check.Normalize)
+		document := testkit.Analyze(tc.text, check)
 		line := document.Sections[0].Lines[0]
 		if line.Severity != tc.severity {
 			t.Errorf("%q should be graded %v, got %v", tc.text, tc.severity, line.Severity)
@@ -516,7 +515,7 @@ func TestDmesgKeepFilterPrecision(t *testing.T) {
 		"[    1.234567] rootkit: loading out-of-tree module taints kernel.\n" +
 		"[  123.456789] real_sys_call_table: 00000000c05a4000\n" +
 		"[  123.456789] Changing 0000000000000000->0000000000000000.\n"
-	document := reader.Analyze(text, check.Rules, check.Filters, 0, model.FloorAll, check.Normalize)
+	document := testkit.Analyze(text, check)
 
 	var kept []string
 	for _, section := range document.Sections {

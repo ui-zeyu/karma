@@ -26,6 +26,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/cellbuf"
 	"github.com/samber/lo"
 
 	"karma/internal/model"
@@ -48,7 +49,7 @@ func mastheadBand(term int) string { return titleBand("KARMA", authorLabel, term
 // edge, filled out to the line.
 func titleBand(label, meta string, term int) string {
 	rows := bandHead(bandStyle, label, meta,
-		style{fg: bandMetaColor, bg: bannerColor}, lineWidth(term))
+		style{FG: string(bandMetaColor), BG: string(bannerColor)}, lineWidth(term))
 	return trimPadding(strings.Join(rows, "\n"))
 }
 
@@ -124,12 +125,13 @@ func textWidth(term int) int { return max(railInner(term)-bodyPad-rightPad, 4) }
 // color for signals and muted otherwise. lipgloss draws the rail; inside it
 // the head rows form the check title band (level two of the heading tree,
 // filled to the inner width by bandHead) and the body is indented two more
-// columns; over-long lines are soft-wrapped by lipgloss's Width, with
-// continuation lines sharing the body indent and the rail unbroken. Rows are
-// bounded first (see boundRow), so nothing reaches the terminal's last column.
+// columns. Rows are bounded first (see boundRow), so nothing reaches the
+// terminal's last column and lipgloss has nothing to wrap.
 //
-// The rail pads every line out to the block width, so the finished panel goes
-// through trimPadding before it is returned.
+// The body is indented by its padding column and every row is bounded to the
+// text width, which already leaves the right edge its slack, so what the rail
+// draws from there needs no width of its own; the finished panel goes through
+// trimPadding before it is returned.
 func checkBlock(severity model.Severity, head []string, body []string, term int) string {
 	st := lipgloss.NewStyle().BorderLeft(true).
 		BorderStyle(lipgloss.OuterHalfBlockBorder())
@@ -138,12 +140,19 @@ func checkBlock(severity model.Severity, head []string, body []string, term int)
 	} else {
 		st = st.BorderForeground(MutedColor)
 	}
-	inner := railInner(term)
 	text := strings.Join(head, "\n")
 	if len(body) > 0 {
-		rows := lo.Map(body, func(row string, _ int) string { return boundRow(row, textWidth(term)) })
-		box := lipgloss.NewStyle().Padding(0, rightPad, 0, bodyPad).Width(inner)
-		text += "\n" + box.Render(strings.Join(rows, "\n"))
+		indent := strings.Repeat(" ", bodyPad)
+		rows := lo.Map(body, func(row string, _ int) string {
+			row = boundRow(row, textWidth(term))
+			if !strings.ContainsRune(row, '\n') {
+				return indent + row
+			}
+			// A row the bounding wrapped is several lines, and every one of
+			// them takes the body indent the same way.
+			return indent + strings.ReplaceAll(row, "\n", "\n"+indent)
+		})
+		text += "\n" + strings.Join(rows, "\n")
 	}
 	return trimPadding(st.Render(text))
 }
@@ -161,14 +170,18 @@ func trimPadding(block string) string {
 	return strings.Join(lines, "\n")
 }
 
-// boundRow keeps a row inside the given width before lipgloss wraps it. A row
-// that already fits is returned untouched (the common case, so the established
+// boundRow keeps a row inside the given width before it is drawn. A row that
+// already fits is returned untouched (the common case, so the established
 // layout is unchanged). Otherwise it is broken between words and after slashes,
 // and a token that survives that — a base64 argument, a path with no
-// separators — is broken by character: lipgloss's own wrap cannot split such a
-// token, and one of them would widen the whole panel past the terminal's last
-// column.
+// separators — is broken by character: a wrap that cannot split such a token
+// would widen the whole panel past the terminal's last column.
+//
+// The break leaves one style open across the lines it made, so the result goes
+// through cellbuf's own wrapping, which closes each line and reopens the run on
+// the next one; a line that already fits is the line it was.
 func boundRow(row string, width int) string {
+	row = expandTabs(row)
 	// Display width never exceeds the byte count, so a row whose bytes fit
 	// cannot be too wide: the row that fits — nearly every one — skips the
 	// grapheme-by-grapheme measurement.
@@ -176,10 +189,20 @@ func boundRow(row string, width int) string {
 		return row
 	}
 	wrapped := xansi.Wordwrap(row, width, "/")
-	if lipgloss.Width(wrapped) <= width {
-		return wrapped
+	if lipgloss.Width(wrapped) > width {
+		wrapped = xansi.Hardwrap(wrapped, width, false)
 	}
-	return xansi.Hardwrap(wrapped, width, false)
+	return cellbuf.Wrap(wrapped, width, "/")
+}
+
+// expandTabs writes a tab as the four blanks the rendering below would write it
+// as, so the row is measured in the columns it will occupy. A tab never reaches
+// the report: a target that printed one gets lipgloss's own tab width.
+func expandTabs(row string) string {
+	if !strings.ContainsRune(row, '\t') {
+		return row
+	}
+	return strings.ReplaceAll(row, "\t", "    ")
 }
 
 // bandHead lays a panel head on a heading band: the label on the left,
@@ -199,13 +222,13 @@ func bandHead(fill lipgloss.Style, label, meta string, metaStyle style, band int
 	if lipgloss.Width(label)+2+lipgloss.Width(meta) <= text {
 		gap := text - lipgloss.Width(label) - lipgloss.Width(meta)
 		row := labelCell + fill.Render(strings.Repeat(" ", gap)) +
-			metaStyle.seq().Render(meta)
+			metaStyle.Render(meta)
 		return []string{filledRow(fill, row, band)}
 	}
 	rows := []string{filledRow(fill, labelCell, band)}
 	for _, line := range strings.Split(boundRow(meta, text), "\n") {
 		rows = append(rows, filledRow(fill,
-			fill.Render(strings.Repeat(" ", headPad))+metaStyle.seq().Render(line), band))
+			fill.Render(strings.Repeat(" ", headPad))+metaStyle.Render(line), band))
 	}
 	return rows
 }

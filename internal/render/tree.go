@@ -39,12 +39,12 @@ func styleTree(line string) []paintSpan {
 	for {
 		switch {
 		case strings.HasPrefix(line[at:], treeBar):
-			spans = append(spans, paintSpan{Start: at, End: at + len(treeBar), Style: styleOf(form.LevelPaint(level))})
+			spans = append(spans, paintSpan{Start: at, End: at + len(treeBar), Style: form.LevelPaint(level)})
 			at += len(treeBar)
 		case strings.HasPrefix(line[at:], treeGap):
 			at += len(treeGap)
 		case strings.HasPrefix(line[at:], treeMid), strings.HasPrefix(line[at:], treeEnd):
-			spans = append(spans, paintSpan{Start: at, End: at + len(treeMid), Style: styleOf(form.LevelPaint(level))})
+			spans = append(spans, paintSpan{Start: at, End: at + len(treeMid), Style: form.LevelPaint(level)})
 			return spans
 		default:
 			return nil

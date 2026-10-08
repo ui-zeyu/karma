@@ -250,9 +250,9 @@ func (o *LiveObserver) drawProgress() {
 	frame := spinnerFrames[o.frame%len(spinnerFrames)]
 	o.frame++
 	line := fmt.Sprintf("\r\033[K%s %d/%d %s %s",
-		accentStyle.seq().Render(frame),
+		accentStyle.Render(frame),
 		o.finished, o.total,
-		mutedStyle.seq().Render(o.current),
-		mutedStyle.seq().Render(time.Since(o.started).Round(time.Second).String()))
+		mutedStyle.Render(o.current),
+		mutedStyle.Render(time.Since(o.started).Round(time.Second).String()))
 	fmt.Fprint(o.w, line)
 }

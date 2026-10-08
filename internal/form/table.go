@@ -228,7 +228,7 @@ func reasonLines(matches []model.Match, widths []int, opts model.RenderOptions) 
 			continue
 		}
 		if opts.Color {
-			reason = DimPaint().Style().Render(reason)
+			reason = DimPaint().Render(reason)
 		}
 		indent := columnLeft(widths, column)
 		if indent+displayWidth(reason) > opts.Width {
@@ -341,7 +341,7 @@ func withReasonRows(rows []string, reason string, opts model.RenderOptions) []st
 	}
 	painted := reason
 	if opts.Color {
-		painted = DimPaint().Style().Render(reason)
+		painted = DimPaint().Render(reason)
 	}
 	last := rows[len(rows)-1]
 	if displayWidth(last)+2+displayWidth(reason) <= opts.Width {
@@ -426,9 +426,8 @@ func paintValue(value string, hits []paintHit, base Paint, color bool) string {
 	if !color {
 		return value
 	}
-	baseStyle := base.Style()
 	if len(hits) == 0 {
-		return baseStyle.Render(value)
+		return base.Render(value)
 	}
 	ordered := slices.Clone(hits)
 	slices.SortStableFunc(ordered, func(a, b paintHit) int {
@@ -449,11 +448,11 @@ func paintValue(value string, hits []paintHit, base Paint, color bool) string {
 		}
 		if at == len(value) || next != current {
 			if at > start {
-				style := baseStyle
+				paint := base
 				if current > 0 {
-					style = SeverityPaint(ordered[current-1].severity).Style()
+					paint = SeverityPaint(ordered[current-1].severity)
 				}
-				out.WriteString(style.Render(value[start:at]))
+				out.WriteString(paint.Render(value[start:at]))
 			}
 			start, current = at, next
 		}
@@ -483,7 +482,7 @@ func noteRow(note string, opts model.RenderOptions) string {
 	if !opts.Color {
 		return note
 	}
-	return Paint{Faint: true, Italic: true}.Style().Render(note)
+	return Paint{Faint: true, Italic: true}.Render(note)
 }
 
 // total is what a row of these columns occupies, gaps included.

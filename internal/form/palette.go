@@ -5,7 +5,11 @@
 package form
 
 import (
+	"strings"
+	"sync"
+
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"karma/internal/model"
 )
@@ -39,6 +43,62 @@ func (p Paint) Style() lipgloss.Style {
 		out = out.Background(lipgloss.Color(p.BG))
 	}
 	return out
+}
+
+// Render paints one run of one line. It is Style().Render for a run that is
+// already a single line, and both callers paint a row a run at a time: a
+// table cell and a permission bit are each their own run, so a listing line is
+// a dozen of them. lipgloss rebuilds its property map and its sequence on
+// every call, and the pair a style opens and closes with is that style's own,
+// so it is derived once per style and kept. Text carrying a tab or a line
+// break goes to lipgloss, whose own normalization those runs need.
+func (p Paint) Render(text string) string {
+	if strings.ContainsAny(text, "\t\r\n") {
+		return p.Style().Render(text)
+	}
+	open, close := p.sequences()
+	if open == "" {
+		return text
+	}
+	return open + text + close
+}
+
+// sequenceKey is what one cached pair is keyed by: the style, and the color
+// profile it was derived under, so a run forced onto another profile gets that
+// profile's sequences.
+type sequenceKey struct {
+	profile termenv.Profile
+	paint   Paint
+}
+
+// sequencePair is the cached pair.
+type sequencePair struct{ open, close string }
+
+// sequenceCache keeps one pair per style and profile. A report paints a row a
+// run at a time, so the same few styles are asked for their sequences on every
+// line, and the derivation is worth doing once.
+var sequenceCache sync.Map
+
+// sequences derives this style's open and close sequences. The pair is read off
+// lipgloss itself, from a one-byte run: what it wraps that byte with is what it
+// wraps every run of this style with.
+func (p Paint) sequences() (open, close string) {
+	key := sequenceKey{profile: lipgloss.ColorProfile(), paint: p}
+	if cached, ok := sequenceCache.Load(key); ok {
+		pair := cached.(sequencePair)
+		return pair.open, pair.close
+	}
+	open, close = splitSequences(p.Style().Render("\x00"))
+	sequenceCache.Store(key, sequencePair{open: open, close: close})
+	return open, close
+}
+
+// splitSequences takes the wrapped byte apart: what precedes the mark opens a
+// run and what follows it closes one. A profile that writes no escapes returns
+// the byte alone, which is an empty pair.
+func splitSequences(wrapped string) (open, close string) {
+	at := strings.Index(wrapped, "\x00")
+	return wrapped[:at], wrapped[at+1:]
 }
 
 // MutedColor is the single source of muting: the muted style, the grey rail of

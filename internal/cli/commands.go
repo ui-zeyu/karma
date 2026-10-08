@@ -256,7 +256,8 @@ func newListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			render.RenderListTable(os.Stdout, selected, terminalWidth(os.Stdout))
+			out := cmd.OutOrStdout()
+			render.RenderListTable(out, selected, terminalWidth(out))
 			return nil
 		},
 	}

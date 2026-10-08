@@ -9,9 +9,15 @@ import (
 	"karma/internal/reader"
 )
 
-// readDocument is the reading shortcut for a body of one untitled section.
+// readDocument is the reading shortcut for a body of one untitled section: the
+// shape a tier with a single output answers with.
 func readDocument(text string, rules []model.Matcher, filters []model.LineFilter, normalize model.Normalizer) model.Document {
-	return reader.Analyze(text, rules, filters, 0, model.FloorAll, normalize)
+	check := &model.Check{Rules: rules, Filters: filters, Normalize: normalize}
+	return reader.Read(model.ReadRequest{
+		Check: check,
+		Body:  model.Body{Sections: []model.BodySection{{Text: text}}},
+		Floor: model.FloorAll,
+	})
 }
 
 // readSections reads a body the collection states: the pairs are
@@ -178,7 +184,7 @@ func TestEmptySectionsDropped(t *testing.T) {
 
 func TestCapBytesTruncatesOnRuneBoundary(t *testing.T) {
 	text := strings.Repeat("a", reader.MaxScanBytes) + "→"
-	document := reader.Analyze(text, nil, nil, 0, model.FloorAll, nil)
+	document := readDocument(text, nil, nil, nil)
 	if !document.Truncated {
 		t.Fatal("over limit should mark truncated")
 	}

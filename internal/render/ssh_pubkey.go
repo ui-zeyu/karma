@@ -19,7 +19,7 @@ func styleSSHPublicKey(line string) []paintSpan {
 		return nil
 	}
 	return []paintSpan{
-		{Start: matched[typeIdx], End: matched[typeIdx+1], Style: style{fg: "4"}},
+		{Start: matched[typeIdx], End: matched[typeIdx+1], Style: style{FG: "4"}},
 		{Start: matched[blobIdx], End: matched[blobIdx+1], Style: dimStyle},
 	}
 }

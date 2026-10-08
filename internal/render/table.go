@@ -19,7 +19,7 @@ import (
 var tableColumnStyles = func() [form.Tints]style {
 	var cycle [form.Tints]style
 	for index := range cycle {
-		cycle[index] = styleOf(form.ColumnPaint(index))
+		cycle[index] = form.ColumnPaint(index)
 	}
 	return cycle
 }()

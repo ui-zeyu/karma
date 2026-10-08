@@ -22,7 +22,7 @@ func stylePipeTable(line string) []paintSpan {
 	for index, segment := range segments {
 		switch index {
 		case 0:
-			spans = append(spans, paintSpan{Start: offset, End: offset + len(segment), Style: style{fg: "4"}})
+			spans = append(spans, paintSpan{Start: offset, End: offset + len(segment), Style: style{FG: "4"}})
 		case 1:
 			spans = append(spans, paintSpan{Start: offset, End: offset + len(segment), Style: dimStyle})
 		default:
@@ -30,7 +30,7 @@ func stylePipeTable(line string) []paintSpan {
 				spans = append(spans, paintSpan{Start: offset + loc[0], End: offset + loc[1], Style: mutedStyle})
 			}
 			for _, loc := range pipeTime.FindAllStringIndex(segment, -1) {
-				spans = append(spans, paintSpan{Start: offset + loc[0], End: offset + loc[1], Style: style{fg: "2"}})
+				spans = append(spans, paintSpan{Start: offset + loc[0], End: offset + loc[1], Style: style{FG: "2"}})
 			}
 		}
 		if index < len(segments)-1 {

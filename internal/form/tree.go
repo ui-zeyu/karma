@@ -166,7 +166,7 @@ func (t Tree) row(item model.BlockItem, lead string, opts model.RenderOptions) [
 	}
 	if reason := ReasonFor(item.Matches); reason != "" {
 		if opts.Color {
-			reason = DimPaint().Style().Render(reason)
+			reason = DimPaint().Render(reason)
 		}
 		rows = append(rows, indent+reason)
 	}
@@ -183,13 +183,13 @@ func paintLead(lead string) string {
 	for at < len(lead) {
 		switch {
 		case strings.HasPrefix(lead[at:], branchBar):
-			b.WriteString(LevelPaint(level).Style().Render(lead[at : at+len(branchBar)]))
+			b.WriteString(LevelPaint(level).Render(lead[at : at+len(branchBar)]))
 			at += len(branchBar)
 		case strings.HasPrefix(lead[at:], branchGap):
 			b.WriteString(lead[at : at+len(branchGap)])
 			at += len(branchGap)
 		default:
-			b.WriteString(LevelPaint(level).Style().Render(lead[at:]))
+			b.WriteString(LevelPaint(level).Render(lead[at:]))
 			return b.String()
 		}
 		level++

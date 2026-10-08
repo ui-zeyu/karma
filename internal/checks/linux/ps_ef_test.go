@@ -19,6 +19,9 @@ import (
 // (`ps -efww` prints this same header).
 const psEfHeaderRow = "UID          PID    PPID  C STIME TTY          TIME CMD"
 
+// psAuxHeaderRow is the aux table's header line, as procps prints it.
+const psAuxHeaderRow = "USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND"
+
 const psEfCapture = `UID          PID    PPID  C STIME TTY          TIME CMD
 root           1       0  0 Jul29 ?        00:00:27 /sbin/init
 root           2       0  0 Jul29 ?        00:00:00 [kthreadd]
@@ -30,7 +33,7 @@ lab        60610   60604  0 09:45 ?        00:00:00 ps -ef
 `
 
 func TestParsePsEfReadsThePinnedTable(t *testing.T) {
-	set, err := parsePsEf(psEfCapture)
+	set, err := psEfSchema.parse(psEfCapture)
 	if err != nil {
 		t.Fatalf("the tier's own capture should parse: %v", err)
 	}
@@ -96,7 +99,7 @@ func TestParsePsEfReadsThePinnedTable(t *testing.T) {
 // sources are held to one spelling from both sides.
 func TestParsePsEfAgreesWithTheNativeRow(t *testing.T) {
 	const row = "root 2210 948 0 14:00 pts/0 00:00:09 bash -i"
-	set, err := parsePsEf(psEfHeaderRow + "\n" + row + "\n")
+	set, err := psEfSchema.parse(psEfHeaderRow + "\n" + row + "\n")
 	if err != nil {
 		t.Fatalf("the native row spelling should parse: %v", err)
 	}
@@ -131,7 +134,7 @@ func TestParsePsEfDeclinesOtherText(t *testing.T) {
 		{"bsd dialect, long row", psEfHeaderRow + "\n501 77448 74783 0 30Sep26 ttys004 0:00.29 -zsh\n"},
 	}
 	for _, c := range cases {
-		if set, err := parsePsEf(c.text); err == nil {
+		if set, err := psEfSchema.parse(c.text); err == nil {
 			t.Errorf("%s: parsed as %+v, want a refusal", c.name, set)
 		}
 	}
@@ -140,7 +143,7 @@ func TestParsePsEfDeclinesOtherText(t *testing.T) {
 // The parser's rows read as records the reading layer can judge: a rule that
 // names a field paints the same cells whichever source read the table.
 func TestParsePsEfRowsAreRecords(t *testing.T) {
-	set, err := parsePsEf(psEfCapture)
+	set, err := psEfSchema.parse(psEfCapture)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

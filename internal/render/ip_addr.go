@@ -8,9 +8,9 @@ var brAddrRow = compile(`^(?P<iface>\S+)\s{2,}(?P<state>\S+)(?:\s{2,}(?P<rest>\S
 // spaces inside (several addresses per interface); the state gets a semantic
 // color
 var brStateStyles = map[string]style{
-	"UP":      {fg: "2"},
-	"DOWN":    {faint: true},
-	"UNKNOWN": {faint: true},
+	"UP":      {FG: "2"},
+	"DOWN":    {Faint: true},
+	"UNKNOWN": {Faint: true},
 }
 
 func styleIPAddr(line string) []paintSpan {
@@ -22,7 +22,7 @@ func styleIPAddr(line string) []paintSpan {
 	}
 	ifaceStart, ifaceEnd, _ := matched.span("iface")
 	stateStart, stateEnd, _ := matched.span("state")
-	spans := []paintSpan{{Start: ifaceStart, End: ifaceEnd, Style: style{fg: "4"}}}
+	spans := []paintSpan{{Start: ifaceStart, End: ifaceEnd, Style: style{FG: "4"}}}
 	if st, ok := brStateStyles[line[stateStart:stateEnd]]; ok {
 		spans = append(spans, paintSpan{Start: stateStart, End: stateEnd, Style: st})
 	}

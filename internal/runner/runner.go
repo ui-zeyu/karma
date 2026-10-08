@@ -231,7 +231,15 @@ func runCheck(ctx context.Context, sess session.Session, check *model.Check, opt
 			SkippedLabels: skipped,
 		}
 	}
-	return &model.CheckResult{Check: check, Outcome: model.Collected, SkippedLabels: skipped}
+	// Nothing answered and nothing failed out loud: a quiet check, whose walk
+	// leaves the panel silent. A walk the operator's cancellation ended between
+	// two steps is not that — the check never ran its remaining tiers — so the
+	// note says so rather than presenting the empty body as the answer.
+	result := &model.CheckResult{Check: check, Outcome: model.Collected, SkippedLabels: skipped}
+	if ctx.Err() != nil {
+		result.Note = "interrupted"
+	}
+	return result
 }
 
 // stepMembers runs every probe of one step. Whether the target has the tier's

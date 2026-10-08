@@ -6,6 +6,7 @@ require (
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/charmbracelet/x/cellbuf v0.0.15
 	github.com/coder/websocket v1.8.15
 	github.com/muesli/termenv v0.16.0
 	github.com/prometheus/procfs v0.22.0
@@ -22,7 +23,6 @@ require (
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
-	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect

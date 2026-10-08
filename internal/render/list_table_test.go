@@ -161,7 +161,7 @@ func TestRenderListTableColors(t *testing.T) {
 			t.Errorf("the heading bands should carry %s", want)
 		}
 	}
-	if !strings.Contains(text, mutedStyle.seq().Render("▌")) {
+	if !strings.Contains(text, mutedStyle.Style().Render("▌")) {
 		t.Error("the aspect heading should wear the muted rail")
 	}
 	for _, line := range strings.Split(text, "\n") {

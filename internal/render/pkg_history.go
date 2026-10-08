@@ -29,9 +29,9 @@ var (
 // The record colors stay inside the syntax palette (the severity colors are
 // reserved for hits).
 var (
-	historyActionStyle  = style{fg: "6"} // dark cyan, the table palette's last column
+	historyActionStyle  = style{FG: "6"} // dark cyan, the table palette's last column
 	historySubjectStyle = stringColor    // blue, the same as an identifier elsewhere
-	historyArgStyle     = style{fg: "2"} // green, an option rather than an operand
+	historyArgStyle     = style{FG: "2"} // green, an option rather than an operand
 	historyTailStyle    = dimStyle       // the arch suffix and the version pair
 )
 

@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"karma/internal/model"
-	"karma/internal/reader"
 	"karma/internal/testkit"
 )
 
@@ -18,7 +16,7 @@ import (
 func keptLines(t *testing.T, body string) []string {
 	t.Helper()
 	check := testkit.CheckByID(t, All, "services")
-	document := reader.Analyze(body, check.Rules, check.Filters, 0, model.FloorAll)
+	document := testkit.Analyze(body, check)
 	var kept []string
 	for _, section := range document.Sections {
 		for _, line := range section.Lines {

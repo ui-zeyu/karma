@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"karma/internal/model"
-	"karma/internal/reader"
+	"karma/internal/testkit"
 )
 
 // listingPanel is one directory-listing check's result: rows of the collected
@@ -37,7 +37,7 @@ func listingPanel(tb testing.TB, rows int, hit bool) *model.CheckResult {
 	return &model.CheckResult{
 		Check: check, Outcome: model.Collected, ProbeLabel: "find",
 		Raw:      body.String(),
-		Document: reader.Analyze(body.String(), check.Rules, check.Filters, 0, model.FloorAll, check.Normalize),
+		Document: testkit.Analyze(body.String(), check),
 	}
 }
 

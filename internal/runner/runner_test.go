@@ -351,6 +351,32 @@ func TestRunCheckStopsWalkingOnCancel(t *testing.T) {
 	}
 }
 
+// A cancel that lands between two steps stops the walk without any tier
+// answering or failing out loud: the check is collected, and the panel has to
+// say the walk did not finish rather than read as a quiet host.
+func TestRunCheckSaysTheWalkWasInterruptedBetweenSteps(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sess := &scriptSession{
+		reply: []model.RunResult{
+			{Verdict: model.VerdictFailed, ExitCode: -1}, // no output, no stderr
+			{Verdict: model.VerdictAnswered, Stdout: "late\n"},
+		},
+		onRun: cancel,
+	}
+	check := chain("lsof", "proc")
+	result := runCheck(ctx, sess, check, model.RunOptions{Timeout: time.Second})
+	if sess.ranCount() != 1 {
+		t.Fatalf("a cancelled run must not try the next step: ran %d steps", sess.ranCount())
+	}
+	if result.Outcome != model.Collected {
+		t.Fatalf("the walk ran, so the check is collected: %v", result.Outcome)
+	}
+	if !strings.Contains(result.Note, "interrupted") {
+		t.Fatalf("the note should name the interruption: %q", result.Note)
+	}
+}
+
 func TestRunCatalogStopsOnCancelledContext(t *testing.T) {
 	sess := &scriptSession{}
 	ctx, cancel := context.WithCancel(context.Background())
