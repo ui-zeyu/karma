@@ -68,7 +68,7 @@ type unitStyler struct {
 	table *tableStyler
 }
 
-func newUnitStyler() *unitStyler { return &unitStyler{table: newTableStyler(nil, true)} }
+func newUnitStyler() *unitStyler { return &unitStyler{table: newTableStyler(nil)} }
 
 func (u *unitStyler) style(line string) []paintSpan {
 	if spans, ok := sysvServiceSpans(line); ok {

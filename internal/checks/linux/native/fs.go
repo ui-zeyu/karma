@@ -229,14 +229,22 @@ func renderMountRows(rows []mountRow) string {
 }
 
 // Findmnt renders findmnt's columns over the kernel's mount table: the target
-// indented by its depth, then the source, the fstype, and the options.
+// indented by its level in the mount tree, then the source, the fstype, and the
+// options.
 //
-// findmnt's tree glyphs and its padding are not reproduced: the mount tree's
-// parent ids live in /proc/self/mountinfo, which these readers deliberately
-// keep out of (mountinfo splits the options into two maps where the printed
-// fourth field is one merged string, and mount below prints that string).
-// The rows are the kernel's mount order with the same tokens in the same
-// columns, which is what the check's rules and its table lexer read.
+// The tree is the one the targets themselves state: a mount hangs under the
+// mount on the longest prefix of its target — the mount that covers the
+// directory it is mounted in — so a target below a directory nothing mounts
+// (/etc/hosts on a host that mounts no /etc) sits one level under the root
+// rather than at its path's own depth. The kernel's parent ids live in
+// /proc/self/mountinfo, which these readers keep out of: its options field is a
+// different string than the one mount prints, and reconciling two readings of
+// one table row by row would trade a shape stated from the table for a join
+// between two files.
+//
+// findmnt's box glyphs are not reproduced either: a level is findmnt's own two
+// cells of indent, and the rows keep the tokens the check's rules and its table
+// lexer read.
 func Findmnt(ctx context.Context) (string, error) {
 	rows, ok := readMounts()
 	if !ok {
@@ -245,16 +253,86 @@ func Findmnt(ctx context.Context) (string, error) {
 	return renderFindmntRows(rows), nil
 }
 
-// renderFindmntRows prints the findmnt(1) view: header, then one row per
-// mount with the target indented by its depth, in the one padded table the
-// reading layer's shapers use (shape.Table) — so the rows line up under the
-// header they name. The options keep mount's own parentheses, the way the
-// flat `mount` output spells them.
+// renderFindmntRows prints the findmnt(1) view: header, then one row per mount
+// in the mount tree's own order — a mount after the mount that holds it — with
+// the target indented by its level, in the one padded table the reading layer's
+// shapers use (shape.Table), so the rows line up under the header they name.
+// The options keep mount's own parentheses, the way the flat `mount` output
+// spells them.
 func renderFindmntRows(rows []mountRow) string {
 	table := shape.NewTable("TARGET", "SOURCE", "FSTYPE", "OPTIONS")
-	for _, m := range rows {
-		depth := strings.Count(strings.TrimSuffix(m.point, "/"), "/")
-		table.Add(strings.Repeat("  ", depth)+m.point, m.dev, m.fstype, "("+m.opts+")")
+	for _, mount := range mountOrder(rows) {
+		table.Add(strings.Repeat("  ", mount.level)+mount.row.point,
+			mount.row.dev, mount.row.fstype, "("+mount.row.opts+")")
 	}
 	return table.String()
+}
+
+// mountTreeNode is one mount where the tree prints it: the row, and its level
+// below the root (a root is level 0).
+type mountTreeNode struct {
+	row   mountRow
+	level int
+}
+
+// mountOrder orders the mount table as the tree its targets make: a mount hangs
+// under the mount covering its target's directory, the mounts no other mount
+// covers are the roots, and the walk keeps the table's own order among
+// siblings, so a parent is printed before everything under it. A target mounted
+// twice — a filesystem mounted over another at the same point — comes out beside
+// the mount it covers: both sit in that directory, and only the kernel's parent
+// ids tell those two apart.
+func mountOrder(rows []mountRow) []mountTreeNode {
+	byPoint := make(map[string]int, len(rows))
+	for index, row := range rows {
+		byPoint[row.point] = index
+	}
+	children := make([][]int, len(rows))
+	var roots []int
+	for index, row := range rows {
+		parent, ok := coveredBy(byPoint, row.point)
+		if !ok {
+			roots = append(roots, index)
+			continue
+		}
+		children[parent] = append(children[parent], index)
+	}
+	var ordered []mountTreeNode
+	var walk func(index, level int)
+	walk = func(index, level int) {
+		ordered = append(ordered, mountTreeNode{row: rows[index], level: level})
+		for _, child := range children[index] {
+			walk(child, level+1)
+		}
+	}
+	for _, root := range roots {
+		walk(root, 0)
+	}
+	return ordered
+}
+
+// coveredBy is the mount covering the directory a mount point sits in: the
+// longest prefix of the point that is itself a target in the table, which is
+// the deepest mount the point lies under.
+func coveredBy(byPoint map[string]int, point string) (int, bool) {
+	for parent := mountParentOf(point); parent != ""; parent = mountParentOf(parent) {
+		if index, ok := byPoint[parent]; ok {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
+// mountParentOf is the directory a path sits in: the path without its last
+// component, which is the next candidate for the mount covering it. The root,
+// and a path that carries no separator, have no directory above them.
+func mountParentOf(path string) string {
+	if path == "" || path == "/" {
+		return ""
+	}
+	cut := strings.LastIndexByte(path, '/')
+	if cut <= 0 {
+		return "/"
+	}
+	return path[:cut]
 }

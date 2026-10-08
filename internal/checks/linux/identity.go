@@ -228,7 +228,7 @@ var IdentityChecks = []*model.Check{
 			{{Label: "last", Inv: model.Native{Body: native.Last(lastRows)}}},
 			{{Label: "last-sh", Inv: model.Sh("last -n " + strconv.Itoa(lastRows))}},
 		},
-		model.Options{Syntax: model.SyntaxTable}),
+		model.Options{Syntax: model.SyntaxLast}),
 	define.LinuxCheck("lastlog", "Last account login (lastlog)", model.AspectIdentity,
 		[]model.Step{
 			{{Label: "lastlog", Inv: model.Native{Body: native.Lastlog}}},

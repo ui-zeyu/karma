@@ -24,7 +24,7 @@ import (
 const clkTck = 100
 
 // procEntry carries the fields the ps formats print, already resolved from
-// /proc/[pid]/{stat,status,cmdline,statm}.
+// /proc/[pid]/{stat,status,cmdline}.
 type procEntry struct {
 	pid, ppid, pgrp, sid, tpgid int
 	tgid                        int
@@ -33,9 +33,9 @@ type procEntry struct {
 	comm, args, user            string
 	utime, stime, starttime     int64  // clock ticks
 	vsize                       int64  // bytes
-	rss, shr                    int64  // pages
+	rss                         int64  // pages
 	lockKiB                     uint64 // VmLck: pages locked into memory
-	priority, nice, numThreads  int
+	nice, numThreads            int
 }
 
 // procFS opens the one /proc reader: the process table, boot time, CPU and
@@ -66,8 +66,8 @@ type processSnapshot struct {
 type procSnapshotKey struct{}
 
 // procSnapshot returns the run's view of the process table, computed at the
-// first request and shared from then on: one entry costs four /proc reads
-// (stat, status, cmdline, statm), and ps, top, miner, and w all want the whole
+// first request and shared from then on: one entry costs three /proc reads
+// (stat, status, cmdline), and ps, top, miner, and w all want the whole
 // table while their checks run together. Outside a run — a unit test calling a
 // body directly — each caller computes its own.
 func procSnapshot(ctx context.Context) processSnapshot {
@@ -142,7 +142,7 @@ func readProcEntry(p procfs.Proc, names *localfs.NameCache) (procEntry, bool) {
 		ttyNr: st.TTY, state: st.State[0], comm: st.Comm,
 		utime: int64(st.UTime), stime: int64(st.STime), starttime: int64(st.Starttime),
 		vsize: int64(st.VSize), rss: int64(st.RSS),
-		priority: st.Priority, nice: st.Nice, numThreads: st.NumThreads,
+		nice: st.Nice, numThreads: st.NumThreads,
 	}
 	e.user = "?"
 	e.tgid = e.pid
@@ -157,9 +157,6 @@ func readProcEntry(p procfs.Proc, names *localfs.NameCache) (procEntry, bool) {
 		e.args = "[" + e.comm + "] <defunct>"
 	} else {
 		e.args = "[" + e.comm + "]"
-	}
-	if statm, err := p.Statm(); err == nil {
-		e.shr = int64(statm.Shared)
 	}
 	return e, true
 }
@@ -227,12 +224,11 @@ func (e procEntry) memPercent(memTotal int64) float64 {
 	return float64(rssBytes*1000/memTotal) / 10
 }
 
-// rssBytes, vsizeKiB, rssKiB and shrKiB are the table columns' units: /proc
-// reports rss and shr in pages and vsize in bytes, while ps prints KiB.
+// rssBytes, vsizeKiB and rssKiB are the table columns' units: /proc reports rss
+// in pages and vsize in bytes, while ps prints KiB.
 func (e procEntry) rssBytes() int64 { return e.rss * int64(os.Getpagesize()) }
 func (e procEntry) vsizeKiB() int64 { return e.vsize / 1024 }
 func (e procEntry) rssKiB() int64   { return e.rssBytes() / 1024 }
-func (e procEntry) shrKiB() int64   { return e.shr * int64(os.Getpagesize()) / 1024 }
 
 // cpuSeconds is the accumulated CPU time in seconds (ps's TIME column).
 func (e procEntry) cpuSeconds() float64 {

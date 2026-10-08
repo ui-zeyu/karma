@@ -197,7 +197,7 @@ var LogsChecks = []*model.Check{
 			{{Label: "lastb", Inv: model.Native{Body: native.Lastb(lastbRows)}}},
 			{{Label: "lastb-sh", Inv: model.Sh("lastb -n " + strconv.Itoa(lastbRows))}},
 		},
-		model.Options{Syntax: model.SyntaxTable}),
+		model.Options{Syntax: model.SyntaxLast}),
 	listingCheck("log-dirs", "Log directory listing (by mtime)", model.AspectLog,
 		[]string{"/var/log", "/var/log/journal"}, 100,
 		[]model.Matcher{

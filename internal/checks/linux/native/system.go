@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/procfs"
+
 	"karma/internal/localfs"
 	"karma/internal/model"
 )
@@ -184,4 +186,67 @@ func Env(ctx context.Context) (string, error) {
 	lines := os.Environ()
 	slices.Sort(lines)
 	return strings.Join(lines, "\n") + "\n", nil
+}
+
+// Free renders `free`'s table from /proc/meminfo: the header, the Mem row and the
+// Swap row, in the widths and the unit procps prints them in.
+//
+// The numbers are procps' own reading of the file: buff/cache is Buffers +
+// Cached + SReclaimable, shared is Shmem, and used is the total minus the
+// MemAvailable figure. That last one is a definition the tool changed: procps 4
+// derives it from MemAvailable, while 3.3 subtracted free and buff/cache — so an
+// older target prints its own arithmetic on its row, and the header names the
+// column either way. A kernel that states no available figure, or an impossible
+// one, gets the second reading.
+//
+// The unit is the file's own: KiB, the spelling plain `free` prints and the one
+// every procps carries, where free -h's scaling differs between 3.3 (which
+// truncates a cell to whole units) and 4.0 (which rounds it).
+func Free(ctx context.Context) (string, error) {
+	mi, err := procFS().Meminfo()
+	if err != nil {
+		return "", model.ErrTierUnavailable
+	}
+	table := freeTable(&mi)
+	if table == "" {
+		return "", model.ErrTierUnavailable
+	}
+	return table, nil
+}
+
+// freeTable renders free's table from one /proc/meminfo reading. An empty answer
+// is a reading without a total: a kernel that does not report the file's first
+// figure has no memory view to print.
+func freeTable(mi *procfs.Meminfo) string {
+	kib := func(value *uint64) int64 {
+		if value == nil {
+			return 0
+		}
+		return int64(*value)
+	}
+	total := kib(mi.MemTotal)
+	if total <= 0 {
+		return ""
+	}
+	free, available := kib(mi.MemFree), kib(mi.MemAvailable)
+	cache := kib(mi.Buffers) + kib(mi.Cached) + kib(mi.SReclaimable)
+	if available <= 0 || available > total {
+		// A kernel that states no available figure (pre-3.14), or an impossible
+		// one, gets the reading the file does support: what is free plus what the
+		// page cache could give back. The subtraction below then lands on the
+		// definition procps 3.3 used, total minus free minus buff/cache.
+		available = free + cache
+	}
+	used := max(total-available, 0)
+	swapTotal, swapFree := kib(mi.SwapTotal), kib(mi.SwapFree)
+	var b strings.Builder
+	// The label column is eight cells, every number cell twelve, right-aligned:
+	// free's own layout, so the header words land over the columns they name.
+	fmt.Fprintf(&b, "%-8s%12s%12s%12s%12s%12s%12s\n",
+		"", "total", "used", "free", "shared", "buff/cache", "available")
+	fmt.Fprintf(&b, "%-8s%12d%12d%12d%12d%12d%12d\n", "Mem:",
+		total, used, free, kib(mi.Shmem), cache, available)
+	fmt.Fprintf(&b, "%-8s%12d%12d%12d\n", "Swap:",
+		swapTotal, swapTotal-swapFree, swapFree)
+	return b.String()
 }

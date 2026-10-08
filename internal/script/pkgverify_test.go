@@ -94,7 +94,9 @@ func TestPkgVerifyBodyListsSmallDirectories(t *testing.T) {
 
 // A directory with more rows than the listing threshold is counted once, at
 // the deepest ancestor that carries a mass, with how many of its files are
-// gone rather than modified.
+// gone rather than modified — and with the flag field blank: the count is the
+// row's evidence, where one member's flags are not, and the check's rule for
+// the verifier's own rows must not read a count as one changed file.
 func TestPkgVerifyBodyCountsBigDirectories(t *testing.T) {
 	var lines []string
 	for _, name := range []string{"a", "b", "c", "d", "e"} {
@@ -103,7 +105,7 @@ func TestPkgVerifyBodyCountsBigDirectories(t *testing.T) {
 	facts := map[string]VerifyFacts{"/usr/share/doc/a": {Missing: true}}
 	got := PkgVerifyBody(strings.Join(lines, "\n")+"\n", factsOf(facts), nil)
 	want := verifyOtherLabel + "\n" +
-		"??5??????   /usr/share/doc/  5 files differ, 1 missing\n"
+		"            /usr/share/doc/  5 files differ, 1 missing\n"
 	if got != want {
 		t.Errorf("a big directory rendered as\n%q\nwant\n%q", got, want)
 	}
@@ -119,7 +121,7 @@ func TestPkgVerifyBodyRollsSmallDirectoriesUp(t *testing.T) {
 	lines = append(lines, "??5??????   /usr/share/doc/tiny/readme")
 	got := PkgVerifyBody(strings.Join(lines, "\n")+"\n", noFacts, nil)
 	want := verifyOtherLabel + "\n" +
-		"??5??????   /usr/share/doc/  26 files differ\n"
+		"            /usr/share/doc/  26 files differ\n"
 	if got != want {
 		t.Errorf("a rolled-up directory rendered as\n%q\nwant\n%q", got, want)
 	}

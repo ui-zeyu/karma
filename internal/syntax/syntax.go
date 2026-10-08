@@ -112,20 +112,18 @@ var syntaxStylers = map[model.Syntax]func() lineStyler{
 	model.SyntaxColon:      func() lineStyler { return styleColonTable },
 	model.SyntaxLsmod:      func() lineStyler { return styleLsmod },
 	model.SyntaxIPAddr:     func() lineStyler { return styleIPAddr },
-	model.SyntaxTable:      func() lineStyler { return newTableStyler(nil, true).style },
+	model.SyntaxTable:      func() lineStyler { return newTableStyler(nil).style },
 	model.SyntaxTree:       func() lineStyler { return styleTree },
-	// Cycle off: top -b's summary lines (banner, Tasks, %Cpu, MiB Mem) are
-	// prose, not columns. The process table anchors on its all-caps header;
-	// everything before it stays plain.
-	model.SyntaxTop:       func() lineStyler { return newTableStyler(nil, false).style },
-	model.SyntaxLastlog:   func() lineStyler { return newTableStyler([]*regexp.Regexp{lastlogHeader}, true).style },
-	model.SyntaxUnits:     func() lineStyler { return newUnitStyler().style },
-	model.SyntaxUnitFiles: func() lineStyler { return styleUnitFiles },
-	model.SyntaxTimers:    func() lineStyler { return timersRow },
+	model.SyntaxLast:       func() lineStyler { return styleLast },
+	model.SyntaxLastlog:    func() lineStyler { return newTableStyler([]*regexp.Regexp{lastlogHeader}).style },
+	model.SyntaxFree:       func() lineStyler { return newTableStyler([]*regexp.Regexp{freeHeader}).style },
+	model.SyntaxUnits:      func() lineStyler { return newUnitStyler().style },
+	model.SyntaxUnitFiles:  func() lineStyler { return styleUnitFiles },
+	model.SyntaxTimers:     func() lineStyler { return timersRow },
 	model.SyntaxListen: func() lineStyler {
-		return newTableStyler([]*regexp.Regexp{compile(`^Netid\s+State\s`), compile(`^Proto\s+Recv-Q\s+Send-Q\s`)}, true).style
+		return newTableStyler([]*regexp.Regexp{compile(`^Netid\s+State\s`), compile(`^Proto\s+Recv-Q\s+Send-Q\s`)}).style
 	},
-	model.SyntaxNetstat: func() lineStyler { return newTableStyler([]*regexp.Regexp{compile(`^\s*Proto\s+Local`)}, true).style },
+	model.SyntaxNetstat: func() lineStyler { return newTableStyler([]*regexp.Regexp{compile(`^\s*Proto\s+Local`)}).style },
 	model.SyntaxPkgHistory: func() lineStyler {
 		return stylePkgHistory
 	},

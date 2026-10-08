@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 }
 
 func TestTableStylerStaysInsideTheLine(t *testing.T) {
-	table := newTableStyler(nil, true)
+	table := newTableStyler(nil)
 	lines := []string{
 		"USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT",
 		"root     pts/0    1.2.3.4          21:17    0.00s  0.01s  0.00s w",
@@ -59,48 +59,6 @@ func TestTableStylerStaysInsideTheLine(t *testing.T) {
 	short := " 10:20:30 up 12:16,  1 user,  load average: 0.00, 0.01, 0.05"
 	if got := table.style(short); len(got) != 1 || got[0].Style != mutedStyle {
 		t.Fatalf("an uptime banner under a day should also be muted whole-line: %+v", got)
-	}
-}
-
-// top -b opens with a summary block (banner, Tasks, %Cpu, MiB Mem) that is
-// prose, not columns: the top styler has no cycle fallback, so it stays plain
-// until the all-caps process header anchors the table.
-
-func TestTopStylerKeepsTheSummaryPlain(t *testing.T) {
-	top := buildLineStyler("top")
-	preamble := []string{
-		"top - 21:39:12 up 95 days,  3:12,  1 user,  load average: 0.12, 0.34, 0.56",
-		"Tasks: 112 total,   1 running, 111 sleeping,   0 stopped,   0 zombie",
-		"%Cpu(s):  0.7 us,  0.3 sy,  0.0 ni, 98.9 id,  0.1 wa,  0.0 hi,  0.0 si,  0.0 st",
-		"MiB Mem :   7964.0 total,   1234.5 free,   2345.6 used,   4383.9 buff/cache",
-		"MiB Swap:   2048.0 total,   2048.0 free,      0.0 used.   5618.4 avail Mem",
-		"Mem: 12345K used, 6789K free, 0K shrd, 123K buff, 4567K cached",
-		"CPU:  0.0% usr  0.0% sys  0.0% nic 99.7% idle  0.0% io  0.0% irq  0.0% sirq",
-	}
-	for _, line := range preamble {
-		if spans := top(line); spans != nil {
-			t.Fatalf("a summary line should stay plain: %q -> %v", line, spans)
-		}
-	}
-	header := "    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND"
-	if spans := top(header); spans != nil {
-		t.Fatalf("the process header only records anchors: %v", spans)
-	}
-	row := "  1234 root      20   0  1621236 458880  10240 S   0.0  0.3   0:05.32  sshd"
-	spans := top(row)
-	if len(spans) == 0 {
-		t.Fatal("a process row should get column colors")
-	}
-	if spans[0].Start != strings.Index(row, "1234") {
-		t.Fatalf("the first span should color the PID cell: %+v in %q", spans[0], row)
-	}
-	if last := spans[len(spans)-1]; row[last.Start:last.End] != "0:05.32" {
-		t.Fatalf("the last span should color the TIME+ cell: %+v in %q", last, row)
-	}
-	for _, span := range spans {
-		if span.Start < 0 || span.End > len(row) || span.Start >= span.End {
-			t.Fatalf("span out of range: %+v line length %d", span, len(row))
-		}
 	}
 }
 
@@ -442,13 +400,11 @@ func TestLastlogStylerAnchorsOnItsHeader(t *testing.T) {
 }
 
 // A numeric column is right-aligned, so its value drifts left as the number
-// grows wider. The pid column of top and ps aux changed color when a process
-// count crossed ten: a one-digit pid starts two characters right of the header's
+// grows wider. The pid column of ps aux changed color when a process count
+// crossed ten: a one-digit pid starts two characters right of the header's
 // anchor, and the tolerance-based lookup read it as the column after it. The
 // row's field order settles the column, so every pid keeps the column it belongs
-// to whatever its width. The rows are the tools' own layout (top right-aligns the
-// pid in seven columns, ps aux in the twelve that end at the third character of
-// "PID").
+// to whatever its width.
 
 func TestTableStylerKeepsThePIDColumnAtEveryWidth(t *testing.T) {
 	cases := []struct {
@@ -457,11 +413,6 @@ func TestTableStylerKeepsThePIDColumnAtEveryWidth(t *testing.T) {
 		header string
 		row    func(pid string) string
 	}{
-		{model.SyntaxTop, 0,
-			"    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND",
-			func(pid string) string {
-				return fmt.Sprintf("%7s %s", pid, "root      20   0  102528   7880   4156 S   0.0   0.4   0:01.18 systemd")
-			}},
 		{model.SyntaxTable, 1,
 			"USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND",
 			func(pid string) string {

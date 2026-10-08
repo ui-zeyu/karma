@@ -251,12 +251,10 @@ const minerWalkDepth = 4
 // bound); the sh tier caps at 131072 because its interpreted loop probes at
 // ~10µs per pid, so a full sweep would outlast the tier's deadline.
 
-// topHead and psSortHead are the row shapes the resource snapshot asks for:
-// top's own table, and the two ps listings sorted by CPU and by memory.
-const (
-	topHead    = 25
-	psSortHead = 10
-)
+// psSortHead is the row shape the resource snapshot asks for: each of the two
+// sorted ps listings is a panel of its own, and ten rows answer "what is using
+// the box" without becoming the whole process table.
+const psSortHead = 10
 
 // hiddenPidsScript is the sh source's brute force over the same two views: kill
 // -0 is a shell builtin on every practical /bin/sh, so the loop forks nothing,
@@ -378,24 +376,27 @@ var ProcessChecks = []*model.Check{
 			{{Label: "pstree-ef", Inv: psEfScript}},
 		},
 		model.Options{Form: pstreeTree, Rules: processRules}),
+	// The resource snapshot is the two sorted aux views, and nothing else, on
+	// either source: procps' own top prints a near-zero %CPU delta on its first
+	// frame (it compares against a reading taken at startup), so the order that
+	// answers the question comes from a ps listing — karma reads /proc itself on
+	// the local channel, and the sh source runs the target's own ps through the
+	// parser that states the same fields. Each source's two views are one step,
+	// so a panel carries the CPU order and then the memory order.
 	define.LinuxCheck("top", "Resource usage snapshot", model.AspectProcess,
 		[]model.Step{
-			{ // these caps are the shape each probe wants: plenty to read, and
-				// small enough that a busy host's snapshot stays a panel
-				{Label: "top", Inv: model.Native{Body: native.Top}, Cap: model.Shape(topHead)}},
-			{{Label: "ps-cpu", Inv: model.Fields{Read: native.PsCPU}, Cap: model.Shape(psSortHead)}},
-			{{Label: "ps-mem", Inv: model.Fields{Read: native.PsMem}, Cap: model.Shape(psSortHead)}},
-			// The sh source's three readings of the same snapshot: top's own
-			// table, and the two sorted aux views the parsers read back into
-			// the aux schema the native tiers state.
-			{{Label: "top-sh", Inv: model.Sh("top -b -n 1"), Cap: model.Shape(topHead)}},
-			{{Label: "ps-cpu-sh", Inv: psAuxScript("ps", "auxww", "--sort=-%cpu"), Cap: model.Shape(psSortHead)}},
-			{{Label: "ps-mem-sh", Inv: psAuxScript("ps", "auxww", "--sort=-%mem"), Cap: model.Shape(psSortHead)}},
+			{
+				{Label: "ps-cpu", Inv: model.Fields{Read: native.PsCPU}, Cap: model.Shape(psSortHead)},
+				{Label: "ps-mem", Inv: model.Fields{Read: native.PsMem}, Cap: model.Shape(psSortHead)},
+			},
+			{
+				{Label: "ps-cpu-sh", Inv: psAuxScript("ps", "auxww", "--sort=-%cpu"), Cap: model.Shape(psSortHead)},
+				{Label: "ps-mem-sh", Inv: psAuxScript("ps", "auxww", "--sort=-%mem"), Cap: model.Shape(psSortHead)},
+			},
 		},
 		model.Options{
-			Syntax: model.SyntaxTop,
-			// top's own table is the tool's text; the two ps --sort tiers state the
-			// same fields the ps check draws, and land in the same table.
+			// Both sources state these rows as fields, so the ps check's table
+			// draws them the way it draws ps -ef's.
 			Form:  psTable,
 			Rules: []model.Matcher{define.KeywordRule},
 		}),

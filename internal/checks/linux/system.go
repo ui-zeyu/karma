@@ -13,6 +13,18 @@ import (
 // line either way — the same three surfaces native.OsRelease reads.
 const osReleaseSh = `cat /etc/os-release 2>/dev/null || lsb_release -a 2>/dev/null; echo; uname -a`
 
+// freeCheck is the memory reading, from /proc/meminfo here and from the
+// target's own free over a channel: the plain KiB table, which is what every
+// procps carries and what busybox's free prints too. free -h is deliberately not
+// used — its scaling differs between procps 3.3 (a cell truncated to whole
+// units) and 4.0 (a cell rounded), so the two sources would not read alike.
+func freeCheck() []model.Step {
+	return []model.Step{
+		{{Label: "free", Inv: model.Native{Body: native.Free}}},
+		{{Label: "free-sh", Inv: model.Sh("free")}},
+	}
+}
+
 // SystemChecks covers system information.
 var SystemChecks = []*model.Check{
 	define.LinuxCheck("os-release", "Distro and kernel", model.AspectSystem,
@@ -32,6 +44,9 @@ var SystemChecks = []*model.Check{
 			{{Label: "proc-uptime-sh", Inv: model.Sh("cat /proc/uptime")}},
 		},
 		model.Options{}),
+	define.LinuxCheck("free", "Memory and swap", model.AspectSystem,
+		freeCheck(),
+		model.Options{Syntax: model.SyntaxFree}),
 	define.LinuxCheck("time", "System time and timezone", model.AspectSystem,
 		[]model.Step{
 			{{Label: "timedatectl", Inv: model.NewCommand("timedatectl")}},

@@ -60,15 +60,15 @@ func columnIndex(starts []int, start int) int {
 }
 
 // tableStyler colors table columns anchored on the header (it carries the
-// column anchors across lines; one instance per check).
+// column anchors across lines; one instance per check). A styler with no
+// declared header falls back to cycling word by word.
 type tableStyler struct {
 	headers []*regexp.Regexp
-	cycle   bool
 	starts  []int
 }
 
-func newTableStyler(headers []*regexp.Regexp, cycle bool) *tableStyler {
-	return &tableStyler{headers: headers, cycle: cycle}
+func newTableStyler(headers []*regexp.Regexp) *tableStyler {
+	return &tableStyler{headers: headers}
 }
 
 func (t *tableStyler) style(line string) []paintSpan {
@@ -97,7 +97,7 @@ func (t *tableStyler) style(line string) []paintSpan {
 		// A styler with declared headers knows an anchor line is coming: text
 		// ahead of it (a note, a banner) stays plain, rather than taking the
 		// word-by-word cycle that exists for headerless tables.
-		if t.cycle && len(t.headers) == 0 {
+		if len(t.headers) == 0 {
 			return cycleColumns(columns)
 		}
 		return nil

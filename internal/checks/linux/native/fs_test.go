@@ -175,13 +175,48 @@ func TestRenderMountRows(t *testing.T) {
 	}
 }
 
-func TestRenderFindmntRowsIndentsByDepth(t *testing.T) {
+// findmnt's rows are the mount tree its targets make: a mount comes out after
+// the mount covering its directory, one level in, whatever order the kernel's
+// table named them in, and its level is the tree's — not the path's own depth.
+func TestRenderFindmntRowsDrawsTheMountTree(t *testing.T) {
 	out := renderFindmntRows([]mountRow{
-		{dev: "/dev/sda2", point: "/", fstype: "ext4", opts: "rw"},
+		{dev: "sysfs", point: "/sys", fstype: "sysfs", opts: "rw"},
 		{dev: "proc", point: "/proc", fstype: "proc", opts: "rw"},
+		{dev: "udev", point: "/dev", fstype: "devtmpfs", opts: "rw"},
+		{dev: "devpts", point: "/dev/pts", fstype: "devpts", opts: "rw"},
+		{dev: "efivarfs", point: "/sys/firmware/efi/efivars", fstype: "efivarfs", opts: "rw"},
+		{dev: "/dev/sda1", point: "/", fstype: "ext4", opts: "rw"}, // the root, last in the table
+		{dev: "/dev/sda1", point: "/etc/hosts", fstype: "ext4", opts: "rw"},
+	})
+	want := []string{
+		"/ ",
+		"  /sys ",
+		"    /sys/firmware/efi/efivars ", // two levels: /sys/firmware is no mount of its own
+		"  /proc ",
+		"  /dev ",
+		"    /dev/pts ",
+		"  /etc/hosts ", // one level under the root, not one per path component
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != len(want)+1 || !strings.HasPrefix(lines[0], "TARGET ") {
+		t.Fatalf("findmnt table:\n%s", out)
+	}
+	for index, prefix := range want {
+		if line := lines[index+1]; !strings.HasPrefix(line, prefix) {
+			t.Fatalf("row %d is %q, want it to start %q:\n%s", index, line, prefix, out)
+		}
+	}
+}
+
+// A table whose mounts have no covering mount — a namespace read without its
+// root — still lists every row, each of them a root of its own.
+func TestRenderFindmntRowsWithoutARootMount(t *testing.T) {
+	out := renderFindmntRows([]mountRow{
+		{dev: "proc", point: "/proc", fstype: "proc", opts: "rw"},
+		{dev: "devpts", point: "/dev/pts", fstype: "devpts", opts: "rw"},
 	})
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 3 || !strings.HasPrefix(lines[1], "/ ") || !strings.HasPrefix(lines[2], "  /proc ") {
+	if len(lines) != 3 || !strings.HasPrefix(lines[1], "/proc ") || !strings.HasPrefix(lines[2], "/dev/pts ") {
 		t.Fatalf("findmnt rows:\n%s", out)
 	}
 }

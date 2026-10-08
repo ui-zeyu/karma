@@ -87,6 +87,8 @@ func pkgVerifyAwk() string {
     p = rest; sub(/.* /, "", p)
     vpath[n] = p
     vpre[n] = rest; sub(/[^ ]*$/, "", vpre[n])
+    # the counted rows carry this field blank (blankField)
+    vblank[n] = vpre[n]; gsub(/./, " ", vblank[n])
     if (vpre[n] ~ / c[ \t]*$/) conf[n] = 1
     d = p
     if (!sub("/[^/]*$", "", d)) d = ""
@@ -144,7 +146,7 @@ END {
     if (name[i]) continue
     g = gkey[i]
     if (g == "" || gcount[g] <= listed) { print vline[i] (havefile && gone[vpath[i]] ? " (missing)" : ""); continue }
-    if (!(g in seen)) { seen[g] = 1; gtot[g] = 0; gpre[g] = vpre[i] }
+    if (!(g in seen)) { seen[g] = 1; gtot[g] = 0; gblank[g] = vblank[i] }
     gtot[g]++
     if (gone[vpath[i]]) gmiss[g]++
     if (!(g in listed_group)) { listed_group[g] = 1; gorder[++gn] = g }
@@ -154,10 +156,10 @@ END {
     gorder[b + 1] = g }
   for (j = 1; j <= gn; j++) {
     g = gorder[j]
-    if (!havefile) print gpre[g] g "/  " gtot[g] " files"
-    else if (gmiss[g] == gtot[g]) print gpre[g] g "/  " gtot[g] " files missing"
-    else if (gmiss[g] > 0) print gpre[g] g "/  " gtot[g] " files differ, " gmiss[g] " missing"
-    else print gpre[g] g "/  " gtot[g] " files differ"
+    if (!havefile) print gblank[g] g "/  " gtot[g] " files"
+    else if (gmiss[g] == gtot[g]) print gblank[g] g "/  " gtot[g] " files missing"
+    else if (gmiss[g] > 0) print gblank[g] g "/  " gtot[g] " files differ, " gmiss[g] " missing"
+    else print gblank[g] g "/  " gtot[g] " files differ"
   }
 }`, verifyMassFiles, verifyListedFiles, verifyKeyLabel, verifyOtherLabel, verifyFilesLabel, verifyLsLabel)
 }
@@ -219,9 +221,11 @@ func (r VerifyRow) Conffile() bool {
 //
 // The shape, in output order: the named rows verbatim, their type and attribute
 // rows, then the other changed files — those whose directory holds few enough
-// rows to list one by one, then one counted row per directory, in path order.
-// Each part follows its own label line (PkgVerifyTitles), and a part with no rows
-// prints nothing at all, label included.
+// rows to list one by one, then one counted row per directory, in path order. A
+// counted row states the directory and how many files it counts, with the flag
+// field left blank: the count is the row's evidence, and one member's flags are
+// not. Each part follows its own label line (PkgVerifyTitles), and a part with no
+// rows prints nothing at all, label included.
 func PkgVerifyBody(verify string, classify func(path string) VerifyFacts, forensics func(paths []string) (files, ls string)) string {
 	rows := parseVerify(verify)
 	if len(rows) == 0 {
@@ -285,7 +289,7 @@ func PkgVerifyBody(verify string, classify func(path string) VerifyFacts, forens
 	b.WriteString(verifyOtherLabel + "\n")
 
 	type group struct {
-		prefix  string
+		blank   string
 		count   int
 		missing int
 	}
@@ -302,7 +306,7 @@ func PkgVerifyBody(verify string, classify func(path string) VerifyFacts, forens
 		}
 		entry, seen := groups[dir]
 		if !seen {
-			entry = &group{prefix: row.Prefix}
+			entry = &group{blank: blankField(row.Prefix)}
 			groups[dir] = entry
 			order = append(order, dir)
 		}
@@ -314,9 +318,20 @@ func PkgVerifyBody(verify string, classify func(path string) VerifyFacts, forens
 	slices.Sort(order)
 	for _, dir := range order {
 		entry := groups[dir]
-		b.WriteString(fmt.Sprintf("%s%s/  %d files%s\n", entry.prefix, dir, entry.count, groupNote(entry.count, entry.missing)))
+		b.WriteString(fmt.Sprintf("%s%s/  %d files%s\n",
+			entry.blank, dir, entry.count, groupNote(entry.count, entry.missing)))
 	}
 	return b.String()
+}
+
+// blankField is the flag field a counted row carries: as wide as the verifier
+// prints its own, and empty. The counted row is a directory's count rather than
+// a file, so the flags of whichever member happened to open the group say
+// nothing about the rest of it — and the check's rule for the verifier's own
+// rows would otherwise read a count as one file's verdict, which is what makes
+// a wall of them all say the same thing.
+func blankField(prefix string) string {
+	return strings.Repeat(" ", len(prefix))
 }
 
 // missingNote marks a named row whose file is gone: neither dpkg's nor rpm's

@@ -75,12 +75,13 @@ func TestVerifyNamesProgramsAndCountsTheRest(t *testing.T) {
 	out := verify(t)
 	// The body carries its parts in order — the named rows, their type and
 	// attribute rows, then the counted remainder — each under its own label line
-	// (the check declares those labels as the body's sections).
+	// (the check declares those labels as the body's sections), and the counted
+	// row keeps the verifier's flag field empty.
 	for _, want := range []string{
 		"??5??????   " + tool + "\n",
 		tool + ": ",
 		readme + "\n",
-		"??5??????   " + mass + "/  4 files missing\n",
+		"            " + mass + "/  4 files missing\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the tier's output is missing %q:\n%s", want, out)

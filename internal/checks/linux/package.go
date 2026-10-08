@@ -138,13 +138,17 @@ var pkgHistoryKeep = []model.LineFilter{
 }
 
 // authBinPaths are the programs most often replaced in the login auth chain;
-// once pkg-verify points at one, type and mtime close the loop in place. The
-// globs cover both the multiarch and lib64 PAM layouts. The sh loop and the
-// local walk cover the same list.
+// once pkg-verify points at one, type and mtime close the loop in place. The PAM
+// module is spelled through the same three module directories the pam listing
+// reads (pamDirs): the multiarch one (Debian/Ubuntu), the lib64 one (RedHat
+// family), and the flat one (Alpine etc.) — a star does not cross a separator,
+// so the multiarch directory is a pattern of its own rather than a suffix of
+// "lib". The sh loop and the local walk cover the same list.
 var authBinPaths = []string{
 	"/usr/sbin/sshd", "/usr/bin/login", "/usr/bin/su", "/usr/bin/sudo",
 	"/usr/bin/passwd", "/usr/sbin/unix_chkpwd", "/sbin/unix_chkpwd",
-	"/usr/lib*/security/pam_unix.so", "/lib*/security/pam_unix.so",
+	"/usr/lib/*-linux-gnu/security/pam_unix.so", "/usr/lib64/security/pam_unix.so",
+	"/usr/lib/security/pam_unix.so",
 }
 
 // binNotElfRule is a file whose type is a script or text where an ELF object is
