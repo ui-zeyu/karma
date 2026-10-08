@@ -2,6 +2,7 @@ package checks_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"karma/internal/checks"
@@ -91,6 +92,15 @@ func TestCatalogInvariants(t *testing.T) {
 						t.Errorf("check %s probe %s carries both an invocation and a file list", check.ID, probe.Label)
 					case probe.Files != nil && (probe.Files.List == nil || probe.Files.Read == nil):
 						t.Errorf("check %s probe %s has an incomplete file list", check.ID, probe.Label)
+					case len(probe.Titles) > 0 && probe.Files != nil:
+						// A file section is titled with its path, so declared titles
+						// would have nowhere to apply and would be dropped silently.
+						t.Errorf("check %s probe %s declares titles and a file list", check.ID, probe.Label)
+					}
+					for _, title := range probe.Titles {
+						if strings.TrimSpace(title) == "" {
+							t.Errorf("check %s probe %s declares an empty title", check.ID, probe.Label)
+						}
 					}
 					stepLabels[probe.Label] = true
 				}

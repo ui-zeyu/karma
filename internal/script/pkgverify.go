@@ -6,11 +6,14 @@
 // attributes, and counts the rest per directory, noting how many of them are
 // gone rather than modified.
 //
-// The body is one section: the named rows, then their type and attribute rows,
-// then the counted remainder. Its parts are computed from one verifier run, and a
-// section boundary is the collection's own statement (model.BodySection) — a body
-// whose parts share one expensive computation stays one section rather than
-// running the verifier again to name each part.
+// The body carries four parts, in this order: the named rows, their type rows,
+// their attribute rows, then the other changed files — the directories small
+// enough to list one by one, then one counted row per directory. Each part opens
+// with a label line, and PkgVerifyTitles names those labels so the check can
+// declare them (model.Probe.Titles): the reading opens a section titled with each
+// one, which is how one verifier run's four parts reach the report as four
+// sections rather than as one flat block. A part with no rows prints nothing,
+// label included.
 //
 // Two implementations render that body and must agree word for word: this
 // file's Go side (PkgVerifyBody, the local channel) and the awk pipeline the
@@ -128,13 +131,15 @@ END {
     gkey[i] = g
     if (g != "") gcount[g]++
   }
+  if (named) print "%[3]s"
   for (i = 1; i <= n; i++) if (name[i]) print vline[i] (havefile && gone[vpath[i]] ? " (missing)" : "")
   # Both parts keep the order their source printed: the F rows the argument
   # order file(1) reads, the L rows the order ls sorted its arguments into. The
   # local channel renders them the same way, so nothing is re-ordered here.
-  for (i = 1; i <= fn; i++) if (namedpath[fpath[i]] && !fseen[fpath[i]]) { fseen[fpath[i]] = 1; print fline[i] }
-  for (i = 1; i <= ln; i++) if (namedpath[lpath[i]] && !lseen[lpath[i]]) { lseen[lpath[i]] = 1; print lline[i] }
+  for (i = 1; i <= fn; i++) if (namedpath[fpath[i]] && !fseen[fpath[i]]) { if (!inf) { print "%[5]s"; inf = 1 }; fseen[fpath[i]] = 1; print fline[i] }
+  for (i = 1; i <= ln; i++) if (namedpath[lpath[i]] && !lseen[lpath[i]]) { if (!inl) { print "%[6]s"; inl = 1 }; lseen[lpath[i]] = 1; print lline[i] }
   if (!other) exit
+  print "%[4]s"
   for (i = 1; i <= n; i++) {
     if (name[i]) continue
     g = gkey[i]
@@ -154,15 +159,26 @@ END {
     else if (gmiss[g] > 0) print gpre[g] g "/  " gtot[g] " files differ, " gmiss[g] " missing"
     else print gpre[g] g "/  " gtot[g] " files differ"
   }
-}`, verifyMassFiles, verifyListedFiles)
+}`, verifyMassFiles, verifyListedFiles, verifyKeyLabel, verifyOtherLabel, verifyFilesLabel, verifyLsLabel)
 }
 
-// The mass and listing thresholds. PkgVerifyScript spells the same numbers in its
+// The mass and listing thresholds, and the labels the body prints in front of
+// its parts. PkgVerifyScript spells the same numbers and the same labels in its
 // awk program.
 const (
 	verifyMassFiles   = 20
 	verifyListedFiles = 3
+	verifyKeyLabel    = "executables, libraries and conffiles"
+	verifyFilesLabel  = "file"
+	verifyLsLabel     = "ls"
+	verifyOtherLabel  = "other changed files (grouped by directory)"
 )
+
+// PkgVerifyTitles are the body's part labels in output order. The check declares
+// them (model.Probe.Titles) on both sources' tiers, so the reading opens a
+// section titled with each one; the body prints a label only in front of rows it
+// has, so a part with nothing to show states nothing.
+var PkgVerifyTitles = []string{verifyKeyLabel, verifyFilesLabel, verifyLsLabel, verifyOtherLabel}
 
 // VerifyRow is one verifier line split into the parts the body groups by: dpkg
 // -V and rpm -Va print a flag field, an optional conffile marker, and the path
@@ -204,6 +220,8 @@ func (r VerifyRow) Conffile() bool {
 // The shape, in output order: the named rows verbatim, their type and attribute
 // rows, then the other changed files — those whose directory holds few enough
 // rows to list one by one, then one counted row per directory, in path order.
+// Each part follows its own label line (PkgVerifyTitles), and a part with no rows
+// prints nothing at all, label included.
 func PkgVerifyBody(verify string, classify func(path string) VerifyFacts, forensics func(paths []string) (files, ls string)) string {
 	rows := parseVerify(verify)
 	if len(rows) == 0 {
@@ -243,16 +261,28 @@ func PkgVerifyBody(verify string, classify func(path string) VerifyFacts, forens
 	}
 
 	var b strings.Builder
-	for index, row := range rows {
-		if kept[index] {
-			b.WriteString(row.Line + missingNote(facts, row.Path) + "\n")
+	// Each part opens with its own label: the parts are one section because they
+	// share the verifier run, so the label is the only thing that says what the
+	// rows under it are. No blank line separates them — the reading layer drops
+	// blank rows on every check — so the label is the separation.
+	if other < len(rows) {
+		b.WriteString(verifyKeyLabel + "\n")
+		for index, row := range rows {
+			if kept[index] {
+				b.WriteString(row.Line + missingNote(facts, row.Path) + "\n")
+			}
 		}
 	}
-	b.WriteString(filesBody)
-	b.WriteString(lsBody)
+	if filesBody != "" {
+		b.WriteString(verifyFilesLabel + "\n" + filesBody)
+	}
+	if lsBody != "" {
+		b.WriteString(verifyLsLabel + "\n" + lsBody)
+	}
 	if other == 0 {
 		return b.String()
 	}
+	b.WriteString(verifyOtherLabel + "\n")
 
 	type group struct {
 		prefix  string

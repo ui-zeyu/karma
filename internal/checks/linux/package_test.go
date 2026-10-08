@@ -73,8 +73,9 @@ func TestVerifyNamesProgramsAndCountsTheRest(t *testing.T) {
 	fakeVerifier(t, body.String())
 
 	out := verify(t)
-	// The body is one section: the named rows, their type and attribute rows,
-	// then the counted remainder, in that order.
+	// The body carries its parts in order — the named rows, their type and
+	// attribute rows, then the counted remainder — each under its own label line
+	// (the check declares those labels as the body's sections).
 	for _, want := range []string{
 		"??5??????   " + tool + "\n",
 		tool + ": ",

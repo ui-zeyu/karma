@@ -37,9 +37,13 @@ var (
 )
 
 // firewallTier is the check's surfaces as a tier pair, one section each: every
-// family and table pair, then the nft ruleset (with the iptables compat layer
-// present, that ruleset is not skipped by the fallback either). The section
-// titles are the surfaces' own names.
+// family and table pair, then the nft ruleset, which is a surface of its own on
+// both sources (with the iptables compat layer present, that ruleset is not
+// skipped by the fallback either). The section titles are the surfaces' own
+// names. The check holds no command step of its own for nft: it would read the
+// same ruleset, and unlike a surface — whose refusal is the tier being
+// unavailable — it would put the tool's own refusal into the panel, so a
+// non-root run would report a permission error instead of skipping quietly.
 func firewallTier() []model.Step {
 	parts := make([]surface, 0, len(firewallFamilies)*len(firewallTables)+1)
 	for _, binary := range firewallFamilies {
@@ -120,9 +124,7 @@ var NetworkChecks = []*model.Check{
 		// and netstat tables, which come pre-aligned.
 		define.CheckOpt{Syntax: model.SyntaxTable, Normalize: shape.RouteTable}),
 	define.LinuxCheck("firewall", "Firewall rules", model.AspectNetwork,
-		append(firewallTier(),
-			model.Step{{Label: "nft", Inv: model.NewCommand("nft", "list", "ruleset")}},
-		),
+		firewallTier(),
 		define.CheckOpt{
 			Rules: []model.Matcher{
 				model.NewRule("firewall-active", `^-A `, model.Medium, "active firewall rule"),

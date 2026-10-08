@@ -11,7 +11,9 @@
 //
 // Sections arrive already named (model.BodySection): a boundary is the
 // collection's own statement about what it read, so no byte of file content or
-// tool output can become one.
+// tool output can become one. A section that carries several named parts of one
+// computation says so the same way (BodySection.Titles), and the reading opens a
+// section at each name.
 package reader
 
 import (
@@ -71,11 +73,13 @@ func Read(req model.ReadRequest) model.Document {
 		if body.Assemble != nil && !cut {
 			text = body.Assemble(text)
 		}
-		section, hits, next, ok := readSection(body, text, req.Check, req.Floor, number)
-		number = next
-		filtered = filtered.merge(hits)
-		if ok {
-			sections = append(sections, section)
+		for _, part := range titledSections(body, text) {
+			section, hits, next, ok := readSection(part, part.Text, req.Check, req.Floor, number)
+			number = next
+			filtered = filtered.merge(hits)
+			if ok {
+				sections = append(sections, section)
+			}
 		}
 	}
 	return model.Document{
@@ -83,6 +87,55 @@ func Read(req model.ReadRequest) model.Document {
 		Truncated: truncated || req.Truncated,
 		Filtered:  filtered,
 	}
+}
+
+// titledSections splits one section into the sections its own titles name: a
+// line equal to a declared title opens a section titled with it, and the text
+// before the first one — if any — stays under the section's own title. A section
+// with no declared titles is the one section it already is.
+//
+// The parts are read exactly as the whole would have been: every line keeps its
+// own bytes, the title line becomes the section's title rather than a row, and a
+// trailing part with nothing under it and no title of its own drops out.
+func titledSections(body model.BodySection, text string) []model.BodySection {
+	if len(body.Titles) == 0 {
+		body.Text = text
+		return []model.BodySection{body}
+	}
+	parts := make([]model.BodySection, 0, len(body.Titles)+1)
+	// The join already ran over the whole body, so no part runs it again.
+	part := body
+	part.Text, part.Titles, part.Assemble = "", nil, nil
+	var lines strings.Builder
+	flush := func() {
+		part.Text = lines.String()
+		if part.Title != "" || part.Text != "" {
+			parts = append(parts, part)
+		}
+		lines.Reset()
+	}
+	for line := range textutil.Lines(text) {
+		if title, ok := declaredTitle(body.Titles, line); ok {
+			flush()
+			part = body
+			part.Titles, part.Assemble, part.Title = nil, nil, title
+			continue
+		}
+		lines.WriteString(line + "\n")
+	}
+	flush()
+	return parts
+}
+
+// declaredTitle reports whether a body line is one of the section titles the
+// collection declared, and returns it.
+func declaredTitle(titles []string, line string) (string, bool) {
+	for _, title := range titles {
+		if line == title {
+			return title, true
+		}
+	}
+	return "", false
 }
 
 // readSection is one section's reading: the records path when the section

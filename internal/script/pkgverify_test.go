@@ -1,12 +1,13 @@
 // The package-verify body is one contract with two implementations: the Go
 // renderer the native source uses, and the awk program the sh source runs.
-// These tests pin the shape, then run the awk over a marked
-// stream built the way the shell builds it and compare the two bodies line for
-// line, so a grouping, threshold or title change cannot land on one side alone.
+// These tests pin the shape, then run the awk over a tagged stream built the
+// way the shell builds it and compare the two bodies line for line, so a
+// grouping, threshold or label change cannot land on one side alone.
 
 package script
 
 import (
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -45,9 +46,10 @@ func TestPkgVerifyBodyNamesKeyFiles(t *testing.T) {
 	ls := "-rw-r--r-- 1 root root 8600 May 18 07:20 /usr/lib/x/libevil.so\n"
 	got := PkgVerifyBody(verify, factsOf(facts), detailOf(files, ls))
 	want :=
-		"??5??????   /usr/lib/x/libevil.so\n" +
-			files +
-			ls
+		verifyKeyLabel + "\n" +
+			"??5??????   /usr/lib/x/libevil.so\n" +
+			verifyFilesLabel + "\n" + files +
+			verifyLsLabel + "\n" + ls
 	if got != want {
 		t.Errorf("the key files rendered as\n%q\nwant\n%q", got, want)
 	}
@@ -60,10 +62,10 @@ func TestPkgVerifyBodyMarksMissingFiles(t *testing.T) {
 	verify := "??5??????   /opt/x/a.conf\n??5??????   /opt/x/b.conf\n"
 	facts := map[string]VerifyFacts{"/opt/x/a.conf": {Missing: true}}
 	got := PkgVerifyBody(verify, factsOf(facts), nil)
-	want :=
+	want := verifyOtherLabel + "\n" +
 		"??5??????   /opt/x/a.conf (missing)\n??5??????   /opt/x/b.conf\n"
 	if got != want {
-		t.Errorf("a named missing file rendered as\n%q\nwant\n%q", got, want)
+		t.Errorf("a missing file rendered as\n%q\nwant\n%q", got, want)
 	}
 }
 
@@ -72,7 +74,7 @@ func TestPkgVerifyBodyMarksMissingFiles(t *testing.T) {
 func TestPkgVerifyBodyNamesConffiles(t *testing.T) {
 	verify := "??5?????? c /etc/ssh/sshd_config\n"
 	got := PkgVerifyBody(verify, noFacts, nil)
-	want := "??5?????? c /etc/ssh/sshd_config\n"
+	want := verifyKeyLabel + "\n" + "??5?????? c /etc/ssh/sshd_config\n"
 	if got != want {
 		t.Errorf("a changed conffile rendered as %q, want %q", got, want)
 	}
@@ -83,7 +85,7 @@ func TestPkgVerifyBodyNamesConffiles(t *testing.T) {
 func TestPkgVerifyBodyListsSmallDirectories(t *testing.T) {
 	verify := "??5??????   /opt/x/a.conf\n??5??????   /opt/x/b.conf\n??5??????   /opt/y/c.conf\n"
 	got := PkgVerifyBody(verify, noFacts, nil)
-	want :=
+	want := verifyOtherLabel + "\n" +
 		"??5??????   /opt/x/a.conf\n??5??????   /opt/x/b.conf\n??5??????   /opt/y/c.conf\n"
 	if got != want {
 		t.Errorf("small directories rendered as\n%q\nwant\n%q", got, want)
@@ -100,7 +102,7 @@ func TestPkgVerifyBodyCountsBigDirectories(t *testing.T) {
 	}
 	facts := map[string]VerifyFacts{"/usr/share/doc/a": {Missing: true}}
 	got := PkgVerifyBody(strings.Join(lines, "\n")+"\n", factsOf(facts), nil)
-	want :=
+	want := verifyOtherLabel + "\n" +
 		"??5??????   /usr/share/doc/  5 files differ, 1 missing\n"
 	if got != want {
 		t.Errorf("a big directory rendered as\n%q\nwant\n%q", got, want)
@@ -116,9 +118,88 @@ func TestPkgVerifyBodyRollsSmallDirectoriesUp(t *testing.T) {
 	}
 	lines = append(lines, "??5??????   /usr/share/doc/tiny/readme")
 	got := PkgVerifyBody(strings.Join(lines, "\n")+"\n", noFacts, nil)
-	want :=
+	want := verifyOtherLabel + "\n" +
 		"??5??????   /usr/share/doc/  26 files differ\n"
 	if got != want {
 		t.Errorf("a rolled-up directory rendered as\n%q\nwant\n%q", got, want)
 	}
+}
+
+// The two implementations are one contract, so the awk program the sh source
+// runs is run over the tagged stream the shell builds for it and compared with
+// the Go body: the labels, the blank line between the parts, the grouping and
+// the order all have to match, or one source's panel would say something the
+// other's does not.
+func TestPkgVerifyScriptAgreesWithTheBody(t *testing.T) {
+	const (
+		key    = "/usr/lib/x/libevil.so"
+		conff  = "/etc/ssh/sshd_config"
+		keyRow = key + ": ELF 64-bit LSB shared object\n"
+		lsRow  = "-rw-r--r-- 1 root root 8600 May 18 07:20 " + key + "\n"
+	)
+	// Four rows under one directory are counted rather than listed; the key
+	// file and the conffile are named.
+	all := "??5??????   " + key + "\n" +
+		"??5?????? c " + conff + "\n" +
+		"??5??????   /usr/share/doc/x/a\n??5??????   /usr/share/doc/x/b\n" +
+		"??5??????   /usr/share/doc/x/c\n??5??????   /usr/share/doc/x/d\n"
+	// Nothing is named: the body opens with the counted remainder instead, and
+	// no blank line may precede its label.
+	other := "??5??????   /opt/x/a.conf\n??5??????   /opt/x/b.conf\n"
+	cases := []struct {
+		name     string
+		verify   string
+		facts    map[string]VerifyFacts
+		files    string
+		ls       string
+		havefile bool
+	}{
+		{name: "every part", verify: all, facts: map[string]VerifyFacts{key: {Key: true}}, files: keyRow, ls: lsRow, havefile: true},
+		{name: "no named rows", verify: other},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stream strings.Builder
+			tag := func(mark, body string) {
+				for _, line := range strings.Split(strings.TrimSuffix(body, "\n"), "\n") {
+					if line != "" {
+						stream.WriteString(mark + " " + line + "\n")
+					}
+				}
+			}
+			tag("V", tc.verify)
+			tag("F", tc.files)
+			tag("L", tc.ls)
+			var forensics func([]string) (string, string)
+			if tc.files != "" || tc.ls != "" {
+				forensics = detailOf(tc.files, tc.ls)
+			}
+			want := PkgVerifyBody(tc.verify, factsOf(tc.facts), forensics)
+			if got := runVerifyAWK(t, stream.String(), tc.havefile); got != want {
+				t.Errorf("the awk body is\n%q\nwant the Go body\n%q", got, want)
+			}
+		})
+	}
+}
+
+// runVerifyAWK runs the sh source's awk program over a tagged stream: the same
+// input the shell pipeline builds for it (V the verifier's row, F file(1)'s, L
+// ls -l's).
+func runVerifyAWK(t *testing.T, stream string, havefile bool) string {
+	t.Helper()
+	awk, err := exec.LookPath("awk")
+	if err != nil {
+		t.Skip("no awk on this host to run the sh source's program")
+	}
+	flag := "0"
+	if havefile {
+		flag = "1"
+	}
+	cmd := exec.Command(awk, "-v", "havefile="+flag, pkgVerifyAwk())
+	cmd.Stdin = strings.NewReader(stream)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("awk: %v", err)
+	}
+	return string(out)
 }

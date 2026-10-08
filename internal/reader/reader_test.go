@@ -1,6 +1,7 @@
 package reader_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -195,5 +196,45 @@ func TestSeverityTakesMinimum(t *testing.T) {
 	document := readDocument("hit\n", rules, nil, nil)
 	if got := document.Sections[0].Lines[0].Severity; got != model.Low {
 		t.Fatalf("multiple matches take the most severe: %v", got)
+	}
+}
+
+// The parts a body carries inside one answer are sections like any other: the
+// collection declares the titles, the reading opens a section at each one, and
+// the title line becomes the section's title rather than one of its rows.
+func TestReadSplitsABodyAtItsDeclaredTitles(t *testing.T) {
+	body := model.Body{Sections: []model.BodySection{{
+		Title:  "preamble",
+		Titles: []string{"file", "ls"},
+		Text:   "before\nfile\n/path: ELF\nls\n-rw-r--r-- 1 root root /path\n",
+	}}}
+	document := reader.Read(model.ReadRequest{
+		Check: &model.Check{ID: "pkg-verify"}, Body: body, Floor: model.FloorAll,
+	})
+	var got []string
+	for _, section := range document.Sections {
+		for _, line := range section.Lines {
+			got = append(got, section.Title+"|"+line.Text)
+		}
+	}
+	want := []string{"preamble|before", "file|/path: ELF", "ls|-rw-r--r-- 1 root root /path"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("declared titles split the body as\n%q\nwant\n%q", got, want)
+	}
+}
+
+// A declared title with no rows under it is not a section: the collection prints
+// a title only in front of rows it has, and one that arrived anyway keeps nothing
+// to show.
+func TestReadDropsADeclaredTitleWithNothingUnderIt(t *testing.T) {
+	body := model.Body{Sections: []model.BodySection{{
+		Titles: []string{"file", "ls"},
+		Text:   "file\n/path: ELF\nls\n",
+	}}}
+	document := reader.Read(model.ReadRequest{
+		Check: &model.Check{ID: "pkg-verify"}, Body: body, Floor: model.FloorAll,
+	})
+	if len(document.Sections) != 1 || document.Sections[0].Title != "file" {
+		t.Fatalf("only the title with rows is a section: %+v", document.Sections)
 	}
 }

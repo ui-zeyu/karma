@@ -192,6 +192,11 @@ var (
 		"executable changed since install")
 )
 
+// pkgVerifyTitles are the sections the verify body carries, declared on both
+// sources' tiers: the tier prints each one in front of its own rows, and the
+// reading makes it a section titled with it.
+var pkgVerifyTitles = script.PkgVerifyTitles
+
 // PackageChecks covers packages.
 var PackageChecks = []*model.Check{
 	define.LinuxCheck("containers", "Containers (Docker)", model.AspectPackage,
@@ -202,10 +207,10 @@ var PackageChecks = []*model.Check{
 		define.CheckOpt{Syntax: model.SyntaxTable, Rules: []model.Matcher{define.KeywordRule}}),
 	define.LinuxCheck("pkg-verify", "Package integrity verification", model.AspectPackage,
 		[]model.Step{
-			{{Label: "dpkg", Inv: model.Native{Body: native.PkgVerify([]string{"dpkg", "-V"})}}},
-			{{Label: "dpkg-sh", Inv: model.Sh(verifyScript(pkgVerifyDpkg))}},
-			{{Label: "rpm", Inv: model.Native{Body: native.PkgVerify([]string{"rpm", "-Va"})}}},
-			{{Label: "rpm-sh", Inv: model.Sh(verifyScript(pkgVerifyRpm))}},
+			{{Label: "dpkg", Inv: model.Native{Body: native.PkgVerify([]string{"dpkg", "-V"})}, Titles: pkgVerifyTitles}},
+			{{Label: "dpkg-sh", Inv: model.Sh(verifyScript(pkgVerifyDpkg)), Titles: pkgVerifyTitles}},
+			{{Label: "rpm", Inv: model.Native{Body: native.PkgVerify([]string{"rpm", "-Va"})}, Titles: pkgVerifyTitles}},
+			{{Label: "rpm-sh", Inv: model.Sh(verifyScript(pkgVerifyRpm)), Titles: pkgVerifyTitles}},
 		},
 		define.CheckOpt{
 			Rules: []model.Matcher{

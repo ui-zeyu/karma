@@ -252,13 +252,14 @@ func stepMembers(ctx context.Context, sess session.Session, step model.Step) []a
 
 // runProbe is one probe's answer: the sections it read, and the call result the
 // walk's verdict reads. A probe of one invocation answers with one section under
-// the probe's own title; a file list answers with one section per path, titled
-// with the path.
+// the probe's own title — split into the parts the probe declares (Probe.Titles);
+// a file list answers with one section per path, titled with the path.
 func runProbe(ctx context.Context, sess session.Session, probe model.Probe) answeredTier {
 	if probe.Files == nil {
 		result := sess.Run(ctx, model.Call{Inv: probe.Inv, Cap: probe.Cap})
 		return answeredTier{probe: probe, result: result, sections: []model.BodySection{{
 			Title:    probe.Title,
+			Titles:   probe.Titles,
 			Text:     result.Stdout,
 			Records:  result.Records,
 			Adapt:    probe.Adapt,

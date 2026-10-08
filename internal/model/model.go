@@ -707,7 +707,14 @@ type Probe struct {
 	// output has; a step that answers with several sections names each one here,
 	// so the reading never has to recognize a boundary in the bytes it read.
 	Title string
-	Inv   Invocation
+	// Titles names the sections one answer carries, for a tier that prints
+	// several parts of one computation in one output. Each is a line of the body
+	// as that tier prints it, and the reading opens a section titled with it at
+	// every occurrence — the tier prints a title only in front of rows it has, so
+	// a part with nothing to show states nothing. Empty means the answer is the
+	// one section Title names.
+	Titles []string
+	Inv    Invocation
 	// Files makes the probe a file list: List answers with the paths, one per
 	// line, and Read builds the call that reads one of them. Each path becomes
 	// one section, titled with the path.
@@ -847,7 +854,9 @@ type Body struct{ Sections []BodySection }
 //
 // The title is carried here rather than recognized in the text: a section
 // boundary is the collection's own statement about what it read, so no byte of
-// file content or tool output can become one.
+// file content or tool output can become one. Titles is that statement one level
+// down — the parts a tier prints inside one answer, still declared by the check
+// rather than found in the bytes.
 //
 // Adapt is the producing tier's dialect alignment over this section (nil for
 // none): a tier declares it once, and the reading runs it on every section that
@@ -858,7 +867,12 @@ type Body struct{ Sections []BodySection }
 // rows before the reading sees them. The stream stays the evidence — what the
 // target sent — while the rows are what is read and shown.
 type BodySection struct {
-	Title    string
+	Title string
+	// Titles are the section titles this one body carries inside it (nil for
+	// none): the reading splits the text at each one and reads every part as its
+	// own section. The join ran before the split, so a part never runs Assemble
+	// again.
+	Titles   []string
 	Text     string
 	Records  *RecordSet
 	Adapt    Normalizer
