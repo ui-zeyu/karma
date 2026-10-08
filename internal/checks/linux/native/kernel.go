@@ -69,11 +69,11 @@ func ModuleDiffViews(attrs []ModuleAttr) script.ModuleDiffViews {
 // chain falls to the next tier.
 func ModulesHidden(views script.ModuleDiffViews) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
-		modules, err := os.ReadFile(views.ModulesPath)
+		modules, err := procFile(views.ModulesPath)
 		if err != nil {
-			return "", model.ErrTierUnavailable
+			return "", err
 		}
-		return hiddenModuleViewsText(views, string(modules)), nil
+		return hiddenModuleViewsText(views, modules), nil
 	}
 }
 
@@ -179,19 +179,19 @@ func ModuleMemoryViews() script.ModuleMemoryViews {
 // answers exactly the rows the stream carries.
 func ModuleMemory(views script.ModuleMemoryViews, kitNames *regexp.Regexp) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
-		allocations, err := os.ReadFile(views.VMallocPath)
+		allocations, err := procFile(views.VMallocPath)
 		if err != nil {
-			return "", model.ErrTierUnavailable
+			return "", err
 		}
-		modules, err := os.ReadFile(views.ModulesPath)
+		modules, err := procFile(views.ModulesPath)
 		if err != nil {
-			return "", model.ErrTierUnavailable
+			return "", err
 		}
-		symbols, err := os.ReadFile(views.SymbolsPath)
+		symbols, err := procFile(views.SymbolsPath)
 		if err != nil {
-			return "", model.ErrTierUnavailable
+			return "", err
 		}
-		stream := moduleMemoryText(views, string(allocations), string(modules), string(symbols))
+		stream := moduleMemoryText(views, allocations, modules, symbols)
 		// The dig needs the regions the join could not explain, so it reads them
 		// out of the join's own output rather than parsing a row back.
 		_, unowned := script.ModuleMemoryRows(views, stream)
@@ -380,21 +380,17 @@ func readTrimmedFile(path string) (string, bool) {
 // process; no hit stays empty and quiet.
 func Kallsyms(pattern *regexp.Regexp) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		data, err := os.ReadFile("/proc/kallsyms")
+		data, err := procFile(procKallsymsFile)
 		if err != nil {
-			return "", model.ErrTierUnavailable
+			return "", err
 		}
-		return filteredLines(string(data), pattern.MatchString), nil
+		return filteredLines(data, pattern.MatchString), nil
 	}
 }
 
 // ProcModules reads the module registry the cat tier reads.
 func ProcModules(ctx context.Context) (string, error) {
-	data, err := os.ReadFile("/proc/modules")
-	if err != nil {
-		return "", model.ErrTierUnavailable
-	}
-	return string(data), nil
+	return procFile(procModulesFile)
 }
 
 // stripSyslogPriority drops the "<N>" facility/level prefix the kernel stores
@@ -460,9 +456,5 @@ func lsmodRows(data string) string {
 // itself unavailable where /proc is absent); the file holds one integer, so it
 // is read directly.
 func Tainted(ctx context.Context) (string, error) {
-	data, err := os.ReadFile("/proc/sys/kernel/tainted")
-	if err != nil {
-		return "", model.ErrTierUnavailable
-	}
-	return string(data), nil
+	return procFile("/proc/sys/kernel/tainted")
 }

@@ -179,14 +179,21 @@ func stderrRows(stderr string) []string {
 // drawn in the shape its check declares; every other section reads as text.
 func bodyRows(result *model.CheckResult, maxLines, term int, color bool) []string {
 	width := textWidth(term)
-	base := newLineStyler(result.Check.Syntax)
+	// A stream that takes no color pays for no lexing: every span a syntax
+	// produces would be painted through a style whose profile writes no
+	// escapes, so the line would come back as the bytes it went in as. The
+	// forms make the same decision from the same flag.
+	var base lineStyler
+	if color {
+		base = newLineStyler(result.Check.Syntax)
+	}
 	var rows []string
 	budget := maxLines
 	for _, section := range result.Document.Sections {
 		// A section override builds its own instance: cross-line state (table
 		// anchors) must not leak across sections or shapes.
 		lineStyler := base
-		if syntax := sectionSyntax(result.Check, section.Title); syntax != result.Check.Syntax {
+		if syntax := sectionSyntax(result.Check, section.Title); color && syntax != result.Check.Syntax {
 			lineStyler = newLineStyler(syntax)
 		}
 		planned, used := plan(section.Lines, budget)

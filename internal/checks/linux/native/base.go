@@ -90,6 +90,22 @@ func haveBinary(name string) bool {
 	return err == nil
 }
 
+// procFile reads one kernel interface whole. An interface that cannot be read
+// is the same answer a missing host tool gives — the tier cannot run here, and
+// the chain falls through — so /proc on a host without it, a container that
+// hides the file and a permission the run does not hold are one outcome.
+//
+// The read is a plain os.ReadFile: /proc and /sys entries are the one place
+// localfs's non-blocking open is not used, because the interface's own read
+// semantics are what the tier is reading (see localfs's package comment).
+func procFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", model.ErrTierUnavailable
+	}
+	return string(data), nil
+}
+
 // numericName is /proc's own name test: an entry whose name is all digits is a
 // pid (or a thread id), everything else is a kernel interface. One predicate for
 // the pid listings, so the two views cannot disagree about what a process is.

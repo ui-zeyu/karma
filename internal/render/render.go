@@ -72,18 +72,18 @@ func fillBand(label string, width int, st lipgloss.Style) string {
 	return st.Render(label + strings.Repeat(" ", width-lipgloss.Width(label)))
 }
 
-// SyntaxLine paints one line's declared syntax — the report's body-line
-// coloring without hit spans — so a caller outside the report (the built-in
-// readers) prints the same paint its panels get. An unknown syntax returns
-// the line unchanged. The styler is built here, so this is the shape for a
-// line-shaped lexer; a table lexer, which carries its column anchors from line
-// to line, needs one styler over the whole output.
-func SyntaxLine(syntax model.Syntax, line string) string {
+// SyntaxPainter builds the line painter for one declared syntax — the report's
+// body-line coloring without hit spans — so a caller outside the report (the
+// built-in readers) prints the same paint its panels get. It is built once per
+// caller because a table lexer carries its column anchors from line to line: a
+// painter built per line would never carry them. An unknown syntax returns
+// nil, and the caller prints the line as it is.
+func SyntaxPainter(syntax model.Syntax) func(string) string {
 	styler := newLineStyler(syntax)
 	if styler == nil {
-		return line
+		return nil
 	}
-	return paintLine(line, styler(line))
+	return func(line string) string { return paintLine(line, styler(line)) }
 }
 
 // Masthead and Panel expose the report's own surfaces to callers outside it:

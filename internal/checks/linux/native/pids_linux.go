@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-
-	"karma/internal/model"
 )
 
 // HiddenPIDs is the native tier of the hidden-pids check: the brute force runs
@@ -30,13 +28,13 @@ func HiddenPIDs(ctx context.Context) (string, error) {
 // PIDs, and a kill(0) probe costs ~0.6µs, so the 4M default sweeps in a
 // couple of seconds even on a small box — nothing alive can sit above it.
 func newHiddenPidScan() (hiddenPidScan, error) {
-	raw, err := os.ReadFile("/proc/sys/kernel/pid_max")
+	raw, err := procFile("/proc/sys/kernel/pid_max")
 	if err != nil {
-		return hiddenPidScan{}, model.ErrTierUnavailable
+		return hiddenPidScan{}, err
 	}
-	pidMax, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	pidMax, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil || pidMax < 1 {
-		return hiddenPidScan{}, fmt.Errorf("pid_max: %q", string(raw))
+		return hiddenPidScan{}, fmt.Errorf("pid_max: %q", raw)
 	}
 	return hiddenPidScan{
 		pidMax:   pidMax,

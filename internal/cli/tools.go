@@ -73,12 +73,19 @@ func newLsCmd() *cobra.Command {
 			w := cmd.OutOrStdout()
 			if text != "" {
 				st := stylesFor(w)
+				// One painter for the whole listing, built only when the stream
+				// takes color: a plain stream paints nothing, so every span the
+				// lexer states would be spent on escapes that never appear.
+				var paint func(string) string
+				if render.StreamColored(w) {
+					paint = render.SyntaxPainter(model.SyntaxLsL)
+				}
 				for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
 					// section headers read like the panels' section titles
 					if _, ok := section.Title(line); ok {
 						line = st.bold(line)
-					} else {
-						line = render.SyntaxLine(model.SyntaxLsL, line)
+					} else if paint != nil {
+						line = paint(line)
 					}
 					fmt.Fprintln(w, line)
 				}

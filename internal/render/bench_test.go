@@ -7,9 +7,11 @@
 package render
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
+	"karma/internal/form"
 	"karma/internal/model"
 	"karma/internal/testkit"
 )
@@ -60,6 +62,70 @@ func BenchmarkCheckPanelQuietRail(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		checkPanel(result, 400, 120, true)
+	}
+}
+
+// BenchmarkCheckPanelPlain is the same body on a stream that takes no color:
+// a redirected report or a pipe. The panel is the same layout with no escapes,
+// so this is the path the plain output pays for and the one the lexers must
+// not run on.
+func BenchmarkCheckPanelPlain(b *testing.B) {
+	result := listingPanel(b, 400, true)
+	b.ReportAllocs()
+	for b.Loop() {
+		checkPanel(result, 400, 120, false)
+	}
+}
+
+// formPanel is one check drawn through a form: a record set and the table its
+// check declares, which is how ps, pstree and top's record fallbacks render.
+// The hits are the ones a rule states on the command line column, so the
+// painted path carries spans the way a real finding does.
+func formPanel(tb testing.TB, rows int) *model.CheckResult {
+	tb.Helper()
+	check := &model.Check{
+		ID: "ps", Aspect: model.AspectProcess,
+		Form: form.Table{Align: map[string]form.Alignment{"PID": form.Right}},
+		Rules: []model.Matcher{
+			model.NewRule("ps-tmp-path", `(?:^|\s)/(?:tmp|var/tmp|dev/shm)/\S*`,
+				model.Medium, "command line references temp path"),
+		},
+	}
+	header := []string{"UID", "PID", "PPID", "STIME", "TTY", "TIME", "CMD"}
+	set := &model.RecordSet{Header: header}
+	for i := range rows {
+		values := []string{"root", strconv.Itoa(i), "1", "10:00", "?", "00:00:00", "/usr/sbin/cron -f"}
+		if i == rows/2 {
+			values[6] = "/tmp/.evil -x"
+		}
+		fields := make([]model.Field, len(header))
+		for index, name := range header {
+			fields[index] = model.Field{Name: name, Value: values[index]}
+		}
+		set.Rows = append(set.Rows, model.Record{Fields: fields})
+	}
+	return &model.CheckResult{
+		Check: check, Outcome: model.Collected, ProbeLabel: "ps",
+		Document: testkit.RecordsDocument(set, check),
+	}
+}
+
+// BenchmarkCheckPanelFormColored and BenchmarkCheckPanelFormPlain are the form
+// path — `ps` and its neighbours — on a stream that takes color and on one
+// that does not.
+func BenchmarkCheckPanelFormColored(b *testing.B) {
+	result := formPanel(b, 400)
+	b.ReportAllocs()
+	for b.Loop() {
+		checkPanel(result, 400, 120, true)
+	}
+}
+
+func BenchmarkCheckPanelFormPlain(b *testing.B) {
+	result := formPanel(b, 400)
+	b.ReportAllocs()
+	for b.Loop() {
+		checkPanel(result, 400, 120, false)
 	}
 }
 

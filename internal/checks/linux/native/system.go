@@ -38,11 +38,7 @@ func OsRelease(ctx context.Context) (string, error) {
 // source's walk, so this is the minimal-system fallback — the file the banner
 // itself is derived from.
 func ProcUptime(ctx context.Context) (string, error) {
-	data, err := os.ReadFile("/proc/uptime")
-	if err != nil {
-		return "", model.ErrTierUnavailable
-	}
-	return string(data), nil
+	return procFile("/proc/uptime")
 }
 
 // uptimeBannerLine is the banner `uptime` and `w` print: clock, up span,

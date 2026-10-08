@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 
 	"karma/internal/model"
 )
@@ -494,6 +495,18 @@ func total(widths []int) int {
 	return sum
 }
 
-func displayWidth(text string) int { return lipgloss.Width(text) }
+// displayWidth is the width the text occupies on the line, ANSI escapes
+// ignored. Every text measured here is one line — a field value, a rendered
+// cell, a fact — and a single-line text's width is ansi.StringWidth's own
+// answer, which lipgloss.Width reaches by splitting the text on newlines
+// first: that split allocates a slice per call, and the forms measure once per
+// cell and once per rune they wrap. Multi-line text (a cell whose value
+// carries a newline) keeps lipgloss's answer, the widest of its lines.
+func displayWidth(text string) int {
+	if !strings.ContainsRune(text, '\n') {
+		return xansi.StringWidth(text)
+	}
+	return lipgloss.Width(text)
+}
 
 func clamp(value, low, high int) int { return min(max(value, low), high) }

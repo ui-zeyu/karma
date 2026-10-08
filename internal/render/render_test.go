@@ -23,20 +23,24 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func plain(s string) string { return ansi.ReplaceAllString(s, "") }
 
-// SyntaxLine is the report's body-line coloring handed to callers outside the
-// report: an ls-l row comes back with the ls-l paint and strips back to
-// itself, and an unknown syntax stays plain.
-func TestSyntaxLine(t *testing.T) {
+// SyntaxPainter is the report's body-line coloring handed to callers outside
+// the report: an ls-l row comes back with the ls-l paint and strips back to
+// itself, and an unknown syntax has no painter at all.
+func TestSyntaxPainter(t *testing.T) {
 	row := "drwxr-xr-x 2 root root 4096 Oct 06 12:00 /tmp/sub"
-	painted := SyntaxLine("ls-l", row)
+	paint := SyntaxPainter("ls-l")
+	if paint == nil {
+		t.Fatal("ls-l should have a painter")
+	}
+	painted := paint(row)
 	if painted == row {
 		t.Fatalf("the ls-l row should be colored: %q", painted)
 	}
 	if plain(painted) != row {
 		t.Fatalf("the paint should not change the text: %q", painted)
 	}
-	if got := SyntaxLine("no-such-syntax", row); got != row {
-		t.Fatalf("an unknown syntax should stay plain: %q", got)
+	if got := SyntaxPainter("no-such-syntax"); got != nil {
+		t.Fatal("an unknown syntax should have no painter")
 	}
 }
 
@@ -45,7 +49,7 @@ func TestSyntaxLine(t *testing.T) {
 // span still covers the whole path.
 func TestLsLAlignedRow(t *testing.T) {
 	row := "drwxr-xr-x  2 root root    4096 Oct 06 12:00 /tmp/sub"
-	painted := SyntaxLine("ls-l", row)
+	painted := SyntaxPainter("ls-l")(row)
 	if painted == row {
 		t.Fatalf("an aligned ls-l row should be colored: %q", painted)
 	}
