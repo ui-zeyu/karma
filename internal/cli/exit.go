@@ -1,6 +1,5 @@
 // Process exit codes: what the status says about the run, so a caller can tell
-// an interruption from a channel that died and from karma's own damage without
-// reading the message.
+// a failed reader from karma's own damage without reading the message.
 
 package cli
 
@@ -16,12 +15,12 @@ const (
 	// already printed. It is the status a failed read carries, so a script that
 	// checks $? sees it.
 	ExitRead ExitCode = 1
-	// ExitEnvironment is the environment failing the run: a connection that could
-	// not be made, or a channel that died mid-run.
+	// ExitEnvironment is the environment failing the run: a kernel interface the
+	// watcher needs could not be opened.
 	ExitEnvironment ExitCode = 2
 	// ExitInternal is karma's own damage: an internal error ended the run, so the
 	// report is incomplete. It is sysexits' EX_SOFTWARE, kept distinct from the
-	// environment's code so a script can tell the tool's defect from the target's.
+	// environment's code so a script can tell the tool's defect from the host's.
 	ExitInternal ExitCode = 70
 	// ExitInterrupted is SIGINT or SIGTERM: the run stopped early and the report
 	// holds what was collected.

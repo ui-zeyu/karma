@@ -1,6 +1,9 @@
 package trust
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestUnderAndHidden(t *testing.T) {
 	cases := []struct {
@@ -56,7 +59,7 @@ func TestBuildKeepsLexicalAndResolvedTrees(t *testing.T) {
 
 func TestBuildSpecialBits(t *testing.T) {
 	facts := Build("/usr/local/bin/helper", Attrs{
-		Kind: File, Mode: Mode(0o4755), UID: 0, ParentWritable: true,
+		Kind: File, Mode: os.ModeSetuid | 0o755, UID: 0, ParentWritable: true,
 	})
 	if !facts.Setuid || !facts.Executable || !facts.ParentWritable {
 		t.Errorf("special-bit facts = %+v", facts)

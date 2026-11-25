@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +12,7 @@ import (
 
 func pathFacts(path string, ctime int64, mode uint32, owner int) trust.Facts {
 	return trust.Build(path, trust.Attrs{
-		Kind: trust.File, Mode: trust.Mode(mode), UID: owner, GID: owner,
+		Kind: trust.File, Mode: os.FileMode(mode), UID: owner, GID: owner,
 		Real: path, CTime: ctime,
 	})
 }

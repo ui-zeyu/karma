@@ -43,19 +43,6 @@ func TestCatchTurnsAPanicIntoAValue(t *testing.T) {
 	}
 }
 
-// Result carries a value out, and the zero value with the panic when the
-// boundary broke.
-func TestResultCarriesAValueOrThePanic(t *testing.T) {
-	value, err := Result("check df", func() string { return "kept" })
-	if err != nil || value != "kept" {
-		t.Fatalf("a boundary that ends well should carry its value, got %q, %v", value, err)
-	}
-	value, err = Result("check df", func() string { panic("boom") })
-	if value != "" || err == nil {
-		t.Fatalf("a panicking boundary should give the zero value and the panic, got %q, %v", value, err)
-	}
-}
-
 // panicValue is a value the caller might panic with that carries no message of
 // its own.
 type panicValue struct{ Code int }

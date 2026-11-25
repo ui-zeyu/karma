@@ -1,9 +1,6 @@
-// The ls -l body row, read side: taking a collected row apart into its nine
-// columns and lining a listing up the way ls -l lays it out. The shape itself
-// is LSBodyPrintf in script.go; the collection side and the reading side
-// (cluster's listing normalizer) both split it here, so the columns are one
-// definition.
-
+// Package script owns the ls -l row shape (LSBodyPrintf) and its reading side:
+// taking a row apart into its nine columns and lining a listing up the way
+// ls -l lays it out, so the columns are one definition.
 package script
 
 import (
@@ -11,6 +8,11 @@ import (
 	"strconv"
 	"strings"
 )
+
+// LSBodyPrintf is the ls -l row shape: permissions links owner group size date
+// clock path. A symlink row appends its target with no arrow (find's %l prints
+// the target alone); the reading side separates path and target.
+const LSBodyPrintf = `%M %n %u %g %s %Tb %Td %TH:%TM %p%l\n`
 
 // lsBodyColumns is the number of columns of an ls -l body row: permissions,
 // links, owner, group, size, month, day, clock, path.

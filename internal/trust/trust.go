@@ -212,23 +212,6 @@ func Build(path string, attrs Attrs) Facts {
 	return facts
 }
 
-// Mode turns a stat mode's permission word (the `%a` spelling, special bits
-// included) into the FileMode the rest of the package reads. The sh source
-// carries that word; a caller that already has the FileMode passes it directly.
-func Mode(bits uint32) fs.FileMode {
-	mode := fs.FileMode(bits & 0o777)
-	if bits&0o4000 != 0 {
-		mode |= os.ModeSetuid
-	}
-	if bits&0o2000 != 0 {
-		mode |= os.ModeSetgid
-	}
-	if bits&0o1000 != 0 {
-		mode |= os.ModeSticky
-	}
-	return mode
-}
-
 // Classify reads one path's facts. A nil resolver reports package ownership as
 // unknown; a path that does not exist still carries the path-level facts
 // (hidden, admin layer, package ownership of a deleted package file).

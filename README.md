@@ -4,7 +4,7 @@ Read-only incident-response audit for Linux. Karma runs on the target host and
 answers one question: **what appeared after the artifact was built, and what
 authority can it reach?**
 
-The version is `0.43.0`.
+The version is `0.44.0`.
 
 ## Model
 
@@ -69,7 +69,7 @@ Groups are `persistence`, `boot`, `login`, `schedule`, `service`, `device`,
 
 ```text
  KARMA                                                          yuyy
-▌ 0.43.0                                    2026-11-25 19:25:48 +0800
+▌ 0.44.0                                    2026-11-25 19:25:48 +0800
 ▌  host      web-1                    distro    Ubuntu 24.04
 ▌  account   root (uid 0)             kernel    5.15.0
 ▌  source    local                    ledger    dpkg · 64 pkgs · 380 hash entries · 351 verified

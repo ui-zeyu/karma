@@ -32,15 +32,6 @@ const (
 	Mismatched                    // the content differs from the ledger
 )
 
-var verifyNames = [...]string{"unverified", "verified", "mismatched"}
-
-func (s VerifyState) String() string {
-	if int(s) >= len(verifyNames) {
-		return "unverified"
-	}
-	return verifyNames[s]
-}
-
 // Content is one path's ledger comparison: the package that claims the file,
 // the hash the ledger records, the hash the disk carries.
 type Content struct {

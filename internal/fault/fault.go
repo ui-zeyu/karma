@@ -29,9 +29,8 @@ type Panic struct {
 	Stack []byte
 }
 
-// newPanic captures a recovered panic value as a *Panic. Catch and Result are
-// the recover sites, and both build their value through here, so a panic is
-// never recorded in a shape of its own.
+// newPanic captures a recovered panic value as a *Panic. Catch is the one
+// recover site, so a panic is never recorded in a shape of its own.
 func newPanic(boundary string, value any) *Panic {
 	return &Panic{Boundary: boundary, Value: value, Stack: debug.Stack()}
 }
@@ -51,16 +50,4 @@ func Catch(boundary string, fn func() error) (err error) {
 		}
 	}()
 	return fn()
-}
-
-// Result runs one boundary that produces a value. A panic comes back as the
-// zero value plus a *Panic error.
-func Result[T any](boundary string, fn func() T) (value T, err error) {
-	defer func() {
-		if problem := recover(); problem != nil {
-			var zero T
-			value, err = zero, newPanic(boundary, problem)
-		}
-	}()
-	return fn(), nil
 }
