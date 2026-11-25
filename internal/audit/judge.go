@@ -57,6 +57,9 @@ func Judge(snapshot *Snapshot, filter Filter) *Report {
 	}
 	for _, pkg := range tamperOrder {
 		rows := tamperByPkg[pkg]
+		if len(filter.PIDs) > 0 || !pathInScope(rows[0].Path, filter) {
+			continue
+		}
 		if pkg == logLedgerPkg {
 			add(Finding{
 				Class: "ledger-tampered", Severity: Medium, Origin: Modified, Reach: RootAsset,

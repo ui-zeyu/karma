@@ -1,9 +1,6 @@
 package audit
 
 import (
-	"encoding/base64"
-	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -240,76 +237,6 @@ func TestScopeNarrowsSurfacesAndPaths(t *testing.T) {
 	}
 }
 
-func TestParseAuditRebuildsTheSnapshot(t *testing.T) {
-	host := base64.StdEncoding.EncodeToString([]byte("lab"))
-	kernel := base64.StdEncoding.EncodeToString([]byte("5.15"))
-	osname := base64.StdEncoding.EncodeToString([]byte("Ubuntu"))
-	path := "/etc/audit-target"
-	encoded := base64.StdEncoding.EncodeToString([]byte(path))
-	exe := base64.StdEncoding.EncodeToString([]byte("/bin/bash"))
-	cwd := base64.StdEncoding.EncodeToString([]byte("/tmp"))
-	cmd := base64.StdEncoding.EncodeToString([]byte("bash /tmp/x.sh"))
-	comm := base64.StdEncoding.EncodeToString([]byte("bash"))
-	auth := base64.StdEncoding.EncodeToString([]byte("/etc/sudoers"))
-	dpkg := base64.StdEncoding.EncodeToString([]byte("coreutils: " + path + "\n"))
-	text := fmt.Sprintf(`KARMA-AUDIT 2
-T 1000 100 1 %s %s %s
-K 1001
-P %s f 755 0 0 0 %s 0 0 0 0 1200 42 0
-Q 10 1 0 0 5 S %s %s %s - %s
-A %s
-D 1
-O dpkg
-%s
-`, host, kernel, osname, encoded, encoded, comm, exe, cwd, cmd, auth, dpkg)
-	snapshot := &Snapshot{Objects: map[string]trust.Facts{}}
-	if err := parseAudit(text, snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Boundary.Time.Unix() != 1001 || snapshot.Boundary.Kind != "container" {
-		t.Errorf("boundary = %+v", snapshot.Boundary)
-	}
-	if len(snapshot.Processes) != 1 || snapshot.Processes[0].Exe != "/bin/bash" {
-		t.Fatalf("processes = %+v", snapshot.Processes)
-	}
-	if len(snapshot.Authority) != 1 || snapshot.Authority[0] != "/etc/sudoers" {
-		t.Errorf("authority = %v", snapshot.Authority)
-	}
-	facts := snapshot.Objects[path]
-	if facts.Package != "coreutils" || facts.CTime != 1200 || facts.Inode != 42 {
-		t.Errorf("facts = %+v", facts)
-	}
-}
-
-func TestParseAuditAcceptsEmptyFields(t *testing.T) {
-	text := "KARMA-AUDIT 2\nT 0 0 0 - - -\nQ 1 0 0 0 0 S - - - - -\n"
-	snapshot := &Snapshot{Objects: map[string]trust.Facts{}}
-	if err := parseAudit(text, snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if len(snapshot.Processes) != 1 {
-		t.Fatalf("processes = %+v", snapshot.Processes)
-	}
-	process := snapshot.Processes[0]
-	if process.Comm != "" || process.Exe != "" || process.Cmdline != "" {
-		t.Errorf("empty fields = %+v", process)
-	}
-}
-
-func TestScriptsAreValidPOSIX(t *testing.T) {
-	for name, script := range map[string]string{
-		"audit":        Script(nil),
-		"audit-seeded": Script([]string{"/etc/x y.sh", "/opt/z"}),
-		"startup":      startup.Script(),
-	} {
-		command := exec.Command("sh", "-n")
-		command.Stdin = strings.NewReader(script)
-		if out, err := command.CombinedOutput(); err != nil {
-			t.Errorf("%s script: %v\n%s", name, err, out)
-		}
-	}
-}
-
 func TestRenderKeepsThePanelLanguageAndTheRawInventory(t *testing.T) {
 	trigger := pathFacts("/etc/systemd/system/x.service", 1200, 0o644, 0)
 	target := pathFacts("/opt/x", 1200, 0o755, 0)
@@ -329,7 +256,7 @@ func TestRenderKeepsThePanelLanguageAndTheRawInventory(t *testing.T) {
 	report := Judge(snapshot, Filter{})
 	var out strings.Builder
 	Render(&out, report, snapshot, RenderOptions{
-		Channel: "local", Version: "9.9.9", Width: 100, Evidence: true,
+		Version: "9.9.9", Width: 100, Evidence: true,
 	})
 	text := out.String()
 	for _, want := range []string{"KARMA", "9.9.9", "CRITICAL", "EVIDENCE", "ACTIVATION", "SERVICE", "LISTEN", "x.service", "0.0.0.0:22"} {

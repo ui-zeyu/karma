@@ -2,10 +2,7 @@ package audit
 
 import (
 	"context"
-	"regexp"
 	"sort"
-	"strconv"
-	"strings"
 
 	"karma/internal/netdiag"
 )
@@ -77,35 +74,4 @@ func sortSockets(sockets []Socket) {
 		}
 		return left.Peer < right.Peer
 	})
-}
-
-var (
-	ssPID  = regexp.MustCompile(`pid=(\d+)`)
-	ssComm = regexp.MustCompile(`users:\(\("([^"]+)"`)
-)
-
-// parseSocketLine reads one `ss -H -lntup` row.
-func parseSocketLine(line string) (Socket, bool) {
-	fields := strings.Fields(line)
-	if len(fields) < 5 {
-		return Socket{}, false
-	}
-	entry := Socket{Proto: fields[0], State: fields[1]}
-	rest := ""
-	if len(fields) >= 6 {
-		// ss's own row: state, recv-q, send-q, local, peer, then the process.
-		entry.Local, entry.Peer = fields[4], fields[5]
-		rest = strings.Join(fields[6:], " ")
-	} else {
-		// The /proc/net/* fallback: state, local, peer, uid.
-		entry.Local, entry.Peer = fields[2], fields[3]
-		rest = strings.Join(fields[4:], " ")
-	}
-	if match := ssPID.FindStringSubmatch(rest); match != nil {
-		entry.PID, _ = strconv.Atoi(match[1])
-	}
-	if match := ssComm.FindStringSubmatch(rest); match != nil {
-		entry.Comm = match[1]
-	}
-	return entry, true
 }

@@ -13,7 +13,6 @@ import (
 
 // RenderOptions carries what the report needs to read well on this stream.
 type RenderOptions struct {
-	Channel  string
 	Version  string
 	Color    bool
 	Evidence bool
@@ -67,12 +66,11 @@ func renderMasthead(w io.Writer, report *Report, options RenderOptions, width in
 	head := band(" "+version, clock(), width-2, subBandBG, subBandFG, false, options.Color)
 	facts := []fact{
 		{label: "host", value: valueOr(report.Host.Hostname, "unknown")},
-		{label: "channel", value: valueOr(options.Channel, "local")},
 		{label: "distro", value: valueOr(report.Host.OS, "unknown distro")},
 		{label: "account", value: accountCell(report.Host)},
 		{label: "kernel", value: valueOr(report.Host.Kernel, "unknown")},
 		{label: "source", value: valueOr(report.Source, "unknown")},
-		{label: "ledger", value: ledgerCell(report.Ledger)},
+		{label: "ledger", value: ledgerCell(report.Ledger), full: true},
 		{label: "boundary", value: boundaryText(report.Boundary), full: true},
 		{label: "judged", value: fmt.Sprintf("%d edges · %d proc · %d auth · %d svc · %d listen",
 			report.Activated, report.Processes, report.Authority, len(report.Services), len(report.Sockets)), full: true},
@@ -414,7 +412,7 @@ func RenderShow(w io.Writer, snapshot *Snapshot, section string, options RenderO
 }
 
 // WriteJSON writes the report as one object.
-func WriteJSON(w io.Writer, report *Report, channel string) error {
+func WriteJSON(w io.Writer, report *Report) error {
 	type boundaryJSON struct {
 		Time       string `json:"time,omitempty"`
 		Kind       string `json:"kind"`
@@ -432,7 +430,6 @@ func WriteJSON(w io.Writer, report *Report, channel string) error {
 		Evidence []string `json:"evidence,omitempty"`
 	}
 	type reportJSON struct {
-		Channel   string         `json:"channel,omitempty"`
 		Source    string         `json:"source"`
 		Host      Host           `json:"host"`
 		Boundary  boundaryJSON   `json:"boundary"`
@@ -444,9 +441,8 @@ func WriteJSON(w io.Writer, report *Report, channel string) error {
 		Coverage  []string       `json:"coverage,omitempty"`
 	}
 	out := reportJSON{
-		Channel: channel,
-		Source:  report.Source,
-		Host:    report.Host,
+		Source: report.Source,
+		Host:   report.Host,
 		Boundary: boundaryJSON{
 			Kind: report.Boundary.Kind, Source: report.Boundary.Source,
 			Confidence: report.Boundary.Confidence.String(),

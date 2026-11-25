@@ -240,9 +240,8 @@ func mergeTimes(dst, src map[string]time.Time) map[string]time.Time {
 	return dst
 }
 
-// evidenceSet is everything the ledger pass gathered, whatever the source:
-// native readers and the sh records fill the same shape, and attachEvidence
-// turns it into the snapshot fields the judge reads.
+// evidenceSet is everything the ledger pass gathered; attachEvidence turns it
+// into the snapshot fields the judge reads.
 type evidenceSet struct {
 	times     map[string]time.Time
 	actual    map[string]string
@@ -477,39 +476,6 @@ func parseTimelineRows(text string) map[string]time.Time {
 		}
 	}
 	return times
-}
-
-// parseHashRow reads one md5sum output row: `hash  path`.
-func parseHashRow(line string) (hash, path string, ok bool) {
-	fields := strings.Fields(line)
-	if len(fields) != 2 || len(fields[0]) != 32 {
-		return "", "", false
-	}
-	return fields[0], fields[1], true
-}
-
-// parseLedgerRow reads one ledger-file stamp row: `epoch<TAB>pkg<TAB>file`,
-// as the sh collector emits it.
-func parseLedgerRow(line string) (ledgerFile, bool) {
-	fields := strings.Split(line, "\t")
-	if len(fields) != 3 {
-		return ledgerFile{}, false
-	}
-	seconds, err := strconv.ParseInt(fields[0], 10, 64)
-	if err != nil || seconds <= 0 {
-		return ledgerFile{}, false
-	}
-	return ledgerFile{Pkg: fields[1], Stamp: time.Unix(seconds, 0), Path: fields[2]}, true
-}
-
-// parseExpectedRow reads one ledger hash row the sh collector emits:
-// `pkg<TAB>hash<TAB>path-without-slash`.
-func parseExpectedRow(line string) (pkg, hash, path string, ok bool) {
-	fields := strings.Split(line, "\t")
-	if len(fields) != 3 || len(fields[1]) != 32 {
-		return "", "", "", false
-	}
-	return fields[0], fields[1], fields[2], true
 }
 
 // rpmQueryBudget bounds one rpm call; a verify of a whole system takes the

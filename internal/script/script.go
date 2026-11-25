@@ -1,5 +1,5 @@
-// Package script builds the fragments the shell speaks in: word quoting for the
-// bootstrap command line and the collector scripts, and the ls -l row shape
+// Package script builds the fragments the shell speaks in: word quoting and the
+// ls -l row shape
 // (LSBodyPrintf, with SplitLsBody and AlignLsBodies in lsbody.go) that the
 // built-in listing prints.
 package script
@@ -25,11 +25,6 @@ var shellReserved = map[string]bool{
 	"do": true, "done": true, "elif": true, "else": true, "esac": true,
 	"fi": true, "for": true, "if": true, "in": true, "then": true,
 	"until": true, "while": true,
-}
-
-// Lines joins script fragments into one multi-line script.
-func Lines(parts ...string) string {
-	return strings.Join(parts, "\n")
 }
 
 // Join renders words into a shell word string: only unsafe characters get single quotes.

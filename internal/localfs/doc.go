@@ -1,6 +1,6 @@
 // Package localfs is the in-process view of the host's filesystem behind the
-// `karma local cat` and `karma local ls` readers, and the startup collector's
-// non-blocking file read.
+// `karma cat` and `karma ls` readers, and the startup collector's non-blocking
+// file read.
 //
 // No read in this package can block: every host file is opened non-blocking
 // (openRegular), so a planted FIFO reads as empty or is reported, never as a

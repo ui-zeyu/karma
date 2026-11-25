@@ -33,7 +33,7 @@ func collectLocal(ctx context.Context) (*Snapshot, error) {
 		Objects:      map[string]trust.Facts{},
 		PackageTimes: packageTimes,
 		Unreadable:   corpus.Unreadable(),
-		Source:       "native",
+		Source:       "local",
 	}
 	for _, edge := range snapshot.Activations {
 		remember(snapshot, edge.Trigger, edge.TriggerFacts)
@@ -71,45 +71,6 @@ func collectLocal(ctx context.Context) (*Snapshot, error) {
 		remember(snapshot, parent, facts(parent))
 	}
 	attachSnapshotEvidence(ctx, snapshot)
-	if snapshot.Boundary.Confidence < HighConfidence {
-		snapshot.Coverage = append(snapshot.Coverage,
-			fmt.Sprintf("artifact boundary from %s (%s confidence)",
-				snapshot.Boundary.Source, snapshot.Boundary.Confidence))
-	}
-	return snapshot, nil
-}
-
-func collectRemote(ctx context.Context, exec Exec) (*Snapshot, error) {
-	activationText, err := exec(ctx, startup.Script())
-	if err != nil {
-		return nil, fmt.Errorf("activation collection: %w", err)
-	}
-	snapshot, err := parseActivation(activationText)
-	if err != nil {
-		return nil, err
-	}
-	// The activation targets join the audit collector's candidate set, so the
-	// content ledger verifies exactly the files the native source verifies.
-	seed := make([]string, 0, 2*len(snapshot.Activations))
-	for _, edge := range snapshot.Activations {
-		if edge.Dynamic {
-			continue
-		}
-		if edge.Trigger != "" {
-			seed = append(seed, edge.Trigger)
-		}
-		if edge.Target != "" {
-			seed = append(seed, edge.Target)
-		}
-	}
-	auditText, err := exec(ctx, Script(seed))
-	if err != nil {
-		return nil, fmt.Errorf("activity collection: %w", err)
-	}
-	if err := parseAudit(auditText, snapshot); err != nil {
-		return nil, err
-	}
-	snapshot.Source = "sh"
 	if snapshot.Boundary.Confidence < HighConfidence {
 		snapshot.Coverage = append(snapshot.Coverage,
 			fmt.Sprintf("artifact boundary from %s (%s confidence)",

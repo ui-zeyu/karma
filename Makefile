@@ -18,10 +18,10 @@ vet:
 test:
 	$(GO) test -count=1 ./...
 
-# The packages whose code runs across goroutines: the three channels, the
-# audit, the live watcher, and the collectors they read.
+# The packages whose code runs across goroutines: the audit, the live watcher,
+# and the collectors they read.
 race:
-	$(GO) test -race -count=1 ./internal/audit/ ./internal/session/ ./internal/cli/ ./internal/watch/ ./internal/startup/ ./internal/trust/ ./internal/localfs/
+	$(GO) test -race -count=1 ./internal/audit/ ./internal/cli/ ./internal/watch/ ./internal/startup/ ./internal/trust/ ./internal/localfs/
 
 staticcheck:
 	staticcheck -checks=all ./...

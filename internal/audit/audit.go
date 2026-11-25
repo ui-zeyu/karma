@@ -168,8 +168,7 @@ type Socket struct {
 	Comm  string `json:"comm,omitempty"`
 }
 
-// Snapshot is the collected facts one source answered. Both the native and the
-// sh source produce this same shape.
+// Snapshot is the facts one local collection answered.
 type Snapshot struct {
 	Boundary    Boundary
 	Host        Host
@@ -245,15 +244,7 @@ type Filter struct {
 	MinSeverity  Severity
 }
 
-// Exec runs one shell script on a remote target and answers its stdout.
-type Exec func(ctx context.Context, script string) (string, error)
-
 // CollectLocal reads the target in process.
 func CollectLocal(ctx context.Context) (*Snapshot, error) {
 	return collectLocal(ctx)
-}
-
-// CollectRemote reads the target through one executor.
-func CollectRemote(ctx context.Context, exec Exec) (*Snapshot, error) {
-	return collectRemote(ctx, exec)
 }

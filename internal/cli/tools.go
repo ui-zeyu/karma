@@ -19,7 +19,7 @@ func newCatCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "cat FILE...",
 		Short: "Print files, read in process",
-		Args:  atLeastOneArg("cat needs at least one file: karma local cat FILE..."),
+		Args:  atLeastOneArg("cat needs at least one file: karma cat FILE..."),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
 			var first error

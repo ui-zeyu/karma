@@ -1,5 +1,5 @@
 // The built-in listing: rows in find -printf shape sorted by mtime descending.
-// Ls is the reader the `karma local ls` command prints.
+// Ls is the reader the `karma ls` command prints.
 
 package localfs
 

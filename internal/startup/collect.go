@@ -10,8 +10,8 @@ import (
 	"karma/internal/localfs"
 )
 
-// FS is what the collector reads. The native source is the host's filesystem;
-// a test states the same tree without touching /etc.
+// FS is what the collector reads: the host's filesystem in production, a test
+// tree in tests.
 type FS interface {
 	ReadFile(name string) ([]byte, error)
 	ReadDir(name string) ([]fs.DirEntry, error)

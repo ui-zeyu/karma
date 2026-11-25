@@ -1,13 +1,8 @@
-// Help routing: cobra's own help output, plus the two cases where a word does
-// not name a command of the root — a name mounted elsewhere, and a typo.
+// Help routing: cobra's own help output, with a fallback to the root's help.
 
 package cli
 
-import (
-	"strings"
-
-	"github.com/spf13/cobra"
-)
+import "github.com/spf13/cobra"
 
 func helpCommand(root *cobra.Command) *cobra.Command {
 	return &cobra.Command{
@@ -16,32 +11,9 @@ func helpCommand(root *cobra.Command) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, _, err := root.Find(args)
 			if err != nil {
-				return err
-			}
-			if len(args) > 0 && target == root {
-				return rootArgs(root, args)
+				return usagef(cmd, "%s", err)
 			}
 			return target.Help()
 		},
 	}
-}
-
-func rootArgs(cmd *cobra.Command, args []string) error {
-	if len(args) == 0 {
-		return nil
-	}
-	name := args[0]
-	if hint, ok := nameHints[name]; ok {
-		return usagef(cmd, "unknown command %q. %s", name, hint)
-	}
-	if suggestions := closestName(name, cmd.SuggestionsFor(name)); len(suggestions) > 0 {
-		return usagef(cmd, "unknown command %q. Did you mean: %s", name, strings.Join(suggestions, ", "))
-	}
-	return usagef(cmd, "unknown command %q", name)
-}
-
-var nameHints = map[string]string{
-	"mtime": `mtime is written after the channel: "karma local mtime DIR..." or "karma ssh TARGET mtime DIR..."`,
-	"cat":   `cat is written under the local channel: "karma local cat FILE..."`,
-	"ls":    `ls is written under the local channel: "karma local ls [PATH...]"`,
 }

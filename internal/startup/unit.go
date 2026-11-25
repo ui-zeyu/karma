@@ -3,7 +3,6 @@ package startup
 import (
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -500,14 +499,4 @@ func isWrapper(program string) bool {
 // PATH, not a file edge.
 func looksLikePath(word string) bool {
 	return strings.Contains(word, "/")
-}
-
-// parseInt reads a decimal field the protocol carries; a missing or malformed
-// field is the caller's stated default.
-func parseInt(value string, fallback int) int {
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
-	}
-	return parsed
 }

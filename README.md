@@ -1,8 +1,8 @@
 # karma
 
-Read-only incident-response audit for Linux. Karma reads a target over a local
-shell, SSH, or a ttyd web terminal and answers one question: **what appeared
-after the artifact was built, and what authority can it reach?**
+Read-only incident-response audit for Linux. Karma runs on the target host and
+answers one question: **what appeared after the artifact was built, and what
+authority can it reach?**
 
 The version is `0.43.0`.
 
@@ -49,22 +49,15 @@ make dist                              # linux/amd64 and linux/arm64
 
 ## Usage
 
-| Channel | Command |
-| --- | --- |
-| This host | `karma local [audit|show|mtime] [scope...]` |
-| SSH | `karma ssh [flags] TARGET [audit|show|mtime|bootstrap] [scope...]` |
-| ttyd | `karma ttyd [flags] TARGET [audit|show|mtime|bootstrap] [scope...]` |
-
-With no mode word the command audits. Scope words narrow it:
-
 ```bash
-karma ssh root@10.0.0.8                      # the whole artifact delta
-karma ssh root@10.0.0.8 persistence          # activation surfaces
-karma ssh root@10.0.0.8 login,kernel         # two groups; commas and spaces are equal
-karma ssh root@10.0.0.8 /var/www             # everything under a path
-karma ssh root@10.0.0.8 /etc/systemd/system/x.service
-karma ssh root@10.0.0.8 /proc/36             # one process and its script
-karma ssh root@10.0.0.8 '!activity'          # exclude a surface
+karma                                       # the whole artifact delta
+karma audit                                 # the same, named
+karma persistence                           # activation surfaces
+karma login,kernel                          # two groups; commas and spaces are equal
+karma /var/www                              # everything under a path
+karma /etc/systemd/system/x.service
+karma /proc/36                              # one process and its script
+karma '!activity'                           # exclude a surface
 ```
 
 Groups are `persistence`, `boot`, `login`, `schedule`, `service`, `device`,
@@ -77,10 +70,9 @@ Groups are `persistence`, `boot`, `login`, `schedule`, `service`, `device`,
 ```text
  KARMA                                                          yuyy
 ▌ 0.43.0                                    2026-11-25 19:25:48 +0800
-▌  host      web-1                    channel   ssh root@10.0.0.8
-▌  distro    Ubuntu 24.04             account   root (uid 0)
-▌  kernel    5.15.0                    source    native
-▌  ledger    dpkg · 64 pkgs · 380 hash entries · 351 verified
+▌  host      web-1                    distro    Ubuntu 24.04
+▌  account   root (uid 0)             kernel    5.15.0
+▌  source    local                    ledger    dpkg · 64 pkgs · 380 hash entries · 351 verified
 ▌  boundary  container start 2026-11-25 06:33:28
 ▌  judged    32 edges · 15 proc · 17 auth · 4 svc · 4 listen
 ▌  severity ● critical  ● high  ● medium  ● low
@@ -124,28 +116,26 @@ raw inventories; `--json` changes the output.
 ## Other modes
 
 ```bash
-karma local show activation                 # every edge, unjudged
-karma local show process                    # every process, unjudged
-karma local show services                   # systemd's own service inventory
-karma local show listeners                  # listening TCP/UDP sockets
-karma local show authority                  # setuid, capabilities, keys, sudoers
-karma local show mounts                     # the mount table
-karma local show coverage                   # what could not be read and why
+karma show activation                       # every edge, unjudged
+karma show process                          # every process, unjudged
+karma show services                         # systemd's own service inventory
+karma show listeners                        # listening TCP/UDP sockets
+karma show authority                        # setuid, capabilities, keys, sudoers
+karma show mounts                           # the mount table
+karma show coverage                         # what could not be read and why
 
-karma local cat /etc/profile.d/x.sh         # read in process, no host cat
-karma local ls /var/www                     # list in process
-karma local mtime /var/www                  # one tree by change time; ssh and ttyd take DIR... too
+karma cat /etc/profile.d/x.sh               # read in process, no host cat
+karma ls /var/www                           # list in process
+karma mtime /var/www                        # one tree by change time
 
-karma local watch proc                      # live process starts and exits
-karma local watch socket                    # live sockets, with the owner
-
-karma ssh root@10.0.0.8 bootstrap           # put this binary on the target
+karma watch proc                            # live process starts and exits
+karma watch socket                          # live sockets, with the owner
 ```
 
-`bootstrap` is the only mode that writes to a target: it uploads this build for
-the target's platform, verifies it, and prints the path. Run it there yourself;
-`local` reads `/proc` and the kernel interfaces in process. An audit over a
-channel writes nothing and reads the target through its own shell.
+`cat`, `ls`, `mtime`, `watch` and the audit itself read `/proc`, the kernel
+interfaces and the package database in process; nothing is written and no host
+tool is executed. Karma is meant to be carried to the host and run there; a
+remote channel will place the binary first and then run this same local audit.
 
 ## Limits
 
@@ -164,9 +154,9 @@ channel writes nothing and reads the target through its own shell.
   stay below the model. The process report still states deleted images,
   runtime scripts, interpreter arguments, and each process's established
   connections.
-- In-guest collection can be lied to by a kernel-level rootkit. Use `bootstrap`
-  and a trusted binary, or an out-of-band observer, when that adversary is in
-  scope.
+- In-guest collection can be lied to by a kernel-level rootkit. Run this build
+  from read-only media, or use an out-of-band observer, when that adversary is
+  in scope.
 - The raw panels cover the model's own surfaces: activation, processes,
   services, listeners, authority, and mounts. Logs, kernel modules, and
   account-file contents are not collected here; use `cat`, `ls`, `mtime`, and

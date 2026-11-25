@@ -1,8 +1,6 @@
 package audit
 
 import (
-	"encoding/base64"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -364,86 +362,6 @@ func TestJudgeLedgerCoverageLines(t *testing.T) {
 	}
 }
 
-func TestParseAuditEvidenceRecords(t *testing.T) {
-	ls := base64.StdEncoding.EncodeToString([]byte("/usr/bin/ls"))
-	bash := base64.StdEncoding.EncodeToString([]byte("/bin/bash"))
-	root := base64.StdEncoding.EncodeToString([]byte("/"))
-	cmdline := base64.StdEncoding.EncodeToString([]byte("bash -x"))
-	body := func(text string) string {
-		return base64.StdEncoding.EncodeToString([]byte(text))
-	}
-	// The ledger stamps are a build's uniform cluster around 1699999xxx plus
-	// one outlier at 1700100000; only the outlier reads as tampered, and the
-	// uniform cluster is the artifact being born.
-	ledgerRows := "400\tbash\t/i/1\n" +
-		"1699999000\tbash\t/i/2\n1699999100\tbash\t/i/3\n1699999200\tbash\t/i/4\n" +
-		"1699999300\tbash\t/i/5\n1699999400\tbash\t/i/6\n1699999500\tbash\t/i/7\n" +
-		"1700100000\tbash\t/i/8\n"
-	text := fmt.Sprintf(`KARMA-AUDIT 2
-T 0 0 0 - - -
-K 1001
-P %s f 755 0 0 0 %s 0 0 0 0 1200 42 0
-Q 10 1 0 0 5 S - %s - %s %s
-D 1
-O dpkg
-%s
-Y timeline
-%s
-E md5sums
-%s
-C conffiles
-%s
-L ledgerstat
-%s
-F mounts
-%s
-H md5sum
-%s
-`, ls, ls, bash, root, cmdline,
-		body("coreutils: /usr/bin/ls\nbash: /bin/bash\n"),
-		body("bash 1699999500\ncoreutils 1200\n"),
-		body("coreutils\t"+testHash+"\tusr/bin/ls\n"),
-		body("/etc/bash.bashrc\n"),
-		body(ledgerRows),
-		body("tmpfs /dev/shm tmpfs rw,nosuid\nsysfs /sys sysfs rw\n"),
-		body(testHash+"  /usr/bin/ls\n"))
-	snapshot := &Snapshot{Objects: map[string]trust.Facts{}}
-	if err := parseAudit(text, snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if got := snapshot.PackageTimes["bash"]; got.Unix() != 1699999500 {
-		t.Errorf("timeline bash = %v", got)
-	}
-	content := snapshot.Verify["/usr/bin/ls"]
-	if content.State != Verified || content.Package != "coreutils" {
-		t.Errorf("verify = %+v, want verified against coreutils", content)
-	}
-	if !snapshot.conffiles["/etc/bash.bashrc"] {
-		t.Errorf("conffiles = %v", snapshot.conffiles)
-	}
-	if len(snapshot.tamper) != 1 || snapshot.tamper[0].Stamp.Unix() != 1700100000 {
-		t.Errorf("tamper rows = %+v, want only the outlier", snapshot.tamper)
-	}
-	if len(snapshot.Mounts) != 2 || snapshot.Mounts[0].FSType != "tmpfs" {
-		t.Errorf("mounts = %+v", snapshot.Mounts)
-	}
-	if snapshot.Ledger.Kind != "dpkg" || snapshot.Ledger.Verified != 1 || len(snapshot.Ledger.Tampered) != 1 {
-		t.Errorf("ledger summary = %+v", snapshot.Ledger)
-	}
-	if snapshot.Processes[0].Root != "/" || snapshot.Processes[0].Cmdline != "bash -x" {
-		t.Errorf("process root/cmdline = %+v", snapshot.Processes[0])
-	}
-	report := Judge(snapshot, Filter{})
-	classes := map[string]bool{}
-	for _, finding := range report.Findings {
-		classes[finding.Class] = true
-	}
-	if !classes["ledger-tampered"] {
-		t.Errorf("a tampered ledger row produced no finding: %+v", report.Findings)
-	}
-}
-
-// mentions answers whether one evidence line carries the phrase.
 func mentions(lines []string, phrase string) bool {
 	for _, line := range lines {
 		if strings.Contains(line, phrase) {

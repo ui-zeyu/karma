@@ -18,8 +18,7 @@ const (
 )
 
 // Attrs is one path's raw filesystem attributes, before provenance is read
-// into them. The native source fills it from its own stat; the sh source fills
-// it from the target's stat, so both sources hand the same facts to Build.
+// into them. The collector fills it from the host's own stat.
 type Attrs struct {
 	Kind Kind
 	Mode fs.FileMode // the resolved file's permission and special bits
@@ -174,8 +173,8 @@ type PackageResolver interface {
 }
 
 // Build reads the facts a set of raw attributes states. It is the one place
-// the tree vocabularies are applied, so the native source's stat and the sh
-// source's stat cannot classify the same host differently.
+// the tree vocabularies are applied, so every caller classifies a host the
+// same way.
 func Build(path string, attrs Attrs) Facts {
 	facts := Facts{
 		Path:               path,
@@ -215,7 +214,7 @@ func Build(path string, attrs Attrs) Facts {
 
 // Mode turns a stat mode's permission word (the `%a` spelling, special bits
 // included) into the FileMode the rest of the package reads. The sh source
-// carries that word; the native source already has the FileMode.
+// carries that word; a caller that already has the FileMode passes it directly.
 func Mode(bits uint32) fs.FileMode {
 	mode := fs.FileMode(bits & 0o777)
 	if bits&0o4000 != 0 {

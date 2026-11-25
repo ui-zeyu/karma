@@ -4,7 +4,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,17 +12,15 @@ import (
 	"golang.org/x/term"
 
 	"karma/internal/audit"
-	"karma/internal/model"
-	"karma/internal/session"
 )
 
-// runAudit is the default mode of every channel.
-func runAudit(ctx context.Context, w io.Writer, transport session.Transport, local bool, channel string, words []string, flags auditFlags) error {
+// runAudit is the default action of the command and of `karma audit`.
+func runAudit(ctx context.Context, w io.Writer, words []string, flags auditFlags) error {
 	parsed, err := parseScope(words)
 	if err != nil {
 		return err
 	}
-	snapshot, err := collectSnapshot(ctx, transport, local, flags.timeout)
+	snapshot, err := collectSnapshot(ctx, flags.timeout)
 	if err != nil {
 		return err
 	}
@@ -36,10 +33,9 @@ func runAudit(ctx context.Context, w io.Writer, transport session.Transport, loc
 	}
 	report := audit.Judge(snapshot, parsed.filter(flags.minSeverity))
 	if flags.json {
-		return audit.WriteJSON(w, report, channel)
+		return audit.WriteJSON(w, report)
 	}
 	audit.Render(w, report, snapshot, audit.RenderOptions{
-		Channel:  channel,
 		Version:  buildVersion,
 		Color:    isTerminal(w),
 		Evidence: flags.evidence,
@@ -50,7 +46,7 @@ func runAudit(ctx context.Context, w io.Writer, transport session.Transport, loc
 }
 
 // runShow prints one collected inventory without judging it.
-func runShow(ctx context.Context, w io.Writer, transport session.Transport, local bool, words []string, flags auditFlags) error {
+func runShow(ctx context.Context, w io.Writer, words []string, flags auditFlags) error {
 	if len(words) == 0 {
 		fmt.Fprintln(w, "show: activation | process | services | listeners | authority | mounts | coverage")
 		return nil
@@ -66,43 +62,24 @@ func runShow(ctx context.Context, w io.Writer, transport session.Transport, loca
 	if err != nil {
 		return err
 	}
-	snapshot, err := collectSnapshot(ctx, transport, local, flags.timeout)
+	snapshot, err := collectSnapshot(ctx, flags.timeout)
 	if err != nil {
 		return err
 	}
 	audit.RenderShow(w, snapshot, section, audit.RenderOptions{
-		Channel: "", Version: buildVersion, Color: isTerminal(w), Evidence: true,
+		Version: buildVersion, Color: isTerminal(w), Evidence: true,
 		Width: terminalWidth(w), Filter: parsed.filter(audit.Info),
 	})
 	return nil
 }
 
-// collectSnapshot reads the target once. A local run reads in process; a
-// remote run opens one session and sends the two collector scripts.
-func collectSnapshot(ctx context.Context, transport session.Transport, local bool, budget time.Duration) (*audit.Snapshot, error) {
-	ctx, cancel := session.Within(ctx, budget)
+// collectSnapshot reads this host in process under the run's time budget.
+func collectSnapshot(ctx context.Context, budget time.Duration) (*audit.Snapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	if local {
-		snapshot, err := audit.CollectLocal(ctx)
-		if err != nil {
-			return nil, failf(ExitInternal, "collection: %v", err)
-		}
-		return snapshot, nil
-	}
-	sess, err := transport.Open(ctx)
+	snapshot, err := audit.CollectLocal(ctx)
 	if err != nil {
-		return nil, failf(ExitEnvironment, "connection failed: %v", err)
-	}
-	defer sess.Close()
-	snapshot, err := audit.CollectRemote(ctx, func(ctx context.Context, script string) (string, error) {
-		result := sess.Run(ctx, model.Call{Inv: model.Shell{Script: script}})
-		if result.Verdict != model.VerdictAnswered {
-			return "", errors.New(commandFailure(result))
-		}
-		return result.Stdout, nil
-	})
-	if err != nil {
-		return nil, failf(ExitEnvironment, "collection: %v", err)
+		return nil, failf(ExitInternal, "collection: %v", err)
 	}
 	return snapshot, nil
 }

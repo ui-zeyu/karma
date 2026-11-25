@@ -3,7 +3,6 @@ module karma
 go 1.27
 
 require (
-	github.com/coder/websocket v1.8.15
 	github.com/mdlayher/netlink v1.11.2
 	github.com/prometheus/procfs v0.22.0
 	github.com/samber/lo v1.53.0
@@ -12,7 +11,6 @@ require (
 	github.com/ti-mo/conntrack v0.6.0
 	github.com/ti-mo/netfilter v0.5.3
 	github.com/vishvananda/netlink v1.3.1
-	golang.org/x/crypto v0.57.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
 	mvdan.cc/sh/v3 v3.14.1
