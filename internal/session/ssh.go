@@ -27,8 +27,6 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
-
-	"karma/internal/model"
 )
 
 // defaultIdentities is the default private key locations when -i is not given,
@@ -78,9 +76,6 @@ type SSHTransport struct {
 	// shipped one, so a caller never has to state it.
 	pace pace
 }
-
-// Platform is always the Linux directory: the SSH channel never targets Windows.
-func (t *SSHTransport) Platform() model.Platform { return model.Linux }
 
 // Open establishes the connection. The password comes only from --password;
 // without it only public key auth is used, and rejection fails immediately with no interactive input.

@@ -1,10 +1,6 @@
-// Local channel: turns an Invocation into a subprocess, or runs a Native tier's
-// body itself. This is the channel's spawn point; the in-process tiers ask a
-// host binary through their own runner (native.runHost), and Windows stops a
-// process tree with taskkill. Command goes through exec without a shell; Shell
-// goes through /bin/sh -c (rendering shared with SSH via shellcmd, POSIX only).
-// The call's deadline kills the whole process tree; output already produced is
-// kept.
+// Local channel: runs one Shell script through /bin/sh -c (rendering shared
+// with SSH via shellcmd, POSIX only). The call's deadline kills the whole
+// process tree; output already produced is kept.
 
 package session
 
@@ -12,7 +8,6 @@ import (
 	"bufio"
 	"context"
 	"os/exec"
-	"runtime"
 	"strings"
 
 	"karma/internal/model"
@@ -26,14 +21,6 @@ type LocalSession struct{ pace pace }
 // LocalTransport is the local channel factory: the directory follows the host OS (the Windows directory on Windows).
 type LocalTransport struct{}
 
-// Platform follows the host OS.
-func (LocalTransport) Platform() model.Platform {
-	if runtime.GOOS == "windows" {
-		return model.Windows
-	}
-	return model.Linux
-}
-
 // Open is the local channel's connection step: there is nothing to connect.
 func (LocalTransport) Open(context.Context) (Session, error) { return LocalSession{}, nil }
 
@@ -44,9 +31,6 @@ func (LocalSession) Name() string { return "local" }
 // so the local host name is the whole description.
 func (LocalSession) Describe() string { return "local" }
 
-// Channel is which side of the wire karma runs on: karma itself is the target.
-func (LocalSession) Channel() model.Channel { return model.ChanLocal }
-
 // Run sends the invocation to run locally. A Native tier runs its in-process
 // body; everything else becomes a subprocess.
 //
@@ -55,7 +39,7 @@ func (LocalSession) Channel() model.Channel { return model.ChanLocal }
 // the chain in the runner falls to the next tier, which is what happens on every
 // other channel too.
 func (s LocalSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return dispatch(ctx, call.Inv, call.Cap, s.pace, s.shell)
+	return dispatch(ctx, call.Inv, call.Cap, s.shell)
 }
 
 // shell is the local channel's shell front: a Command execs without a shell,

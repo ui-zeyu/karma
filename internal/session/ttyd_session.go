@@ -60,30 +60,12 @@ type TTYDSession struct {
 // Name is the channel display name.
 func (s *TTYDSession) Name() string { return "ttyd" }
 
-// Describe names the channel and the endpoint it reached. The endpoint carries
-// no credential: ParseTTYDEndpoint strips the userinfo out of the URL before it
-// is stored.
-func (s *TTYDSession) Describe() string {
-	if s.endpoint == "" {
-		return "ttyd"
-	}
-	return "ttyd " + s.endpoint
-}
-
-// Channel is which side of the wire karma runs on: the target is remote.
-func (s *TTYDSession) Channel() model.Channel { return model.ChanTTYD }
-
-// Lost reports whether the endpoint can no longer be dialled — the server or
-// the network to it died. Latched on the first failed dial that was not this
-// run's own cancellation, since every later call would fail the same way.
-func (s *TTYDSession) Lost() bool { return s.lost.Load() }
-
 // Close releases the channel's resources: connections live per call.
 func (s *TTYDSession) Close() error { return nil }
 
 // Run types one collection line into a fresh terminal and harvests the answer.
 func (s *TTYDSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return dispatch(ctx, call.Inv, call.Cap, s.pace, s.shell)
+	return dispatch(ctx, call.Inv, call.Cap, s.shell)
 }
 
 func (s *TTYDSession) shell(ctx context.Context, inv model.Invocation, cap model.RowCap) model.RunResult {

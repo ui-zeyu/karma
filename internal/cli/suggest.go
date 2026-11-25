@@ -6,7 +6,6 @@ package cli
 
 import (
 	"slices"
-	"strings"
 
 	"github.com/samber/lo"
 )
@@ -25,31 +24,6 @@ func closestName(name string, candidates []string) []string {
 	return lo.Filter(candidates, func(_ string, index int) bool {
 		return distances[index] == best
 	})
-}
-
-// closeMatches is the " Did you mean: a, b" tail for an unknown word: prefix
-// hits first, then anything within edit distance 2, at most three. The tail is
-// empty when nothing is close, so the message then states the unknown word and
-// stops rather than promising a suggestion of "none".
-func closeMatches(word string, names []string) string {
-	candidates := lo.Filter(names, func(name string, _ int) bool {
-		return strings.HasPrefix(name, word) || editDistance(word, name) <= 2
-	})
-	if len(candidates) == 0 {
-		return ""
-	}
-	slices.SortStableFunc(candidates, func(a, b string) int {
-		return prefixRank(word, a) - prefixRank(word, b)
-	})
-	return ". Did you mean: " + strings.Join(candidates[:min(3, len(candidates))], ", ")
-}
-
-// prefixRank orders candidates: a prefix hit (rank 0) sorts before the rest.
-func prefixRank(word, name string) int {
-	if strings.HasPrefix(name, word) {
-		return 0
-	}
-	return 1
 }
 
 // editDistance is the Levenshtein distance with two rolling rows: prev is the

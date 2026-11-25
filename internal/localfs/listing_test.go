@@ -1,4 +1,4 @@
-// Tests for the listing tier and its reader form: Ls is the rows the panels
+// Tests for the built-in listing: Ls prints the rows the
 // show, with the columns lined up.
 
 package localfs
@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Ls is the reader form of the listing rows: bare ls-l bodies (no epoch
+// Ls prints bare ls-l bodies (no epoch
 // prefix), the same mtime-descending order, no cap, dot entries included, and
 // a file operand prints its own row. A path list prints one section per path;
 // a failed path leaves the others printed and its error with the caller.

@@ -1,11 +1,5 @@
-// Package section owns the `== ` section header of the report: the one line the
-// report shows above a section's body, and the only spelling it uses for one.
-//
-// The header is presentation, never a boundary: sections arrive named from the
-// collection (model.BodySection), so no byte a tier read — a file's contents, a
-// tool's output, a path in a listing — can become a section. The readers here
-// exist for the places that state a body as text: the evidence the report keeps
-// (reader.Evidence) and the built-in readers whose output is the text itself.
+// Package section owns the `== ` section header the built-in listing prints
+// above each operand.
 package section
 
 import "strings"

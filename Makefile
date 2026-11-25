@@ -3,7 +3,7 @@
 # test passes.
 
 GO ?= go
-VERSION ?= 0.41.0
+VERSION ?= 0.43.0
 .PHONY: all fmt vet test race staticcheck build linux-arm64 dist clean
 
 all: fmt vet test
@@ -18,11 +18,10 @@ vet:
 test:
 	$(GO) test -count=1 ./...
 
-# The packages whose code runs across goroutines (presentation, channels,
-# orchestration, the run's shared-read store, and the checks that publish and
-# read that store from several workers) under the race detector.
+# The packages whose code runs across goroutines: the three channels, the
+# audit, the live watcher, and the collectors they read.
 race:
-	$(GO) test -race -count=1 ./internal/render/ ./internal/session/ ./internal/runner/ ./internal/cli/ ./internal/runstate/ ./internal/checks/...
+	$(GO) test -race -count=1 ./internal/audit/ ./internal/session/ ./internal/cli/ ./internal/watch/ ./internal/startup/ ./internal/trust/ ./internal/localfs/
 
 staticcheck:
 	staticcheck -checks=all ./...
@@ -41,11 +40,9 @@ build:
 linux-arm64:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/karma-linux-arm64 ./cmd/karma
 
-# dist builds the release binaries for the two supported platforms, ARM64 Linux
-# included.
+# dist builds the release binaries for Linux. The audit model is Linux-only.
 dist: build linux-arm64
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/karma-linux-amd64 ./cmd/karma
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o dist/karma-windows-amd64.exe ./cmd/karma
 	@file dist/karma-linux-amd64 | grep -q "statically linked" || { \
 		echo "dist/karma-linux-amd64 is not statically linked"; exit 1; }
 	@file dist/karma-linux-arm64 | grep -q "statically linked" || { \

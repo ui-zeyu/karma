@@ -1,5 +1,5 @@
 // stat fields for the darwin build: the same numbers, field names macOS spells
-// with a Timespec suffix. The Linux catalog's local tiers answer unavailable
+// with a Timespec suffix. The Linux collector answers unavailable
 // without /proc anyway; this file exists so the package compiles everywhere.
 
 //go:build darwin

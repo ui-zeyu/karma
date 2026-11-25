@@ -1,6 +1,6 @@
 // stat fields for platforms whose syscall layer offers no Stat_t here: link
 // count 1, ctime equal to mtime, one device. Only build coverage needs this
-// file; the Linux catalog's local tiers run where /proc exists.
+// file; the Linux collector runs where /proc exists.
 
 //go:build !linux && !darwin
 

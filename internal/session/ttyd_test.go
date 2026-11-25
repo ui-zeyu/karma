@@ -168,19 +168,19 @@ func TestTTYDCancelledDialDoesNotLoseTheChannel(t *testing.T) {
 		model.Shell{Script: "true"}, time.Second, model.RowCap{}); result.Verdict != model.VerdictFailed {
 		t.Fatalf("wanted a failed call, got %+v", result)
 	}
-	if sess.Lost() {
+	if sess.lost.Load() {
 		t.Fatal("our own cancellation is not the endpoint going away")
 	}
 }
 
 // An endpoint nothing answers is latched: every later call would fail the same
-// way, so the runner stops queueing checks and the command line says so once.
+// way, so the command line stops sending scripts and says so once.
 func TestTTYDUnreachableEndpointIsLost(t *testing.T) {
 	t.Parallel()
 	sess := &TTYDSession{endpoint: "ws://127.0.0.1:1/ws"}
 	runCall(context.Background(), sess,
 		model.Shell{Script: "true"}, time.Second, model.RowCap{})
-	if !sess.Lost() {
+	if !sess.lost.Load() {
 		t.Fatal("a dial nothing answers must latch lost")
 	}
 }

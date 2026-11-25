@@ -1,7 +1,7 @@
 // Signal handling for one run.
 //
 // The first SIGINT or SIGTERM cancels the run's context: collection stops
-// promptly, in-flight checks keep the output they had already read, and the
+// promptly, the in-flight collection keeps the output it had already read, and the
 // partial report is still presented. A second signal exits at once — a channel
 // operation the context cannot break (an uninterruptible syscall on the target,
 // a library call with no context) would otherwise leave the operator with no way

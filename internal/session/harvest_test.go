@@ -151,7 +151,7 @@ func harvestFor(t *testing.T, src source, budget time.Duration, cap model.RowCap
 func TestHarvestScanCapCleanEOF(t *testing.T) {
 	t.Parallel()
 	src := fakeSourceOf(line("a\n"), line("b\n"), line("c\n"))
-	result := harvestFor(t, src, 2*time.Second, model.Scan(3))
+	result := harvestFor(t, src, 2*time.Second, model.RowCap{Rows: 3})
 	if result.Truncated {
 		t.Errorf("EOF exactly at the limit does not count as truncated")
 	}
@@ -166,7 +166,7 @@ func TestHarvestScanCapCleanEOF(t *testing.T) {
 func TestHarvestScanCapTruncated(t *testing.T) {
 	t.Parallel()
 	src := fakeSourceOf(line("a\n"), line("b\n"), line("c\n"), line("d\n"))
-	result := harvestFor(t, src, 2*time.Second, model.Scan(3))
+	result := harvestFor(t, src, 2*time.Second, model.RowCap{Rows: 3})
 	if !result.Truncated {
 		t.Errorf("a complete line after the limit should mark truncated")
 	}
@@ -179,7 +179,7 @@ func TestHarvestScanCapTruncated(t *testing.T) {
 func TestHarvestScanCapPartialTail(t *testing.T) {
 	t.Parallel()
 	src := fakeSourceOf(line("a\n"), line("b\n"), line("c\n"), tail("partial"))
-	result := harvestFor(t, src, 2*time.Second, model.Scan(3))
+	result := harvestFor(t, src, 2*time.Second, model.RowCap{Rows: 3})
 	if !result.Truncated {
 		t.Errorf("a trailing partial line after the limit should mark truncated")
 	}

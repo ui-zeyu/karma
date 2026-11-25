@@ -1,198 +1,179 @@
 # karma
 
-Semi-automatic incident-response collection. Run one command on your analysis host and karma reads
-the target without writing to it: Linux over the local channel, SSH, or a ttyd web terminal, and
-Windows over the local channel. Each check prints as soon as it finishes, in catalog order, and the
-output is filtered before it is shown — hits are highlighted and given a reason at the end of the
-line. No hit, no output.
+Read-only incident-response audit for Linux. Karma reads a target over a local
+shell, SSH, or a ttyd web terminal and answers one question: **what appeared
+after the artifact was built, and what authority can it reach?**
+
+The version is `0.43.0`.
+
+## Model
+
+Every finding comes from three facts:
+
+- **Artifact boundary** — the container's PID 1 start, or a host's last package
+  transaction (a short boot window when the host has not updated since boot).
+  Objects older than the boundary came with the target; objects newer arrived
+  later.
+- **Origin** — an object is `base` (package-owned), `provisioned` (a package
+  installed after the boundary), `modified` (a package file changed), `runtime`
+  (created after the boundary), `preexisting`, or `unknown`.
+- **Activation and authority** — the files that decide a future execution
+  (systemd, profile, cron, rc, ld.so, udev, ssh, PAM, supervisor, xdg, apt,
+  modprobe) and the accounts or capabilities they run as.
+
+Judgment reads a fourth fact on top: the **content ledger**. On a dpkg host
+karma reads the package database's own per-file md5sums and compares them to
+the judged files — activation targets, process images, authority objects. On an
+rpm host it runs `rpm -Va`. The comparison outranks time: a hash match acquits
+a file whose timestamps a package upgrade moved, a mismatch convicts a file
+whose timestamps were cleaned, and a package ledger rewritten after its last
+transaction is reported as tampered evidence, with that package's comparison
+ignored. A package timeline from `dpkg.log` (or rpm's install ids) dates each
+package's last transaction, so a file installed after the boundary reads as
+provisioned. An edited conffile softens its hit one tier; an authority object
+never softens.
+
+A runtime object in an activation surface is a finding. So is a runtime setuid
+binary, sudo policy, key, or credential file. Severity is the authority the
+object can reach: root, a service account, a user, or the kernel. The audit also
+keeps the base-space checks that need no boundary: an activation object someone
+other than its owner can replace, and a running process whose image or script
+was introduced after the boundary.
 
 ## Build
 
 ```bash
 go build -o dist/karma ./cmd/karma     # this host
-make dist                              # dist/ binaries for linux/amd64, linux/arm64, windows/amd64 and this host
+make dist                              # linux/amd64 and linux/arm64
 ```
-
-The version is `0.41.0`. Override it with `-ldflags "-X main.version=…"`; `karma version` prints it.
 
 ## Usage
 
 | Channel | Command |
 | --- | --- |
-| This host | `karma local [selector...]` |
-| SSH target | `karma ssh [flags] TARGET [selector...]` |
-| ttyd web terminal | `karma ttyd [flags] TARGET [selector...]` |
+| This host | `karma local [audit|show|mtime] [scope...]` |
+| SSH | `karma ssh [flags] TARGET [audit|show|mtime|bootstrap] [scope...]` |
+| ttyd | `karma ttyd [flags] TARGET [audit|show|mtime|bootstrap] [scope...]` |
+
+With no mode word the command audits. Scope words narrow it:
 
 ```bash
-dist/karma local                          # every aspect
-dist/karma local network process          # aspect names
-dist/karma local network,log listen       # commas and spaces are equivalent; check ids mix in
-dist/karma local '!pkg-verify'            # a leading ! excludes those checks
-
-dist/karma ssh root@10.0.0.8 network
-dist/karma ssh -p 2222 -i ~/.ssh/id_ed25519 root@10.0.0.8 persistence
-dist/karma ssh root@10.0.0.8 'package,!pkg-verify'
-
-dist/karma ttyd ws://10.0.0.8:7681        # a bare host means port 7681
-dist/karma ttyd ws://user:pass@10.0.0.8:80 network
-dist/karma ttyd wss://10.0.0.8:7681 --tls-pin <sha256-hex>
-
-dist/karma list                           # the catalog: every platform, aspect, check id and probe chain
+karma ssh root@10.0.0.8                      # the whole artifact delta
+karma ssh root@10.0.0.8 persistence          # activation surfaces
+karma ssh root@10.0.0.8 login,kernel         # two groups; commas and spaces are equal
+karma ssh root@10.0.0.8 /var/www             # everything under a path
+karma ssh root@10.0.0.8 /etc/systemd/system/x.service
+karma ssh root@10.0.0.8 /proc/36             # one process and its script
+karma ssh root@10.0.0.8 '!activity'          # exclude a surface
 ```
 
-A selector word is a platform name, an aspect name, or a check id; with none given, everything runs.
-An unknown word is an error with close matches. `!` excludes, and exclusion wins over inclusion. The
-first positional argument of `ssh` and `ttyd` is the target; connection flags (`-p`, `-i`,
-`--password`, `-o`, `--credential`, `--tls-pin`) follow the target as usual.
+Groups are `persistence`, `boot`, `login`, `schedule`, `service`, `device`,
+`activity`, and `authority`. Surface names are `systemd`, `profile`, `init`,
+`cron`, `loader`, `udev`, `ssh`, `pam`, `supervisor`, `xdg`, `apt`, `module`,
+`activity`, and `authority`.
 
-A ttyd target must accept input: ttyd 1.7.4 and later need `-W/--writable`, earlier releases are
-writable by default. karma connects to the same endpoint as a second client, so it never disturbs the
-console the operator is looking at. SSH accepts `[user@]host`, `ssh://[user@]host[:port]`, `-p` port,
-`-i` private key (repeatable), `--password` (also the passphrase of an encrypted key) and
-`-o StrictHostKeyChecking=no|accept-new|yes`.
+## What the report says
 
-**A remote collection reads the target through its own shell.** `ssh` and `ttyd` write nothing to
-the target: each check's own pinned command runs over the connection — a `cat` loop over a file list,
-one `find -printf` per directory, `LC_ALL=C ps -efww` into the fields the native read states — and the
-text comes back to be read here. So the collection is one call per tier over a channel the operator
-already has, nothing has to be executable or writable on the target, and no host tool stands between
-karma and the evidence longer than the command itself. A remote panel is that command's answer, read
-by the same rules and filters as the native source.
+```text
+ KARMA                                                          yuyy
+▌ 0.43.0                                    2026-11-25 19:25:48 +0800
+▌  host      web-1                    channel   ssh root@10.0.0.8
+▌  distro    Ubuntu 24.04             account   root (uid 0)
+▌  kernel    5.15.0                    source    native
+▌  ledger    dpkg · 64 pkgs · 380 hash entries · 351 verified
+▌  boundary  container start 2026-11-25 06:33:28
+▌  judged    32 edges · 15 proc · 17 auth · 4 svc · 4 listen
+▌  severity ● critical  ● high  ● medium  ● low
 
-The reading happens here and the evidence comes from there: the catalog, the rules, the severity
-floors and the terminal are this end's, and the target only answers. Where the local channel runs
-karma's own in-process bodies — reading `/proc`, `sock_diag`, the utmp records — a remote one cannot:
-that code is karma's, and it is not on the target. `bootstrap` is how a remote host gets that reading.
+▌ CRITICAL  /etc/profile.d/vendor-runtime-loader.sh
+▌  runtime object in an activation surface
+▌  export VENDOR_RUNTIME_LOADER in /etc/profile.d/vendor-runtime-loader.sh activates
+▌  /var/lib/vendor/runtime/.attach-loader.sh
+▌  origin runtime · reach root
+▌  · trigger /etc/profile.d/vendor-runtime-loader.sh: runtime (created after the boundary)
+▌  · no package owns it; the nearest owned ancestor /etc belongs to base-files
+▌  · runs as root, reach root (profile)
 
-### Working on a target
+ EVIDENCE
+▌ ACTIVATION                                             32
+▌  SURFACE     REACH         AS          ORIGIN      TRIGGER
+▌  profile     login         login       runtime     /etc/profile.d/vendor-runtime-loader.sh:1
+▌      export VENDOR_RUNTIME_LOADER -> /var/lib/vendor/runtime/.attach-loader.sh
+...
+▌ SERVICE                                                12
+▌ LISTEN                                                  4
+▌ AUTHORITY                                              17
+▌ MOUNTS                                                 24
+```
+
+The evidence panels are the raw rows behind the findings: every activation edge,
+process, systemd service, listening socket, authority object, and mount in
+scope. Every finding carries its evidence lines — the origins of both ends, the
+content comparison, the account it runs as, an unowned file's nearest owned
+ancestor, a process's established connections. `--no-evidence` prints the
+findings and coverage alone. `--json` prints the findings, services, listeners,
+mounts, ledger summary, and coverage as one object.
+
+## Options
+
+`--since` chooses the boundary: `provision` (the default), `boot`, a duration
+such as `24h`, or an RFC3339 time. `--min-severity` filters the findings.
+`--timeout` bounds the whole collection in seconds. `--no-evidence` hides the
+raw inventories; `--json` changes the output.
+
+## Other modes
 
 ```bash
-dist/karma local mtime /var/www              # cluster directory change times; ssh and ttyd take DIR... too
-dist/karma local cat /etc/passwd /etc/shadow # print files, in process
-dist/karma local ls /tmp /var/tmp            # list directories the way the report's rows look
-dist/karma ssh root@10.0.0.8 tainted         # one check, read through the target's own shell
+karma local show activation                 # every edge, unjudged
+karma local show process                    # every process, unjudged
+karma local show services                   # systemd's own service inventory
+karma local show listeners                  # listening TCP/UDP sockets
+karma local show authority                  # setuid, capabilities, keys, sudoers
+karma local show mounts                     # the mount table
+karma local show coverage                   # what could not be read and why
 
-dist/karma ssh root@10.0.0.8 bootstrap       # put this binary on the target and print its path
-dist/karma ttyd ws://10.0.0.8:7681 bootstrap
+karma local cat /etc/profile.d/x.sh         # read in process, no host cat
+karma local ls /var/www                     # list in process
+karma local mtime /var/www                  # one tree by change time; ssh and ttyd take DIR... too
+
+karma local watch proc                      # live process starts and exits
+karma local watch socket                    # live sockets, with the owner
+
+karma ssh root@10.0.0.8 bootstrap           # put this binary on the target
 ```
 
-`bootstrap` places a compressed copy of the binary on the target, verifies it and prints the path —
-nothing else runs, and no collection ever writes to a target. The copy travels gzip-compressed when
-the target can unpack it (its own `gzip`, or busybox's) and uncompressed when it cannot, so the mode
-depends on nothing the channel does not already use. It lands in the account's own directory first
-(`$HOME/.karma/karma`) and then in `/tmp/karma/karma`, and a copy whose md5 equals the build's is
-reused rather than uploaded again. Run it on the target yourself, for example `$HOME/.karma/karma
-local`: that is how an SSH or ttyd host gets the native source's reading — the in-process checks,
-userland rootkit detection among them. The program placed is the artifact built for *its* platform,
-not the operator's, so a release's artifacts sit beside the binary (`dist/karma-linux-amd64`,
-`dist/karma-linux-arm64`) and an operator on macOS audits a Linux host with `dist/karma`.
+`bootstrap` is the only mode that writes to a target: it uploads this build for
+the target's platform, verifies it, and prints the path. Run it there yourself;
+`local` reads `/proc` and the kernel interfaces in process. An audit over a
+channel writes nothing and reads the target through its own shell.
 
-`mtime` walks each given directory on its own filesystem, skipping `/proc`, `/sys` and `/dev`. `cat`
-and `ls` read in process rather than through the host's own binaries, so a preload hook on those
-cannot reshape what they print.
+## Limits
 
-### Options
-
-`--concurrency` (default 6), `--timeout` (30s per check), `--max-lines` (400) and `--min-severity`
-(default `all`) are shared by every collection. `--timeout` is the budget of one check's whole
-fallback walk — its channel's own setup (a dial, a session open, the line typed into a terminal), the
-command, and the last line read — so no check can take longer than that number, and a run's worst case
-is `ceil(checks / concurrency) × --timeout`. The report is the output: there is no evidence bundle to
-write, and a run leaves the target as it found it.
-
-`--min-severity` is the triage knob: it names the least severe row the report keeps — `critical`,
-`high`, `medium`, `low`, `info` or `benign` — or `all`, the default, which keeps the whole report.
-Rows below the floor are left out and counted with the check's own filtered lines, and the header
-legend says which floor is in force, so a quiet host stays readable and a busy one answers one
-question. It filters the reading and nothing else.
-
-`--json` prints the run as a result stream instead of the report: one JSON object per check, written
-as that check finishes, carrying the check id, how its walk ended (`collected`, `skipped`, `failed`),
-the tier that answered, the chain it passed, that tier's raw text or its fields, its standard error,
-and whether a row cap stopped it. Nothing in a line has been read or shaped, so the floors and the
-lexers above are the reader's business (`karma local --json df mounts | jq`).
-
-**One source per channel.** The local channel reads with karma's own bodies, in process; `ssh` and
-`ttyd` read the target's shell. That is one decision rather than an option, because an in-process body
-is karma's code and karma is not on the target: a check declares both readings side by side (`ps` read
-from `/proc`, and `LC_ALL=C ps -efww` read from the target), the two never fall back to one another,
-and the channel picks the side. Both readings produce the same layer-1 structure, so the same rules,
-filters and lexers read either, and a report states one source.
-
-Exit codes: 0 a run that finished, 1 a built-in reader that could not read an operand, 2 a run that
-could not happen (a failed connection, or a channel that died mid-run), 70 karma's own damage — an
-internal error ended the run, so the report is incomplete, and the message names the boundary that
-broke — and 130 interrupted. Ctrl-C stops collection
-promptly and the partial report still prints, saying how many of the selected checks were not
-collected; a second Ctrl-C exits at once, which is the way out of a channel operation the context
-cannot break. Errors go to stderr with a `karma: ` prefix and one plain sentence.
-
-## Output
-
-Every bit of the layout is drawn by lipgloss: a masthead — the `KARMA` band with the author on its
-right edge, the build's version and the run's clock on the panel's own title band, and a table of
-labeled facts (host, channel and the target it reached, distro, kernel, the collecting account, and how
-much of the catalog ran) plus the severity key — a banner
-per aspect, and a left-rail panel per check. The rail is the highest hit severity for a signal and
-grey otherwise; the first line inside it carries the check id, the fallback chain, `filtered N` and
-`truncated` where they apply. Long lines are soft-wrapped rather than cut, nothing is padded with
-blank space, and the rows of an `ls -l` listing line up column by column.
-
-| Severity | Presentation |
-| --- | --- |
-| critical | red thick rail, hit spans bold white on red |
-| high | bright red thick rail |
-| medium | yellow thick rail |
-| low | bright cyan thick rail |
-
-Below the hit colors sits syntax coloring — bash and PowerShell through chroma, and built-in shapes
-for `ls -l`, `env`, `dmesg`, tables, trees (one hue per nesting level), `passwd`, listen tables, `ip`
-addresses and routes, and so on.
-Color follows `NO_COLOR`, `CLICOLOR` and `CLICOLOR_FORCE`. A non-empty `NO_COLOR` wins, and a
-non-terminal is plain unless color is forced.
-
-The command line's own screens are that first panel too: `--help` opens with the command's band
-carrying the author on its right edge, the build's version on the rail's first line, and the
-command's description inside the same panel, then the usage sections as rail panels.
-
-On Windows, PowerShell 5.1's `>` decodes karma's UTF-8 output with the console code page and
-re-encodes it, so the file opens as garbage. Use cmd redirection or PowerShell 7 to keep the bytes
-intact.
-
-## Catalog
-
-Linux aspects: `system` `identity` `process` `network` `service` `persistence` `filesystem` `log`
-`kernel` `package` (77 checks). Windows aspects: `system` `identity` `process` `network`
-`persistence` `execution` `navigation` `documents` `remote` `log` `timeline` `devices` (43 checks).
-`karma list` prints them as a heading tree, every row carrying the check id, its title and its probe
-chain; column widths are measured over the whole selection, so the groups line up.
-
-## Development
-
-```bash
-make fmt vet test        # the gates, or each one alone
-make race                # the concurrent packages under -race
-make staticcheck         # when installed
-make dist                # dist/ binaries, with the static-link guard
-```
-
-A tier is one source's reading of the evidence, and the tests run it over a fixture with the host
-tools stubbed where it needs them (`internal/checks/linux`, `internal/checks/linux/native`), so a
-row, a threshold or a section title that regresses fails there rather than on a target.
-
-The code lives in `cmd/karma` and `internal/`: `model` is the domain, `define` builds the catalogs,
-`session` runs the channels, `runner` walks the probes, `reader` reads the collected text into a
-document, and `render` presents it. The catalog vocabulary (platform, aspect, check id) is also the
-selector vocabulary, so what `karma list` shows is what the positional arguments accept. Each package's
-own comments carry the reasoning behind its shape.
-
-Collection is read-only: it reads files, processes, sockets and the registry; it never writes to the
-target, kills a process or changes a firewall. What you see is what the current login user can see.
-
-Two properties hold the design together. Release binaries are statically linked
-(`CGO_ENABLED=0`), and the tiers read the kernel's own interfaces in process — `/proc`,
-`syslog(2)`, `sock_diag`/`rtnetlink`, utmp/wtmp records, `lstat` and `debug/elf` — so neither
-`LD_PRELOAD` nor a replaced host tool can change what karma reads. And a tier is one source's
-reading: `model.Native` and `model.Fields` run where karma itself stands, and every remote reading is
-the target's own tool answering a pinned command. Both readings produce the same records or the same
-text, so the same rules and filters read either.
+- The model is Linux-only. Windows has no artifact boundary or activation
+  inventory here.
+- A boundary is only as good as the artifact. An image that already carries the
+  implant reads as `base`; image signing and attestation are outside karma.
+- `ctime` is the runtime signal and userland cannot set it; the content ledger
+  is the stronger signal and a mismatch convicts even a cleaned timestamp. The
+  residual adversary is the one who rewrites both the file and the package
+  ledger and their times — the tamper check reads that as its own finding.
+- A container that provisions users, packages, or configuration in its
+  entrypoint writes after PID 1 starts; those objects read as runtime until the
+  operator explains them.
+- Memory-only code, and a base binary used with only legitimate arguments, can
+  stay below the model. The process report still states deleted images,
+  runtime scripts, interpreter arguments, and each process's established
+  connections.
+- In-guest collection can be lied to by a kernel-level rootkit. Use `bootstrap`
+  and a trusted binary, or an out-of-band observer, when that adversary is in
+  scope.
+- The raw panels cover the model's own surfaces: activation, processes,
+  services, listeners, authority, and mounts. Logs, kernel modules, and
+  account-file contents are not collected here; use `cat`, `ls`, `mtime`, and
+  `show` for the files and tables that are.
+- A static vendor unit with no enablement link appears in `SERVICE` and in
+  `coverage` as a running service with no activation edge; systemd starts it
+  through a built-in dependency, so there is no link to follow.
+- On an rpm host the content answer comes from `rpm -Va`; a host where it
+  cannot finish in time reports the gap in coverage and the run falls back to
+  time evidence.

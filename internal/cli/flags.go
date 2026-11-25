@@ -1,10 +1,5 @@
-// Flag registration and reading: the run options shared by local and ssh, the
-// SSH transport options, and the conversion from flags to run options.
-//
-// Registration goes through plain FlagSets (runFlags/sshFlags) so assembly and
-// tests share one list; reading is direct (intFlag and friends) because a
-// statically registered flag cannot fail to read, and validation only covers
-// value ranges.
+// Flag registration and reading: the audit options shared by every channel and
+// the transport options for ssh and ttyd.
 
 package cli
 
@@ -19,60 +14,43 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"karma/internal/model"
+	"karma/internal/audit"
 	"karma/internal/session"
 )
 
-// addRunFlags registers the run options shared by local and ssh (long options,
-// no shorthands).
 func addRunFlags(cmd *cobra.Command) { runFlags(cmd.Flags()) }
 
-// runFlags registers the run options on a plain FlagSet, so assembly and tests
-// share one list.
 func runFlags(flags *pflag.FlagSet) {
-	flags.Int("concurrency", model.DefaultConcurrency, "number of checks to run in parallel")
-	flags.Float64("timeout", model.DefaultTimeout.Seconds(),
-		"budget of one check in seconds: its whole fallback walk, channel setup included")
-	flags.Int("max-lines", model.DefaultMaxLines, "maximum number of lines shown per check")
-	flags.String("min-severity", "all",
-		"show only rows at or above this severity and count the rest as filtered: "+
-			"all|"+strings.Join(model.SeverityNames(), "|"))
-	flags.Bool("json", false,
-		"print one JSON object per check (the result stream) instead of drawing the report: "+
-			"each line carries the tier's raw text and how its walk ended, and nothing has been read or shaped")
+	flags.Bool("json", false, "print the report as one JSON object")
+	flags.Bool("no-evidence", false, "hide the raw inventories printed after the findings")
+	flags.String("min-severity", "all", "report findings at or above this severity: all|info|low|medium|high|critical")
+	flags.String("since", "provision",
+		"artifact boundary: provision|boot|auto, a duration such as 24h, or an RFC3339 time")
+	flags.Float64("timeout", 60, "budget of the whole collection in seconds")
 }
 
-// runOptions gathers the run options from the command line; selectorArgs are the
-// selector words (without the subcommand's target).
-func runOptions(flags *pflag.FlagSet, selectorArgs []string) (model.RunOptions, error) {
-	concurrency := intFlag(flags, "concurrency")
+func auditOptions(flags *pflag.FlagSet) (auditFlags, error) {
 	seconds := floatFlag(flags, "timeout")
-	maxLines := intFlag(flags, "max-lines")
-	floor, ok := model.ParseSeverityFloor(stringFlag(flags, "min-severity"))
-	switch {
-	case concurrency < 1:
-		return model.RunOptions{}, fmt.Errorf("--concurrency must be >= 1")
-	case seconds < 0.5:
-		return model.RunOptions{}, fmt.Errorf("--timeout must be >= 0.5s")
-	case maxLines < 1:
-		return model.RunOptions{}, fmt.Errorf("--max-lines must be >= 1")
-	case !ok:
-		return model.RunOptions{}, fmt.Errorf("--min-severity must be all|%s (got: %s)",
-			strings.Join(model.SeverityNames(), "|"), stringFlag(flags, "min-severity"))
+	if seconds < 1 {
+		return auditFlags{}, fmt.Errorf("--timeout must be >= 1s")
 	}
-	return model.RunOptions{
-		Selectors:   selectorArgs,
-		Concurrency: concurrency,
-		Timeout:     time.Duration(seconds * float64(time.Second)),
-		MaxLines:    maxLines,
-		MinSeverity: floor,
-		JSON:        boolFlag(flags, "json"),
+	floor := audit.Info
+	if word := stringFlag(flags, "min-severity"); word != "all" {
+		parsed, ok := audit.ParseSeverity(word)
+		if !ok {
+			return auditFlags{}, fmt.Errorf("--min-severity must be all|info|low|medium|high|critical")
+		}
+		floor = parsed
+	}
+	return auditFlags{
+		json:        boolFlag(flags, "json"),
+		evidence:    !boolFlag(flags, "no-evidence"),
+		minSeverity: floor,
+		since:       stringFlag(flags, "since"),
+		timeout:     time.Duration(seconds * float64(time.Second)),
 	}, nil
 }
 
-// intFlag / floatFlag / stringFlag / stringSliceFlag read flags directly:
-// statically registered flags cannot fail to read, so an error branch would only
-// be noise.
 func intFlag(flags *pflag.FlagSet, name string) int {
 	value, _ := flags.GetInt(name)
 	return value
@@ -98,12 +76,8 @@ func stringSliceFlag(flags *pflag.FlagSet, name string) []string {
 	return value
 }
 
-// addSSHFlags registers the transport options: -p/-i/-o/--password. mtime under
-// local does not carry them; mtime under ssh shares them with collection.
 func addSSHFlags(cmd *cobra.Command) { sshFlags(cmd.Flags()) }
 
-// sshFlags registers the transport options on a plain FlagSet, so assembly and
-// tests share one list.
 func sshFlags(flags *pflag.FlagSet) {
 	flags.IntP("port", "p", 0, "port, overriding the URI's port")
 	flags.StringSliceP("identity", "i", nil,
@@ -116,8 +90,6 @@ func sshFlags(flags *pflag.FlagSet) {
 			"without it karma uses public keys only and exits when authentication fails")
 }
 
-// addTTYDFlags registers the ttyd transport options: the credential for ttyd's
-// basic authentication and the TLS answers for wss.
 func addTTYDFlags(cmd *cobra.Command) { ttydFlags(cmd.Flags()) }
 
 func ttydFlags(flags *pflag.FlagSet) {
@@ -129,8 +101,6 @@ func ttydFlags(flags *pflag.FlagSet) {
 		"wss: the server certificate's SHA-256 fingerprint as 64 hex characters, verified instead of the chain")
 }
 
-// buildTTYDTransport reads the ttyd flags into the transport; the endpoint
-// itself is parsed when the connection opens.
 func buildTTYDTransport(flags *pflag.FlagSet, target string) (session.Transport, error) {
 	return &session.TTYDTransport{
 		Target:     target,
@@ -140,8 +110,6 @@ func buildTTYDTransport(flags *pflag.FlagSet, target string) (session.Transport,
 	}, nil
 }
 
-// buildSSHTransport does destination parsing, connection-parameter validation,
-// and transport construction in one pass.
 func buildSSHTransport(flags *pflag.FlagSet, target string) (session.Transport, error) {
 	port := intFlag(flags, "port")
 	if port < 0 || port > session.MaxPort {
@@ -158,9 +126,6 @@ func buildSSHTransport(flags *pflag.FlagSet, target string) (session.Transport, 
 		case info.IsDir():
 			return nil, fmt.Errorf("identity file is a directory: %s", path)
 		case !info.Mode().IsRegular():
-			// A FIFO or device node would park the connection in open(2), where no
-			// deadline and no signal reaches it; the operator named this path, so
-			// saying what it holds beats reading it.
 			return nil, fmt.Errorf("identity file is not a regular file: %s", path)
 		}
 	}

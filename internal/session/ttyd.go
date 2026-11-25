@@ -24,8 +24,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-
-	"karma/internal/model"
 )
 
 // ttydDefaultPort is ttyd's own listening default, used when a bare host is
@@ -153,9 +151,6 @@ type TTYDTransport struct {
 	// shipped one, so a caller never has to state it.
 	pace pace
 }
-
-// Platform is always the Linux directory: the ttyd channel never targets Windows.
-func (t *TTYDTransport) Platform() model.Platform { return model.Linux }
 
 // Open verifies the endpoint and probes the terminal once: client input must
 // reach a shell and come back. A readonly deployment (ttyd from 1.7.4 without

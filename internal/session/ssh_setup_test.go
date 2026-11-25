@@ -100,7 +100,7 @@ func TestSSHSetupIsBoundedByTheCallBudget(t *testing.T) {
 	sess := newSilentSSHD(t).open(t)
 	budget := 300 * time.Millisecond
 	started := time.Now()
-	result := runCall(t.Context(), sess, model.NewCommand("id"), budget, model.RowCap{})
+	result := runCall(t.Context(), sess, model.Shell{Script: "id"}, budget, model.RowCap{})
 	elapsed := time.Since(started)
 	if result.Verdict != model.VerdictTimedOut {
 		t.Fatalf("a setup that outlives the budget is this call's deadline: %+v", result)
@@ -124,7 +124,7 @@ func TestSSHUnansweredSetupLatchesTheChannelLost(t *testing.T) {
 	if sess.Lost() {
 		t.Fatal("a fresh connection is not lost")
 	}
-	result := runCall(t.Context(), sess, model.NewCommand("id"), time.Minute, model.RowCap{})
+	result := runCall(t.Context(), sess, model.Shell{Script: "id"}, time.Minute, model.RowCap{})
 	if result.Verdict != model.VerdictFailed {
 		t.Fatalf("an unanswered setup is this call failing: %+v", result)
 	}

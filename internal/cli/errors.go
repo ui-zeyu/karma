@@ -1,10 +1,4 @@
 // Failure reporting: one funnel for every error the command line can produce.
-//
-// Errors come in two shapes — a usage error (unknown command, unknown flag,
-// wrong argument count) additionally gets that command's usage block, and a
-// coded error carries its own exit code for a run that could not happen. Every
-// other failure is a mistake the tool explains to a human and leaves the shell's
-// exit status at 0, so a typo never looks like a failed run.
 
 package cli
 
@@ -18,7 +12,6 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// exitError is an error with an exit code; Main prints the message.
 type exitError struct {
 	code ExitCode
 	err  error
@@ -26,8 +19,6 @@ type exitError struct {
 
 func (e exitError) Error() string { return e.err.Error() }
 
-// usageError is a usage-level error (unknown command, unknown flag, wrong
-// argument count): the message plus that command's usage block.
 type usageError struct {
 	err error
 	cmd *cobra.Command
@@ -35,37 +26,19 @@ type usageError struct {
 
 func (e usageError) Error() string { return e.err.Error() }
 
-// failf builds an error with an exit code; Main prints the message.
 func failf(code ExitCode, format string, args ...any) error {
 	return exitError{code: code, err: fmt.Errorf(format, args...)}
 }
 
-// usagef builds a usage error; Main appends the usage block.
 func usagef(cmd *cobra.Command, format string, args ...any) error {
 	return usageError{err: fmt.Errorf(format, args...), cmd: cmd}
 }
 
-// reportError prints one failure and returns the exit code: a usage error gets
-// the command's usage block appended, a coded error returns its own code, and
-// anything else — a mistake the message has already explained — returns 0.
 func reportError(w io.Writer, err error) int {
-	return reportErrorWith(w, err, stylesFor(w))
-}
-
-// reportErrorWith renders at a fixed set of styles; tests use it to force color
-// on a capture buffer.
-func reportErrorWith(w io.Writer, err error, st streamStyles) int {
-	msg := "karma: " + err.Error()
-	// A suggestion tail ("Did you mean: …") is guidance, not the failure, so it
-	// takes the hint color while the failure itself stays red.
-	if i := strings.Index(msg, "Did you mean:"); i > 0 {
-		fmt.Fprintf(w, "%s%s\n", st.err(msg[:i]), st.hint(msg[i:]))
-	} else {
-		fmt.Fprintln(w, st.err(msg))
-	}
+	fmt.Fprintln(w, "karma: "+err.Error())
 	var usage usageError
-	if errors.As(err, &usage) {
-		styledUsageWith(w, usage.cmd, st)
+	if errors.As(err, &usage) && usage.cmd != nil {
+		fmt.Fprintln(w, strings.TrimRight(usage.cmd.UsageString(), "\n"))
 	}
 	var coded exitError
 	if errors.As(err, &coded) {
@@ -74,8 +47,6 @@ func reportErrorWith(w io.Writer, err error, st streamStyles) int {
 	return int(ExitOK)
 }
 
-// flagErrorText turns pflag's flag errors into short sentences; an unfamiliar
-// shape keeps its original text.
 func flagErrorText(err error) string {
 	var (
 		notExist *pflag.NotExistError

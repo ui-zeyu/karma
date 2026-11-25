@@ -18,9 +18,11 @@ func TestIdentityFileMustBeARegularFile(t *testing.T) {
 	if err := unix.Mkfifo(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	flags := newSSHFlags()
-	flags.Set("identity", path)
-	_, err := buildSSHTransport(flags, "root@10.0.0.8")
+	cmd := newSSHCmd()
+	if err := cmd.Flags().Set("identity", path); err != nil {
+		t.Fatal(err)
+	}
+	_, err := buildSSHTransport(cmd.Flags(), "root@10.0.0.8")
 	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("a FIFO identity file = %v; want it refused as a non-regular file", err)
 	}

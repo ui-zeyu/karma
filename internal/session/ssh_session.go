@@ -32,17 +32,6 @@ type SSHSession struct {
 // Name is the channel display name.
 func (s *SSHSession) Name() string { return "ssh" }
 
-// Describe names the channel and the host it reached.
-func (s *SSHSession) Describe() string {
-	if s.target == "" {
-		return "ssh"
-	}
-	return "ssh " + s.target
-}
-
-// Channel is which side of the wire karma runs on: the target is remote.
-func (s *SSHSession) Channel() model.Channel { return model.ChanSSH }
-
 // Lost reports whether the connection is gone — closed, or the server stopped
 // answering. A channel the server refused leaves the connection alive and fails
 // one tier instead, so a host that limits concurrent sessions does not end the
@@ -54,7 +43,7 @@ func (s *SSHSession) Lost() bool { return s.lost.Load() }
 // the session and handing it the command — go through setup, which is what puts
 // them inside the call's deadline.
 func (s *SSHSession) Run(ctx context.Context, call model.Call) model.RunResult {
-	return dispatch(ctx, call.Inv, call.Cap, s.pace, s.shell)
+	return dispatch(ctx, call.Inv, call.Cap, s.shell)
 }
 
 func (s *SSHSession) shell(ctx context.Context, inv model.Invocation, cap model.RowCap) model.RunResult {

@@ -9,15 +9,15 @@
 // races with unread buffers (the os/exec StdoutPipe contract), so Wait returns
 // immediately once everything is drained. The row cap's "stop once enough is
 // read" also happens here: probe one extra line to confirm there is more
-// content, then stop the source — that stop is this tier's answer — while the
+// content, then stop the source — that stop is this call's answer — while the
 // byte safety valve (maxHarvestBytes) stops the source at the limit and counts
 // the body as truncated.
 //
 // The deadline is the context's, so the one number an operator gave bounds the
 // channel's setup too. One finished call is read into a model.Verdict here, the
 // single place the exit codes are interpreted and the single place a cut is
-// named: every channel hands back this result and the chain above it reads the
-// verdict alone.
+// named: every channel hands back this result and the caller reads the verdict
+// alone.
 
 package session
 

@@ -83,34 +83,6 @@ func TestListingRowsShapeAndOrder(t *testing.T) {
 	}
 }
 
-// The forensics rows keep ls -l's own order (ls sorts its arguments) and its
-// symlink arrow; a file that is gone costs only its row.
-func TestLsRowsSortsAndKeepsLinkTargets(t *testing.T) {
-	dir := t.TempDir()
-	first := filepath.Join(dir, "a.txt")
-	second := filepath.Join(dir, "b.txt")
-	link := filepath.Join(dir, "c-link")
-	for _, path := range []string{second, first} {
-		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Symlink("a.txt", link); err != nil {
-		t.Fatal(err)
-	}
-	rows := strings.Split(strings.TrimRight(
-		LsRows([]string{second, link, first, filepath.Join(dir, "gone")}), "\n"), "\n")
-	if len(rows) != 3 {
-		t.Fatalf("wanted three rows (the missing file drops out), got %v", rows)
-	}
-	if !strings.HasSuffix(rows[0], " "+first) || !strings.HasSuffix(rows[1], " "+second) {
-		t.Fatalf("rows should be sorted by path: %v", rows)
-	}
-	if !strings.HasSuffix(rows[2], "c-link -> a.txt") {
-		t.Fatalf("symlink row should keep the arrow: %q", rows[2])
-	}
-}
-
 func epochOf(path string) string {
 	info, err := os.Stat(path)
 	if err != nil {

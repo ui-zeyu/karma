@@ -2,14 +2,14 @@
 //
 // A panic on a goroutine has no recover above it: it ends the process and takes
 // the whole report with it, where karma's contract is that one broken piece
-// fails alone. Every boundary a run crosses — a check's walk, a channel's
-// reader, the render loop, one in-process body, one channel setup — goes
-// through here, so the wording, the stack, and the decision to keep one are a
-// single package's business instead of one recover per call site.
+// fails alone. Every boundary a run crosses — a collection, a channel's reader,
+// the report loop, one channel setup — goes through here, so the wording, the
+// stack, and the decision to keep one are a single package's business instead
+// of one recover per call site.
 //
-// The boundary names the piece that broke ("check ssh-authorized-keys", "ttyd
-// frame pump"); the report prints the message, and the value keeps the stack it
-// was recovered at, which is what a test or a debugger reads to find the frame.
+// The boundary names the piece that broke ("collection", "ttyd frame pump");
+// the report prints the message, and the value keeps the stack it was recovered
+// at, which is what a test or a debugger reads to find the frame.
 package fault
 
 import (

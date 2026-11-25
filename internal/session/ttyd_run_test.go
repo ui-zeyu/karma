@@ -185,9 +185,6 @@ func TestTTYDSessionMeta(t *testing.T) {
 	if sess.Name() != "ttyd" {
 		t.Fatalf("name: %q", sess.Name())
 	}
-	if sess.Channel() != model.ChanTTYD || !sess.Channel().Remote() {
-		t.Fatalf("channel: %v", sess.Channel())
-	}
 }
 
 func TestTTYDRunCollectsBodyAndExitCode(t *testing.T) {

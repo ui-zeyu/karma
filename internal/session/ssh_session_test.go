@@ -124,7 +124,7 @@ func TestSSHRefusedChannelDoesNotLoseTheConnection(t *testing.T) {
 	defer cancel()
 
 	result := runCall(ctx, sess,
-		model.NewCommand("id"), 5*time.Second, model.RowCap{})
+		model.Shell{Script: "id"}, 5*time.Second, model.RowCap{})
 	if result.Verdict != model.VerdictFailed || !strings.Contains(result.Stderr, "the server is at its session limit") {
 		t.Fatalf("a refused channel should fail that one call, got %+v", result)
 	}
@@ -146,7 +146,7 @@ func TestSSHDisconnectedTransportIsLost(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for !sess.Lost() && time.Now().Before(deadline) {
 		runCall(ctx, sess,
-			model.NewCommand("id"), time.Second, model.RowCap{})
+			model.Shell{Script: "id"}, time.Second, model.RowCap{})
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !sess.Lost() {

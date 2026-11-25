@@ -1,5 +1,4 @@
-// The execution flow shared by local and ssh: select checks, connect, collect
-// facts, collect live, summarize.
+// The audit run: collect one snapshot, judge it, and render the findings.
 
 package cli
 
@@ -13,138 +12,139 @@ import (
 
 	"golang.org/x/term"
 
-	"karma/internal/checks"
-	"karma/internal/collect"
-	"karma/internal/facts"
-	"karma/internal/fault"
+	"karma/internal/audit"
 	"karma/internal/model"
-	"karma/internal/render"
-	"karma/internal/runner"
 	"karma/internal/session"
 )
 
-const fallbackWidth = 100
+// runAudit is the default mode of every channel.
+func runAudit(ctx context.Context, w io.Writer, transport session.Transport, local bool, channel string, words []string, flags auditFlags) error {
+	parsed, err := parseScope(words)
+	if err != nil {
+		return err
+	}
+	snapshot, err := collectSnapshot(ctx, transport, local, flags.timeout)
+	if err != nil {
+		return err
+	}
+	if seconds, ok, err := sinceTime(flags.since); err != nil {
+		return err
+	} else if ok {
+		snapshot.Boundary = audit.Boundary{
+			Time: seconds, Kind: snapshot.Boundary.Kind, Source: "operator", Confidence: audit.HighConfidence,
+		}
+	}
+	report := audit.Judge(snapshot, parsed.filter(flags.minSeverity))
+	if flags.json {
+		return audit.WriteJSON(w, report, channel)
+	}
+	audit.Render(w, report, snapshot, audit.RenderOptions{
+		Channel:  channel,
+		Version:  buildVersion,
+		Color:    isTerminal(w),
+		Evidence: flags.evidence,
+		Width:    terminalWidth(w),
+		Filter:   parsed.filter(audit.Info),
+	})
+	return nil
+}
 
-// terminalFile returns the file handle when writer is a terminal.
-func terminalFile(w io.Writer) (*os.File, bool) {
-	file, ok := w.(*os.File)
-	return file, ok && term.IsTerminal(int(file.Fd()))
+// runShow prints one collected inventory without judging it.
+func runShow(ctx context.Context, w io.Writer, transport session.Transport, local bool, words []string, flags auditFlags) error {
+	if len(words) == 0 {
+		fmt.Fprintln(w, "show: activation | process | services | listeners | authority | mounts | coverage")
+		return nil
+	}
+	section := words[0]
+	switch section {
+	case "activation", "persistence", "boot", "login", "service", "device", "schedule",
+		"process", "activity", "services", "listeners", "sockets", "listen", "authority", "mounts", "coverage":
+	default:
+		return fmt.Errorf("unknown show target %q (activation, process, services, listeners, authority, mounts, coverage)", section)
+	}
+	parsed, err := parseScope(words[1:])
+	if err != nil {
+		return err
+	}
+	snapshot, err := collectSnapshot(ctx, transport, local, flags.timeout)
+	if err != nil {
+		return err
+	}
+	audit.RenderShow(w, snapshot, section, audit.RenderOptions{
+		Channel: "", Version: buildVersion, Color: isTerminal(w), Evidence: true,
+		Width: terminalWidth(w), Filter: parsed.filter(audit.Info),
+	})
+	return nil
+}
+
+// collectSnapshot reads the target once. A local run reads in process; a
+// remote run opens one session and sends the two collector scripts.
+func collectSnapshot(ctx context.Context, transport session.Transport, local bool, budget time.Duration) (*audit.Snapshot, error) {
+	ctx, cancel := session.Within(ctx, budget)
+	defer cancel()
+	if local {
+		snapshot, err := audit.CollectLocal(ctx)
+		if err != nil {
+			return nil, failf(ExitInternal, "collection: %v", err)
+		}
+		return snapshot, nil
+	}
+	sess, err := transport.Open(ctx)
+	if err != nil {
+		return nil, failf(ExitEnvironment, "connection failed: %v", err)
+	}
+	defer sess.Close()
+	snapshot, err := audit.CollectRemote(ctx, func(ctx context.Context, script string) (string, error) {
+		result := sess.Run(ctx, model.Call{Inv: model.Shell{Script: script}})
+		if result.Verdict != model.VerdictAnswered {
+			return "", errors.New(commandFailure(result))
+		}
+		return result.Stdout, nil
+	})
+	if err != nil {
+		return nil, failf(ExitEnvironment, "collection: %v", err)
+	}
+	return snapshot, nil
+}
+
+// auditFlags are the run options the audit and show modes share.
+type auditFlags struct {
+	json        bool
+	evidence    bool
+	minSeverity audit.Severity
+	since       string
+	timeout     time.Duration
 }
 
 func isTerminal(w io.Writer) bool {
-	_, ok := terminalFile(w)
-	return ok
+	file, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
 }
 
-// terminalWidth is the terminal width; a non-terminal falls back to a default.
 func terminalWidth(w io.Writer) int {
-	file, ok := terminalFile(w)
+	file, ok := w.(*os.File)
 	if !ok {
-		return fallbackWidth
+		return 100
 	}
 	if size, _, err := term.GetSize(int(file.Fd())); err == nil && size > 0 {
 		return size
 	}
-	return fallbackWidth
+	return 100
 }
 
-// Execute is one full collection run. A nil catalog uses the platform's check
-// catalog; the mtime subcommand passes its own list. A cancelled context stops
-// the run: in-flight checks keep the output they had already read, and the
-// partial report is still presented. The returned error is printed by the
-// command-line layer.
-//
-// w carries the report and warn the run's own warnings — a capability probe cut
-// short — so a caller that captured the report can also read why something is
-// missing from it, and neither stream is a hard-coded process handle.
-//
-// This is also the run's own damage boundary. Nothing above it recovers: main
-// only turns the returned error into an exit status, so a panic on this path
-// would print a Go stack trace, lose the report written so far, and leave the
-// same status a failed connection uses. Here it becomes one message and the exit
-// code that says the tool itself broke.
-func Execute(ctx context.Context, w, warn io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
-	err := fault.Catch("collection", func() error { return execute(ctx, w, warn, transport, options, catalog) })
-	var crash *fault.Panic
-	if !errors.As(err, &crash) {
-		return err
+// sinceTime reads --since: empty and "auto" keep the collected boundary;
+// "boot" and "provision" are the same boundary by another name; a duration
+// answers now minus it; an RFC3339 stamp is absolute.
+func sinceTime(value string) (time.Time, bool, error) {
+	switch value {
+	case "", "auto", "boot", "provision":
+		return time.Time{}, false, nil
 	}
-	return failf(ExitInternal, "%s", crash.Error())
-}
-
-// execute is the run itself. The boundary above it owns the panic contract, so
-// nothing here guards against one escaping.
-func execute(ctx context.Context, w, warn io.Writer, transport session.Transport, options model.RunOptions, catalog []*model.Check) error {
-	started := time.Now()
-	target := catalog
-	if target == nil {
-		target = checks.ChecksFor(transport.Platform())
+	if duration, err := time.ParseDuration(value); err == nil {
+		return time.Now().Add(-duration), true, nil
 	}
-	selected, err := SelectChecks(options.Selectors, target)
-	if err != nil {
-		return err
+	if stamp, err := time.Parse(time.RFC3339, value); err == nil {
+		return stamp, true, nil
 	}
-
-	// CLI boundary: a connection failure (authentication failure, rejected host
-	// key) is one environmental failure, with exit code 2
-	sess, err := transport.Open(ctx)
-	if err != nil {
-		return failf(ExitEnvironment, "connection failed: %v", err)
-	}
-	defer sess.Close()
-
-	factsValue := facts.CollectFor(ctx, transport.Platform(), sess)
-	if factsValue.ProbeCut {
-		fmt.Fprintln(warn,
-			"karma: the capability probe timed out: a tool it did not reach reads as absent, so the host facts may be thinner than they look")
-	}
-	// Two ways to hand the operator what the run saw. The report draws each panel
-	// as its check finishes; the result stream writes one JSON object per check
-	// instead, which is the shape a program reads. The walk, the concurrency and
-	// the budgets are the same either way.
-	var (
-		observer runner.Observer
-		stream   *collect.Writer
-	)
-	if options.JSON {
-		stream = collect.NewWriter(w)
-		observer = stream
-	} else {
-		width := terminalWidth(w)
-		render.RenderHeader(w, factsValue, render.HeaderInfo{
-			Channel:   sess.Describe(),
-			Version:   buildVersion,
-			Started:   started,
-			Selected:  len(selected),
-			Total:     len(target),
-			Selectors: SelectorTokens(options.Selectors),
-			Floor:     options.MinSeverity,
-		}, width)
-		live := render.NewLiveObserver(w, selected, options.MaxLines, width, isTerminal(w), render.StreamColored(w))
-		live.Start()
-		defer live.Close()
-		observer = live
-	}
-	// Every channel walks the checks on this side: a local session runs the
-	// native source's bodies in process, and a remote one reads the target
-	// through the sh source's pinned spellings, one call per tier.
-	summary := runner.RunCatalog(ctx, sess, selected, options, observer)
-	// A stream that stopped early is a result the reader is missing, so the run
-	// says so rather than ending as if it had delivered the whole set.
-	if stream != nil && stream.Err() != nil {
-		return failf(ExitRead, "the result stream could not be written: %v", stream.Err())
-	}
-	// The run reports how it ended: the exit status and the message come from
-	// what it saw, so a signal that lands after the last check cannot turn a
-	// complete report into an interrupted one, and a run that stopped early says
-	// how much it is missing.
-	switch {
-	case summary.Interrupted:
-		return failf(ExitInterrupted, "interrupted: %d of the %d selected checks were not collected",
-			len(selected)-summary.Results, len(selected))
-	case summary.LostChannel:
-		return failf(ExitEnvironment, "channel lost mid-run: %d of the %d selected checks were not collected",
-			len(selected)-summary.Results, len(selected))
-	}
-	return nil
+	return time.Time{}, false, fmt.Errorf("--since needs a duration, boot, provision, or an RFC3339 time (got: %s)", value)
 }

@@ -22,7 +22,7 @@ func TestRunLocalCapturesFullOutput(t *testing.T) {
 
 func TestRunLocalScanCapMarksTruncated(t *testing.T) {
 	t.Parallel()
-	result := runCall(context.Background(), LocalSession{}, model.Shell{Script: "seq 1 500"}, 10*time.Second, model.Scan(50))
+	result := runCall(context.Background(), LocalSession{}, model.Shell{Script: "seq 1 500"}, 10*time.Second, model.RowCap{Rows: 50})
 	if !result.Truncated || result.Verdict != model.VerdictAnswered {
 		t.Fatalf("stopping the source at enough lines should mark truncated: %+v", result)
 	}

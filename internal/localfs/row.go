@@ -18,8 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"karma/internal/script"
 )
 
 // months is the C-locale month abbreviation table find's %Tb prints under
@@ -178,7 +176,7 @@ func listingOrder(a, b listedRow) int {
 // listingRows is one directory's listing: its entries as
 // "%T@\t%C@\t" + ls-l rows, sorted by listingOrder and capped at head. A head
 // of zero or less lists every entry. The epoch prefix is the cluster's input;
-// RowBody is the half the panels show.
+// rowBody is the half the listing shows.
 func listingRows(dir string, head int, names *NameCache) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -206,7 +204,7 @@ func listingRows(dir string, head int, names *NameCache) ([]string, error) {
 	return texts, nil
 }
 
-// rowBody cuts a collection row down to the ls-l body the panels display.
+// rowBody cuts a collection row down to the ls-l body the listing prints.
 // The two leading fields are the epoch prefix the cluster reads.
 func rowBody(row string) string {
 	parts := strings.SplitN(row, "\t", 3)
@@ -214,24 +212,4 @@ func rowBody(row string) string {
 		return parts[2]
 	}
 	return row
-}
-
-// LsRows renders the `== ls` forensics section for one file list: the ls -l row
-// of every path that still exists, in the listing tier's sorted order. The
-// attributes come from lstat in process, not from a hooked libc: a setuid bit
-// added to an auth binary is the kind of fact an LD_PRELOAD ls would hide. Rows
-// are the listing tier's shape (script.LSBodyPrintf) — the same rows every
-// other local listing prints — so they differ from GNU ls's column padding, and
-// the date is clock-shaped. ls sorts its arguments itself, and a vanished file
-// costs only its row (ls reports it on stderr, which the sh source drops).
-func LsRows(files []string) string {
-	names := NewNameCache()
-	var b strings.Builder
-	for _, path := range script.LsSorted(files) {
-		if info, err := os.Lstat(path); err == nil {
-			b.WriteString(LsBody(info, path, names))
-			b.WriteByte('\n')
-		}
-	}
-	return b.String()
 }
