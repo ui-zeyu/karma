@@ -82,6 +82,23 @@ func TestViewNarrowsRowsByTheRelationsTheyAnswer(t *testing.T) {
 	}
 }
 
+func TestViewMountsFollowAPathScope(t *testing.T) {
+	snapshot := &Snapshot{Mounts: []Mount{
+		{FSType: "ext4", Path: "/"},
+		{FSType: "tmpfs", Path: "/run"},
+		{FSType: "ext4", Path: "/var/www"},
+		{FSType: "tmpfs", Path: "/tmp"},
+	}}
+	view := NewView(snapshot, Filter{Paths: []string{"/run/secrets"}})
+	if len(view.Mounts) != 2 || view.Mounts[0].Path != "/" || view.Mounts[1].Path != "/run" {
+		t.Errorf("mount scope = %+v, want the root and /run backing mounts", view.Mounts)
+	}
+	view = NewView(snapshot, Filter{Paths: []string{"/var/www/html"}})
+	if len(view.Mounts) != 2 || view.Mounts[1].Path != "/var/www" {
+		t.Errorf("mount scope = %+v, want the root and /var/www mounts", view.Mounts)
+	}
+}
+
 func TestViewSurfaceScopeGatesThePanelsTheScopeJudges(t *testing.T) {
 	snapshot := &Snapshot{
 		Boundary: boundary(),
@@ -91,9 +108,9 @@ func TestViewSurfaceScopeGatesThePanelsTheScopeJudges(t *testing.T) {
 		Authority:   []string{"/etc/passwd"},
 		Activations: []startup.Edge{edge(startup.SurfaceSystemd, "/etc/systemd/system/ssh.service", "/usr/sbin/sshd")},
 	}
-	// A surface scope that does not select the activity or authority view
-	// judges neither inventory, so the panels carry no rows.
-	view := NewView(snapshot, Filter{Surfaces: map[string]bool{"systemd": true}})
+	// The domains decide which inventories the view carries; the startup
+	// surface only decides which activation rows are read.
+	view := NewView(snapshot, Filter{Domains: DomainPersistence, Surfaces: surfacePtr(startup.Systemd)})
 	if len(view.Processes) != 0 {
 		t.Errorf("processes = %+v", view.Processes)
 	}
@@ -103,13 +120,16 @@ func TestViewSurfaceScopeGatesThePanelsTheScopeJudges(t *testing.T) {
 	if len(view.Activations) != 1 {
 		t.Errorf("activations = %+v", view.Activations)
 	}
-	// The surface words the audit names as views open their own panels.
-	view = NewView(snapshot, Filter{Surfaces: map[string]bool{"activity": true, "authority": true}})
+	// A processes/authority run reads those rows and no activation panel.
+	view = NewView(snapshot, Filter{Domains: DomainProcesses | DomainAuthority, Surfaces: surfacePtr(0)})
 	if len(view.Processes) != 1 {
 		t.Errorf("processes = %+v", view.Processes)
 	}
 	if len(view.Authority) != 1 {
 		t.Errorf("authority = %+v", view.Authority)
+	}
+	if len(view.Activations) != 0 {
+		t.Errorf("activations = %+v", view.Activations)
 	}
 }
 
@@ -117,7 +137,8 @@ func TestSectionTableCarriesEveryShowWord(t *testing.T) {
 	for _, word := range []string{
 		"activation", "persistence", "boot", "login", "service", "device", "schedule",
 		"process", "activity", "services", "listeners", "sockets", "listen",
-		"connections", "connection", "network", "kernel", "authority", "mounts", "coverage",
+		"connections", "connection", "network", "kernel", "authority", "mounts",
+		"trail", "history", "coverage",
 	} {
 		if _, ok := SectionFor(word); !ok {
 			t.Errorf("show word %q is missing from the section table", word)
@@ -132,6 +153,7 @@ func TestSectionTableCarriesEveryShowWord(t *testing.T) {
 		"listeners": "LISTEN", "sockets": "LISTEN", "listen": "LISTEN",
 		"connections": "CONNECTION", "connection": "CONNECTION", "network": "CONNECTION",
 		"boot": "ACTIVATION", "login": "ACTIVATION",
+		"service": "SERVICE", "services": "SERVICE", "process": "PROCESS", "processes": "PROCESS",
 	}
 	for word, want := range cases {
 		section, _ := SectionFor(word)
@@ -142,7 +164,7 @@ func TestSectionTableCarriesEveryShowWord(t *testing.T) {
 	// Every section answers a collection plan that includes its own domains,
 	// and the persistence sections read every surface.
 	activation, _ := SectionFor("boot")
-	if plan := activation.Plan(Plan{}); !plan.Has(DomainPersistence) || plan.Surfaces != nil {
+	if plan := activation.Plan(Plan{}); !plan.Has(DomainPersistence) || plan.Surfaces == nil || *plan.Surfaces != startup.AllScope() {
 		t.Errorf("activation plan = %+v", plan)
 	}
 	mounts, _ := SectionFor("mounts")
@@ -176,7 +198,7 @@ func TestGraphSpecPlanCarriesTheDomainsTheGraphReads(t *testing.T) {
 	}
 	// The boot graph reads every activation surface.
 	_, spec, _ := GraphTarget("boot")
-	if plan := spec.Plan(DomainPersistence); plan.Surfaces != nil {
-		t.Errorf("boot plan surfaces = %+v", plan.Surfaces)
+	if plan := spec.Plan(DomainPersistence); plan.Surfaces == nil || *plan.Surfaces != startup.AllScope() {
+		t.Errorf("boot plan surfaces = %v", plan.Surfaces)
 	}
 }

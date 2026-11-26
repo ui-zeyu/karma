@@ -8,6 +8,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -128,6 +129,13 @@ func writePage(w io.Writer, cmd *cobra.Command, sections []pageSection, footer s
 	}
 }
 
+func pageByline() string {
+	if user := os.Getenv("USER"); user != "" {
+		return chrome.SafeText(user) + " "
+	}
+	return "karma "
+}
+
 // pageMasthead is the report's first panel: the command path as the level-one
 // band, the version as the level-two head, the description inside the rail.
 func pageMasthead(cmd *cobra.Command, width int, color bool) string {
@@ -135,7 +143,7 @@ func pageMasthead(cmd *cobra.Command, width int, color bool) string {
 	if version == "" {
 		version = "dev"
 	}
-	band := chrome.Band(" "+strings.ToUpper(cmd.CommandPath()), "yuyy ", width,
+	band := chrome.Band(" "+strings.ToUpper(cmd.CommandPath()), pageByline(), width,
 		chrome.BannerBG, chrome.BannerFG, true, color)
 	head := chrome.Band(" "+version, "", width-2, chrome.SubBandBG, chrome.SubBandFG, false, color)
 	return band + "\n" + chrome.Rail(head, descriptionRows(cmd), width, chrome.MutedColor, color)

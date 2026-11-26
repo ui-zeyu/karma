@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 
+	"karma/internal/localfs"
 	"karma/internal/trust"
 )
 
@@ -127,12 +128,16 @@ type moduleRow struct {
 // collectKernel reads the kernel domain and returns the coverage gaps its
 // reads produced. The module files, declaration files and loader configuration
 // join snapshot.Objects so the content ledger judges them.
-func collectKernel(ctx context.Context, snapshot *Snapshot, facts func(string) trust.Facts, prefetch func([]string)) []string {
+func collectKernel(ctx context.Context, snapshot *Snapshot, facts func(string) trust.Facts) []string {
 	state := &snapshot.Kernel
 	if _, err := os.Stat("/proc"); err != nil {
 		return []string{"kernel state is only read on Linux"}
 	}
 	state.Collected = true
+	filter := snapshot.plan.Filter
+	if !kernelPathNeeded(filter) {
+		return []string{"kernel state skipped: the path scope names no kernel surface"}
+	}
 	var gaps []string
 
 	declared, declarationFiles, declarationGaps := readModuleDeclarations(snapshot, facts)
@@ -149,7 +154,17 @@ func collectKernel(ctx context.Context, snapshot *Snapshot, facts func(string) t
 	// read keeps a module that appeared after the second read out of the
 	// hidden set.
 	sysfsSecond, sysfsSecondOK := readSysfsModules()
-	symbols, kallsymsOK := readKallsymsModules(ctx)
+	var symbols map[string]bool
+	var kallsymsOK bool
+	if filter.globalScope() {
+		var gap string
+		symbols, kallsymsOK, gap = readKallsymsModules(ctx)
+		if gap != "" {
+			gaps = append(gaps, gap)
+		}
+	} else {
+		gaps = append(gaps, "hidden-module cross-check skipped: the scope names one object")
+	}
 	third, thirdOK := readProcModules()
 	if !firstOK && !secondOK && !thirdOK {
 		gaps = append(gaps, "kernel module registry "+procModulesPath+" is unreadable")
@@ -160,10 +175,12 @@ func collectKernel(ctx context.Context, snapshot *Snapshot, facts func(string) t
 		moduleRead{rows: third, ok: thirdOK},
 	)
 	sysfs, sysfsOK := steadyModuleView(sysfsFirst, sysfsFirstOK, sysfsSecond, sysfsSecondOK)
-	builtin, _ := readModulesBuiltin(snapshot.Host.Kernel)
-	for name := range builtin {
-		delete(symbols, name)
-		delete(sysfs, name)
+	if symbols != nil {
+		builtin, _ := readModulesBuiltin(snapshot.Host.Kernel)
+		for name := range builtin {
+			delete(symbols, name)
+			delete(sysfs, name)
+		}
 	}
 
 	emptyContainerView := len(loaded) == 0 && snapshot.Boundary.Kind == "container" &&
@@ -188,27 +205,18 @@ func collectKernel(ctx context.Context, snapshot *Snapshot, facts func(string) t
 	if !mapped {
 		gaps = append(gaps, "module file mapping unavailable: "+filepath.Join("/lib/modules", snapshot.Host.Kernel, "modules.dep"))
 	}
-	var moduleFiles []string
 	mappedCount := 0
 	for _, name := range order {
-		file, ok := mapping[normalizeModuleName(name)]
+		_, ok := mapping[normalizeModuleName(name)]
 		if !ok {
 			continue
 		}
 		mappedCount++
-		moduleFiles = append(moduleFiles, file)
-		// The package database records the usrmerge spelling; the module
-		// database can name the /lib spelling. Prefetch both so Classify's
-		// resolved query is a cache hit rather than one dpkg call per module.
-		if real, err := filepath.EvalSymlinks(file); err == nil && real != file {
-			moduleFiles = append(moduleFiles, real)
-		}
 	}
 	if mapped && len(order) > 0 && mappedCount == 0 {
 		state.MappingStale = true
 		gaps = append(gaps, "module database names no loaded module: the file mapping belongs to another kernel")
 	}
-	prefetch(moduleFiles)
 
 	for _, name := range order {
 		row := loaded[name]
@@ -233,7 +241,7 @@ func collectKernel(ctx context.Context, snapshot *Snapshot, facts func(string) t
 		}
 		state.Modules = append(state.Modules, module)
 	}
-	dormantGaps := collectDormantModules(snapshot, state, facts, prefetch)
+	dormantGaps := collectDormantModules(snapshot, state, facts)
 	gaps = append(gaps, dormantGaps...)
 
 	state.Tainted, state.TaintNames = readTaint()
@@ -241,13 +249,35 @@ func collectKernel(ctx context.Context, snapshot *Snapshot, facts func(string) t
 		gaps = append(gaps, fmt.Sprintf("kernel taint mask %d: %s", state.Tainted, strings.Join(state.TaintNames, ", ")))
 	}
 
-	hiddenPIDs, pidGaps := readHiddenPIDs(ctx)
-	state.HiddenPIDs = hiddenPIDs
-	gaps = append(gaps, pidGaps...)
+	if filter.globalScope() {
+		hiddenPIDs, pidGaps := readHiddenPIDs(ctx)
+		state.HiddenPIDs = hiddenPIDs
+		gaps = append(gaps, pidGaps...)
+	}
 
-	loaderGaps := collectLoader(ctx, state, snapshot, facts, prefetch)
+	loaderGaps := collectLoader(ctx, state, snapshot, facts)
 	gaps = append(gaps, loaderGaps...)
 	return gaps
+}
+
+// kernelPathNeeded reports whether a path scope can reach any kernel or
+// loader object. A run scoped to /etc/passwd has no reason to read kallsyms or
+// sweep a pid space.
+func kernelPathNeeded(filter Filter) bool {
+	if len(filter.Paths) == 0 {
+		return true
+	}
+	roots := []string{
+		"/lib/modules", "/usr/lib/modules", "/etc/modules", "/etc/modules-load.d",
+		"/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/ld.so.preload",
+		"/proc/modules", "/proc/kallsyms", "/sys/module",
+	}
+	for _, root := range roots {
+		if filter.touchesPath(root) {
+			return true
+		}
+	}
+	return false
 }
 
 // moduleRead is one /proc/modules read and whether the file answered.
@@ -371,10 +401,10 @@ func readSysfsModules() (map[string]bool, bool) {
 // readKallsymsModules reads the module tag every symbol carries. A module
 // cannot scrub its symbols without unloading, so this view survives a scrub
 // of /proc/modules and /sys/module.
-func readKallsymsModules(ctx context.Context) (map[string]bool, bool) {
+func readKallsymsModules(ctx context.Context) (map[string]bool, bool, string) {
 	file, err := os.Open(kallsymsPath)
 	if err != nil {
-		return nil, false
+		return nil, false, ""
 	}
 	defer file.Close()
 	modules := map[string]bool{}
@@ -382,7 +412,7 @@ func readKallsymsModules(ctx context.Context) (map[string]bool, bool) {
 	var read int
 	for {
 		if err := ctx.Err(); err != nil {
-			return modules, true
+			return modules, false, "kernel symbol table read stopped: " + err.Error()
 		}
 		line, err := reader.ReadString('\n')
 		read += len(line)
@@ -395,13 +425,13 @@ func readKallsymsModules(ctx context.Context) (map[string]bool, bool) {
 			}
 		}
 		if err == io.EOF {
-			return modules, true
+			return modules, true, ""
 		}
 		if err != nil {
-			return modules, true
+			return modules, false, "kernel symbol table unreadable: " + err.Error()
 		}
 		if read > kallsymsLimit {
-			return modules, true
+			return modules, true, "kernel symbol table truncated at 64MiB; hidden-module cross-check is partial"
 		}
 	}
 }
@@ -552,6 +582,10 @@ func normalizeModuleName(name string) string {
 // readModuleDeclarations reads the boot module lists. A declaration file is a
 // TCB object: it decides which modules load as root.
 func readModuleDeclarations(snapshot *Snapshot, facts func(string) trust.Facts) (map[string][]string, []string, []string) {
+	if !snapshot.plan.Filter.touchesPath("/etc/modules") &&
+		!snapshot.plan.Filter.touchesPath("/etc/modules-load.d") {
+		return nil, nil, nil
+	}
 	var files []string
 	declared := map[string][]string{}
 	files = append(files, "/etc/modules")
@@ -655,14 +689,11 @@ func sourceQuote(path string, data []byte) (Quote, bool) {
 	return Quote{}, false
 }
 
-// readCapped reads at most limit bytes of a file.
+// readCapped reads at most limit bytes of a regular host file through the one
+// non-blocking reader, so a FIFO planted at a configuration path cannot hang
+// the kernel domain.
 func readCapped(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	return io.ReadAll(io.LimitReader(file, limit))
+	return localfs.ReadFile(path, limit)
 }
 
 // readTaint decodes the kernel taint mask. Every set bit is named; the judge
@@ -715,7 +746,8 @@ func pidMax() int {
 // readHiddenPIDs asks the kernel directly whether a pid exists and compares
 // the answer with two /proc listings. A pid absent from both listings while
 // kill(0) sees it is hidden from getdents: the process's directory entry was
-// scrubbed while the kernel still schedules it.
+// scrubbed while the kernel still schedules it. ns_last_pid narrows the range
+// when it is readable; pid_max is the fallback.
 func readHiddenPIDs(ctx context.Context) ([]int, []string) {
 	if hidepid := procHidePIDs(); hidepid > 0 && os.Geteuid() != 0 {
 		return nil, []string{fmt.Sprintf("process space not scanned: /proc is mounted with hidepid=%d and this run is not root", hidepid)}
@@ -753,8 +785,8 @@ func readHiddenPIDs(ctx context.Context) ([]int, []string) {
 // is the kernel's own last allocation; when it sits above every visible pid,
 // the allocation sequence has not wrapped and a hidden process cannot sit
 // above it. A wrapped sequence (ns_last_pid below the highest visible pid) is
-// indistinguishable from a reset, so the whole pid_max range is scanned. The
-// file is root-only on some hosts; pid_max is the fallback.
+// indistinguishable from a reset, so the ceiling is pid_max. The file is
+// root-only on some hosts; pid_max is the fallback there too.
 func pidCeiling(known map[int]bool) int {
 	limit := pidMax()
 	if limit == 0 {
@@ -844,7 +876,8 @@ func procPIDs() (map[int]bool, bool) {
 // scanPIDs asks kill(0) about every pid the kernel could have handed out. A
 // hidden process still answers; a live one that started after the first
 // listing is filtered by the second listing in readHiddenPIDs. The scan is
-// chunked across workers because 4 million questions is the normal pid_max.
+// chunked across workers because a full sweep of a raised pid_max is millions
+// of questions.
 func scanPIDs(ctx context.Context, limit int, known map[int]bool) []int {
 	workers := runtimeWorkers()
 	chunk := (limit + workers - 1) / workers
@@ -895,7 +928,8 @@ func runtimeWorkers() int {
 // The configuration files are TCB objects; every search directory is checked
 // for a non-root owner or group/other write, and every unowned .so inside one
 // is a candidate for a soname replacement.
-func collectLoader(ctx context.Context, state *KernelState, snapshot *Snapshot, facts func(string) trust.Facts, prefetch func([]string)) []string {
+func collectLoader(ctx context.Context, state *KernelState, snapshot *Snapshot, facts func(string) trust.Facts) []string {
+	filter := snapshot.plan.Filter
 	var gaps []string
 	visited := map[string]bool{}
 	var dirs []string
@@ -942,7 +976,6 @@ func collectLoader(ctx context.Context, state *KernelState, snapshot *Snapshot, 
 		walk(match, 0)
 	}
 	sort.Strings(dirs)
-	prefetch(dirs)
 	for _, dir := range dirs {
 		dirFacts := facts(dir)
 		if dirFacts.Kind != trust.Dir {
@@ -955,6 +988,9 @@ func collectLoader(ctx context.Context, state *KernelState, snapshot *Snapshot, 
 	seenFile := map[string]bool{}
 	truncated := false
 	for _, dir := range state.LoaderDirs {
+		if !filter.touchesPath(dir.Path) {
+			continue
+		}
 		entries, err := os.ReadDir(dir.Path)
 		if err != nil {
 			gaps = append(gaps, "dynamic loader search directory is unreadable: "+dir.Path)
@@ -1040,12 +1076,15 @@ func parseLdSoConf(text string) (includes, dirs []string) {
 // collectDormantModules reads the out-of-tree drop points: module root files,
 // updates/dkms, extra, weak-updates and misc. A .ko that is not loaded is
 // still a future execution; the graph keeps it as a dormant module node.
-func collectDormantModules(snapshot *Snapshot, state *KernelState, facts func(string) trust.Facts, prefetch func([]string)) []string {
+func collectDormantModules(snapshot *Snapshot, state *KernelState, facts func(string) trust.Facts) []string {
 	release := snapshot.Host.Kernel
 	if release == "" {
 		return nil
 	}
 	root := filepath.Join("/lib/modules", release)
+	if !snapshot.plan.Filter.touchesPath(root) {
+		return nil
+	}
 	if _, err := os.Stat(root); err != nil {
 		return nil
 	}
@@ -1100,7 +1139,6 @@ func collectDormantModules(snapshot *Snapshot, state *KernelState, facts func(st
 	if len(candidates) == 0 {
 		return nil
 	}
-	prefetch(candidates)
 	for _, path := range candidates {
 		module := KernelModule{
 			Name: moduleName(filepath.Base(path)), File: path,
@@ -1146,7 +1184,7 @@ func judgeKernel(snapshot *Snapshot, a *assessor, filter Filter, add func(Findin
 		judgeModule(module, a, filter, add)
 	}
 	for _, name := range state.RegistryGaps {
-		if !globalScope(filter) {
+		if !filter.globalScope() {
 			continue
 		}
 		add(Finding{
@@ -1160,7 +1198,7 @@ func judgeKernel(snapshot *Snapshot, a *assessor, filter Filter, add func(Findin
 			},
 		})
 	}
-	if globalScope(filter) {
+	if filter.globalScope() {
 		for _, hidden := range state.Hidden {
 			add(Finding{
 				Class: "hidden-module", Severity: Critical,
@@ -1364,7 +1402,7 @@ func judgeModule(module KernelModule, a *assessor, filter Filter, add func(Findi
 			Evidence: evidence,
 		})
 	case ModuleFileUnmapped:
-		if !globalScope(filter) {
+		if !filter.globalScope() {
 			return
 		}
 		add(Finding{
@@ -1375,7 +1413,7 @@ func judgeModule(module KernelModule, a *assessor, filter Filter, add func(Findi
 			Evidence: evidence,
 		})
 	case ModuleFileDormant:
-		if !globalScope(filter) {
+		if !filter.globalScope() {
 			return
 		}
 		story := a.read(module.Facts, false)
@@ -1478,10 +1516,6 @@ func taintFinding(state *KernelState) (Finding, bool) {
 // globalScope reports whether a finding about the host itself belongs in this
 // run. A path, pid or unit scope asks about one object; a clock skew or a
 // hidden module has no path to match.
-func globalScope(filter Filter) bool {
-	return len(filter.Paths) == 0 && len(filter.PIDs) == 0 && len(filter.Units) == 0
-}
-
 // pathOrRealInScope answers a path scope under either spelling: the package
 // database and /lib -> /usr/lib disagree on where a module file lives.
 func pathOrRealInScope(path, real string, filter Filter) bool {

@@ -53,7 +53,6 @@ type Corpus struct {
 	files      []File
 	enabled    map[string]string
 	facts      FactSource
-	prefetch   func([]string)
 	seen       map[string]bool
 	unreadable map[string]bool
 	masked     map[string]bool
@@ -109,11 +108,6 @@ func (c *Corpus) Unreadable() []string {
 	return paths
 }
 
-// Prefetch lets the native source fill its package cache for the targets the
-// parse is about to judge, one database call instead of one per path. The sh
-// source already carries every fact and leaves it nil.
-func (c *Corpus) Prefetch(prefetch func([]string)) { c.prefetch = prefetch }
-
 // Analyze turns a corpus into judged edges, most severe first. The parse and
 // the judgment are separate passes so every target's facts can be read once,
 // and so the two sources judge the same structure the same way.
@@ -126,78 +120,20 @@ func Analyze(corpus *Corpus) []Edge {
 		if corpus.stopped() {
 			break
 		}
-		switch file.Surface {
-		case SurfaceSystemd:
+		if file.Surface == SurfaceSystemd {
 			if file.Dialect == GeneratorsDialect {
 				raw = append(raw, generatorEdges(file)...)
 			}
-		case SurfaceProfile:
-			base := rawEdge{
-				surface: SurfaceProfile,
-				phase:   Login,
-				subject: accountFor(file.Path),
-				trigger: file.Path,
-			}
-			switch file.Dialect {
-			case ShellDialect:
-				raw = append(raw, shellEdges(file.Body, base)...)
-			case EnvDialect:
-				raw = append(raw, environmentEdges(file.Body, base)...)
-			}
-		case SurfaceInit:
-			reach := BootStaged
-			if _, enabled := corpus.enabled[filepath.Base(file.Path)]; enabled {
-				reach = BootEnabled
-			}
-			raw = append(raw, shellEdges(file.Body, rawEdge{
-				surface: SurfaceInit, phase: reach, subject: Subject{Class: AccountRoot}, trigger: file.Path,
-			})...)
-		case SurfaceCron:
-			if file.Dialect == ShellDialect {
-				raw = append(raw, shellEdges(file.Body, rawEdge{
-					surface: SurfaceCron, phase: Scheduled, subject: cronShellSubject(file.Path), trigger: file.Path,
-				})...)
-			} else {
-				raw = append(raw, cronEdges(file)...)
-			}
-		case SurfaceLoader:
-			raw = append(raw, loaderEdges(file)...)
-		case SurfaceUdev:
-			raw = append(raw, udevEdges(file)...)
-		case SurfaceSSH:
-			switch file.Dialect {
-			case AuthorizedKeysDialect:
-				raw = append(raw, authorizedKeysEdges(file)...)
-			case SSHConfigDialect:
-				raw = append(raw, sshConfigEdges(file)...)
-			default:
-				raw = append(raw, shellEdges(file.Body, rawEdge{
-					surface: SurfaceSSH, phase: Login, subject: accountFor(file.Path), trigger: file.Path,
-				})...)
-			}
-		case SurfacePAM:
-			if file.Dialect == ShellDialect {
-				// The login banner's run-parts script: it runs itself, and it
-				// may source or run objects of its own.
-				raw = append(raw, motdEdges(file)...)
-			} else {
-				raw = append(raw, pamEdges(file, corpus)...)
-			}
-		case SurfaceSupervisor:
-			if file.Dialect == XinetdDialect {
-				raw = append(raw, xinetdEdges(file)...)
-			} else {
-				raw = append(raw, supervisorEdges(file)...)
-			}
-		case SurfaceSystem:
-			raw = append(raw, systemEdges(file, corpus)...)
-		case SurfaceXdg:
-			raw = append(raw, desktopEdges(file)...)
-		case SurfaceApt:
-			raw = append(raw, aptEdges(file)...)
-		case SurfaceModule:
-			raw = append(raw, modprobeEdges(file)...)
+			continue
 		}
+		if file.Dialect == ShellDialect && !ShellParses(file.Body) {
+			corpus.addGap("shell parse failed: " + file.Path)
+		}
+		surface, ok := surfaceSpecFor(file.Surface)
+		if !ok || surface.parse == nil {
+			continue
+		}
+		raw = append(raw, surface.parse(file, corpus)...)
 	}
 
 	// The trigger lines are the quotes a finding can carry; one split per
@@ -212,18 +148,15 @@ func Analyze(corpus *Corpus) []Edge {
 
 	targets := make([]string, 0, len(raw)*2)
 	for _, edge := range raw {
-		// Prefetch both ends: every unit file, drop-in and profile script is a
-		// trigger, and asking for its package ownership one path at a time is
-		// what makes a wide collection slow on a host with many packages.
+		// Read both ends through the corpus fact source: every unit file,
+		// drop-in and profile script is a trigger, and the package catalog
+		// answers from its loaded index.
 		if edge.trigger != "" {
 			targets = append(targets, edge.trigger)
 		}
 		if !edge.dynamic && edge.target != "" {
 			targets = append(targets, edge.target)
 		}
-	}
-	if corpus.prefetch != nil {
-		corpus.prefetch(targets)
 	}
 	cache := make(map[string]trust.Facts, len(targets)+len(raw))
 	facts := func(path string) trust.Facts {
@@ -297,6 +230,99 @@ func Analyze(corpus *Corpus) []Edge {
 	})
 	return edges
 }
+
+func surfaceSpecFor(surface Surface) (surfaceRun, bool) {
+	for _, spec := range surfaceRuns {
+		if Surface(spec.name) == surface {
+			return spec, true
+		}
+	}
+	return surfaceRun{}, false
+}
+
+// parseSystemdFile states the generator edge a systemd surface file owns.
+// Unit files are folded by analyzeSystemd before this loop, because a unit's
+// files and drop-ins state one list of edges together.
+func parseSystemdFile(file File, _ *Corpus) []rawEdge {
+	if file.Dialect == GeneratorsDialect {
+		return generatorEdges(file)
+	}
+	return nil
+}
+
+func parseProfile(file File, _ *Corpus) []rawEdge {
+	base := rawEdge{
+		surface: SurfaceProfile, phase: Login,
+		subject: accountFor(file.Path), trigger: file.Path,
+	}
+	switch file.Dialect {
+	case ShellDialect:
+		return shellEdges(file.Body, base)
+	case EnvDialect:
+		return environmentEdges(file.Body, base)
+	}
+	return nil
+}
+
+func parseCron(file File, _ *Corpus) []rawEdge {
+	if file.Dialect == ShellDialect {
+		return shellEdges(file.Body, rawEdge{
+			surface: SurfaceCron, phase: Scheduled,
+			subject: cronShellSubject(file.Path), trigger: file.Path,
+		})
+	}
+	return cronEdges(file)
+}
+
+func parseInit(file File, corpus *Corpus) []rawEdge {
+	reach := BootStaged
+	if _, enabled := corpus.enabled[filepath.Base(file.Path)]; enabled {
+		reach = BootEnabled
+	}
+	return shellEdges(file.Body, rawEdge{
+		surface: SurfaceInit, phase: reach,
+		subject: Subject{Class: AccountRoot}, trigger: file.Path,
+	})
+}
+
+func parseLoader(file File, _ *Corpus) []rawEdge { return loaderEdges(file) }
+
+func parseUdev(file File, _ *Corpus) []rawEdge { return udevEdges(file) }
+
+func parseSSH(file File, _ *Corpus) []rawEdge {
+	switch file.Dialect {
+	case AuthorizedKeysDialect:
+		return authorizedKeysEdges(file)
+	case SSHConfigDialect:
+		return sshConfigEdges(file)
+	}
+	return shellEdges(file.Body, rawEdge{
+		surface: SurfaceSSH, phase: Login,
+		subject: accountFor(file.Path), trigger: file.Path,
+	})
+}
+
+func parsePAM(file File, corpus *Corpus) []rawEdge {
+	if file.Dialect == ShellDialect {
+		return motdEdges(file)
+	}
+	return pamEdges(file, corpus)
+}
+
+func parseSupervisor(file File, _ *Corpus) []rawEdge {
+	if file.Dialect == XinetdDialect {
+		return xinetdEdges(file)
+	}
+	return supervisorEdges(file)
+}
+
+func parseSystem(file File, corpus *Corpus) []rawEdge { return systemEdges(file, corpus) }
+
+func parseXdg(file File, _ *Corpus) []rawEdge { return desktopEdges(file) }
+
+func parseApt(file File, _ *Corpus) []rawEdge { return aptEdges(file) }
+
+func parseModule(file File, _ *Corpus) []rawEdge { return modprobeEdges(file) }
 
 // mountNote is a mount row's Type= and Options= for the What edge's note.
 func mountNote(state *unitState) string {

@@ -3,6 +3,8 @@ package watch
 import (
 	"strconv"
 	"strings"
+
+	chrome "karma/internal/panel"
 )
 
 // timeLayout is the report's live-event stamp: local time with milliseconds,
@@ -56,7 +58,7 @@ func lineProc(b *strings.Builder, ev Event, proc *Proc) {
 	b.WriteString(strconv.Itoa(proc.UID))
 	if proc.Comm != "" {
 		b.WriteString(" comm=")
-		b.WriteString(proc.Comm)
+		b.WriteString(chrome.SafeText(proc.Comm))
 	}
 	if proc.Kind == KindExit && proc.ExitCode != nil {
 		b.WriteString(" code=")
@@ -64,7 +66,7 @@ func lineProc(b *strings.Builder, ev Event, proc *Proc) {
 	}
 	if proc.Exe != "" {
 		b.WriteString(" exe=")
-		b.WriteString(proc.Exe)
+		b.WriteString(chrome.SafeText(proc.Exe))
 	}
 	if proc.Cmdline != "" {
 		b.WriteString(" cmdline=")
@@ -72,11 +74,11 @@ func lineProc(b *strings.Builder, ev Event, proc *Proc) {
 	}
 	if proc.Script != "" {
 		b.WriteString(" script=")
-		b.WriteString(proc.Script)
+		b.WriteString(chrome.SafeText(proc.Script))
 	}
 	if proc.Cwd != "" {
 		b.WriteString(" cwd=")
-		b.WriteString(proc.Cwd)
+		b.WriteString(chrome.SafeText(proc.Cwd))
 	}
 }
 
@@ -93,15 +95,15 @@ func lineSock(b *strings.Builder, ev Event, sock *Sock) {
 	b.WriteString(pidWord(sock.PID))
 	if sock.Comm != "" {
 		b.WriteString(" comm=")
-		b.WriteString(sock.Comm)
+		b.WriteString(chrome.SafeText(sock.Comm))
 	}
 	if sock.Exe != "" {
 		b.WriteString(" exe=")
-		b.WriteString(sock.Exe)
+		b.WriteString(chrome.SafeText(sock.Exe))
 	}
 	if sock.Cwd != "" {
 		b.WriteString(" cwd=")
-		b.WriteString(sock.Cwd)
+		b.WriteString(chrome.SafeText(sock.Cwd))
 	}
 }
 

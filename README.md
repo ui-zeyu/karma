@@ -4,7 +4,7 @@ Read-only incident-response audit for Linux. Karma runs on the target host and
 answers one question: **what appeared after the artifact was built, and what
 authority can it reach?**
 
-The version is `0.45.0`.
+The version is `0.46.0`.
 
 ## Model
 
@@ -41,7 +41,8 @@ other than its owner can replace, and a running process whose image or script
 was introduced after the boundary.
 
 The run reads only the domains the command selects: services, processes,
-network, persistence, authority, identity, files, packages, web and kernel. A
+network, persistence, authority, identity, files, packages, web, kernel and
+trail. A
 services audit reads unit files, systemd's inventory and the package ledger; a
 files audit reads program directories and the package file lists; an identity
 audit parses accounts, groups, sudo grants, shadow state and SSH keys; a
@@ -117,6 +118,7 @@ karma audit authority                       # setuid, setgid, caps, sudoers, key
 karma audit identity                        # accounts, groups, sudo, shadow, SSH keys
 karma audit files                           # program directories against the package lists
 karma audit files /opt /usr/lib             # the inventory over named trees
+karma audit trail                           # history, viminfo, known_hosts, auth logs
 karma audit packages                        # every package file against its transaction
 karma audit web                             # web-root script provenance
 karma audit kernel                          # modules, dormant .ko, hidden pids, taint, loader
@@ -135,35 +137,41 @@ karma graph pkg:openssh-server              # a package and its judged files
 ```
 
 Domains are `services`, `processes`, `network`, `persistence`, `authority`,
-`identity`, `files`, `packages`, `web`, and `kernel`. Surface names are
+`identity`, `files`, `packages`, `web`, `kernel`, and `trail`. Surface names are
 `systemd`, `profile`, `init`, `cron`, `loader`, `udev`, `ssh`, `pam`,
-`supervisor`, `xdg`, `apt`, `module`, `system`, `activity`, and `authority`;
-groups are `persistence`, `boot`, `login`, `schedule`, `service`, `device`,
-and `activity`. A path prefix, `/proc/<pid>`, a unit name, or `!word` narrows
-or excludes.
+`supervisor`, `xdg`, `apt`, `module`, and `system`; groups are `persistence`,
+`boot`, `login`, `schedule`, `service`, `device`, and `activity`. A path prefix,
+`/proc/<pid>`, a unit name, or `!word` narrows or excludes. A path scope reads
+the domains that can explain the path: the artifact, activation, authority,
+package, and file inventories, plus identity, web, kernel, service, or trail
+state when the path and that tree overlap.
 
 ## What the report says
 
 ```text
  KARMA                                                          yuyy
-▌ 0.45.0                                    2026-11-25 19:25:48 +0800
+▌ 0.46.0                                    2026-11-25 19:25:48 +0800
 ▌  host      web-1                    distro    Ubuntu 24.04
 ▌  account   root (uid 0)             kernel    5.15.0
-▌  source    local                    ledger    dpkg · 64 pkgs · 380 hash entries · 351 verified
+▌  source    local
+▌  ledger    dpkg · 64 pkgs · 380 checked · 351 verified
 ▌  boundary  container start 2026-11-25 06:33:28
-▌  judged    32 edges · 15 proc · 17 auth · 4 svc · 4 listen · 62 mod
+▌  read      32 edges · 15 proc · 17 auth · 4 svc · 4 listen · 62 mod · 7 trail
 ▌  findings  3 ·  2 critical  ·  1 high
 
-▌ CRITICAL  /etc/profile.d/vendor-runtime.sh
+▌ CRITICAL  /etc/ld.so.preload
 ▌  runtime object in an activation surface
-▌  profile in /etc/profile.d/vendor-runtime.sh activates /var/lib/vendor/runtime/.attach-loader.sh
-▌  profile in /etc/profile.d/vendor-runtime.sh activates /var/lib/vendor/.login-loader.sh
-▌  origin runtime · reach root
-▌  · chain  profile → /etc/profile.d/vendor-runtime.sh → runtime
-▌  · trigger /etc/profile.d/vendor-runtime.sh: runtime (created after the boundary)
-▌  · runs as root, reach root (profile)
-▌  · cite  /etc/profile.d/vendor-runtime.sh
-▌          1 │ export VENDOR_RUNTIME_LOADER=/var/lib/vendor/runtime/.attach-loader.sh
+▌  ld.so.preload in /etc/ld.so.preload activates /var/lib/vendor/runtime/.attach-loader.sh
+▌  origin runtime · reach kernel
+▌  · chain  /etc/ld.so.preload → ld.so.preload /var/lib/vendor/runtime/.attach-loader.sh
+▌  · trigger /etc/ld.so.preload: runtime (created after the boundary (2026-11-25 06:33:28))
+▌  · target /var/lib/vendor/runtime/.attach-loader.sh: runtime (created after the boundary)
+▌  · runs as root, reach kernel (loader)
+▌  · no package owns it; the nearest owned ancestor /var/lib is shared by several packages
+▌  · cite  /etc/ld.so.preload
+▌          1 │ /var/lib/vendor/runtime/.attach-loader.sh
+▌  · cite  /root/.bash_history
+▌          7 │ printf '/var/lib/vendor/runtime/.attach-loader.sh\n' > /etc/ld.so.preload
 
  EVIDENCE
 ▌ ACTIVATION                                             32
@@ -175,38 +183,53 @@ or excludes.
 ▌ LISTEN                                                  4
 ▌ AUTHORITY                                              17
 ▌ MOUNTS                                                 24
+▌ TRAIL                                                    7
+▌  PATH                                          OWNER    ORIGIN      LINES    LAST
+▌  /root/.bash_history                           0        runtime     35       ./karma
 ```
 
 The masthead's `findings` line counts what the run found, one badge per
 severity present in the same ground, ink and weight as the panel head's badge,
-in the order the report ranks them (a quiet run says `findings  none`). The
-findings are ordered by severity, then object, then class, so one object's
+in the order the report ranks them (a quiet run says `findings  none`). The findings
+are ordered by severity, then object, then class and title, so one object's
 relations sit together. Panels group one object's same-title relations at one
 severity: the shared origin, chain and evidence lines print once, and each
-relation's detail prints in turn. Each panel reads top to bottom: the severity
-is a filled badge in its own hue beside the object, the bold title is the
-verdict, the plain details say what the object does, the origin line names the
-origin in its hue and the reach, the chain is the relation path, the evidence
-lines are the facts behind it, and the `cite` block quotes the source lines a
-reader can check: the trigger line, the passwd or sudoers row, the config
-directive, the webshell's head. The quoted text is the bright part; the file
-path, the line number and the `│` bar are quiet. Paths carry the information
-hue and an origin word keeps its temporal hue inside the detail, chain and
-evidence lines, so the object and the verdict stand out of the prose. A scoped
-run or a graph page closes each panel with `next`, the graph command that
-opens the object; a bare audit leaves it off, because the whole report already
-is the answer. Prose lines wrap at word boundaries with a two-column hanging
+relation's detail prints in turn. When six or more distinct files in one
+directory carry the same judgment sentence, the panels collapse into one
+directory panel: the head is the directory, the body names up to eight files
+and `... N more; karma audit <dir>`, and `next` opens the per-file report. JSON
+and a scope that names the directory keep every file visible. Each panel reads
+top to bottom: the severity is a filled badge in its own hue beside the object,
+the bold title is the verdict, the plain details say what the object does, the
+origin line names the origin in its hue and the reach, the chain is the
+relation path, the evidence lines are the facts behind it, and the `cite` block
+quotes the source lines a reader can check: the trigger line, the passwd or
+sudoers row, the config directive, the webshell's head. The quoted text is the
+bright part; the file path, the line number and the `│` bar are quiet. Paths
+carry the information hue and an origin word keeps its temporal hue inside the
+detail, chain and evidence lines, so the object and the verdict stand out of
+the prose. A scoped run or a graph page closes each panel with `next`, the
+graph command that opens the object; a bare audit leaves it off, because the
+whole report already is the answer (a directory rollup always names its
+expansion). Prose lines wrap at word boundaries with a two-column hanging
 indent, so a path or a timestamp is never cut down the middle.
 
 The evidence panels are the raw rows behind the findings: every activation edge,
-process, systemd service, listening socket, authority object, and mount in
-scope. They are hidden by default; `--evidence` prints them (the `EVIDENCE`
-block above). Every finding always carries its evidence lines — the origins of
-both ends, the content comparison, the account it runs as, an unowned file's
-nearest owned ancestor, a process's established connections. `--json` prints the
-findings, services, listeners, mounts, ledger summary, and coverage as one object;
-`--evidence` is a text view, so the pair is rejected — a section of
-`karma show <section> --json` is the machine-readable inventory.
+process, systemd service, listening socket, authority object, mount, and
+interactive trail in scope. They are hidden by default; `--evidence` prints them
+(the `EVIDENCE` block above). Every finding always carries its evidence lines —
+the origins of both ends, the content comparison, the account it runs as, an
+unowned file's nearest owned ancestor, a process's established connections. The
+`trail` domain reads shell history, viminfo, known_hosts and authentication
+logs; `karma show trail` lists them, and a trail line that names an object a
+finding already judges becomes a citation on that finding. Trail files do not
+raise findings of their own: they change on every login, so they are evidence,
+not verdicts. An executable directly under `/` (a container entrypoint such as
+`/start.sh`) is part of the files inventory and raises an `unowned-file`
+finding when no package owns it. `--json` prints the findings, services,
+listeners, mounts, ledger summary, scope (`off_domains`), and coverage as one
+object; `--evidence` is a text view, so the pair is rejected —
+a section of `karma show <section> --json` is the machine-readable inventory.
 
 The text views carry their heuristics on a terminal: evidence and `show` rows
 color the origin column (runtime warm red, modified/unknown amber, provisioned
@@ -244,9 +267,11 @@ prints nodes, edges, findings, and coverage.
 ## Options
 
 `--since` chooses the boundary: `provision` (the default), `boot`, a duration
-such as `24h`, or an RFC3339 time. `--min-severity` filters the findings.
-`--timeout` bounds the whole collection in seconds (default 120; the package
-sweep and authority walk are the expensive domains). `--evidence` prints the
+such as `24h`, or an RFC3339 time. `--timeout` bounds the whole collection in seconds (default 120; the package
+sweep and authority walk are the expensive domains). The hidden-pid sweep asks
+`kill(0)` about the pid range the kernel reports: `ns_last_pid` when it is
+readable, otherwise `kernel.pid_max`. It runs only for a whole-host scope.
+`--evidence` prints the
 raw inventories behind the findings; `--json` changes the output and carries
 each finding's graph chain.
 
@@ -261,6 +286,7 @@ karma show connections                      # established TCP peers
 karma show kernel                           # loaded modules and the taint mask
 karma show authority                        # setuid, capabilities, keys, sudoers
 karma show mounts                           # the mount table
+karma show trail                            # history, viminfo, known_hosts, auth logs
 karma show coverage                         # what could not be read and why
 ```
 
@@ -283,10 +309,12 @@ karma watch proc                            # live process starts and exits
 karma watch socket                          # live sockets, with the owner
 ```
 
-`cat`, `ls`, `ctime`, `watch` and the audit itself read `/proc`, the kernel
-interfaces and the package database in process; nothing is written and no host
-tool is executed. Karma is meant to be carried to the host and run there; a
-remote channel will place the binary first and then run this same local audit.
+`cat`, `ls`, `ctime`, `watch` and the audit's file, `/proc`, kernel-interface
+and package-database reads run in process; nothing is written. The systemd
+inventory uses `systemctl`, and rpm file lists and verification use `rpm`; both
+are read-only child processes, launched by absolute path with a sanitized
+environment. Karma is meant to be carried to the host and run there; a remote
+channel will place the binary first and then run this same local audit.
 
 ## Limits
 
@@ -319,9 +347,11 @@ remote channel will place the binary first and then run this same local audit.
   contents are not collected here; use `cat`, `ls`, `ctime`, and `show` for the
   files and tables that are. Identity files are parsed into account relations,
   not printed.
-- The package sweep is a ctime comparison against each package transaction; it
-  does not hash every package file. The content ledger remains the precise,
-  scoped answer. A kernel-level attacker who forges ctime defeats the sweep.
+- The package sweep is a ctime comparison against each package transaction over
+  package-recorded regular files; directories and scheduler state such as
+  anacron stamps are out of scope, and it does not hash every package file. The
+  content ledger remains the precise, scoped answer. A kernel-level attacker
+  who forges ctime defeats the sweep.
 - Web findings are origin-based. A webshell baked into the base image is
   `base`; content-signature scanning is not part of the default run.
 - Activation objects in stable administrator trees are judged by origin and
@@ -334,9 +364,9 @@ remote channel will place the binary first and then run this same local audit.
 - A static vendor unit with no enablement link appears in `SERVICE` and in
   `coverage` as a running service with no activation edge; systemd starts it
   through a built-in dependency, so there is no link to follow.
-- On an rpm host the content answer comes from `rpm -Va`; a host where it
-  cannot finish in time reports the gap in coverage and the run falls back to
-  time evidence.
+- On an rpm host the content answer comes from `rpm -Va`; exit code 1 with a
+  deviation report is a completed verify, and a host where it cannot finish in
+  time reports the gap in coverage and falls back to time evidence.
 - The static inventory defaults to the program directories. `files <path>`
   extends it; the audit never walks the whole disk. Generated files under
   `/usr/lib` are only reviewed when you name that tree.

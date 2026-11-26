@@ -8,8 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-
-	"karma/internal/audit"
 )
 
 // addRunFlags registers the audit's option set on the bare run and on
@@ -21,7 +19,6 @@ func addRunFlags(cmd *cobra.Command) { runFlags(cmd.Flags()) }
 func runFlags(flags *pflag.FlagSet) {
 	flags.Bool("json", false, "print the report as one JSON object")
 	flags.Bool("evidence", false, "print the raw inventories after the findings")
-	flags.String("min-severity", "all", "report findings at or above this severity: all|info|low|medium|high|critical")
 	flags.String("since", "provision",
 		"artifact boundary: provision|boot|auto, a duration such as 24h, or an RFC3339 time")
 	flags.Duration("timeout", 120*time.Second, "budget of the whole collection in seconds")
@@ -30,7 +27,6 @@ func runFlags(flags *pflag.FlagSet) {
 // graphFlags is the option set a relation graph answers to.
 func graphFlags(flags *pflag.FlagSet) {
 	flags.Bool("json", false, "print the graph as one JSON object")
-	flags.String("min-severity", "all", "report findings at or above this severity: all|info|low|medium|high|critical")
 	flags.String("since", "provision",
 		"artifact boundary: provision|boot|auto, a duration such as 24h, or an RFC3339 time")
 	flags.Duration("timeout", 120*time.Second, "budget of the whole collection in seconds")
@@ -49,20 +45,15 @@ func auditOptions(flags *pflag.FlagSet) (auditFlags, error) {
 	if budget < time.Second {
 		return auditFlags{}, fmt.Errorf("--timeout must be at least 1s")
 	}
-	floor := audit.Info
-	if word := stringFlag(flags, "min-severity"); word != "" && word != "all" {
-		parsed, ok := audit.ParseSeverity(word)
-		if !ok {
-			return auditFlags{}, fmt.Errorf("--min-severity must be all|info|low|medium|high|critical")
-		}
-		floor = parsed
+	since := stringFlag(flags, "since")
+	if err := validateSince(since); err != nil {
+		return auditFlags{}, err
 	}
 	return auditFlags{
-		json:        boolFlag(flags, "json"),
-		evidence:    boolFlag(flags, "evidence"),
-		minSeverity: floor,
-		since:       stringFlag(flags, "since"),
-		timeout:     budget,
+		json:     boolFlag(flags, "json"),
+		evidence: boolFlag(flags, "evidence"),
+		since:    since,
+		timeout:  budget,
 	}, nil
 }
 

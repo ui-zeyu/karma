@@ -75,8 +75,8 @@ func scanProcs(ctx context.Context, fs procfs.FS, prev map[procKey]procState, se
 	}
 	out := make(map[procKey]procState, len(procs))
 	for _, p := range procs {
-		if ctx.Err() != nil {
-			break
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		stat, err := p.Stat()
 		if err != nil {
@@ -104,6 +104,7 @@ func procFacts(p procfs.Proc, stat procfs.ProcStat) procState {
 		state.UID = int(status.UIDs[0])
 	}
 	if cmd, err := p.CmdLine(); err == nil {
+		state.Args = cmd
 		state.Cmdline = strings.Join(cmd, " ")
 	}
 	state.Exe, _ = p.Executable()
@@ -137,6 +138,7 @@ func (s procState) event(kind Kind, at time.Time) Event {
 			Comm:    s.Comm,
 			Exe:     s.Exe,
 			Cmdline: s.Cmdline,
+			Args:    s.Args,
 			Cwd:     s.Cwd,
 		},
 	}

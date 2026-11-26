@@ -6,6 +6,8 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"karma/internal/startup"
@@ -35,6 +37,81 @@ func TestJSONCarriesFindingQuotes(t *testing.T) {
 	quote := doc.Findings[0].Quotes[0]
 	if quote.Path != "/var/www/html/shell.php" || quote.Line != 1 || quote.Text != "<?php system($_GET['c']); ?>" {
 		t.Errorf("quote = %+v", quote)
+	}
+}
+
+func TestDirectoryRollupDoesNotCollapseJSON(t *testing.T) {
+	var findings []Finding
+	for index := 0; index < directoryRollupThreshold; index++ {
+		findings = append(findings, Finding{
+			Class: "unowned-file", Severity: High, Title: "root-level executable no package owns",
+			Path: fmt.Sprintf("/usr/local/lib/tool%d", index), Origin: Runtime, Reach: RootAsset,
+		})
+	}
+	var out bytes.Buffer
+	if err := WriteJSON(&out, layoutReport(findings)); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Findings []struct {
+			Path string `json:"path"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Findings) != directoryRollupThreshold {
+		t.Errorf("JSON findings = %d, want every file", len(doc.Findings))
+	}
+}
+
+func TestGraphContentJSONKeepsTheEnumVocabulary(t *testing.T) {
+	view := &GraphView{
+		Root: "file:/usr/bin/ls", RootKind: "file",
+		Nodes: []GraphNode{{
+			ID: "file:/usr/bin/ls", Kind: "file", Name: "ls", Path: "/usr/bin/ls",
+			Content: &Content{Package: "coreutils", Expected: testHash, Actual: testHash,
+				State: Verified, Method: methodMD5},
+		}},
+	}
+	var out bytes.Buffer
+	if err := WriteGraphJSON(&out, view); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Nodes []struct {
+			Content map[string]any `json:"content"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	content := doc.Nodes[0].Content
+	if content["state"] != "verified" || content["method"] != "md5" || content["package"] != "coreutils" {
+		t.Errorf("content JSON = %v", content)
+	}
+	if _, upper := content["State"]; upper {
+		t.Errorf("content JSON kept Go field names: %v", content)
+	}
+}
+
+func TestJSONCarriesOffDomainsOnly(t *testing.T) {
+	report := &Report{OffDomains: []string{"kernel", "web"}}
+	var out bytes.Buffer
+	if err := WriteJSON(&out, report); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		OffDomains []string `json:"off_domains"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(doc.OffDomains, ",") != "kernel,web" {
+		t.Errorf("off_domains = %v", doc.OffDomains)
+	}
+	if strings.Contains(out.String(), "min_severity") {
+		t.Errorf("JSON still carries min_severity:\n%s", out.String())
 	}
 }
 

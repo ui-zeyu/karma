@@ -34,6 +34,7 @@ func helpTree(buf *bytes.Buffer) *cobra.Command {
 // band with the command path and byline, the version head over the
 // description, and the usage/commands/flags rail panels.
 func TestRootHelpWearsTheReportPanels(t *testing.T) {
+	t.Setenv("USER", "yuyy")
 	var buf bytes.Buffer
 	root := helpTree(&buf)
 	rootHelp(root)
@@ -100,14 +101,14 @@ func TestHelpFlagsKeepTheAlignedColumn(t *testing.T) {
 	var buf bytes.Buffer
 	root := &cobra.Command{Use: "karma", Short: "short", Version: "9.9.9"}
 	root.SetOut(&buf)
-	root.Flags().String("alpha", "", "report findings at or above this severity: all|info|low|medium|high|critical (default \"all\")")
+	root.Flags().String("alpha", "", "print every activation surface, process, socket, authority object and mount in scope (default \"all\")")
 	rootHelp(root)
 	root.InitDefaultHelpFlag()
 	if err := root.Help(); err != nil {
 		t.Fatalf("help: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "critical") {
+	if !strings.Contains(out, "mount") {
 		t.Fatalf("the wrapped description lost a word:\n%s", out)
 	}
 	for _, line := range strings.Split(out, "\n") {
@@ -123,6 +124,12 @@ func TestHelpFlagsKeepTheAlignedColumn(t *testing.T) {
 func TestListPageWearsThePanels(t *testing.T) {
 	var buf bytes.Buffer
 	root := helpTree(&buf)
+	for _, name := range []string{"graph", "show", "cat", "ls", "ctime", "watch"} {
+		root.AddCommand(&cobra.Command{
+			Use:  name,
+			RunE: func(*cobra.Command, []string) error { return nil },
+		})
+	}
 	root.AddCommand(newListCmd())
 	list, _, err := root.Find([]string{"list"})
 	if err != nil {
@@ -136,7 +143,7 @@ func TestListPageWearsThePanels(t *testing.T) {
 		"KARMA LIST", "9.9.9", "List the audit vocabulary",
 		"▌ START", "audit the whole host",
 		"▌ MODES", "▌ DOMAINS", "▌ GRAPH", "▌ SHOW", "▌ SURFACES", "▌ GROUPS",
-		"audit (default) graph show cat ls ctime watch",
+		"audit (default) audit cat ctime graph list ls show watch",
 		"services processes", "Use a word with any command",
 	} {
 		if !strings.Contains(out, want) {

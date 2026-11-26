@@ -41,16 +41,23 @@ func newGraphCmd() *cobra.Command {
 func runGraph(ctx context.Context, w io.Writer, word string, flags auditFlags) error {
 	module, spec, ok := audit.GraphTarget(word)
 	if !ok {
+		if _, isDomain := audit.ModuleForWord(word); isDomain {
+			return usagef(nil, "graph has no domain view for %q; audit or show it instead", word)
+		}
+		if contains(surfaceWords, word) || contains(groupWords(), word) {
+			return usagef(nil, "graph has no domain view for %q; name an object or a graph domain", word)
+		}
 		return runObjectGraph(ctx, w, word, flags)
 	}
-	snapshot, collectErr := collectSnapshot(ctx, spec.Plan(module.Bit), flags.timeout, flags.json)
+	plan := spec.Plan(module.Bit)
+	snapshot, collectErr := collectSnapshot(ctx, plan, flags.timeout, flags.json)
 	if snapshot == nil {
 		return collectErr
 	}
 	if err := applySince(snapshot, flags.since); err != nil {
 		return err
 	}
-	report := audit.Judge(snapshot, audit.Filter{MinSeverity: flags.minSeverity})
+	report := audit.Judge(snapshot, plan.Filter)
 	view := spec.Build(snapshot)
 	view.AttachFindings(spec.Domain, report.Findings, report.Coverage)
 	if flags.json {
@@ -59,6 +66,6 @@ func runGraph(ctx context.Context, w io.Writer, word string, flags auditFlags) e
 		}
 		return collectErr
 	}
-	audit.RenderGraph(w, view, renderOptions(w, flags, audit.Filter{MinSeverity: flags.minSeverity}))
+	audit.RenderGraph(w, view, renderOptions(w, flags, plan.Filter))
 	return collectErr
 }

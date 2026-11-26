@@ -59,6 +59,7 @@ func newLsCmd() *cobra.Command {
 			color := isTerminal(w)
 			if text != "" {
 				for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+					line = chrome.SafeText(line)
 					if strings.HasPrefix(line, "== ") {
 						// A section header reads like the panels' source titles.
 						fmt.Fprintln(w, chrome.Paint(color, "\x1b[1m", line))

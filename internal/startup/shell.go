@@ -17,6 +17,13 @@ type Reference struct {
 	Dynamic   bool
 }
 
+// ShellParses reports whether the shell grammar accepts a body. The parser is
+// the same one the edges use; a refusal is coverage, not a silent empty file.
+func ShellParses(body string) bool {
+	_, err := syntax.NewParser().Parse(strings.NewReader(body), "")
+	return err == nil
+}
+
 // References extracts the file references of a shell body. A target the shell
 // builds at runtime is returned with Dynamic set and no path to judge.
 func References(path, body string) []Reference {
@@ -86,7 +93,9 @@ func commandEdges(src string, base rawEdge, args []*syntax.Word) []rawEdge {
 			return nil
 		}
 		if code, ok := wordLit(args[1]); ok {
-			return shellEdges(code, base)
+			nested := base
+			nested.line = baseLine(base.line) + int(args[0].Pos().Line()) - 1
+			return shellEdges(code, nested)
 		}
 		// eval of a command's output is code the file does not hold; there is
 		// no literal target to place and nothing a static read can name.
@@ -222,7 +231,11 @@ func environmentEdges(body string, base rawEdge) []rawEdge {
 		}
 		name = strings.TrimSpace(name)
 		value = unquote(strings.TrimSpace(value))
-		at := base.line + index + 1
+		baseLine := base.line
+		if baseLine < 1 {
+			baseLine = 1
+		}
+		at := baseLine + index
 		if name == "LD_PRELOAD" || name == "LD_AUDIT" {
 			for _, path := range splitPaths(value) {
 				edges = append(edges, rawEdge{
@@ -245,14 +258,24 @@ func environmentEdges(body string, base rawEdge) []rawEdge {
 	return edges
 }
 
+func baseLine(line int) int {
+	if line < 1 {
+		return 1
+	}
+	return line
+}
+
 // edgeFor builds one edge at the node that named the target.
 func edgeFor(base rawEdge, node syntax.Node, target string, kind Kind, viaInterpreter, dynamic bool) rawEdge {
+	// base.line is the 1-based line of the snippet a nested command was read
+	// from (a crontab command, a udev value); the node's own position is
+	// 1-based inside that snippet, so the first snippet line keeps base.line.
 	line := base.line
+	if line < 1 {
+		line = 1
+	}
 	if node != nil {
-		// base.line is the offset of the snippet a nested command was read
-		// from (a crontab command, a udev value), so the report names the file's
-		// line and not the snippet's.
-		line = base.line + int(node.Pos().Line())
+		line += int(node.Pos().Line()) - 1
 	}
 	mechanism := base.mechanism
 	if mechanism == "" {

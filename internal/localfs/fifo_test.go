@@ -31,6 +31,9 @@ func TestCatRefusesAFifoWithoutBlocking(t *testing.T) {
 	if _, err := Cat(path); !errors.Is(err, ErrNotRegular) {
 		t.Fatalf("Cat on a FIFO = %v; want ErrNotRegular", err)
 	}
+	if _, err := ReadFile(path, 0); !errors.Is(err, ErrNotRegular) {
+		t.Fatalf("ReadFile on a FIFO = %v; want ErrNotRegular", err)
+	}
 }
 
 func TestCatStillReadsARegularFile(t *testing.T) {

@@ -26,15 +26,14 @@ func TestREADMEListsMatchTheRegistries(t *testing.T) {
 	assertSameWords(t, "domains", domains, audit.DomainWords())
 
 	surfaces := backtickedList(t, text, "Surface names are", "groups are")
-	want := append(startup.SurfaceWords(), "activity", "authority")
-	assertSameWords(t, "surfaces", surfaces, want)
+	assertSameWords(t, "surfaces", surfaces, startup.SurfaceWords())
 
-	groups := backtickedList(t, text, "groups are", ". A path prefix")
-	names := make([]string, 0, len(surfaceGroups))
-	for group := range surfaceGroups {
+	groupNames := backtickedList(t, text, "groups are", ". A path prefix")
+	names := make([]string, 0, len(groups))
+	for group := range groups {
 		names = append(names, group)
 	}
-	assertSameWords(t, "surface groups", groups, names)
+	assertSameWords(t, "surface groups", groupNames, names)
 
 	graph := strings.Split(graphWordList(t, text), "|")
 	assertSameWords(t, "graph words", graph, audit.GraphWords())

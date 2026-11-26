@@ -32,7 +32,7 @@ func authorizedKeysEdges(file File) []rawEdge {
 			}
 			edges = append(edges, shellEdges(value, rawEdge{
 				surface: SurfaceSSH, phase: Login, subject: subject, trigger: file.Path,
-				line: index, mechanism: "command=",
+				line: index + 1, mechanism: "command=",
 			})...)
 		}
 	}
@@ -83,7 +83,7 @@ func sshConfigEdges(file File) []rawEdge {
 			}
 			edges = append(edges, shellEdges(value, rawEdge{
 				surface: SurfaceSSH, phase: Login, subject: Subject{Class: AccountRoot}, trigger: file.Path,
-				line: index, mechanism: Mechanism(line[:at]),
+				line: index + 1, mechanism: Mechanism(line[:at]),
 			})...)
 		case "proxycommand", "localcommand":
 			if value == "" || value == "none" {
@@ -91,7 +91,7 @@ func sshConfigEdges(file File) []rawEdge {
 			}
 			edges = append(edges, shellEdges(value, rawEdge{
 				surface: SurfaceSSH, phase: Session, subject: accountFor(file.Path), trigger: file.Path,
-				line: index, mechanism: Mechanism(line[:at]),
+				line: index + 1, mechanism: Mechanism(line[:at]),
 			})...)
 		}
 	}

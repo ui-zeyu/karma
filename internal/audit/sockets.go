@@ -18,7 +18,7 @@ func collectSockets(ctx context.Context) ([]Socket, []Connection, map[int]int, [
 		return nil, nil, nil, []string{"socket table unavailable: " + err.Error()}
 	}
 	inodes, established := socketInodes(dump)
-	return buildSocketRows(dump, netdiag.Owners(inodes), established, false)
+	return buildSocketRows(dump, netdiag.Owners(ctx, inodes), established, false)
 }
 
 // collectSocketsScoped answers the same table for an object graph's selected pids.
@@ -33,7 +33,7 @@ func collectSocketsScoped(ctx context.Context, pids map[int]bool) ([]Socket, []C
 		return nil, nil, nil, []string{"socket table unavailable: " + err.Error()}
 	}
 	inodes, established := socketInodes(dump)
-	return buildSocketRows(dump, netdiag.OwnersFor(inodes, pids), established, true)
+	return buildSocketRows(dump, netdiag.OwnersFor(ctx, inodes, pids), established, true)
 }
 
 func socketInodes(dump []netdiag.Socket) (map[uint64]bool, map[uint64]bool) {

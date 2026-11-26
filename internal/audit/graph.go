@@ -46,12 +46,20 @@ func (g *GraphBuilder) node(id string) *GraphNode {
 	return g.nodes[id]
 }
 
+// setRoot names the object a graph is about. Insertion order decides nothing
+// about the answer: a seed may register the package that owns it before its
+// own node, and the root still has to be the object the operator asked for.
+func (g *GraphBuilder) setRoot(id string) *GraphBuilder {
+	g.root = id
+	return g
+}
+
 // Node builds and registers one node from its parts.
 func (g *GraphBuilder) Node(kind, key, name, path string, origin Origin, reach Reach, detail string) *GraphNode {
 	candidate := &GraphNode{
 		ID: nodeKey(kind, key), Kind: kind, Name: name, Path: path,
 		Origin: origin.String(), Reach: reach.String(),
-		Detail: detail, origin: origin, reach: reach,
+		Detail: detail,
 	}
 	g.add(candidate)
 	return g.nodes[candidate.ID]

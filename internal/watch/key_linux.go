@@ -20,6 +20,7 @@ type procState struct {
 	Comm    string
 	Exe     string
 	Cmdline string
+	Args    []string
 	Cwd     string
 }
 

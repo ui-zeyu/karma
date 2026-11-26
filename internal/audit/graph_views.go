@@ -67,6 +67,14 @@ func networkGraph(snapshot *Snapshot) *GraphView {
 			graph.link(s.ID, peer.ID, "peer", "kernel", "high", "")
 		}
 	}
+	for _, socket := range snapshot.Sockets {
+		if socket.PID != 0 {
+			continue
+		}
+		id := socket.Proto + " " + socket.Local
+		node := graph.Node("socket", id, id, "", Unknown, NoAsset, "listening, no visible owner")
+		graph.link(graph.root, node.ID, "listens", "kernel", "high", "")
+	}
 	return graph.GraphView("domain", snapshot)
 }
 
@@ -170,9 +178,6 @@ func bootGraph(snapshot *Snapshot) *GraphView {
 	a := newAssessor(snapshot)
 	surfaces := map[string]*GraphNode{}
 	for _, edge := range snapshot.Activations {
-		if edge.Context {
-			continue
-		}
 		surface, ok := surfaces[string(edge.Surface)]
 		if !ok {
 			surface = graph.Node("surface", string(edge.Surface), string(edge.Surface), "",
@@ -189,6 +194,18 @@ func bootGraph(snapshot *Snapshot) *GraphView {
 			triggerStory.origin, edgeReach(edge),
 			edge.Phase.String()+" · runs as "+valueOr(edge.Subject.String(), "-"))
 		graph.link(surface.ID, trigger.ID, "triggers", "startup", "high", "")
+		if edge.Context {
+			// Only a context edge the judge can turn into a finding belongs on
+			// the boot page; every declared directory would drown the tree.
+			if _, risk := contextRisk(edge); !risk {
+				continue
+			}
+			target := graph.Node("context", edge.Trigger+"|"+edge.Target, edge.Target, edge.Target,
+				triggerStory.origin, edgeReach(edge), string(edge.Mechanism)+" · "+edge.Target)
+			target.Context = true
+			graph.link(trigger.ID, target.ID, "declares", "unit-decl", "high", string(edge.Mechanism))
+			continue
+		}
 		if edge.Dynamic {
 			id := edge.Trigger + " (dynamic)"
 			target := graph.Node("target", id, "(dynamic)", "", triggerStory.origin, edgeReach(edge),

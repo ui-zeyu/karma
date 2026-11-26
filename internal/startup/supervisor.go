@@ -30,7 +30,7 @@ func supervisorEdges(file File) []rawEdge {
 		}
 		edges = append(edges, shellEdges(d.value, rawEdge{
 			surface: SurfaceSupervisor, phase: BootStaged, subject: subject,
-			trigger: file.Path, line: d.line - 1, mechanism: "command",
+			trigger: file.Path, line: d.line, mechanism: "command",
 		})...)
 	}
 	return edges
@@ -59,7 +59,7 @@ func desktopEdges(file File) []rawEdge {
 			}
 			edges = append(edges, shellEdges(d.value, rawEdge{
 				surface: SurfaceXdg, phase: Session, subject: subject,
-				trigger: file.Path, line: d.line - 1, mechanism: Mechanism(d.key),
+				trigger: file.Path, line: d.line, mechanism: Mechanism(d.key),
 			})...)
 		}
 	}

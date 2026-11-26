@@ -22,11 +22,8 @@ type JudgeFunc func(snapshot *Snapshot, report *Report, a *assessor, filter Filt
 type GraphSpec struct {
 	// Word is the `karma graph` word when it differs from the module's name.
 	Word string
-	// Domain is the finding set the graph shows.
+	// Domain is the finding set the graph shows; the plan reads the same set.
 	Domain Domain
-	// Collect names the domains the graph's collection needs beyond its own
-	// module's bit; zero falls back to the bit.
-	Collect Domain
 	// AllSurfaces reports whether the graph reads every activation surface
 	// rather than the module's own selection.
 	AllSurfaces bool
@@ -36,11 +33,11 @@ type GraphSpec struct {
 
 // Plan reads the domains one domain graph needs.
 func (s *GraphSpec) Plan(bit Domain) Plan {
-	plan := Plan{Domains: DomainBase | bit | s.Collect}
+	plan := Plan{Filter: Filter{Domains: DomainBase | bit | s.Domain}}
 	if s.AllSurfaces {
-		plan.Surfaces = nil
+		plan.Surfaces = surfacePtr(startup.AllScope())
 	} else {
-		plan.Surfaces = map[string]bool{}
+		plan.Surfaces = surfacePtr(0)
 	}
 	return plan
 }
@@ -49,9 +46,16 @@ func (s *GraphSpec) Plan(bit Domain) Plan {
 type Module struct {
 	Name string // the scope word: services, processes, ...
 	Bit  Domain
+	// Selects is the extra domain set a positive scope word turns on. A
+	// services audit also judges the activation edges that launch a unit.
+	Selects Domain
 	// Startup is the startup surfaces the domain's collection reads. A domain
 	// that reads none leaves it nil.
 	Startup func() startup.Scope
+	// Needs names the domains whose collected rows this domain reads as
+	// context. They are collected but not judged; a network finding can use
+	// the process table without turning a processes audit into this one.
+	Needs Domain
 	// Collect fills the domain's part of the snapshot and answers coverage.
 	Collect func(context.Context, *Snapshot) []string
 	// Judge turns the collected state into findings and coverage.
@@ -65,8 +69,8 @@ type Module struct {
 // order is part of the contract.
 var modules = []Module{
 	{
-		Name: "services", Bit: DomainServices,
-		Startup: func() startup.Scope { return startup.Scope{Systemd: true} },
+		Name: "services", Bit: DomainServices, Selects: DomainPersistence,
+		Startup: func() startup.Scope { return startup.Systemd },
 		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
 			return collectServicesModule(ctx, snapshot)
 		},
@@ -83,6 +87,7 @@ var modules = []Module{
 	},
 	{
 		Name: "network", Bit: DomainNetwork,
+		Needs: DomainProcesses,
 		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
 			return collectSocketsModule(ctx, snapshot)
 		},
@@ -91,9 +96,8 @@ var modules = []Module{
 			return nil
 		},
 		GraphBuilder: &GraphSpec{
-			Domain:  DomainProcesses | DomainNetwork,
-			Collect: DomainProcesses,
-			Build:   networkGraph,
+			Domain: DomainProcesses | DomainNetwork,
+			Build:  networkGraph,
 		},
 	},
 	{
@@ -119,7 +123,7 @@ var modules = []Module{
 	{
 		Name: "files", Bit: DomainFiles,
 		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectInventory(ctx, snapshot, snapshot.plan)
+			return collectFiles(ctx, snapshot, snapshot.plan)
 		},
 		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
 			for _, finding := range unownedFindings(snapshot, a, filter) {
@@ -131,7 +135,7 @@ var modules = []Module{
 	{
 		Name: "kernel", Bit: DomainKernel,
 		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectKernel(ctx, snapshot, snapshot.classify, snapshot.ownedAll)
+			return collectKernel(ctx, snapshot, snapshot.classify)
 		},
 		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
 			return judgeKernel(snapshot, a, filter, add)
@@ -149,7 +153,7 @@ var modules = []Module{
 	{
 		Name: "web", Bit: DomainWeb,
 		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectWeb(ctx, snapshot, snapshot.classify, snapshot.ownedAll)
+			return collectWeb(ctx, snapshot, snapshot.classify)
 		},
 		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
 			return judgeWeb(snapshot, a, filter, add)
@@ -159,23 +163,27 @@ var modules = []Module{
 	{
 		Name: "identity", Bit: DomainIdentity,
 		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectIdentity(ctx, snapshot, snapshot.classify, snapshot.ownedAll)
+			return collectIdentity(ctx, snapshot, snapshot.classify)
 		},
 		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
 			return judgeIdentity(snapshot, a, filter, add)
 		},
 		GraphBuilder: &GraphSpec{Domain: DomainIdentity, Build: identityGraph},
 	},
+	{
+		Name: "trail", Bit: DomainTrail,
+		Needs: DomainIdentity,
+		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
+			return collectTrail(ctx, snapshot)
+		},
+	},
 }
 
-// Modules returns the registry in collection order.
-func Modules() []Module { return modules }
+// Modules returns a copy of the registry in collection order.
+func Modules() []Module { return append([]Module(nil), modules...) }
 
 // ModuleForWord answers the module a scope word selects.
-func ModuleForWord(word string) (Module, bool) { return moduleByWord(word) }
-
-// moduleByWord answers the module a scope word selects.
-func moduleByWord(word string) (Module, bool) {
+func ModuleForWord(word string) (Module, bool) {
 	for _, module := range modules {
 		if module.Name == word {
 			return module, true
@@ -200,6 +208,21 @@ func GraphTarget(word string) (Module, *GraphSpec, bool) {
 		}
 	}
 	return Module{}, nil, false
+}
+
+// OffDomains names the bounded domains a run did not judge, in registry order.
+// It reads the same domain set the judges and the views read.
+func OffDomains(domains Domain) []string {
+	if domains == 0 || domains == AllDomains {
+		return nil
+	}
+	var off []string
+	for _, module := range modules {
+		if domains&module.Bit == 0 {
+			off = append(off, module.Name)
+		}
+	}
+	return off
 }
 
 // DomainWords lists the scope words in registry order.

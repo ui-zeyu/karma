@@ -10,83 +10,51 @@ import (
 // collector fills File with it after reading; the path vocabularies live here
 // so the surfaces cannot drift from the parsers.
 func classifyPath(path string) (Surface, Dialect) {
-	return surfaceFor(path), dialectFor(path)
-}
-
-func surfaceFor(path string) Surface {
-	switch {
-	case isProfilePath(path):
-		return SurfaceProfile
-	case isInitPath(path):
-		return SurfaceInit
-	case isCronPath(path):
-		return SurfaceCron
-	case isLoaderPath(path):
-		return SurfaceLoader
-	case isUdevPath(path):
-		return SurfaceUdev
-	case isSSHPath(path):
-		return SurfaceSSH
-	case isPAMPath(path):
-		return SurfacePAM
-	case isSupervisorPath(path):
-		return SurfaceSupervisor
-	case isXdgPath(path):
-		return SurfaceXdg
-	case isAptPath(path):
-		return SurfaceApt
-	case isModulePath(path):
-		return SurfaceModule
-	case isSystemPath(path):
-		return SurfaceSystem
+	for _, surface := range surfaceRuns {
+		if surface.match == nil || !surface.match(path) {
+			continue
+		}
+		return Surface(surface.name), surface.dialect(path)
 	}
-	return SurfaceSystemd
+	return SurfaceSystemd, systemdDialect(path)
 }
 
-func dialectFor(path string) Dialect {
-	switch {
-	case path == "/etc/environment":
-		return EnvDialect
-	case isLoaderPath(path):
-		return LoaderDialect
-	case isGeneratorPath(path):
+func systemdDialect(path string) Dialect {
+	if isGeneratorPath(path) {
 		return GeneratorsDialect
-	case isUdevPath(path):
-		return UdevDialect
-	case isInitPath(path):
-		return ShellDialect
-	case isCronPath(path):
-		if isCronShellPath(path) {
-			return ShellDialect
-		}
-		return CronDialect
-	case isSSHPath(path):
-		return sshDialect(path)
-	case isPAMPath(path):
-		if isMotdPath(path) {
-			return ShellDialect
-		}
-		return PAMDialect
-	case isSupervisorPath(path):
-		if isXinetdPath(path) {
-			return XinetdDialect
-		}
-		if strings.HasSuffix(path, ".conf") || strings.HasSuffix(path, ".ini") {
-			return UnitDialect
-		}
-		return ShellDialect
-	case isXdgPath(path):
-		return UnitDialect
-	case isAptPath(path):
-		return AptDialect
-	case isModulePath(path):
-		return ModprobeDialect
-	case isSystemPath(path):
-		return SystemDialect
-	case isProfilePath(path):
-		return ShellDialect
 	}
 	return UnitDialect
+}
+
+func profileDialect(path string) Dialect {
+	if path == "/etc/environment" {
+		return EnvDialect
+	}
+	return ShellDialect
+}
+
+func cronDialect(path string) Dialect {
+	if isCronShellPath(path) {
+		return ShellDialect
+	}
+	return CronDialect
+}
+
+func pamDialect(path string) Dialect {
+	if isMotdPath(path) {
+		return ShellDialect
+	}
+	return PAMDialect
+}
+
+func supervisorDialect(path string) Dialect {
+	if isXinetdPath(path) {
+		return XinetdDialect
+	}
+	if strings.HasSuffix(path, ".conf") || strings.HasSuffix(path, ".ini") {
+		return UnitDialect
+	}
+	return ShellDialect
 }
 
 // isProfilePath names the login and interactive-shell surfaces. A user's unit
@@ -97,7 +65,8 @@ func isProfilePath(path string) bool {
 	case "/etc/profile", "/etc/bash.bashrc", "/etc/bashrc", "/etc/bash.bash_logout", "/etc/environment":
 		return true
 	}
-	if strings.HasPrefix(path, "/etc/profile.d/") || strings.HasPrefix(path, "/etc/zsh/") {
+	if strings.HasPrefix(path, "/etc/profile.d/") || strings.HasPrefix(path, "/etc/zsh/") ||
+		strings.HasPrefix(path, "/etc/fish/") {
 		return true
 	}
 	if trust.SkelTemplate(path) {

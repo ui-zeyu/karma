@@ -71,7 +71,7 @@ func readClockState() ClockState {
 // time comparison suspect; the third names the objects that carry the
 // inconsistency.
 func judgeClock(snapshot *Snapshot, filter Filter, add func(Finding)) {
-	if !globalScope(filter) {
+	if !filter.globalScope() {
 		return
 	}
 	clock := snapshot.Clock

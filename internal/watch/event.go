@@ -53,14 +53,15 @@ type NetEvent struct {
 
 // Proc is one process observation.
 type Proc struct {
-	Kind    Kind   `json:"kind"`
-	PID     int    `json:"pid"`
-	PPID    int    `json:"ppid,omitempty"`
-	UID     int    `json:"uid,omitempty"`
-	Comm    string `json:"comm,omitempty"`
-	Exe     string `json:"exe,omitempty"`
-	Cmdline string `json:"cmdline,omitempty"`
-	Cwd     string `json:"cwd,omitempty"`
+	Kind    Kind     `json:"kind"`
+	PID     int      `json:"pid"`
+	PPID    int      `json:"ppid,omitempty"`
+	UID     int      `json:"uid,omitempty"`
+	Comm    string   `json:"comm,omitempty"`
+	Exe     string   `json:"exe,omitempty"`
+	Cmdline string   `json:"cmdline,omitempty"`
+	Args    []string `json:"-"`
+	Cwd     string   `json:"cwd,omitempty"`
 	// ExitCode is the connector's exit status; the poll source does not know
 	// it and leaves the pointer nil.
 	ExitCode *int `json:"exit_code,omitempty"`
@@ -78,6 +79,7 @@ type Sock struct {
 	Comm    string   `json:"comm,omitempty"`
 	Exe     string   `json:"exe,omitempty"`
 	Cmdline string   `json:"cmdline,omitempty"`
+	Args    []string `json:"-"`
 	Cwd     string   `json:"cwd,omitempty"`
 }
 

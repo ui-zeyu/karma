@@ -2,10 +2,13 @@ package audit
 
 import (
 	"bufio"
+	"encoding/binary"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"karma/internal/localfs"
 )
 
 // readBoundary answers the artifact's edge and the package transactions that
@@ -82,7 +85,26 @@ func readPID1Start(boot time.Time) time.Time {
 	if err != nil {
 		return time.Time{}
 	}
-	return boot.Add(time.Duration(ticks) * 10 * time.Millisecond)
+	return boot.Add(time.Duration(ticks) * (time.Second / time.Duration(clockTicks())))
+}
+
+// clockTicks is the kernel's USER_HZ from the auxiliary vector (AT_CLKTCK).
+// Assuming 100 is common but wrong on a kernel configured otherwise; the
+// container boundary would then move by tens of seconds.
+func clockTicks() int64 {
+	const atClkTck = 17
+	data, err := os.ReadFile("/proc/self/auxv")
+	if err != nil || len(data) < 16 {
+		return 100
+	}
+	for index := 0; index+16 <= len(data); index += 16 {
+		kind := binary.NativeEndian.Uint64(data[index:])
+		value := binary.NativeEndian.Uint64(data[index+8:])
+		if kind == atClkTck && value > 0 {
+			return int64(value)
+		}
+	}
+	return 100
 }
 
 // isContainer asks the kernel's own views: the marker files, the init cgroup,
@@ -145,7 +167,7 @@ func readHost() Host {
 }
 
 func readOSName() string {
-	data, err := os.ReadFile("/etc/os-release")
+	data, err := localfs.ReadFile("/etc/os-release", 64<<10)
 	if err != nil {
 		return ""
 	}

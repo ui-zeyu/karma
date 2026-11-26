@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"karma/internal/audit"
 	"karma/internal/prov"
@@ -16,14 +17,24 @@ import (
 // costs memory and answers gone stale.
 const maxFactsCache = 4096
 
+// factsTTL bounds how long one path's cached facts describe the disk. A live
+// watcher runs for hours; a replaced binary or a permission change has to be
+// seen without waiting for 4096 unrelated paths.
+const factsTTL = 5 * time.Second
+
 // Annotator adds the structural facts a line needs without asking a name what
 // it means: is the executable package-owned, is it in an administrator layer,
 // is the working directory one, is an interpreter carrying a script. The facts
 // are cached by path; the package catalog answers from its own index, so an
 // event burst costs no package-manager call.
+type cachedFacts struct {
+	facts trust.Facts
+	at    time.Time
+}
+
 type Annotator struct {
 	catalog  *prov.Catalog
-	facts    map[string]trust.Facts
+	facts    map[string]cachedFacts
 	observer *audit.Observer
 }
 
@@ -35,14 +46,14 @@ func NewAnnotator() *Annotator {
 // NewAnnotatorWith builds an annotator over a given catalog; nil answers
 // unknown and is what the tests use.
 func NewAnnotatorWith(catalog *prov.Catalog) *Annotator {
-	return &Annotator{catalog: catalog, facts: map[string]trust.Facts{}, observer: audit.NewObserver()}
+	return &Annotator{catalog: catalog, facts: map[string]cachedFacts{}, observer: audit.NewObserverWith(catalog)}
 }
 
 // share returns an annotator over the same catalog and observer with its own
 // path cache. The pipeline's workers each annotate with their own share, so
 // the caches never share a map.
 func (a *Annotator) share() *Annotator {
-	return &Annotator{catalog: a.catalog, facts: map[string]trust.Facts{}, observer: a.observer}
+	return &Annotator{catalog: a.catalog, facts: map[string]cachedFacts{}, observer: a.observer}
 }
 
 // Annotate attaches the flags and, where the event carries a running image,
@@ -167,7 +178,10 @@ func (a *Annotator) scriptFacts(proc *Proc) (string, bool) {
 	if !startup.IsInterpreter(proc.Exe) {
 		return "", false
 	}
-	script := startup.ScriptArg(proc.Cmdline)
+	script := startup.ScriptArgv(proc.Args)
+	if script == "" && len(proc.Args) == 0 {
+		script = startup.ScriptArg(proc.Cmdline)
+	}
 	if script == "" {
 		return "", false
 	}
@@ -191,7 +205,7 @@ func (a *Annotator) sockScript(sock *Sock) (string, bool) {
 	if !startup.IsInterpreter(sock.Exe) || sock.Cmdline == "" {
 		return "", false
 	}
-	fake := &Proc{Exe: sock.Exe, Cmdline: sock.Cmdline, Cwd: sock.Cwd}
+	fake := &Proc{Exe: sock.Exe, Cmdline: sock.Cmdline, Args: sock.Args, Cwd: sock.Cwd}
 	return a.scriptFacts(fake)
 }
 
@@ -199,14 +213,14 @@ func (a *Annotator) classify(path string) trust.Facts {
 	if path == "" {
 		return trust.Facts{}
 	}
-	if facts, ok := a.facts[path]; ok {
-		return facts
+	if cached, ok := a.facts[path]; ok && time.Since(cached.at) < factsTTL {
+		return cached.facts
 	}
 	if len(a.facts) >= maxFactsCache {
-		a.facts = map[string]trust.Facts{}
+		a.facts = map[string]cachedFacts{}
 	}
 	facts := trust.Classify(path, a.catalog)
-	a.facts[path] = facts
+	a.facts[path] = cachedFacts{facts: facts, at: time.Now()}
 	return facts
 }
 

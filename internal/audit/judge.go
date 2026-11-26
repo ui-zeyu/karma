@@ -1,7 +1,6 @@
 package audit
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"karma/internal/fault"
 	"karma/internal/prov"
 	"karma/internal/trust"
 )
@@ -66,7 +66,6 @@ var classDomain = map[string]Domain{
 	"module-unowned":              DomainKernel,
 	"module-writable":             DomainKernel,
 	"unit-target-missing":         DomainPersistence,
-	"module-missing":              DomainKernel,
 	"module-registry-gap":         DomainKernel,
 	"hidden-module":               DomainKernel,
 	"hidden-process":              DomainKernel,
@@ -91,12 +90,9 @@ func Judge(snapshot *Snapshot, filter Filter) *Report {
 		Connections:      view.Connections,
 		Mounts:           view.Mounts,
 		Ledger:           snapshot.Ledger,
-		Activations:      view.Activations,
-		ProcessRows:      view.Processes,
 		AuthorityObjects: view.Authority,
 		Kernel:           view.Kernel,
-		Unowned:          snapshot.Unowned,
-		OffDomains:       filter.OffDomains,
+		OffDomains:       OffDomains(filter.Domains),
 	}
 	report.view = view
 	if snapshot.Boundary.Time.IsZero() {
@@ -111,9 +107,6 @@ func Judge(snapshot *Snapshot, filter Filter) *Report {
 	seen := map[string]bool{}
 	add := func(finding Finding) {
 		finding.Domain |= classDomain[finding.Class]
-		if finding.Severity < filter.MinSeverity {
-			return
-		}
 		key := finding.Class + "\x00" + finding.Path + "\x00" + finding.Detail
 		if seen[key] {
 			return
@@ -180,81 +173,89 @@ func Judge(snapshot *Snapshot, filter Filter) *Report {
 	// activation loop is the spine the other domains' rows hang from.
 	judgeClock(snapshot, filter, add)
 	for _, module := range modules {
-		if module.Judge == nil {
+		if module.Judge == nil || !filter.judges(module.Bit) {
 			continue
 		}
-		report.Coverage = append(report.Coverage, module.Judge(snapshot, report, a, filter, add)...)
+		judgeErr := fault.Catch("judge "+module.Name, func() error {
+			report.Coverage = append(report.Coverage, module.Judge(snapshot, report, a, filter, add)...)
+			return nil
+		})
+		if judgeErr != nil {
+			report.Coverage = append(report.Coverage, judgeErr.Error())
+		}
 	}
 
-	for _, process := range view.Processes {
-		if process.PID == os.Getpid() {
-			continue
-		}
-		report.Processes++
-		imageStory := a.read(process.ExeFacts, false)
-		origin := imageStory.origin
-		why := "image: " + imageStory.why
-		softened := imageStory.softened
-		contentEvidence := append([]string(nil), imageStory.evidence...)
-		if process.Script != "" {
-			scriptStory := a.read(process.ScriptFacts, false)
-			origin = weaker(origin, scriptStory.origin)
-			why = "script: " + scriptStory.why
-			contentEvidence = append(contentEvidence, scriptStory.evidence...)
-			softened = scriptStory.softened
-			if imageStory.origin.Rank() <= scriptStory.origin.Rank() {
-				softened = imageStory.softened
+	if filter.judges(DomainProcesses) {
+		for _, process := range view.Processes {
+			if process.PID == os.Getpid() {
+				continue
 			}
-		}
-		reach := processReach(process)
-		evidence := append([]string{
-			fmt.Sprintf("pid %d uid %d cmdline %s", process.PID, process.UID, process.Cmdline),
-		}, contentEvidence...)
-		evidence = append(evidence, processContext(process)...)
-		switch {
-		case process.Deleted:
-			// A distribution upgrade leaves old images running with their
-			// files unlinked; that is a base object, not a runtime implant.
-			severity := severityFor(imageStory.origin, reach)
-			if severity < Low {
-				severity = Low
-			}
-			add(Finding{
-				Class: "deleted-image", Severity: severity, Title: "process runs an image deleted from disk",
-				Path: process.Exe, Origin: imageStory.origin, Reach: reach,
-				Detail:   fmt.Sprintf("pid %d %s", process.PID, process.Comm),
-				Evidence: evidence,
-			})
-		case origin == Runtime || origin == Modified:
-			path := process.Exe
+			report.Processes++
+			imageStory := a.read(process.ExeFacts, false)
+			origin := imageStory.origin
+			why := "image: " + imageStory.why
+			softened := imageStory.softened
+			contentEvidence := append([]string(nil), imageStory.evidence...)
 			if process.Script != "" {
-				path = process.Script
+				scriptStory := a.read(process.ScriptFacts, false)
+				origin = weaker(origin, scriptStory.origin)
+				why = "script: " + scriptStory.why
+				contentEvidence = append(contentEvidence, scriptStory.evidence...)
+				softened = scriptStory.softened
+				if imageStory.origin.Rank() <= scriptStory.origin.Rank() {
+					softened = imageStory.softened
+				}
 			}
-			severity := severityFor(origin, reach)
-			if softened && severity > Low {
-				severity--
+			reach := processReach(process)
+			evidence := append([]string{
+				fmt.Sprintf("pid %d uid %d cmdline %s", process.PID, process.UID, process.Cmdline),
+			}, contentEvidence...)
+			evidence = append(evidence, processContext(process)...)
+			switch {
+			case process.Deleted:
+				// A distribution upgrade leaves old images running with their
+				// files unlinked; that is a base object, not a runtime implant.
+				severity := severityFor(imageStory.origin, reach)
+				if severity < Low {
+					severity = Low
+				}
+				add(Finding{
+					Class: "deleted-image", Severity: severity, Title: "process runs an image deleted from disk",
+					Path: process.Exe, Origin: imageStory.origin, Reach: reach,
+					Detail:   fmt.Sprintf("pid %d %s", process.PID, process.Comm),
+					Evidence: evidence,
+				})
+			case origin == Runtime || origin == Modified:
+				path := process.Exe
+				if process.Script != "" {
+					path = process.Script
+				}
+				severity := severityFor(origin, reach)
+				if softened && severity > Low {
+					severity--
+				}
+				add(Finding{
+					Class: "runtime-process", Severity: severity,
+					Title: "running process carries runtime code",
+					Path:  path, Origin: origin, Reach: reach,
+					Detail: fmt.Sprintf("pid %d %s (%s)", process.PID, process.Comm, why),
+					Evidence: append([]string{
+						fmt.Sprintf("image %s: %s", process.Exe, imageStory.why),
+					}, evidence...),
+				})
+			case reach >= ServiceAsset && unownedProcess(process):
+				path := process.Exe
+				if process.Script != "" {
+					path = process.Script
+				}
+				add(Finding{
+					Class: "unowned-process", Severity: unownedSeverity(reach),
+					Title: "running process carries code no package owns",
+					Path:  path, Origin: origin, Reach: reach,
+					Detail:   fmt.Sprintf("pid %d %s", process.PID, process.Comm),
+					Evidence: evidence,
+				})
 			}
-			add(Finding{
-				Class: "runtime-process", Severity: severity,
-				Title: "running process carries runtime code",
-				Path:  path, Origin: origin, Reach: reach,
-				Detail: fmt.Sprintf("pid %d %s (%s)", process.PID, process.Comm, why),
-				Evidence: append([]string{
-					fmt.Sprintf("image %s: %s", process.Exe, imageStory.why),
-				}, evidence...),
-			})
-		case reach >= ServiceAsset && unownedProcess(process):
-			path := process.Exe
-			if process.Script != "" {
-				path = process.Script
-			}
-			add(Finding{
-				Class: "unowned-process", Severity: unownedSeverity(reach),
-				Title: "running process carries code no package owns",
-				Path:  path, Origin: origin, Reach: reach,
-				Detail:   fmt.Sprintf("pid %d %s", process.PID, process.Comm),
-				Evidence: evidence,
-			})
 		}
 	}
 
@@ -262,6 +263,7 @@ func Judge(snapshot *Snapshot, filter Filter) *Report {
 	for _, path := range snapshot.Unreadable {
 		report.Coverage = append(report.Coverage, "unreadable activation file: "+path)
 	}
+	attachTrailEvidence(view.Trail, report)
 	sortFindings(report.Findings)
 	report.Coverage = uniqueStrings(report.Coverage)
 	return report
@@ -299,10 +301,10 @@ func ledgerCoverage(a *assessor, snapshot *Snapshot) []string {
 	default:
 		lines = append(lines, "no package content ledger: content evidence is absent and judgments rest on time alone")
 	}
-	if a.remodified > 0 {
+	if len(a.remodifiedSet) > 0 {
 		lines = append(lines, fmt.Sprintf(
 			"%d verified file(s) carry a change time after their package's last transaction (reinstalled or touched)",
-			a.remodified))
+			len(a.remodifiedSet)))
 	}
 	if len(a.noConffile) > 0 {
 		lines = append(lines, "judged conffile(s) are compared by time only, the ledger does not hash them: "+
@@ -398,11 +400,15 @@ func authorityReach(facts trust.Facts) Reach {
 	return UserAsset
 }
 
-func processReach(process Process) Reach {
-	uid := process.EUID
-	if uid < 0 {
-		uid = process.UID
+func processUID(process Process) int {
+	if process.EUID >= 0 {
+		return process.EUID
 	}
+	return process.UID
+}
+
+func processReach(process Process) Reach {
+	uid := processUID(process)
 	switch {
 	case uid == 0:
 		return RootAsset
@@ -436,54 +442,59 @@ func pathInScope(path string, filter Filter) bool {
 	if path == "" {
 		return len(filter.Paths) == 0
 	}
-	for _, root := range filter.ExcludePaths {
-		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
-			return false
-		}
+	if filter.pathExcluded(path) {
+		return false
 	}
 	if len(filter.Paths) == 0 {
 		return true
 	}
 	for _, root := range filter.Paths {
-		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+		if root == string(filepath.Separator) || path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
 			return true
 		}
 	}
 	return false
 }
 
-// scopedSockets keeps the listener panel on the same object the findings are
-// about: the selected pids, or the pids of the selected units.
-func scopedSockets(sockets []Socket, processes []Process, filter Filter) []Socket {
-	pids := map[int]bool{}
-	for pid := range filter.PIDs {
-		pids[pid] = true
-	}
-	if len(filter.Units) > 0 {
-		for _, process := range processes {
-			if filter.Units[process.Unit] || filter.Units[templateUnit(process.Unit)] {
-				pids[process.PID] = true
-			}
+func (f Filter) pathExcluded(path string) bool {
+	for _, root := range f.ExcludePaths {
+		if root == string(filepath.Separator) || path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+			return true
 		}
 	}
-	if len(pids) == 0 {
-		return nil
-	}
-	var out []Socket
-	for _, socket := range sockets {
-		if pids[socket.PID] {
-			out = append(out, socket)
-		}
-	}
-	return out
+	return false
 }
 
-func processInScope(process Process, filter Filter) bool {
-	if len(filter.PIDs) > 0 {
-		return filter.PIDs[process.PID]
+func (f Filter) pidAllowed(pid int) bool {
+	if len(f.PIDs) > 0 {
+		return f.PIDs[pid] && !f.ExcludePIDs[pid]
 	}
-	if filter.Surfaces != nil && !filter.Surfaces["activity"] {
+	return !f.ExcludePIDs[pid]
+}
+
+func (f Filter) hasPIDScope() bool {
+	return len(f.PIDs) > 0 || len(f.ExcludePIDs) > 0
+}
+
+func (f Filter) hasUnitScope() bool {
+	return len(f.Units) > 0 || len(f.ExcludeUnits) > 0
+}
+
+// scopedSockets keeps the listener panel on the same object the findings are
+// about: the selected pids, or the pids of the selected units.
+
+// processUnits maps a pid to the unit its cgroup named, for the unit half of a
+// socket/connection scope.
+
+// socketAllowed applies the pid and unit selections as one predicate. An
+// exclusion-only scope is a complement, not an empty positive set.
+
+func processInScope(process Process, filter Filter) bool {
+	if !filter.pidAllowed(process.PID) || !unitAllowed(process.Unit, filter) {
 		return false
+	}
+	if len(filter.PIDs) > 0 {
+		return true
 	}
 	if len(filter.Paths) > 0 {
 		return pathInScope(process.Exe, filter) || pathInScope(process.Script, filter) || pathInScope(process.Cwd, filter)
@@ -492,8 +503,9 @@ func processInScope(process Process, filter Filter) bool {
 }
 
 // sortFindings orders the report for reading: severity first, then the
-// object, then the class, so one object's relations stay together while
-// severity stays the primary axis.
+// object, then the class and title. The last key is part of the panel's
+// grouping key, so equal group keys stay adjacent and one run becomes one
+// panel.
 func sortFindings(findings []Finding) {
 	sort.SliceStable(findings, func(i, j int) bool {
 		left, right := findings[i], findings[j]
@@ -503,7 +515,10 @@ func sortFindings(findings []Finding) {
 		if left.Path != right.Path {
 			return left.Path < right.Path
 		}
-		return left.Class < right.Class
+		if left.Class != right.Class {
+			return left.Class < right.Class
+		}
+		return left.Title < right.Title
 	})
 }
 
@@ -514,9 +529,12 @@ type Observer struct {
 	packageTimes map[string]time.Time
 }
 
-// NewObserver reads the local boundary once.
-func NewObserver() *Observer {
-	catalog := prov.Open(context.Background())
+// NewObserverWith reuses the caller's catalog, so the watcher does not open a
+// second package database beside the one its facts already use.
+func NewObserverWith(catalog *prov.Catalog) *Observer {
+	if catalog == nil {
+		return &Observer{}
+	}
 	boundary, packageTimes := readBoundary(catalog.Timeline())
 	return &Observer{boundary: boundary, packageTimes: packageTimes}
 }
@@ -546,14 +564,13 @@ func judgeAuthority(snapshot *Snapshot, report *Report, a *assessor, filter Filt
 	if len(filter.PIDs) > 0 || len(filter.Units) > 0 {
 		return nil
 	}
-	if filter.Surfaces != nil && !filter.Surfaces["authority"] {
+	if !filter.judges(DomainAuthority) {
 		return nil
 	}
 	for _, path := range snapshot.Authority {
 		if !pathInScope(path, filter) {
 			continue
 		}
-		report.Authority++
 		facts := snapshot.Facts(path)
 		story := a.read(facts, true)
 		reach := authorityReach(facts)

@@ -71,7 +71,7 @@ func aptCommandEdges(command string, file File, index int, key string) []rawEdge
 	}
 	return shellEdges(command, rawEdge{
 		surface: SurfaceApt, phase: Scheduled, subject: Subject{Class: AccountRoot},
-		trigger: file.Path, line: index, mechanism: Mechanism(key),
+		trigger: file.Path, line: index + 1, mechanism: Mechanism(key),
 	})
 }
 
@@ -128,7 +128,7 @@ func modprobeEdges(file File) []rawEdge {
 		}
 		edges = append(edges, shellEdges(rest, rawEdge{
 			surface: SurfaceModule, phase: BootStaged, subject: Subject{Class: AccountRoot},
-			trigger: file.Path, line: index, mechanism: Mechanism(words[0]),
+			trigger: file.Path, line: index + 1, mechanism: Mechanism(words[0]),
 		})...)
 	}
 	return edges

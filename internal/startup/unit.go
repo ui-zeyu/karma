@@ -546,7 +546,15 @@ var interpreterNames = []string{
 // -r or -m argument means the code or module is inline, so there is no script
 // path; a relative path is resolved by the caller against the process's cwd.
 func ScriptArg(cmdline string) string {
-	args := strings.Fields(cmdline)
+	return ScriptArgv(strings.Fields(cmdline))
+}
+
+// ScriptArgv is ScriptArg over the kernel's own argv boundaries, so a script
+// path that contains spaces survives.
+func ScriptArgv(args []string) string {
+	if len(args) < 2 {
+		return ""
+	}
 	for _, arg := range args[1:] {
 		switch arg {
 		case "-c", "-e", "-r", "-m":

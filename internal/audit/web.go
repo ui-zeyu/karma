@@ -48,11 +48,14 @@ var webScriptSuffixes = []string{
 	".py", ".pl", ".rb", ".sh", ".cgi", ".asp", ".aspx",
 }
 
-func collectWeb(ctx context.Context, snapshot *Snapshot, facts func(string) trust.Facts, prefetch func([]string)) []string {
+func collectWeb(ctx context.Context, snapshot *Snapshot, facts func(string) trust.Facts) []string {
 	state := &snapshot.Web
 	var gaps []string
 	visited := 0
 	for _, root := range webRoots {
+		if !snapshot.plan.Filter.touchesPath(root) {
+			continue
+		}
 		info, err := os.Stat(root)
 		if err != nil || !info.IsDir() {
 			continue
@@ -71,6 +74,9 @@ func collectWeb(ctx context.Context, snapshot *Snapshot, facts func(string) trus
 			}
 			visited++
 			if entry.IsDir() {
+				if path != root && !snapshot.plan.Filter.touchesPath(path) {
+					return filepath.SkipDir
+				}
 				if path != root && strings.Count(strings.TrimPrefix(path, root), "/") >= webDepth {
 					return filepath.SkipDir
 				}
@@ -87,6 +93,9 @@ func collectWeb(ctx context.Context, snapshot *Snapshot, facts func(string) trus
 			if !webScript(path, entry) {
 				return nil
 			}
+			if len(snapshot.plan.Filter.Paths) > 0 && !pathInScope(path, snapshot.plan.Filter) {
+				return nil
+			}
 			state.Files = append(state.Files, WebFile{Path: path, Root: root, Head: webHead(path)})
 			return nil
 		})
@@ -97,11 +106,6 @@ func collectWeb(ctx context.Context, snapshot *Snapshot, facts func(string) trus
 	if len(state.Files) == 0 {
 		return gaps
 	}
-	paths := make([]string, 0, len(state.Files))
-	for _, file := range state.Files {
-		paths = append(paths, file.Path)
-	}
-	prefetch(paths)
 	for index := range state.Files {
 		state.Files[index].Facts = facts(state.Files[index].Path)
 		remember(snapshot, state.Files[index].Path, state.Files[index].Facts)

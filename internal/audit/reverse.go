@@ -31,9 +31,12 @@ var scriptInterpreters = map[string]bool{
 // hand means. A shell or a raw-socket tool is a verdict; a scripting runtime
 // is only a verdict when no service unit explains it.
 func interpreterClass(process Process) (string, bool) {
-	name := strings.ToLower(filepath.Base(process.Exe))
+	name := programName(process.Exe)
 	if name == "" {
-		name = strings.ToLower(process.Comm)
+		name = programName(process.Comm)
+	}
+	if name == "" {
+		return "", false
 	}
 	if shellInterpreters[name] || socketInterpreters[name] {
 		return name, true
@@ -143,6 +146,14 @@ func judgeConnections(snapshot *Snapshot, filter Filter, add func(Finding)) {
 			})
 		}
 	}
+}
+
+// programName normalizes the version suffix interpreters carry, so python3.12
+// and python3 are the same program for the socket shape. startup.IsInterpreter
+// uses the same rule for static edges.
+func programName(path string) string {
+	base := strings.ToLower(filepath.Base(path))
+	return strings.TrimRight(base, "0123456789.")
 }
 
 func containsPID(pids []int, pid int) bool {

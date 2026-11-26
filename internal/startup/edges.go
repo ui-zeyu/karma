@@ -180,10 +180,13 @@ type Edge struct {
 
 // rawEdge is an edge before its ends' facts are read.
 type rawEdge struct {
-	surface        Surface
-	phase          Phase
-	subject        Subject
-	trigger        string
+	surface Surface
+	phase   Phase
+	subject Subject
+	trigger string
+	// line is the 1-based line in trigger the edge was read from. A parser
+	// reading a command out of a larger line passes that line as the base;
+	// shellEdges adds the command's own 1-based offset.
 	line           int
 	mechanism      Mechanism
 	target         string

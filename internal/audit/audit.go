@@ -58,16 +58,6 @@ func (s Severity) String() string {
 	return severityNames[s]
 }
 
-// ParseSeverity reads the flag's word.
-func ParseSeverity(name string) (Severity, bool) {
-	for index, value := range severityNames {
-		if value == name {
-			return Severity(index), true
-		}
-	}
-	return Info, false
-}
-
 // Reach is the authority an object can acquire: the account it runs as and
 // what the kernel grants it.
 type Reach uint8
@@ -142,9 +132,12 @@ type Process struct {
 	Comm    string `json:"comm,omitempty"`
 	Exe     string `json:"exe,omitempty"`
 	Cmdline string `json:"cmdline,omitempty"`
-	Cwd     string `json:"cwd,omitempty"`
-	Root    string `json:"root,omitempty"`
-	Script  string `json:"script,omitempty"`
+	// Args preserves the kernel's argument boundaries; Cmdline is the display
+	// form. Script detection must use Args: a script path may contain spaces.
+	Args   []string `json:"-"`
+	Cwd    string   `json:"cwd,omitempty"`
+	Root   string   `json:"root,omitempty"`
+	Script string   `json:"script,omitempty"`
 	// Cgroup is the process's cgroup path; Unit is the systemd unit named by
 	// it. The object graph uses the edge from a unit to its live processes.
 	Cgroup string `json:"cgroup,omitempty"`
@@ -211,7 +204,10 @@ type Socket struct {
 
 // Snapshot is the facts one local collection answered.
 type Snapshot struct {
-	Boundary    Boundary
+	Boundary Boundary
+	// Boot is the host's boot time, kept so --since boot can retarget the
+	// artifact edge even when the collected boundary is a package transaction.
+	Boot        time.Time
 	Host        Host
 	Activations []startup.Edge
 	Processes   []Process
@@ -225,16 +221,18 @@ type Snapshot struct {
 	// Verify carries the content ledger's answer per resolved path, Mounts the
 	// mount table, and Ledger which content ledger the run used. conffiles,
 	// tamper and ownerOf are the ledger's own records the judge reads.
-	Verify     map[string]Content
-	Mounts     []Mount
-	Ledger     LedgerSummary
-	conffiles  map[string]bool
-	tamper     []ledgerFile
-	ledgerRows []ledgerFile
-	catalog    *prov.Catalog
-	Unreadable []string
-	Coverage   []string
-	Source     string
+	Verify      map[string]Content
+	Mounts      []Mount
+	Ledger      LedgerSummary
+	ledgerReady bool
+	classifier  *trust.Classifier
+	conffiles   map[string]bool
+	tamper      []ledgerFile
+	ledgerRows  []ledgerFile
+	catalog     *prov.Catalog
+	Unreadable  []string
+	Coverage    []string
+	Source      string
 	// Unowned is the static inventory's dormant executables: files in the
 	// program directories no package's file list records.
 	Unowned []UnownedFile
@@ -249,6 +247,9 @@ type Snapshot struct {
 	Packages PackageState
 	// Identity is the parsed account/sudo/sshd graph.
 	Identity IdentityState
+	// Trail is the interactive evidence a person leaves: shell history,
+	// viminfo, known_hosts and authentication logs.
+	Trail []TrailFile
 	// Web is the web-root script provenance sweep.
 	Web WebState
 	// Clock is the boundary-integrity reading.
@@ -291,10 +292,10 @@ func (s *Snapshot) ensureFacts(paths []string) {
 	if len(missing) == 0 {
 		return
 	}
-	s.ownedAll(missing)
 	for _, path := range missing {
 		s.Objects[path] = s.classify(path)
 	}
+	s.ensureContent(missing)
 }
 
 // Quote is one source line a finding rests on: the file, its 1-based
@@ -369,7 +370,6 @@ type Report struct {
 	Coverage    []string
 	Activated   int
 	Processes   int
-	Authority   int
 	Services    []Service
 	Sockets     []Socket
 	Connections []Connection
@@ -383,23 +383,11 @@ type Report struct {
 	// The raw inventories the evidence panels print. They are the collected
 	// rows, not a second judgment: the panels re-read origins through the
 	// report's own verdicts.
-	Activations      []startup.Edge
-	ProcessRows      []Process
 	AuthorityObjects []string
-	Unowned          []UnownedFile
 
 	// view is the inventories the scope filtered once; the evidence panels
 	// read it instead of re-filtering the collected rows.
 	view *View
-}
-
-// ownedAll prefills the package answers for paths; the catalog answers from
-// its own index, a test-built resolver from its cache.
-func (s *Snapshot) ownedAll(paths []string) {
-	if s == nil || s.catalog == nil {
-		return
-	}
-	s.catalog.OwnedAll(paths)
 }
 
 // classify reads one path's facts through the run's package catalog.
@@ -407,27 +395,43 @@ func (s *Snapshot) classify(path string) trust.Facts {
 	if s == nil {
 		return trust.Classify(path, nil)
 	}
+	if s.classifier != nil {
+		return s.classifier.Classify(path)
+	}
 	return trust.Classify(path, s.catalog)
 }
 
-// Filter narrows an audit without changing its judgments.
+// Filter is the run's scope: the domains it judges, the startup surfaces it
+// reads, and the path, pid and unit relations it selects or excludes. A zero
+// domain set means every domain, which keeps a hand-built snapshot in a test
+// on the same path as a bare run.
 type Filter struct {
-	Surfaces     map[string]bool // canonical surface names; nil means all
+	Domains      Domain
+	Surfaces     *startup.Scope // nil means every startup surface
 	Paths        []string
 	ExcludePaths []string
-	PIDs         map[int]bool
-	Units        map[string]bool // systemd units a service run is narrowed to
-	MinSeverity  Severity
-	// OffDomains names the bounded domains this run did not judge, so the
-	// report can say what its quiet covers.
-	OffDomains []string
+	PIDs         map[int]bool // positive pids only
+	ExcludePIDs  map[int]bool
+	Units        map[string]bool // positive units only
+	ExcludeUnits map[string]bool
+}
+
+// judges reports whether the filter selects a domain for judgment.
+func (f Filter) judges(domain Domain) bool {
+	return f.Domains == 0 || f.Domains&domain != 0
 }
 
 // narrowed reports whether the filter selects less than the whole bounded
 // host: a scope word, a path, pid, unit or a domain left unjudged.
 func (f Filter) narrowed() bool {
-	return f.Surfaces != nil || len(f.Paths)+len(f.ExcludePaths)+len(f.PIDs)+len(f.Units) > 0 ||
-		len(f.OffDomains) > 0
+	if f.Domains != 0 && f.Domains != AllDomains {
+		return true
+	}
+	if f.Surfaces != nil && *f.Surfaces != startup.AllScope() {
+		return true
+	}
+	return len(f.Paths)+len(f.ExcludePaths)+len(f.PIDs)+len(f.ExcludePIDs)+
+		len(f.Units)+len(f.ExcludeUnits) > 0
 }
 
 // Progress reports the collection stage a run entered. The stage words are

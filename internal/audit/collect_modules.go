@@ -6,6 +6,7 @@ package audit
 
 import (
 	"context"
+	"sort"
 	"strconv"
 )
 
@@ -17,10 +18,13 @@ func collectServicesModule(ctx context.Context, snapshot *Snapshot) []string {
 	switch {
 	case snapshot.plan.seedUnit() != "":
 		services, gaps = collectServiceScoped(ctx, snapshot.plan.seedUnit())
-	case len(snapshot.plan.Units) == 1:
+	case len(snapshot.plan.Units) > 0:
 		for unit := range snapshot.plan.Units {
-			services, gaps = collectServiceScoped(ctx, unit)
+			one, oneGaps := collectServiceScoped(ctx, unit)
+			services = append(services, one...)
+			gaps = append(gaps, oneGaps...)
 		}
+		sort.Slice(services, func(i, j int) bool { return services[i].Unit < services[j].Unit })
 	default:
 		services, gaps = collectServices(ctx)
 	}
@@ -31,16 +35,22 @@ func collectServicesModule(ctx context.Context, snapshot *Snapshot) []string {
 // collectProcessesModule reads the running principals, scoped by the plan's
 // pids, one unit or one object graph's process.
 func collectProcessesModule(ctx context.Context, snapshot *Snapshot) []string {
-	scope := processScope{unit: snapshot.plan.seedUnit()}
+	scope := processScope{}
+	if unit := snapshot.plan.seedUnit(); unit != "" {
+		scope.units = map[string]bool{unit: true}
+	}
+	if len(snapshot.plan.Units) > 0 {
+		scope.units = snapshot.plan.Units
+	}
 	if snapshot.plan.Seed.Kind == "pid" {
 		if pid, err := strconv.Atoi(snapshot.plan.Seed.Value); err == nil {
 			scope.pids = map[int]bool{pid: true}
 		}
 	}
-	if pids := positivePIDs(snapshot.plan.PIDs); pids != nil {
-		scope.pids = pids
+	if len(snapshot.plan.PIDs) > 0 {
+		scope.pids = snapshot.plan.PIDs
 	}
-	processes, gaps := collectProcesses(ctx, snapshot.classify, snapshot.catalog.OwnedAll, scope)
+	processes, gaps := collectProcesses(ctx, snapshot.classify, scope)
 	snapshot.Processes = processes
 	for _, process := range processes {
 		remember(snapshot, process.Exe, process.ExeFacts)
@@ -56,8 +66,16 @@ func collectSocketsModule(ctx context.Context, snapshot *Snapshot) []string {
 	if snapshot.plan.Seed.Kind != "" {
 		scopePIDs = seedPids(snapshot.plan.Seed, snapshot.Processes)
 	}
-	if pids := positivePIDs(snapshot.plan.PIDs); pids != nil {
-		scopePIDs = pids
+	if len(snapshot.plan.Units) > 0 {
+		scopePIDs = map[int]bool{}
+		for _, process := range snapshot.Processes {
+			if unitMatches(process.Unit, snapshot.plan.Units) {
+				scopePIDs[process.PID] = true
+			}
+		}
+	}
+	if len(snapshot.plan.PIDs) > 0 {
+		scopePIDs = snapshot.plan.PIDs
 	}
 	var sockets []Socket
 	var connections []Connection
@@ -79,7 +97,7 @@ func collectSocketsModule(ctx context.Context, snapshot *Snapshot) []string {
 // collectAuthorityModule walks the authority trees and reads the facts of
 // every authority object it names.
 func collectAuthorityModule(ctx context.Context, snapshot *Snapshot) []string {
-	authority, gaps := collectAuthority(ctx)
+	authority, gaps := collectAuthority(ctx, snapshot.plan.Filter)
 	snapshot.Authority = authority
 	for _, path := range authority {
 		remember(snapshot, path, snapshot.classify(path))

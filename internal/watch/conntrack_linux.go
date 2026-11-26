@@ -85,7 +85,7 @@ func (j *flowJoiner) owner(ctx context.Context, proto, local, peer string, at ti
 			continue
 		}
 		if state.State == "ESTAB" {
-			return j.holder(state), state, true
+			return j.holder(ctx, state), state, true
 		}
 		if !found {
 			fallback, found = state, true
@@ -94,15 +94,15 @@ func (j *flowJoiner) owner(ctx context.Context, proto, local, peer string, at ti
 	if !found {
 		return 0, sockState{}, false
 	}
-	return j.holder(fallback), fallback, true
+	return j.holder(ctx, fallback), fallback, true
 }
 
 // holder answers the pid that holds the row's inode, if any.
-func (j *flowJoiner) holder(state sockState) int {
+func (j *flowJoiner) holder(ctx context.Context, state sockState) int {
 	if state.Key.Inode == 0 {
 		return 0
 	}
-	owners := netdiag.Owners(map[uint64]bool{state.Key.Inode: true})[state.Key.Inode]
+	owners := netdiag.Owners(ctx, map[uint64]bool{state.Key.Inode: true})[state.Key.Inode]
 	if len(owners) == 0 {
 		return 0
 	}
@@ -225,6 +225,7 @@ func (s *conntrackSource) emitFlow(ctx context.Context, out chan<- Event, event 
 				flow.Sock.Comm = proc.Comm
 				flow.Sock.Exe = proc.Exe
 				flow.Sock.Cmdline = proc.Cmdline
+				flow.Sock.Args = proc.Args
 				flow.Sock.Cwd = proc.Cwd
 				if proc.UID != 0 {
 					flow.Sock.UID = proc.UID

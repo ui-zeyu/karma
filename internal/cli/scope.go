@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,37 +13,56 @@ import (
 )
 
 // scope is the positional narrowing: domains, activation surfaces, paths,
-// pids and unit names.
+// pids and unit names. It keeps positive and excluded sets apart, so an
+// exclusion removes one relation instead of turning a whole domain off.
 type scope struct {
 	domains         audit.Domain
 	excludedDomains audit.Domain
-	surfaces        map[string]bool // nil means every surface
-	paths           []string
-	exclude         []string
-	pids            map[int]bool
-	units           map[string]bool
+
+	surfaces        startup.Scope
+	useSurfaces     bool
+	excludedSurface startup.Scope
+
+	paths       []string
+	exclude     []string
+	pids        map[int]bool
+	excludePIDs map[int]bool
+	units       map[string]bool
+	excludeUnit map[string]bool
 }
 
-// surfaceWords are the startup surfaces plus the two runtime views the
-// audit's own collectors read. The startup names come from the collector
-// table, so the CLI vocabulary cannot drift from what is collected.
-var surfaceWords = append(startup.SurfaceWords(), "activity", "authority")
+// surfaceWords are the startup surfaces. Domain and group words are listed in
+// their own panels; the grammar resolves them before this table.
+var surfaceWords = startup.SurfaceWords()
 
-var surfaceGroups = map[string][]string{
-	"persistence": startup.SurfaceWords(),
-	"boot":        {"systemd", "init", "loader", "udev", "apt", "module", "system"},
-	"login":       {"profile", "ssh", "pam", "xdg"},
-	"schedule":    {"cron"},
-	"service":     {"systemd", "supervisor"},
-	"device":      {"udev"},
-	"activity":    {"activity"},
+// groupScope is one surface group's two effects: the domains it turns on and
+// the startup surfaces it reads. excludedDomains applies only when the group
+// is negated, which is how !activity removes the activity domains while !boot
+// leaves persistence on and removes only its surfaces.
+type groupScope struct {
+	domains         audit.Domain
+	excludedDomains audit.Domain
+	surfaces        []string
+}
+
+var groups = map[string]groupScope{
+	"persistence": {domains: audit.DomainPersistence, surfaces: startup.SurfaceWords()},
+	"boot": {domains: audit.DomainPersistence, surfaces: []string{
+		"systemd", "init", "loader", "udev", "apt", "module", "system",
+	}},
+	"login":    {domains: audit.DomainPersistence, surfaces: []string{"profile", "ssh", "pam", "xdg"}},
+	"schedule": {domains: audit.DomainPersistence, surfaces: []string{"cron"}},
+	"service": {domains: audit.DomainServices | audit.DomainPersistence,
+		surfaces: []string{"systemd", "supervisor"}},
+	"device":   {domains: audit.DomainPersistence, surfaces: []string{"udev"}},
+	"activity": {domains: audit.DomainProcesses | audit.DomainNetwork, excludedDomains: audit.DomainProcesses | audit.DomainNetwork},
 }
 
 // groupWords lists the surface groups, sorted, so the vocabulary has one
 // canonical order.
 func groupWords() []string {
-	words := make([]string, 0, len(surfaceGroups))
-	for word := range surfaceGroups {
+	words := make([]string, 0, len(groups))
+	for word := range groups {
 		words = append(words, word)
 	}
 	sort.Strings(words)
@@ -69,180 +90,213 @@ func parseScope(words []string) (scope, error) {
 			return scope{}, fmt.Errorf("an exclusion needs a word after \"!\"")
 		}
 		if domain, ok := domainWords()[name]; ok {
-			if excluded {
-				parsed.excludedDomains |= domain
-			} else {
-				parsed.domains |= domain
-			}
-			// A domain word keeps every activation surface in judgment scope;
-			// only the domains whose rows are surface-specific name one.
-			switch name {
-			case "services":
-				parsed.selectSurfaces(excluded)
-				parsed.surfaces["systemd"] = !excluded
-			case "processes", "network":
-				parsed.selectSurfaces(excluded)
-				parsed.surfaces["activity"] = !excluded
-			case "files":
-				parsed.selectSurfaces(excluded)
-				parsed.surfaces["files"] = !excluded
-			}
+			parsed.addDomain(name, domain, excluded)
 			continue
 		}
 		if strings.HasPrefix(name, "/proc/") {
-			pid, err := strconv.Atoi(strings.TrimPrefix(name, "/proc/"))
+			if err := parsed.addPID(strings.TrimPrefix(name, "/proc/"), excluded); err != nil {
+				return scope{}, err
+			}
+			continue
+		}
+		if isScopePath(name) {
+			path, err := cleanScopePath(name)
 			if err != nil {
-				return scope{}, fmt.Errorf("unknown process %q", name)
+				return scope{}, err
 			}
-			if parsed.pids == nil {
-				parsed.pids = map[int]bool{}
-			}
-			parsed.pids[pid] = !excluded
-			continue
-		}
-		if strings.HasPrefix(name, "/") || strings.HasPrefix(name, "./") || strings.HasPrefix(name, "~/") {
 			if excluded {
-				parsed.exclude = append(parsed.exclude, name)
+				parsed.exclude = append(parsed.exclude, path)
 			} else {
-				parsed.paths = append(parsed.paths, name)
+				parsed.paths = append(parsed.paths, path)
 			}
 			continue
 		}
-		if hasUnitSuffix(name) {
-			if parsed.units == nil {
-				parsed.units = map[string]bool{}
-			}
-			parsed.units[name] = !excluded
+		if startup.IsUnitName(name) {
 			if excluded {
-				parsed.excludedDomains |= audit.DomainServices
+				if parsed.excludeUnit == nil {
+					parsed.excludeUnit = map[string]bool{}
+				}
+				parsed.excludeUnit[name] = true
 			} else {
-				parsed.domains |= audit.DomainServices
+				if parsed.units == nil {
+					parsed.units = map[string]bool{}
+				}
+				parsed.units[name] = true
+				parsed.domains |= audit.DomainServices | audit.DomainPersistence |
+					audit.DomainProcesses | audit.DomainNetwork
+				parsed.addSurfaces([]string{"systemd"})
 			}
-			// A unit word names a relation, so it stays out of the surface
-			// selection: the services domain's own startup scope collects the
-			// unit's systemd rows, and the panels the unit can answer narrow
-			// by the unit itself.
 			continue
 		}
-		names, group := surfaceGroups[name]
-		if !group {
-			if !contains(surfaceWords, name) {
-				return scope{}, fmt.Errorf("unknown scope %q (surfaces: %s)", name, strings.Join(surfaceWords, ", "))
-			}
-			names = []string{name}
-		}
-		parsed.selectSurfaces(excluded)
-		for _, surface := range names {
-			parsed.surfaces[surface] = !excluded
-		}
-		if excluded {
+		if group, ok := groups[name]; ok {
+			parsed.addGroup(group, excluded)
 			continue
 		}
-		if group {
-			switch name {
-			case "activity":
-				parsed.domains |= audit.DomainProcesses | audit.DomainNetwork
-			case "service":
-				parsed.domains |= audit.DomainServices
-			default:
+		if contains(startup.SurfaceWords(), name) {
+			if excluded {
+				parsed.excludedSurface |= startup.ScopeForWords([]string{name})
+			} else {
 				parsed.domains |= audit.DomainPersistence
+				if name == "systemd" {
+					parsed.domains |= audit.DomainServices
+				}
+				parsed.addSurfaces([]string{name})
 			}
 			continue
 		}
-		switch name {
-		case "systemd":
-			parsed.domains |= audit.DomainServices
-		case "activity":
-			parsed.domains |= audit.DomainProcesses | audit.DomainNetwork
-		case "authority":
-			parsed.domains |= audit.DomainAuthority
-		default:
-			parsed.domains |= audit.DomainPersistence
-		}
+		return scope{}, fmt.Errorf("unknown scope %q (surfaces: %s)", name, strings.Join(surfaceWords, ", "))
 	}
 	return parsed, nil
 }
 
-// selectSurfaces allocates the surface map. An exclusion-first selection
-// starts from every surface, so "!profile" keeps the rest rather than turning
-// the whole host off.
-func (s *scope) selectSurfaces(excluded bool) {
-	if s.surfaces != nil {
+// addDomain applies one domain word. services and persistence carry a surface
+// requirement: the services inventory also judges the systemd activation
+// files, and a persistence audit reads every surface. Excluding services
+// drops only its inventory; persistence keeps its own surfaces.
+func (s *scope) addDomain(name string, domain audit.Domain, excluded bool) {
+	if excluded {
+		// Excluding services drops the inventory; persistence keeps its own
+		// judgment of systemd files.
+		s.excludedDomains |= domain
 		return
 	}
-	s.surfaces = map[string]bool{}
+	module, ok := audit.ModuleForWord(name)
+	if !ok {
+		s.domains |= domain
+		return
+	}
+	s.domains |= module.Bit | module.Selects
+	if module.Startup != nil {
+		s.addSurfaceScope(module.Startup())
+	}
+}
+
+func (s *scope) addSurfaceScope(scope startup.Scope) {
+	if scope == 0 {
+		return
+	}
+	s.useSurfaces = true
+	s.surfaces |= scope
+}
+
+func (s *scope) addGroup(group groupScope, excluded bool) {
 	if excluded {
-		for _, surface := range surfaceWords {
-			s.surfaces[surface] = true
+		s.excludedDomains |= group.excludedDomains
+		s.excludedSurface |= startup.ScopeForWords(group.surfaces)
+		return
+	}
+	s.domains |= group.domains
+	if len(group.surfaces) > 0 {
+		s.addSurfaces(group.surfaces)
+	}
+}
+
+func (s *scope) addSurfaces(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	s.useSurfaces = true
+	s.surfaces |= startup.ScopeForWords(names)
+}
+
+func (s *scope) addPID(value string, excluded bool) error {
+	pid, err := strconv.Atoi(value)
+	if err != nil || pid <= 0 {
+		return fmt.Errorf("unknown process %q", "/proc/"+value)
+	}
+	if excluded {
+		if s.excludePIDs == nil {
+			s.excludePIDs = map[int]bool{}
 		}
+		s.excludePIDs[pid] = true
+		return nil
 	}
+	if s.pids == nil {
+		s.pids = map[int]bool{}
+	}
+	s.pids[pid] = true
+	return nil
 }
 
-func (s scope) filter(min audit.Severity) audit.Filter {
-	// plan() is pure, so the off-domain list answers the same bits the
-	// collectors read.
-	return audit.Filter{
-		Surfaces:     s.surfaces,
-		Paths:        s.paths,
-		ExcludePaths: s.exclude,
-		PIDs:         s.pids,
-		Units:        s.units,
-		MinSeverity:  min,
-		OffDomains:   offDomains(s.plan().Domains),
-	}
+func isScopePath(name string) bool {
+	return strings.HasPrefix(name, "/") || strings.HasPrefix(name, "./") ||
+		strings.HasPrefix(name, "../") || strings.HasPrefix(name, "~/")
 }
 
-// offDomains names the bounded domains the plan does not judge, in registry
-// order. A scoped report's quiet is only about the domains it ran, so the
-// masthead says which ones stayed off.
-func offDomains(domains audit.Domain) []string {
-	bits := domainWords()
-	var off []string
-	for _, word := range audit.DomainWords() {
-		if bit := bits[word]; bit != 0 && bit != audit.DomainBase && domains&bit == 0 {
-			off = append(off, word)
+// cleanScopePath resolves the relative forms the grammar accepts. Facts are
+// absolute, so accepting ./ or ~/ without expanding them would select nothing.
+func cleanScopePath(name string) (string, error) {
+	switch {
+	case strings.HasPrefix(name, "~/"):
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return "", fmt.Errorf("cannot resolve %q: no home directory", name)
 		}
+		return filepath.Clean(filepath.Join(home, strings.TrimPrefix(name, "~/"))), nil
+	case strings.HasPrefix(name, "./"), strings.HasPrefix(name, "../"):
+		path, err := filepath.Abs(name)
+		if err != nil {
+			return "", fmt.Errorf("cannot resolve %q: %v", name, err)
+		}
+		return path, nil
 	}
-	return off
+	return filepath.Clean(name), nil
 }
 
-// plan turns the parsed selection into what the collectors read. No scope
-// words at all means the full bounded host; a domain word means that domain;
-// paths and pids alone keep the full domain set and narrow the judgment.
+// plan turns the parsed selection into the one range state the collectors,
+// the judges and the views read. A bare run keeps every domain and the
+// registry's startup surfaces; positive surface words win, and exclusions are
+// applied last so the result does not depend on word order.
 func (s scope) plan() audit.Plan {
+	paths := s.paths
+	rootPath := contains(paths, "/")
+	if rootPath {
+		// The root prefix covers every path; keeping it as a positive filter
+		// would also suppress the host-level checks. A root path is the bare
+		// run, with any exclusions still applied.
+		paths = nil
+	}
 	domains := s.domains
 	if domains == 0 {
-		if s.surfaces == nil && len(s.pids) > 0 && len(s.paths) == 0 {
-			// A process scope reads the process table and its sockets; the
-			// authority walk and the static inventory cannot be about one pid.
-			domains = audit.DomainBase | audit.DomainProcesses | audit.DomainNetwork
-		} else {
+		switch {
+		case rootPath:
+			domains = audit.AllDomains
+		case len(paths) > 0:
+			domains = audit.PathDomains(paths)
+		case len(s.pids) > 0:
+			domains = audit.DomainProcesses | audit.DomainNetwork
+		default:
 			domains = audit.AllDomains
 		}
 	}
+	if len(s.pids) > 0 {
+		// A pid names a process slice even when a path also narrows the
+		// file side of the run.
+		domains |= audit.DomainProcesses | audit.DomainNetwork
+	}
 	domains |= audit.DomainBase
 	domains &^= s.excludedDomains
-	plan := audit.Plan{
-		Domains:  domains,
-		Surfaces: s.surfaces,
-		Paths:    s.paths,
-		Exclude:  s.exclude,
-		PIDs:     s.pids,
-		Units:    s.units,
+
+	surfaces := s.surfaces
+	if !s.useSurfaces {
+		surfaces = audit.StartupScope(domains)
 	}
-	if domains&audit.DomainFiles != 0 && len(s.paths) > 0 {
-		plan.InventoryRoots = s.paths
+	surfaces &^= s.excludedSurface
+
+	plan := audit.Plan{Filter: audit.Filter{
+		Domains:      domains,
+		Surfaces:     &surfaces,
+		Paths:        paths,
+		ExcludePaths: s.exclude,
+		PIDs:         s.pids,
+		ExcludePIDs:  s.excludePIDs,
+		Units:        s.units,
+		ExcludeUnits: s.excludeUnit,
+	}}
+	if domains&audit.DomainFiles != 0 && len(paths) > 0 {
+		plan.InventoryRoots = paths
 	}
 	return plan
-}
-
-func hasUnitSuffix(name string) bool {
-	switch {
-	case strings.HasSuffix(name, ".service"), strings.HasSuffix(name, ".socket"),
-		strings.HasSuffix(name, ".timer"), strings.HasSuffix(name, ".path"):
-		return true
-	}
-	return false
 }
 
 func contains(values []string, wanted string) bool {

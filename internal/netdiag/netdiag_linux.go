@@ -62,20 +62,20 @@ func Snapshot(ctx context.Context) ([]Socket, error) {
 // /proc/[pid]/fd for "socket:[inode]" links. Reading another user's fd
 // directory needs root, so a non-root run attributes only its own sockets, the
 // same limit ss -p has.
-func Owners(inodes map[uint64]bool) map[uint64][]Owner {
-	return owners(inodes, nil)
+func Owners(ctx context.Context, inodes map[uint64]bool) map[uint64][]Owner {
+	return owners(ctx, inodes, nil)
 }
 
 // OwnersFor is Owners restricted to a pid set: a profile that selected a unit
 // or one process does not read every process's fd table.
-func OwnersFor(inodes map[uint64]bool, pids map[int]bool) map[uint64][]Owner {
+func OwnersFor(ctx context.Context, inodes map[uint64]bool, pids map[int]bool) map[uint64][]Owner {
 	if len(pids) == 0 {
 		return map[uint64][]Owner{}
 	}
-	return owners(inodes, func(pid int) bool { return pids[pid] })
+	return owners(ctx, inodes, func(pid int) bool { return pids[pid] })
 }
 
-func owners(inodes map[uint64]bool, keep func(pid int) bool) map[uint64][]Owner {
+func owners(ctx context.Context, inodes map[uint64]bool, keep func(pid int) bool) map[uint64][]Owner {
 	out := map[uint64][]Owner{}
 	if len(inodes) == 0 {
 		return out
@@ -89,6 +89,9 @@ func owners(inodes map[uint64]bool, keep func(pid int) bool) map[uint64][]Owner 
 		return out
 	}
 	for _, p := range procs {
+		if ctx.Err() != nil {
+			return out
+		}
 		if keep != nil && !keep(p.PID) {
 			continue
 		}

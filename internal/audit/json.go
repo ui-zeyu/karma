@@ -75,6 +75,7 @@ func WriteJSON(w io.Writer, report *Report) error {
 		Source      string         `json:"source"`
 		Host        Host           `json:"host"`
 		Boundary    boundaryData   `json:"boundary"`
+		OffDomains  []string       `json:"off_domains,omitempty"`
 		Findings    []findingData  `json:"findings"`
 		Services    []Service      `json:"services,omitempty"`
 		Listeners   []Socket       `json:"listeners,omitempty"`
@@ -87,6 +88,7 @@ func WriteJSON(w io.Writer, report *Report) error {
 		Source:      report.Source,
 		Host:        report.Host,
 		Boundary:    boundaryDataOf(report.Boundary),
+		OffDomains:  report.OffDomains,
 		Findings:    make([]findingData, 0, len(report.Findings)),
 		Services:    report.Services,
 		Listeners:   report.Sockets,

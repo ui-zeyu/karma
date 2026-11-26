@@ -5,7 +5,11 @@ package audit
 // panel and the JSON answer, so a section is one entry and the vocabulary
 // cannot drift from what the sections print.
 
-import "sort"
+import (
+	"sort"
+
+	"karma/internal/startup"
+)
 
 // Section is one `karma show` section.
 type Section struct {
@@ -16,12 +20,22 @@ type Section struct {
 	Panel string
 	// Domains names what the section needs collected beyond the base.
 	Domains Domain
-	// AllSurfaces reports whether the section reads every activation
-	// surface rather than the scope's own selection.
+	// AllSurfaces reports whether the section reads the scope's activation
+	// surfaces; a plan that names none reads every surface.
 	AllSurfaces bool
-	// Rows builds the section's rows from the run's view. The function
-	// answers the rows and the count the panel head prints.
-	Rows func(view *View, options RenderOptions) ([]string, func(int) int)
+	// SkipEvidence keeps a section out of the audit's EVIDENCE block. The
+	// coverage panel is printed by the report itself, after the inventories.
+	SkipEvidence bool
+	// PIDContext collects the process table when the scope names pids or
+	// units, so a trail row can answer its owner without a second /proc pass.
+	PIDContext bool
+	// Plain marks rows that carry no palette; they are sanitized before a
+	// terminal sees them.
+	Plain bool
+	// Rows builds the section's rows from the run's view. Count is the number
+	// the panel head prints; it is data, not a function of the rendered rows.
+	Rows  func(view *View, options RenderOptions) []string
+	Count func(view *View, options RenderOptions) int
 	// JSONKey and Data are the section's machine-readable answer: the key
 	// the section's collected structures travel under.
 	JSONKey string
@@ -42,10 +56,16 @@ func (s *Section) HasWord(word string) bool {
 // the domains and the surfaces; the scope keeps its units, pids and paths.
 func (s *Section) Plan(base Plan) Plan {
 	base.Domains = DomainBase | s.Domains
-	if s.AllSurfaces {
-		base.Surfaces = nil
-	} else {
-		base.Surfaces = map[string]bool{}
+	if s.PIDContext && (len(base.PIDs) > 0 || len(base.Units) > 0 || len(base.ExcludePIDs) > 0 || len(base.ExcludeUnits) > 0) {
+		base.Domains |= DomainProcesses
+	}
+	switch {
+	case !s.AllSurfaces:
+		base.Surfaces = surfacePtr(0)
+	case base.Surfaces == nil:
+		// A section that reads every surface still honors the scope's
+		// surface exclusions; a hand-built plan with no surface set reads all.
+		base.Surfaces = surfacePtr(startup.AllScope())
 	}
 	return base
 }
@@ -53,33 +73,36 @@ func (s *Section) Plan(base Plan) Plan {
 // sections is the whole `show` vocabulary, in print order.
 var sections = []*Section{
 	{
-		Words:       []string{"activation", "persistence", "boot", "login", "service", "device", "schedule"},
+		Words:       []string{"activation", "persistence", "boot", "login", "device", "schedule"},
 		Panel:       "ACTIVATION",
 		Domains:     DomainPersistence,
 		AllSurfaces: true,
-		Rows: func(view *View, options RenderOptions) ([]string, func(int) int) {
-			return activationRows(view, options), activationCount
+		Rows: func(view *View, options RenderOptions) []string {
+			return activationRows(view, options)
 		},
+		Count:   func(view *View, _ RenderOptions) int { return len(view.Activations) },
 		JSONKey: "activations",
 		Data:    func(view *View, options RenderOptions) any { return view.Activations },
 	},
 	{
-		Words:   []string{"process", "activity"},
+		Words:   []string{"process", "processes", "activity"},
 		Panel:   "PROCESS",
 		Domains: DomainProcesses | DomainNetwork,
-		Rows: func(view *View, options RenderOptions) ([]string, func(int) int) {
-			return processRows(view, options), headerless
+		Rows: func(view *View, options RenderOptions) []string {
+			return processRows(view, options)
 		},
+		Count:   processCount,
 		JSONKey: "processes",
 		Data:    func(view *View, options RenderOptions) any { return view.Processes },
 	},
 	{
-		Words:   []string{"services"},
+		Words:   []string{"services", "service"},
 		Panel:   "SERVICE",
 		Domains: DomainServices,
-		Rows: func(view *View, options RenderOptions) ([]string, func(int) int) {
-			return serviceRows(view, options), headerless
+		Rows: func(view *View, options RenderOptions) []string {
+			return serviceRows(view, options)
 		},
+		Count:   func(view *View, _ RenderOptions) int { return len(view.Services) },
 		JSONKey: "services",
 		Data:    func(view *View, options RenderOptions) any { return view.Services },
 	},
@@ -87,9 +110,10 @@ var sections = []*Section{
 		Words:   []string{"listeners", "sockets", "listen"},
 		Panel:   "LISTEN",
 		Domains: DomainProcesses | DomainNetwork,
-		Rows: func(view *View, options RenderOptions) ([]string, func(int) int) {
-			return socketRows(view, options), headerless
+		Rows: func(view *View, options RenderOptions) []string {
+			return socketRows(view, options)
 		},
+		Count:   func(view *View, _ RenderOptions) int { return len(view.Sockets) },
 		JSONKey: "listeners",
 		Data:    func(view *View, options RenderOptions) any { return view.Sockets },
 	},
@@ -97,9 +121,10 @@ var sections = []*Section{
 		Words:   []string{"connections", "connection", "network"},
 		Panel:   "CONNECTION",
 		Domains: DomainProcesses | DomainNetwork,
-		Rows: func(view *View, options RenderOptions) ([]string, func(int) int) {
-			return connectionRows(view, options), headerless
+		Rows: func(view *View, options RenderOptions) []string {
+			return connectionRows(view, options)
 		},
+		Count:   func(view *View, _ RenderOptions) int { return len(view.Connections) },
 		JSONKey: "connections",
 		Data:    func(view *View, options RenderOptions) any { return view.Connections },
 	},
@@ -107,9 +132,10 @@ var sections = []*Section{
 		Words:   []string{"kernel"},
 		Panel:   "KERNEL",
 		Domains: DomainKernel,
-		Rows: func(view *View, options RenderOptions) ([]string, func(int) int) {
-			return kernelRows(view, options), headerless
+		Rows: func(view *View, options RenderOptions) []string {
+			return kernelRows(view, options)
 		},
+		Count:   kernelCount,
 		JSONKey: "kernel",
 		Data:    func(view *View, options RenderOptions) any { return view.Kernel },
 	},
@@ -117,9 +143,10 @@ var sections = []*Section{
 		Words:   []string{"authority"},
 		Panel:   "AUTHORITY",
 		Domains: DomainAuthority,
-		Rows: func(view *View, options RenderOptions) ([]string, func(int) int) {
-			return authorityRows(view, options), headerless
+		Rows: func(view *View, options RenderOptions) []string {
+			return authorityRows(view, options)
 		},
+		Count:   func(view *View, _ RenderOptions) int { return len(view.Authority) },
 		JSONKey: "authority",
 		Data:    func(view *View, options RenderOptions) any { return view.Authority },
 	},
@@ -127,20 +154,37 @@ var sections = []*Section{
 		Words:   []string{"mounts"},
 		Panel:   "MOUNTS",
 		Domains: 0,
-		Rows: func(view *View, options RenderOptions) ([]string, func(int) int) {
-			return mountRows(view, options), headerless
+		Rows: func(view *View, options RenderOptions) []string {
+			return mountRows(view, options)
 		},
+		Count:   func(view *View, _ RenderOptions) int { return len(view.Mounts) },
 		JSONKey: "mounts",
 		Data:    func(view *View, options RenderOptions) any { return view.Mounts },
 	},
 	{
-		Words:       []string{"coverage"},
-		Panel:       "COVERAGE",
-		Domains:     AllDomains,
-		AllSurfaces: true,
-		Rows: func(view *View, options RenderOptions) ([]string, func(int) int) {
-			coverage := Judge(view.Snapshot, options.Filter).Coverage
-			return coverage, func(rows int) int { return rows }
+		Words:      []string{"trail", "history"},
+		Panel:      "TRAIL",
+		Domains:    DomainTrail | DomainIdentity,
+		PIDContext: true,
+		Rows: func(view *View, options RenderOptions) []string {
+			return trailRows(view, options)
+		},
+		Count:   func(view *View, _ RenderOptions) int { return len(view.Trail) },
+		JSONKey: "trail",
+		Data:    func(view *View, options RenderOptions) any { return view.Trail },
+	},
+	{
+		Words:        []string{"coverage"},
+		Panel:        "COVERAGE",
+		Domains:      AllDomains,
+		AllSurfaces:  true,
+		SkipEvidence: true,
+		Plain:        true,
+		Rows: func(view *View, options RenderOptions) []string {
+			return Judge(view.Snapshot, options.Filter).Coverage
+		},
+		Count: func(view *View, options RenderOptions) int {
+			return len(Judge(view.Snapshot, options.Filter).Coverage)
 		},
 		JSONKey: "coverage",
 		Data: func(view *View, options RenderOptions) any {

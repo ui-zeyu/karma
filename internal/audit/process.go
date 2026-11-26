@@ -16,16 +16,31 @@ import (
 // every pid (cheap) and details only the unit's own processes; a pid seed
 // reads that process. The zero scope is the whole host.
 type processScope struct {
-	unit string
-	pids map[int]bool
+	units map[string]bool
+	pids  map[int]bool
+}
+
+func unitMatches(unit string, units map[string]bool) bool {
+	if len(units) == 0 {
+		return true
+	}
+	if units[unit] || units[templateUnit(unit)] {
+		return true
+	}
+	for wanted := range units {
+		if templateUnit(unit) == templateUnit(wanted) {
+			return true
+		}
+	}
+	return false
 }
 
 // collectProcesses reads the running principals. The image and the script an
 // interpreter carries are judged by origin later; here they are only facts.
-// Ownership is prefetched for every image in one batch before the facts are
-// read: a host with hundreds of processes must not cost one package-manager
-// call per process.
-func collectProcesses(ctx context.Context, facts func(string) trust.Facts, prefetch func([]string), scope processScope) ([]Process, []string) {
+// The catalog answers ownership from its loaded index, so a host with
+// hundreds of processes costs one facts read per image, not one package-
+// manager call.
+func collectProcesses(ctx context.Context, facts func(string) trust.Facts, scope processScope) ([]Process, []string) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, []string{"running processes could not be read: " + err.Error()}
@@ -43,9 +58,8 @@ func collectProcesses(ctx context.Context, facts func(string) trust.Facts, prefe
 		if scope.pids != nil && !scope.pids[pid] {
 			continue
 		}
-		if scope.unit != "" {
-			unit := readCgroupUnit(pid)
-			if unit != scope.unit && templateUnit(unit) != scope.unit {
+		if len(scope.units) > 0 {
+			if !unitMatches(readCgroupUnit(pid), scope.units) {
 				continue
 			}
 		}
@@ -71,18 +85,6 @@ func collectProcesses(ctx context.Context, facts func(string) trust.Facts, prefe
 			processes = append(processes, process)
 			selected[parent] = true
 		}
-	}
-	paths := make([]string, 0, len(processes)*3)
-	for _, process := range processes {
-		paths = append(paths, process.Exe, process.Script)
-		for _, target := range process.LoaderTargets {
-			if filepath.IsAbs(target.Path) {
-				paths = append(paths, target.Path)
-			}
-		}
-	}
-	if prefetch != nil {
-		prefetch(paths)
 	}
 	for index := range processes {
 		processes[index].ExeFacts = facts(processes[index].Exe)
@@ -135,7 +137,8 @@ func readProcess(pid int) (Process, bool) {
 		process.LoaderTargets, process.LibraryPath = loaderEnvironment(string(data))
 	}
 	if raw, err := os.ReadFile(base + "/cmdline"); err == nil {
-		process.Cmdline = strings.TrimSpace(strings.ReplaceAll(string(raw), "\x00", " "))
+		process.Args = cmdlineArgs(string(raw))
+		process.Cmdline = strings.TrimSpace(strings.Join(process.Args, " "))
 	}
 	if cwd, err := os.Readlink(base + "/cwd"); err == nil {
 		process.Cwd = cwd
@@ -280,11 +283,19 @@ func loaderEnvironment(environ string) ([]LoaderTarget, string) {
 // readScript resolves the file an interpreter carries. A relative argument is
 // joined to the process's cwd and is a script only when that path is a file;
 // otherwise it is an option value or a module name.
+func cmdlineArgs(raw string) []string {
+	raw = strings.TrimRight(raw, "\x00")
+	if raw == "" {
+		return nil
+	}
+	return strings.Split(raw, "\x00")
+}
+
 func readScript(process Process) string {
 	if process.Exe == "" || !startup.IsInterpreter(process.Exe) {
 		return ""
 	}
-	script := startup.ScriptArg(process.Cmdline)
+	script := startup.ScriptArgv(process.Args)
 	if script == "" {
 		return ""
 	}

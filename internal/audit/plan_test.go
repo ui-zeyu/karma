@@ -11,19 +11,36 @@ func TestPlanCollectors(t *testing.T) {
 	if !full.Has(DomainProcesses) || !full.Has(DomainNetwork) {
 		t.Errorf("full plan skips processes or network")
 	}
-	services := Plan{Domains: DomainServices, Surfaces: map[string]bool{"systemd": true}}
+	services := Plan{Filter: Filter{Domains: DomainServices, Surfaces: surfacePtr(startup.Systemd)}}
 	if services.Has(DomainProcesses) {
 		t.Errorf("a services audit should not read /proc")
 	}
-	if scope := services.startupScope(); !scope.Systemd || scope.Profile {
-		t.Errorf("services startup scope = %+v", scope)
+	if scope := services.startupScope(); !scope.Has(startup.SurfaceSystemd) || scope.Has(startup.SurfaceProfile) {
+		t.Errorf("services startup scope = %b", scope)
 	}
-	files := Plan{Domains: DomainFiles, Surfaces: map[string]bool{"files": true}}
+	files := Plan{Filter: Filter{Domains: DomainFiles, Surfaces: surfacePtr(0)}}
 	if files.Has(DomainProcesses) {
 		t.Errorf("a files audit should not read /proc")
 	}
-	if scope := files.startupScope(); scope != (startup.Scope{}) {
-		t.Errorf("files startup scope is not empty: %+v", scope)
+	if scope := files.startupScope(); scope != 0 {
+		t.Errorf("files startup scope is not empty: %b", scope)
+	}
+}
+
+func TestPlanCollectsContextDependencies(t *testing.T) {
+	network := Plan{Filter: Filter{Domains: DomainNetwork}}
+	if !network.collects(DomainProcesses) || network.Has(DomainProcesses) {
+		t.Errorf("network collection = %+v, want process rows as context, not a process judgment", network)
+	}
+	trail := Plan{Filter: Filter{Domains: DomainTrail}}
+	if !trail.collects(DomainIdentity) || trail.Has(DomainIdentity) {
+		t.Errorf("trail collection = %+v, want identity context, not an identity judgment", trail)
+	}
+	if got := StartupScope(DomainPersistence); got != startup.AllScope() {
+		t.Errorf("persistence startup = %b, want every surface", got)
+	}
+	if got := StartupScope(DomainFiles); got != 0 {
+		t.Errorf("files startup = %b, want none", got)
 	}
 }
 

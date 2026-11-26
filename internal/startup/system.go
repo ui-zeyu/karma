@@ -140,7 +140,7 @@ func pamEdges(file File, corpus *Corpus) []rawEdge {
 			if target := commandTargetFor(args); !target.dynamic && target.target != "" {
 				edges = append(edges, rawEdge{
 					surface: SurfacePAM, phase: Login, subject: Subject{Class: AccountRoot},
-					trigger: file.Path, line: index, mechanism: "pam_exec",
+					trigger: file.Path, line: index + 1, mechanism: "pam_exec",
 					target: target.target, kind: target.kind,
 					viaInterpreter: target.viaInterpreter,
 				})
@@ -154,7 +154,7 @@ func pamEdges(file File, corpus *Corpus) []rawEdge {
 		}
 		edges = append(edges, rawEdge{
 			surface: SurfacePAM, phase: Login, subject: Subject{Class: AccountRoot},
-			trigger: file.Path, line: index, mechanism: "pam",
+			trigger: file.Path, line: index + 1, mechanism: "pam",
 			target: path, kind: Library,
 		})
 	}
@@ -165,7 +165,7 @@ func pamEdges(file File, corpus *Corpus) []rawEdge {
 // libc maps into each process that resolves a name.
 func nssEdges(file File, corpus *Corpus) []rawEdge {
 	var edges []rawEdge
-	for _, line := range strings.Split(file.Body, "\n") {
+	for index, line := range strings.Split(file.Body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -186,7 +186,7 @@ func nssEdges(file File, corpus *Corpus) []rawEdge {
 			}
 			edges = append(edges, rawEdge{
 				surface: SurfaceSystem, phase: Login, subject: Subject{Class: AccountRoot},
-				trigger: file.Path, mechanism: "nss", target: path, kind: Library,
+				trigger: file.Path, line: index + 1, mechanism: "nss", target: path, kind: Library,
 			})
 		}
 	}
@@ -239,7 +239,7 @@ func fstabEdges(file File) []rawEdge {
 		}
 		edges = append(edges, rawEdge{
 			surface: SurfaceSystem, phase: BootEnabled, subject: Subject{Class: AccountRoot},
-			trigger: file.Path, line: index, mechanism: "fstab",
+			trigger: file.Path, line: index + 1, mechanism: "fstab",
 			target: fields[1], kind: Config,
 			note: strings.Join(fields[2:], " "),
 		})
@@ -263,10 +263,17 @@ func crypttabEdges(file File) []rawEdge {
 		}
 		edges = append(edges, rawEdge{
 			surface: SurfaceSystem, phase: BootEnabled, subject: Subject{Class: AccountRoot},
-			trigger: file.Path, line: index, mechanism: "crypttab",
+			trigger: file.Path, line: index + 1, mechanism: "crypttab",
 			target: "/dev/mapper/" + fields[0], kind: Config,
 			note: strings.Join(fields[1:], " "),
 		})
+		if len(fields) >= 3 && filepath.IsAbs(fields[2]) {
+			edges = append(edges, rawEdge{
+				surface: SurfaceSystem, phase: BootEnabled, subject: Subject{Class: AccountRoot},
+				trigger: file.Path, line: index + 1, mechanism: "crypttab-key",
+				target: fields[2], kind: Config,
+			})
+		}
 	}
 	return edges
 }
@@ -302,7 +309,7 @@ func wrapperCommands(file File) []rawEdge {
 			}
 			edges = append(edges, shellEdges(rest, rawEdge{
 				surface: base.surface, phase: base.phase, subject: base.subject,
-				trigger: base.trigger, line: index, mechanism: Mechanism(keyword),
+				trigger: base.trigger, line: index + 1, mechanism: Mechanism(keyword),
 			})...)
 			break
 		}
@@ -338,7 +345,7 @@ func xinetdEdges(file File) []rawEdge {
 		}
 		edges = append(edges, rawEdge{
 			surface: SurfaceSupervisor, phase: Login, subject: Subject{Class: AccountRoot},
-			trigger: file.Path, line: d.line - 1, mechanism: "server",
+			trigger: file.Path, line: d.line, mechanism: "server",
 			target: value, kind: Exec, dynamic: !filepath.IsAbs(value),
 		})
 	}

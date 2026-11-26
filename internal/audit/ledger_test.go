@@ -16,6 +16,25 @@ const (
 	evilHash = "0123456789abcdef0123456789abcdef"
 )
 
+func TestDPKGExpectedIsEmptyWithoutJudgedFiles(t *testing.T) {
+	hashes := map[string]prov.HashEntry{
+		"usr/bin/bash": {Pkg: "bash", Hash: testHash},
+		"etc/passwd":   {Pkg: "passwd", Hash: testHash},
+	}
+	expected := dpkgExpected(hashes, map[string]trust.Facts{
+		"/etc": {Path: "/etc", Real: "/etc", Kind: trust.Dir},
+	})
+	if len(expected) != 0 {
+		t.Fatalf("expected rows = %+v, want an empty ledger", expected)
+	}
+	expected = dpkgExpected(hashes, map[string]trust.Facts{
+		"/bin/bash": {Path: "/bin/bash", Real: "/usr/bin/bash", Kind: trust.File},
+	})
+	if len(expected) != 1 || expected["usr/bin/bash"].pkg != "bash" {
+		t.Errorf("expected rows = %+v, want the judged bash file", expected)
+	}
+}
+
 func pkgFacts(path string, ctime int64, pkg string) trust.Facts {
 	return trust.Build(path, trust.Attrs{
 		Kind: trust.File, Mode: 0o755, UID: 0, Real: path, CTime: ctime,
@@ -70,6 +89,107 @@ func TestHashFilesAndJoinContent(t *testing.T) {
 	verify := joinContent(actual, expected)
 	if content := verify[binary]; content.State != Verified || content.Package != "coreutils" {
 		t.Errorf("content = %+v, want verified against coreutils", content)
+	}
+}
+
+func TestLedgerPackagesCountsDistinctJudgedPackages(t *testing.T) {
+	expected := map[string]ledgerEntry{
+		"usr/bin/a": {pkg: "coreutils", hash: testHash},
+		"usr/bin/b": {pkg: "coreutils", hash: evilHash},
+		"usr/bin/c": {pkg: "bash", hash: testHash},
+	}
+	if got := ledgerPackages(expected); got != 2 {
+		t.Fatalf("ledger packages = %d, want 2", got)
+	}
+}
+
+func TestLedgerSummaryKeepsTheRPMInventoryCount(t *testing.T) {
+	snapshot := &Snapshot{}
+	snapshot.attachEvidence(evidenceSet{kind: "rpm", packages: 195})
+	if snapshot.Ledger.Packages != 195 {
+		t.Fatalf("packages = %d, want the rpm inventory count", snapshot.Ledger.Packages)
+	}
+	if snapshot.Ledger.Entries != 0 {
+		t.Fatalf("entries = %d, want 0 when no judged file reached rpm -Va", snapshot.Ledger.Entries)
+	}
+}
+
+func TestLedgerSummaryCountsTheRPMVerify(t *testing.T) {
+	path := "/usr/bin/tool"
+	snapshot := &Snapshot{Objects: map[string]trust.Facts{
+		path: pkgFacts(path, 900, "tools"),
+	}}
+	snapshot.attachEvidence(evidenceSet{
+		kind: "rpm", packages: 1, rpmVerified: true, objects: snapshot.Objects,
+		rpmFlag: map[string]string{"/usr/bin/deviation": "S.5....T."},
+	})
+	if snapshot.Ledger.Entries != 1 || snapshot.Ledger.Verified != 1 || snapshot.Ledger.Mismatched != 0 {
+		t.Fatalf("ledger = %+v, want one checked and verified file", snapshot.Ledger)
+	}
+	content, ok := snapshot.Verify[path]
+	if !ok || content.State != Verified || content.Method != methodRPM {
+		t.Fatalf("content = %+v %t, want rpm verified", content, ok)
+	}
+}
+
+func TestRPMDeviationFollowsTheResolvedSpelling(t *testing.T) {
+	facts := pkgFacts("/bin/bash", 900, "bash")
+	facts.Real = "/usr/bin/bash"
+	snapshot := &Snapshot{Objects: map[string]trust.Facts{"/bin/bash": facts}}
+	snapshot.attachEvidence(evidenceSet{
+		kind: "rpm", packages: 1, objects: snapshot.Objects,
+		rpmFlag: map[string]string{"/usr/bin/bash": "S.5....T."},
+	})
+	if content := snapshot.Verify["/usr/bin/bash"]; content.State != Mismatched || content.Method != methodRPM {
+		t.Fatalf("resolved content = %+v, want the rpm mismatch under the real path", content)
+	}
+}
+
+func TestRPMConffileDeviationSoftens(t *testing.T) {
+	path := "/etc/environment"
+	facts := pkgFacts(path, 900, "setup")
+	snapshot := &Snapshot{Objects: map[string]trust.Facts{path: facts}}
+	snapshot.attachEvidence(evidenceSet{
+		kind: "rpm", packages: 1, objects: snapshot.Objects,
+		conffiles: map[string]bool{path: true},
+		rpmFlag:   map[string]string{path: "S.5....T."},
+	})
+	content := snapshot.Verify[path]
+	if content.State != Mismatched || content.Method != methodRPM {
+		t.Fatalf("content = %+v, want an rpm mismatch", content)
+	}
+	story := newAssessor(snapshot).read(facts, false)
+	if story.origin != Modified || !story.softened {
+		t.Fatalf("story = %+v, want modified and softened", story)
+	}
+	if !mentions(story.evidence, "rpm -Va reports a deviation") {
+		t.Errorf("evidence = %v", story.evidence)
+	}
+}
+
+func TestHashFilesKeepsTheResolvedSpelling(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "bin", "ls")
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binary, []byte("ELF"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hash, ok := hashFile(binary)
+	if !ok {
+		t.Fatal("hashFile failed")
+	}
+	stripped := strings.TrimPrefix(binary, "/")
+	facts := pkgFacts("/bin/ls", 900, "coreutils")
+	facts.Real = binary
+	actual := hashFiles(t.Context(), map[string]trust.Facts{"/bin/ls": facts},
+		map[string]ledgerEntry{stripped: {pkg: "coreutils", hash: hash}})
+	if len(actual) != 1 || actual[binary] != hash {
+		t.Fatalf("actual = %v, want one resolved key", actual)
+	}
+	if _, alias := actual["/bin/ls"]; alias {
+		t.Fatal("hashFiles kept a second spelling for the same file")
 	}
 }
 
@@ -246,8 +366,9 @@ func TestVerdictReinstalledFileCountsAsRemodified(t *testing.T) {
 	}
 	a := newAssessor(snapshot)
 	story := a.read(pkgFacts("/bin/bash", 1200, "bash"), false)
-	if story.origin != Base || a.remodified != 1 {
-		t.Errorf("origin = %s remodified = %d, want base and one re-modified file", story.origin, a.remodified)
+	a.read(pkgFacts("/bin/bash", 1200, "bash"), false)
+	if story.origin != Base || len(a.remodifiedSet) != 1 {
+		t.Errorf("origin = %s remodified = %d, want base and one re-modified file", story.origin, len(a.remodifiedSet))
 	}
 	if !mentions(story.evidence, "newer than the package's last transaction") {
 		t.Errorf("evidence = %v", story.evidence)

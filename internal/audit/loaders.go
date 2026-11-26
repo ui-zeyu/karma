@@ -106,15 +106,15 @@ func judgeLoaders(snapshot *Snapshot, a *assessor, filter Filter, add func(Findi
 				})
 			}
 		}
-		if process.UID != 0 {
+		if uid := processUID(process); uid != 0 {
 			if names := processCapabilities(process.CapEff); len(names) > 0 {
 				add(Finding{
 					Class: "process-capability", Severity: High,
 					Title: "non-root process holds a privilege capability",
 					Path:  process.Exe, Origin: Unknown, Reach: RootAsset,
 					Detail:   "effective capabilities: " + strings.Join(names, ", "),
-					Evidence: []string{fmt.Sprintf("pid %d uid %d cmdline %s", process.PID, process.UID, process.Cmdline)},
-					Trace:    steps("process "+valueOr(process.Comm, process.Exe), "uid "+fmt.Sprint(process.UID), strings.Join(names, ", ")),
+					Evidence: []string{fmt.Sprintf("pid %d euid %d cmdline %s", process.PID, uid, process.Cmdline)},
+					Trace:    steps("process "+valueOr(process.Comm, process.Exe), "euid "+fmt.Sprint(uid), strings.Join(names, ", ")),
 				})
 			}
 		}

@@ -14,7 +14,11 @@ func defaultInterval(family Family) time.Duration {
 	if family == FamilySocket {
 		return 100 * time.Millisecond
 	}
-	return 20 * time.Millisecond
+	// The connector is the default process source; the poll is the fallback
+	// for a container. Fifty milliseconds keeps a burst affordable while a
+	// process that lives shorter than a poll is still caught by the connector
+	// where the kernel offers it.
+	return 50 * time.Millisecond
 }
 
 // Open selects a source. The process view prefers the kernel's proc connector
@@ -27,7 +31,7 @@ func Open(family Family, opt Options) (Source, error) {
 	case "", "auto":
 		if family == FamilyProcess {
 			if source, err := newConnector(opt); err == nil {
-				return source, nil
+				return sourceFits(family, source)
 			}
 		}
 		return openPoll(family, opt)
@@ -41,7 +45,7 @@ func Open(family Family, opt Options) (Source, error) {
 		if err != nil {
 			return nil, connectorUnavailable(err)
 		}
-		return source, nil
+		return sourceFits(family, source)
 	case "conntrack":
 		if family != FamilySocket {
 			return nil, fmt.Errorf("the conntrack source watches sockets only")
@@ -50,12 +54,23 @@ func Open(family Family, opt Options) (Source, error) {
 		if err != nil {
 			return nil, conntrackUnavailable(err)
 		}
-		return source, nil
+		return sourceFits(family, source)
 	case "perf", "ebpf":
 		return nil, fmt.Errorf("watch source %q is not available yet; use --source auto", opt.Backend)
 	default:
 		return nil, fmt.Errorf("unknown watch source %q; use auto|poll|connector|conntrack", opt.Backend)
 	}
+}
+
+func sourceFits(family Family, source Source) (Source, error) {
+	caps := source.Caps()
+	if family == FamilyProcess && !caps.Process {
+		return nil, fmt.Errorf("source %s does not produce process events", source.Name())
+	}
+	if family == FamilySocket && !caps.Socket {
+		return nil, fmt.Errorf("source %s does not produce socket events", source.Name())
+	}
+	return source, nil
 }
 
 func openPoll(family Family, opt Options) (Source, error) {

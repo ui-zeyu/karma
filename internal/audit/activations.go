@@ -33,10 +33,16 @@ func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Fi
 	}
 	dynamic := 0
 	for _, edge := range snapshot.Activations {
-		if !surfaceInScope(edge.Surface, filter) || !pathInScope(edge.Trigger, filter) && !pathInScope(edge.Target, filter) {
+		if !surfaceInScope(edge.Surface, filter) {
 			continue
 		}
-		if len(filter.Units) > 0 && !unitInScope(edge.Trigger, filter) {
+		if filter.pathExcluded(edge.Trigger) || filter.pathExcluded(edge.Target) {
+			continue
+		}
+		if !pathInScope(edge.Trigger, filter) && !pathInScope(edge.Target, filter) {
+			continue
+		}
+		if !unitInScope(edge.Trigger, filter) {
 			continue
 		}
 		if edge.Dynamic {
@@ -76,12 +82,18 @@ func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Fi
 			softened = triggerStory.softened
 		}
 		path := edge.Target
+		self := edge.Trigger == edge.Target
 		detail := string(edge.Mechanism) + " in " + edge.Trigger
+		if self {
+			detail = "the boot reads this file by position (" + string(edge.Mechanism) + ")"
+		}
 		evidence := []string{
 			fmt.Sprintf("trigger %s: %s (%s)", edge.Trigger, triggerStory.origin, triggerStory.why),
-			fmt.Sprintf("target %s: %s (%s)", edge.Target, targetStory.origin, targetStory.why),
-			fmt.Sprintf("runs as %s, reach %s (%s)", edge.Subject, reach, edge.Surface),
 		}
+		if !self {
+			evidence = append(evidence, fmt.Sprintf("target %s: %s (%s)", edge.Target, targetStory.origin, targetStory.why))
+		}
+		evidence = append(evidence, fmt.Sprintf("runs as %s, reach %s (%s)", edge.Subject, reach, edge.Surface))
 		evidence = append(evidence, triggerStory.evidence...)
 		evidence = append(evidence, targetStory.evidence...)
 		switch {
@@ -97,10 +109,10 @@ func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Fi
 				Quotes: edgeQuotes(edge), Trace: edgeTrace(edge),
 			})
 		case origin == Runtime || origin == Modified:
-			if triggerStory.origin.Rank() <= targetStory.origin.Rank() {
+			if !self && triggerStory.origin.Rank() <= targetStory.origin.Rank() {
 				path = edge.Trigger
 				detail += " activates " + edge.Target
-			} else {
+			} else if !self {
 				detail = "activated by " + edge.Trigger + " (" + string(edge.Mechanism) + ")"
 			}
 			class := "activation-introduction"
@@ -150,6 +162,11 @@ func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Fi
 // edgeTrace is the relation a finding answers: the trigger, the mechanism and
 // the target, with the nodes the boot graph draws them as.
 func edgeTrace(edge startup.Edge) []Step {
+	if edge.Trigger == edge.Target {
+		// A file the boot reads by position is one object, not a relation
+		// from itself to itself.
+		return []Step{{Text: edge.Trigger, Node: nodeKey("trigger", edge.Trigger)}}
+	}
 	return []Step{
 		{Text: edge.Trigger, Node: nodeKey("trigger", edge.Trigger)},
 		{Text: string(edge.Mechanism) + " " + edge.Target, Node: nodeKey("target", edge.Target)},
@@ -274,15 +291,24 @@ func surfaceInScope(surface startup.Surface, filter Filter) bool {
 	if filter.Surfaces == nil {
 		return true
 	}
-	return filter.Surfaces[string(surface)] || filter.Surfaces["persistence"]
+	return filter.Surfaces.Has(surface)
 }
 
 func unitInScope(trigger string, filter Filter) bool {
+	return unitAllowed(activationUnit(trigger), filter)
+}
+
+// unitAllowed reads the positive unit scope and its exclusions. An exclusion
+// alone narrows one unit; it never turns the whole unit inventory off.
+func unitAllowed(unit string, filter Filter) bool {
+	template := templateUnit(unit)
+	if filter.ExcludeUnits[unit] || filter.ExcludeUnits[template] {
+		return false
+	}
 	if len(filter.Units) == 0 {
 		return true
 	}
-	unit := activationUnit(trigger)
-	return filter.Units[unit] || filter.Units[templateUnit(unit)]
+	return filter.Units[unit] || filter.Units[template]
 }
 
 // activationUnit is the unit a trigger file belongs to: the file's own name, or

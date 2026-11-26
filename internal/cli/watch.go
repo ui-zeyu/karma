@@ -75,7 +75,7 @@ func newWatchProcCmd() *cobra.Command {
 			return runWatch(cmd, watch.FamilyProcess)
 		},
 	}
-	watchFlags(cmd, 20*time.Millisecond)
+	watchFlags(cmd, 50*time.Millisecond)
 	cmd.Flags().Bool("all", false, "print the poll baseline, or include fork and thread events (connector)")
 	cmd.Flags().Bool("fork", false, "include fork events (connector source)")
 	return cmd

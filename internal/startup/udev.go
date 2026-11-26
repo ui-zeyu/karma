@@ -27,7 +27,7 @@ func udevEdges(file File) []rawEdge {
 				phase:     Device,
 				subject:   Subject{Class: AccountRoot},
 				trigger:   file.Path,
-				line:      index,
+				line:      index + 1,
 				mechanism: Mechanism(key),
 			})...)
 		}

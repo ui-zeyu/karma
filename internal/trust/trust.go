@@ -172,13 +172,14 @@ var StartupRoots = []string{
 // project's own .profile in a deeper directory is not a startup file.
 var startupHomeFiles = []string{
 	".bashrc", ".bash_profile", ".bash_login", ".profile", ".bash_logout",
-	".zshrc", ".zprofile", ".zshenv", ".zlogin",
+	".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout",
 	".config/fish/config.fish",
 }
 
 // PackageResolver answers package ownership: the package that owns a path,
-// with known=false when the question could not be answered. *Resolver is the
-// live implementation; tests and callers that only read facts can pass a fake.
+// with known=false when the question could not be answered. *prov.Catalog is
+// the live implementation; tests and callers that only read facts can pass a
+// fake.
 type PackageResolver interface {
 	Owned(path string) (pkg string, known bool)
 }
@@ -229,7 +230,38 @@ func Build(path string, attrs Attrs) Facts {
 // Classify reads one path's facts. A nil resolver reports package ownership as
 // unknown; a path that does not exist still carries the path-level facts
 // (hidden, admin layer, package ownership of a deleted package file).
+type dirFlags struct {
+	replaceable bool
+	open        bool
+}
+
+// Classifier is one run's fact reader. It shares the directory-metadata cache
+// across paths, so a tree of files costs one stat per directory rather than
+// one per path.
+type Classifier struct {
+	resolver PackageResolver
+	dirs     map[string]dirFlags
+	facts    map[string]Facts
+}
+
+func NewClassifier(resolver PackageResolver) *Classifier {
+	return &Classifier{resolver: resolver, dirs: map[string]dirFlags{}, facts: map[string]Facts{}}
+}
+
+func (c *Classifier) Classify(path string) Facts {
+	if facts, ok := c.facts[path]; ok {
+		return facts
+	}
+	facts := classify(path, c.resolver, c.dirs)
+	c.facts[path] = facts
+	return facts
+}
+
 func Classify(path string, resolver PackageResolver) Facts {
+	return classify(path, resolver, nil)
+}
+
+func classify(path string, resolver PackageResolver, dirs map[string]dirFlags) Facts {
 	attrs := Attrs{Kind: Missing, UID: -1, GID: -1, Real: path}
 	if path == "" {
 		return Build(path, attrs)
@@ -256,8 +288,8 @@ func Classify(path string, resolver PackageResolver) Facts {
 		}
 	}
 
-	attrs.ParentWritable, attrs.ParentOpen = parentFlags(attrs.Real)
-	attrs.PathParentWritable, attrs.PathParentOpen = parentFlags(path)
+	attrs.ParentWritable, attrs.ParentOpen = parentFlags(attrs.Real, dirs)
+	attrs.PathParentWritable, attrs.PathParentOpen = parentFlags(path, dirs)
 	if resolver != nil {
 		attrs.Package, attrs.PackageKnown, attrs.PackageShared = owned(resolver, attrs.Real)
 		if attrs.Real != path && !attrs.PackageKnown {
@@ -316,28 +348,39 @@ func kindOf(mode fs.FileMode) Kind {
 // bit, or group/other write) and `open` (group/other write alone). A sticky
 // directory is protected from everyone but the file's owner, which is what
 // /tmp is for.
-func parentFlags(path string) (replaceable, open bool) {
+func parentFlags(path string, cache map[string]dirFlags) (replaceable, open bool) {
 	for dir := filepath.Dir(path); ; {
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			mode := info.Mode()
-			if mode&os.ModeSticky == 0 {
-				perm := mode.Perm()
-				if perm&0o022 != 0 {
-					open = true
-					replaceable = true
-				}
-				owner, _ := statOwner(info)
-				if owner != 0 && perm&0o200 != 0 {
-					replaceable = true
-				}
+		flags, ok := cache[dir]
+		if !ok {
+			flags = statDirFlags(dir)
+			if cache != nil {
+				cache[dir] = flags
 			}
 		}
+		replaceable = replaceable || flags.replaceable
+		open = open || flags.open
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			return replaceable, open
 		}
 		dir = parent
 	}
+}
+
+func statDirFlags(dir string) dirFlags {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSticky != 0 {
+		return dirFlags{}
+	}
+	perm := info.Mode().Perm()
+	flags := dirFlags{open: perm&0o022 != 0}
+	if flags.open {
+		flags.replaceable = true
+	}
+	if owner, _ := statOwner(info); owner != 0 && perm&0o200 != 0 {
+		flags.replaceable = true
+	}
+	return flags
 }
 
 // SkelTemplate reports whether path is one of the login files /etc/skel
@@ -379,7 +422,7 @@ func StartupPath(path string) bool {
 			return true
 		}
 	}
-	return false
+	return strings.HasPrefix(rest, ".config/fish/conf.d/") && strings.HasSuffix(rest, ".fish")
 }
 
 // UnderAny reports whether path is one of roots or inside one, on a path
@@ -395,6 +438,9 @@ func UnderAny(path string, roots []string) bool {
 
 // Under reports whether path is root or inside root, on a path boundary.
 func Under(path, root string) bool {
+	if root == "/" {
+		return strings.HasPrefix(path, "/")
+	}
 	if path == root {
 		return true
 	}

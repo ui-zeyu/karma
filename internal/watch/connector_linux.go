@@ -256,7 +256,7 @@ func (s *connectorSource) forkEvent(payload []byte, at time.Time) []Event {
 		Time: at, Source: SourceConnector,
 		Proc: &Proc{
 			Kind: KindFork, PID: childTgid, PPID: parentTgid, UID: state.UID,
-			Comm: state.Comm, Exe: state.Exe, Cmdline: state.Cmdline, Cwd: state.Cwd,
+			Comm: state.Comm, Exe: state.Exe, Cmdline: state.Cmdline, Args: state.Args, Cwd: state.Cwd,
 		},
 	}}
 }
@@ -275,7 +275,7 @@ func (s *connectorSource) execEvent(payload []byte, at time.Time) []Event {
 		Time: at, Source: SourceConnector,
 		Proc: &Proc{
 			Kind: KindExec, PID: pid, PPID: state.PPID, UID: state.UID,
-			Comm: state.Comm, Exe: state.Exe, Cmdline: state.Cmdline, Cwd: state.Cwd,
+			Comm: state.Comm, Exe: state.Exe, Cmdline: state.Cmdline, Args: state.Args, Cwd: state.Cwd,
 		},
 	}}
 }

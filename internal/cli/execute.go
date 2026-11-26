@@ -25,21 +25,22 @@ func runAudit(ctx context.Context, w io.Writer, words []string, flags auditFlags
 	if flags.json && flags.evidence {
 		return usagef(nil, "--evidence prints the text inventories after a text report; the machine-readable inventories are \"karma show <section> --json\"")
 	}
-	snapshot, collectErr := collectSnapshot(ctx, parsed.plan(), flags.timeout, flags.json)
+	plan := parsed.plan()
+	snapshot, collectErr := collectSnapshot(ctx, plan, flags.timeout, flags.json)
 	if snapshot == nil {
 		return collectErr
 	}
 	if err := applySince(snapshot, flags.since); err != nil {
 		return err
 	}
-	report := audit.Judge(snapshot, parsed.filter(flags.minSeverity))
+	report := audit.Judge(snapshot, plan.Filter)
 	if flags.json {
 		if err := audit.WriteJSON(w, report); err != nil {
 			return err
 		}
 		return collectErr
 	}
-	audit.Render(w, report, renderOptions(w, flags, parsed.filter(audit.Info)))
+	audit.Render(w, report, renderOptions(w, flags, plan.Filter))
 	return collectErr
 }
 
@@ -55,14 +56,15 @@ func runShow(ctx context.Context, w io.Writer, words []string, flags auditFlags)
 	if err != nil {
 		return usagef(nil, "%s", err)
 	}
-	snapshot, collectErr := collectSnapshot(ctx, section.Plan(parsed.plan()), flags.timeout, flags.json)
+	plan := section.Plan(parsed.plan())
+	snapshot, collectErr := collectSnapshot(ctx, plan, flags.timeout, flags.json)
 	if snapshot == nil {
 		return collectErr
 	}
 	if err := applySince(snapshot, flags.since); err != nil {
 		return err
 	}
-	options := renderOptions(w, flags, parsed.filter(audit.Info))
+	options := renderOptions(w, flags, plan.Filter)
 	view := audit.NewView(snapshot, options.Filter)
 	if flags.json {
 		if err := audit.WriteShowJSON(w, view, section, words[0], options); err != nil {
@@ -82,14 +84,15 @@ func runObjectGraph(ctx context.Context, w io.Writer, word string, flags auditFl
 	if err != nil {
 		return usagef(nil, "%s", err)
 	}
-	snapshot, collectErr := collectSnapshot(ctx, audit.ObjectGraphPlan(seed), flags.timeout, flags.json)
+	plan := audit.ObjectGraphPlan(seed)
+	snapshot, collectErr := collectSnapshot(ctx, plan, flags.timeout, flags.json)
 	if snapshot == nil {
 		return collectErr
 	}
 	if err := applySince(snapshot, flags.since); err != nil {
 		return err
 	}
-	view, err := audit.BuildObjectGraph(ctx, snapshot, seed, flags.minSeverity)
+	view, err := audit.BuildObjectGraph(ctx, snapshot, seed)
 	if err != nil {
 		return usagef(nil, "%s", err)
 	}
@@ -99,7 +102,7 @@ func runObjectGraph(ctx context.Context, w io.Writer, word string, flags auditFl
 		}
 		return collectErr
 	}
-	audit.RenderGraph(w, view, renderOptions(w, flags, audit.Filter{MinSeverity: flags.minSeverity}))
+	audit.RenderGraph(w, view, renderOptions(w, flags, plan.Filter))
 	return collectErr
 }
 
@@ -131,11 +134,10 @@ func collectSnapshot(ctx context.Context, plan audit.Plan, budget time.Duration,
 
 // auditFlags are the run options the audit and show modes share.
 type auditFlags struct {
-	json        bool
-	evidence    bool
-	minSeverity audit.Severity
-	since       string
-	timeout     time.Duration
+	json     bool
+	evidence bool
+	since    string
+	timeout  time.Duration
 }
 
 func isTerminal(w io.Writer) bool {
@@ -154,11 +156,19 @@ func terminalWidth(w io.Writer) int {
 	return 100
 }
 
-// sinceTime reads --since: empty and "auto" keep the collected boundary;
-// "boot" and "provision" are the same boundary by another name; a duration
-// answers now minus it; an RFC3339 stamp is absolute.
-// applySince retargets a collected snapshot when --since names an edge.
+// applySince retargets a collected snapshot when --since names an edge. The
+// collected "provision" boundary is already the artifact's own choice; "boot"
+// forces the host's boot, and a duration or RFC3339 stamp is operator input.
 func applySince(snapshot *audit.Snapshot, since string) error {
+	if since == "boot" {
+		if snapshot.Boot.IsZero() {
+			return usagef(nil, "--since boot: the host boot time is unreadable")
+		}
+		snapshot.SetBoundary(audit.Boundary{
+			Time: snapshot.Boot, Kind: "host", Source: "boot", Confidence: audit.MediumConfidence,
+		})
+		return nil
+	}
 	seconds, ok, err := sinceTime(since)
 	if err != nil {
 		return usagef(nil, "%s", err)
@@ -169,6 +179,12 @@ func applySince(snapshot *audit.Snapshot, since string) error {
 		})
 	}
 	return nil
+}
+
+// validateSince rejects a mistyped boundary before the collection starts.
+func validateSince(value string) error {
+	_, _, err := sinceTime(value)
+	return err
 }
 
 // renderOptions is the one place the text options are built.
@@ -184,7 +200,7 @@ func renderOptions(w io.Writer, flags auditFlags, filter audit.Filter) audit.Ren
 
 func sinceTime(value string) (time.Time, bool, error) {
 	switch value {
-	case "", "auto", "boot", "provision":
+	case "", "auto", "provision", "boot":
 		return time.Time{}, false, nil
 	}
 	if duration, err := time.ParseDuration(value); err == nil {

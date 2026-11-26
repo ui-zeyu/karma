@@ -31,12 +31,113 @@ type UnownedFile struct {
 	Total     int // entries in the directory
 	Owned     int // entries in the directory a package claims
 	RootOwned bool
-	Mode      fs.FileMode
+	// Root marks an executable directly under /, the container entrypoint
+	// layer rather than a program directory.
+	Root bool
+	Mode fs.FileMode
 }
 
 // collectInventory walks the plan's roots and records the executables no
 // package owns. Only files outside the active judgment set are recorded: an
 // activation target or a process image is already judged by its own check.
+// collectFiles is the files domain's collection: the program directories,
+// plus the entrypoint layer at the filesystem root.
+func collectFiles(ctx context.Context, snapshot *Snapshot, plan Plan) []string {
+	gaps := collectInventory(ctx, snapshot, plan)
+	// The root layer is cheap to read and stays outside every InventoryRoot;
+	// the path filter keeps it out of a scoped report when it is not named.
+	gaps = append(gaps, collectRootScripts(ctx, snapshot)...)
+	// A path scope can read the same root file through the parent walk and
+	// the entrypoint scan; the root description wins.
+	snapshot.Unowned = dedupeUnowned(snapshot.Unowned)
+	return gaps
+}
+
+func dedupeUnowned(files []UnownedFile) []UnownedFile {
+	if len(files) < 2 {
+		return files
+	}
+	out := make([]UnownedFile, 0, len(files))
+	index := make(map[string]int, len(files))
+	for _, file := range files {
+		if at, ok := index[file.Path]; ok {
+			if file.Root && !out[at].Root {
+				out[at] = file
+			}
+			continue
+		}
+		index[file.Path] = len(out)
+		out = append(out, file)
+	}
+	return out
+}
+
+// collectRootScripts names executables at / itself. A container entrypoint or
+// a dropped payload at the root is outside every program directory, and the
+// static inventory would otherwise never see it.
+func collectRootScripts(ctx context.Context, snapshot *Snapshot) []string {
+	if snapshot.catalog == nil || snapshot.catalog.Kind() == "none" {
+		return nil
+	}
+	files, total, owned, err := scanRootScripts(ctx, "/", func(path string) bool {
+		return snapshot.catalog.OwnedPath(path) || snapshot.catalog.Diversion(path)
+	}, activePaths(snapshot))
+	if err != nil {
+		return []string{"root entrypoint scan: " + err.Error()}
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	for index := range files {
+		files[index].Total = total
+		files[index].Owned = owned
+	}
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.Path)
+	}
+	snapshot.ensureFacts(paths)
+	snapshot.Unowned = append(snapshot.Unowned, files...)
+	return nil
+}
+
+// scanRootScripts reads one directory's immediate entries; it is separate
+// from the recursive inventory so a test can point it at a fixture.
+func scanRootScripts(ctx context.Context, root string, owned func(string) bool, active map[string]bool) ([]UnownedFile, int, int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, 0, err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	total := len(entries)
+	ownedCount := 0
+	var files []UnownedFile
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		if owned(path) {
+			ownedCount++
+			continue
+		}
+		if active[path] {
+			continue
+		}
+		files = append(files, UnownedFile{
+			Path: path, Dir: root, Root: true,
+			RootOwned: trust.Owner(info) == 0, Mode: info.Mode(),
+		})
+	}
+	return files, total, ownedCount, nil
+}
+
 func collectInventory(ctx context.Context, snapshot *Snapshot, plan Plan) []string {
 	roots := plan.InventoryRoots
 	if len(roots) == 0 {
@@ -156,7 +257,7 @@ func unownedFindings(snapshot *Snapshot, a *assessor, filter Filter) []Finding {
 	if len(filter.PIDs) > 0 || len(filter.Units) > 0 {
 		return nil
 	}
-	if filter.Surfaces != nil && !filter.Surfaces["files"] {
+	if !filter.judges(DomainFiles) {
 		return nil
 	}
 	var findings []Finding
@@ -187,22 +288,32 @@ func unownedFindings(snapshot *Snapshot, a *assessor, filter Filter) []Finding {
 			"mode " + file.Mode.Perm().String() + ", owner root=" + boolWord(file.RootOwned),
 		}
 		evidence = append(evidence, story.evidence...)
+		title := "executable in a program directory no package owns"
+		detail := "no package file list records it; the static inventory found it"
+		if file.Root {
+			title = "root-level executable no package owns"
+			detail = "an executable at the filesystem root is an entrypoint or a dropped payload"
+		}
 		findings = append(findings, Finding{
 			Class: "unowned-file", Severity: severity, Origin: story.origin, Reach: reach,
-			Title:    "executable in a program directory no package owns",
-			Path:     file.Path,
-			Detail:   "no package file list records it; the static inventory found it",
-			Evidence: evidence,
+			Title: title, Path: file.Path, Detail: detail, Evidence: evidence,
 		})
 	}
 	return findings
 }
 
 func formatSibling(file UnownedFile) string {
+	if file.Root {
+		return "the filesystem root is the entrypoint layer; this executable is not package-owned"
+	}
 	if file.Total <= 0 {
 		return "the directory has no package-owned peer count"
 	}
-	return filepath.Base(file.Dir) + ": " + strconv.Itoa(file.Owned) + " of " + strconv.Itoa(file.Total) +
+	dir := filepath.Base(file.Dir)
+	if dir == "." || dir == "" {
+		dir = "the directory"
+	}
+	return dir + ": " + strconv.Itoa(file.Owned) + " of " + strconv.Itoa(file.Total) +
 		" entries are package-owned, this one is not"
 }
 

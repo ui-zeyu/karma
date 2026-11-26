@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"karma/internal/audit"
+	"karma/internal/startup"
 )
 
 func TestScopePlanDomains(t *testing.T) {
@@ -11,21 +12,20 @@ func TestScopePlanDomains(t *testing.T) {
 		name     string
 		words    []string
 		domains  audit.Domain
-		surfaces map[string]bool
+		surfaces startup.Scope
 		units    map[string]bool
 	}{
-		{name: "bare", domains: audit.AllDomains},
+		{name: "bare", domains: audit.AllDomains, surfaces: startup.AllScope()},
 		{name: "services", words: []string{"services"},
-			domains:  audit.DomainBase | audit.DomainServices,
-			surfaces: map[string]bool{"systemd": true}},
+			domains:  audit.DomainBase | audit.DomainServices | audit.DomainPersistence,
+			surfaces: startup.ScopeForWords([]string{"systemd"})},
 		{name: "files", words: []string{"files"},
-			domains:  audit.DomainBase | audit.DomainFiles,
-			surfaces: map[string]bool{"files": true}},
+			domains: audit.DomainBase | audit.DomainFiles},
 		{name: "processes", words: []string{"processes"},
-			domains:  audit.DomainBase | audit.DomainProcesses,
-			surfaces: map[string]bool{"activity": true}},
+			domains: audit.DomainBase | audit.DomainProcesses},
 		{name: "persistence", words: []string{"persistence"},
-			domains: audit.DomainBase | audit.DomainPersistence},
+			domains:  audit.DomainBase | audit.DomainPersistence,
+			surfaces: startup.AllScope()},
 		{name: "kernel", words: []string{"kernel"},
 			domains: audit.DomainBase | audit.DomainKernel},
 		{name: "packages", words: []string{"packages"},
@@ -35,8 +35,10 @@ func TestScopePlanDomains(t *testing.T) {
 		{name: "identity", words: []string{"identity"},
 			domains: audit.DomainBase | audit.DomainIdentity},
 		{name: "unit", words: []string{"sshd.service"},
-			domains: audit.DomainBase | audit.DomainServices,
-			units:   map[string]bool{"sshd.service": true}},
+			domains: audit.DomainBase | audit.DomainServices | audit.DomainPersistence |
+				audit.DomainProcesses | audit.DomainNetwork,
+			surfaces: startup.ScopeForWords([]string{"systemd"}),
+			units:    map[string]bool{"sshd.service": true}},
 		{name: "pid", words: []string{"/proc/1"},
 			domains: audit.DomainBase | audit.DomainProcesses | audit.DomainNetwork},
 	}
@@ -49,12 +51,8 @@ func TestScopePlanDomains(t *testing.T) {
 		if plan.Domains != test.domains {
 			t.Errorf("%s: domains = %b, want %b", test.name, plan.Domains, test.domains)
 		}
-		if test.surfaces != nil {
-			for surface, want := range test.surfaces {
-				if plan.Surfaces[surface] != want {
-					t.Errorf("%s: surface %s = %t, want %t", test.name, surface, plan.Surfaces[surface], want)
-				}
-			}
+		if plan.Surfaces == nil || *plan.Surfaces != test.surfaces {
+			t.Errorf("%s: surfaces = %v, want %b", test.name, plan.Surfaces, test.surfaces)
 		}
 		for unit := range test.units {
 			if !plan.Units[unit] {

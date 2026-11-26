@@ -9,6 +9,8 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"karma/internal/localfs"
 	"karma/internal/trust"
 )
 
@@ -37,10 +40,12 @@ const stampLayout = "2006-01-02 15:04:05"
 
 // Ownership is one path's package answer. Known false means the database did
 // not answer; Name empty with Known true means no package claims the path.
+// Dir marks a path the package records as a directory.
 type Ownership struct {
 	Name   string
 	Known  bool
 	Shared bool
+	Dir    bool
 }
 
 // HashEntry is the content hash dpkg recorded for one path.
@@ -76,7 +81,7 @@ type Catalog struct {
 
 	ownerOnce sync.Once
 	owners    map[string]Ownership
-	paths     []string
+	packages  int
 	ownerGap  string
 
 	hashOnce sync.Once
@@ -84,6 +89,7 @@ type Catalog struct {
 	hashGap  string
 
 	conffileOnce sync.Once
+	conffileMu   sync.RWMutex
 	conffiles    map[string]bool
 
 	timeOnce sync.Once
@@ -96,9 +102,11 @@ type Catalog struct {
 	diversions    map[string]bool
 
 	rpmVerifyOnce sync.Once
+	rpmMu         sync.RWMutex
 	rpmFlags      map[string]string
 	rpmMissing    int
 	rpmNote       string
+	rpmRan        bool
 }
 
 // Open detects the host's package manager. A host with neither database
@@ -119,9 +127,6 @@ func Open(ctx context.Context) *Catalog {
 
 // Kind names the database that answered: dpkg, rpm or none.
 func (c *Catalog) Kind() string { return c.kind }
-
-// Note is a degraded answer worth a coverage line.
-func (c *Catalog) Note() string { return c.note }
 
 // stopped reports whether the run's context already asked the catalog to stop;
 // a catalog assembled without one never stops.
@@ -181,11 +186,6 @@ func (c *Catalog) OwnedShared(path string) (string, bool, bool) {
 	return ownership.Name, ownership.Known, ownership.Shared
 }
 
-// OwnedAll is the batch hook the collectors use. The catalog already holds
-// every file list, so the answer is an index lookup; the method exists to
-// keep the resolver-shaped call sites one edit.
-func (c *Catalog) OwnedAll(paths []string) {}
-
 // Ownership answers one path with its shared flag.
 func (c *Catalog) Ownership(path string) Ownership {
 	if c == nil || path == "" {
@@ -214,10 +214,16 @@ func (c *Catalog) OwnedPath(path string) bool {
 	return ownership.Known && ownership.Name != ""
 }
 
-// Paths returns every recorded package path, sorted.
-func (c *Catalog) Paths() []string {
+// PackageCount is the number of packages the database lists: dpkg's file
+// lists, or rpm's package rows. It includes packages that own no regular file
+// (metapackages, rpm config-only packages), so it can exceed the names in the
+// ownership index.
+func (c *Catalog) PackageCount() int {
+	if c == nil {
+		return 0
+	}
 	c.ensureOwners()
-	return append([]string(nil), c.paths...)
+	return c.packages
 }
 
 // OwnerRows returns the whole package-to-path index.
@@ -233,6 +239,8 @@ func (c *Catalog) Conffile(path string) bool {
 		return false
 	}
 	c.ensureConffiles()
+	c.conffileMu.RLock()
+	defer c.conffileMu.RUnlock()
 	if c.conffiles[path] {
 		return true
 	}
@@ -275,17 +283,6 @@ func (c *Catalog) Timeline() map[string]time.Time {
 	return c.times
 }
 
-// LatestTransaction is the newest package transaction on the host.
-func (c *Catalog) LatestTransaction() time.Time {
-	var latest time.Time
-	for _, stamp := range c.Timeline() {
-		if stamp.After(latest) {
-			latest = stamp
-		}
-	}
-	return latest
-}
-
 // LedgerFiles returns every package metadata file whose change time is
 // evidence, plus dpkg's transaction log when it is non-empty.
 func (c *Catalog) LedgerFiles() []LedgerFile {
@@ -317,7 +314,23 @@ func (c *Catalog) RPMFlags() map[string]string {
 		return nil
 	}
 	c.ensureRPMVerify()
-	return c.rpmFlags
+	c.rpmMu.RLock()
+	defer c.rpmMu.RUnlock()
+	flags := make(map[string]string, len(c.rpmFlags))
+	for path, flag := range c.rpmFlags {
+		flags[path] = flag
+	}
+	return flags
+}
+
+// RPMVerified reports whether rpm -Va ran to completion, so a judged file with
+// no deviation row has a positive content answer.
+func (c *Catalog) RPMVerified() bool {
+	if c == nil {
+		return false
+	}
+	c.ensureRPMVerify()
+	return c.rpmRan
 }
 
 // RPMMissing counts packaged files rpm -Va reports absent from disk.
@@ -351,13 +364,23 @@ func (c *Catalog) ensureOwners() {
 				c.loadRPMOwners()
 			}
 		}
-		sort.Strings(c.paths)
+		if c.packages == 0 {
+			// The loaders count packages as they read them. A catalog that
+			// arrived with its index already filled did not pass through a
+			// loader, so its count is the names that index holds.
+			seen := map[string]bool{}
+			for _, ownership := range c.owners {
+				if ownership.Name != "" {
+					seen[ownership.Name] = true
+				}
+			}
+			c.packages = len(seen)
+		}
 	})
 }
 
 func (c *Catalog) loadDpkgOwners(infoDir string) {
 	c.owners = map[string]Ownership{}
-	c.paths = nil
 	entries, err := os.ReadDir(infoDir)
 	if err != nil {
 		c.ownerGap = "package file lists unreadable: " + err.Error()
@@ -372,6 +395,7 @@ func (c *Catalog) loadDpkgOwners(infoDir string) {
 		if !strings.HasSuffix(name, ".list") {
 			continue
 		}
+		c.packages++
 		pkg := strings.TrimSuffix(name, ".list")
 		if at := strings.IndexByte(pkg, ':'); at >= 0 {
 			pkg = pkg[:at]
@@ -389,7 +413,6 @@ func (c *Catalog) loadDpkgOwners(infoDir string) {
 				return
 			}
 			c.owners[line] = Ownership{Name: pkg, Known: true}
-			c.paths = append(c.paths, line)
 		})
 	}
 }
@@ -405,21 +428,42 @@ func (c *Catalog) loadRPMOwners() {
 	}
 	ctx, cancel := c.budget(rpmVerifyBudget)
 	defer cancel()
-	out, err := run(ctx, binary, "-qa", "--qf", "[%{NAME}\t%{FILEFLAGS}\t%{FILENAMES}\n]")
+	// A scalar inside an array iterator is a one-element array to rpm 4.16,
+	// so `[%{NAME} ...]` fails as "different sized arrays" for every package
+	// with more than one file. NAME stays outside: one name row, then one
+	// flags<TAB>mode<TAB>path row per file. The mode lets the package sweep
+	// tell a missing directory from a missing file.
+	out, err := run(ctx, binary, "-qa", "--qf", "%{NAME}\n[%{FILEFLAGS}\t%{FILEMODES:octal}\t%{FILENAMES}\n]")
 	if err != nil {
 		c.ownerGap = "rpm file lists unavailable: " + err.Error()
 		return
 	}
+	pkg := ""
 	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.SplitN(strings.TrimSpace(line), "\t", 3)
-		if len(fields) != 3 || !strings.HasPrefix(fields[2], "/") {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
-		pkg, path := fields[0], fields[2]
-		flags, _ := strconv.Atoi(fields[1])
-		if flags&1 != 0 {
-			c.conffiles[path] = true
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) == 1 {
+			pkg = fields[0]
+			c.packages++
 			continue
+		}
+		if len(fields) != 3 {
+			continue
+		}
+		path := fields[2]
+		if pkg == "" || !strings.HasPrefix(path, "/") {
+			continue
+		}
+		flags, _ := strconv.Atoi(fields[0])
+		mode, _ := strconv.ParseUint(fields[1], 8, 32)
+		dir := mode&0o170000 == 0o040000
+		if flags&1 != 0 {
+			// A config file is still owned by its package. Dropping it from
+			// the ownership index made every rpm conffile read as an orphan.
+			c.conffiles[path] = true
 		}
 		if existing, ok := c.owners[path]; ok {
 			if existing.Name != pkg {
@@ -428,8 +472,7 @@ func (c *Catalog) loadRPMOwners() {
 			}
 			continue
 		}
-		c.owners[path] = Ownership{Name: pkg, Known: true}
-		c.paths = append(c.paths, path)
+		c.owners[path] = Ownership{Name: pkg, Known: true, Dir: dir}
 	}
 	if len(c.owners) == 0 {
 		c.ownerGap = "rpm file list is empty"
@@ -481,10 +524,14 @@ func (c *Catalog) ensureConffiles() {
 		if c.conffiles == nil {
 			c.conffiles = map[string]bool{}
 		}
-		if c.kind != "dpkg" {
-			return
+		switch c.kind {
+		case "dpkg":
+			c.loadDpkgConffiles(InfoDir)
+		case "rpm":
+			// rpm's config flags arrive with its file list, not a separate
+			// table.
+			c.ensureOwners()
 		}
-		c.loadDpkgConffiles(InfoDir)
 	})
 }
 
@@ -520,9 +567,13 @@ func (c *Catalog) ensureTimeline() {
 		case "dpkg":
 			for _, path := range packageLogFiles() {
 				if c.stopped() {
+					c.cut()
 					return
 				}
 				readPackageLog(path, c.times, c.stopped)
+			}
+			if c.stopped() {
+				c.cut()
 			}
 		case "rpm":
 			c.loadRPMTimeline()
@@ -599,8 +650,8 @@ func (c *Catalog) loadDpkgLedgerFiles(infoDir string) {
 func (c *Catalog) ensureDiversions() {
 	c.diversionOnce.Do(func() {
 		c.diversions = map[string]bool{}
-		binary, err := exec.LookPath("dpkg-divert")
-		if err != nil {
+		binary := trustedBinary("dpkg-divert")
+		if binary == "" {
 			return
 		}
 		ctx, cancel := c.budget(2 * time.Second)
@@ -629,7 +680,11 @@ func (c *Catalog) ensureDiversions() {
 
 func (c *Catalog) ensureRPMVerify() {
 	c.rpmVerifyOnce.Do(func() {
+		c.ensureConffiles()
 		c.rpmFlags = map[string]string{}
+		if c.conffiles == nil {
+			c.conffiles = map[string]bool{}
+		}
 		binary := rpmBinary()
 		if binary == "" {
 			return
@@ -637,7 +692,7 @@ func (c *Catalog) ensureRPMVerify() {
 		ctx, cancel := c.budget(rpmVerifyBudget)
 		defer cancel()
 		out, err := run(ctx, binary, "-Va")
-		if err != nil {
+		if err != nil && !rpmVerifyAnswered(err, out) {
 			if ctx.Err() != nil {
 				c.rpmNote = "rpm -Va timed out; content evidence is absent"
 			} else {
@@ -645,6 +700,9 @@ func (c *Catalog) ensureRPMVerify() {
 			}
 			return
 		}
+		c.rpmRan = true
+		c.conffileMu.Lock()
+		c.rpmMu.Lock()
 		for _, line := range strings.Split(string(out), "\n") {
 			path, flags, conffile, absent, ok := parseRpmVerifyLine(line)
 			if !ok {
@@ -656,23 +714,32 @@ func (c *Catalog) ensureRPMVerify() {
 			}
 			if conffile {
 				c.conffiles[path] = true
-				continue
 			}
 			if strings.ContainsAny(flags, "SM5") {
 				c.rpmFlags[path] = flags
 			}
 		}
+		c.rpmMu.Unlock()
+		c.conffileMu.Unlock()
 	})
+}
+
+// rpmVerifyAnswered reports the exit status of a verify that ran to its end:
+// rpm exits 1 when it has deviations to report, and that report is the answer.
+// Any other failure leaves no content evidence.
+func rpmVerifyAnswered(err error, out []byte) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(out) > 0
 }
 
 // usrAliases is the usrmerge spelling pair: the package database records
 // /usr/bin while the disk may name /bin, and the reverse.
 func usrAliases(path string) []string {
+	if path == "" || path == "/" || path == "/usr" {
+		return nil
+	}
 	if rest, ok := strings.CutPrefix(path, "/usr/"); ok {
 		return []string{"/" + rest}
-	}
-	if path == "/usr" {
-		return []string{"/"}
 	}
 	return []string{"/usr" + path}
 }
@@ -712,12 +779,12 @@ func packageLogRotation(name string) bool {
 }
 
 func readPackageLog(path string, times map[string]time.Time, stop func() bool) {
-	file, err := os.Open(path)
+	file, err := localfs.Open(path)
 	if err != nil {
 		return
 	}
 	defer file.Close()
-	var reader ioReader = file
+	var reader io.Reader = file
 	if strings.HasSuffix(path, ".gz") {
 		gz, err := gzip.NewReader(file)
 		if err != nil {
@@ -742,11 +809,6 @@ func readPackageLog(path string, times map[string]time.Time, stop func() bool) {
 			times[pkg] = stamp
 		}
 	}
-}
-
-// ioReader keeps the gzip branch one type without importing io twice.
-type ioReader interface {
-	Read([]byte) (int, error)
 }
 
 func parsePackageLogLine(line string) (string, time.Time, bool) {
@@ -785,7 +847,7 @@ func splitInfoName(name string) (pkg, kind string) {
 }
 
 func readRows(path string, read func(string)) {
-	file, err := os.Open(path)
+	file, err := localfs.Open(path)
 	if err != nil {
 		return
 	}
@@ -857,9 +919,28 @@ func rpmVerifyFlags(flags string) bool {
 	return true
 }
 
+// rpmBinaryOverride lets a test fixture point at a stand-in rpm. Production
+// always resolves the system directory first.
+var rpmBinaryOverride string
+
 func rpmBinary() string {
-	path, _ := exec.LookPath("rpm")
-	return path
+	if rpmBinaryOverride != "" {
+		return rpmBinaryOverride
+	}
+	return trustedBinary("rpm")
+}
+
+// trustedBinary resolves a read-only host tool from the system directories,
+// never from the caller's PATH. The environment passed to run also clears the
+// loader variables; /etc/ld.so.preload remains the residual trust boundary.
+func trustedBinary(name string) string {
+	for _, dir := range []string{"/usr/bin", "/bin", "/usr/sbin", "/sbin"} {
+		path := filepath.Join(dir, name)
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			return path
+		}
+	}
+	return ""
 }
 
 const (
@@ -869,6 +950,12 @@ const (
 
 func run(ctx context.Context, binary string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.Env = []string{
+		"PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=/",
+		"TMPDIR=/tmp",
+		"LANG=C",
+		"LC_ALL=C",
+	}
 	return cmd.Output()
 }

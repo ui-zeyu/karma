@@ -106,7 +106,7 @@ var privilegedGroups = map[string]Severity{
 var passwordKinds = map[string]bool{"x": true, "*": true, "!": true, "!!": true}
 
 // collectIdentity reads the identity files and parses their records.
-func collectIdentity(ctx context.Context, snapshot *Snapshot, facts func(string) trust.Facts, prefetch func([]string)) []string {
+func collectIdentity(ctx context.Context, snapshot *Snapshot, facts func(string) trust.Facts) []string {
 	state := &snapshot.Identity
 	var paths []string
 	read := func(path string) (string, bool) {
@@ -156,7 +156,6 @@ func collectIdentity(ctx context.Context, snapshot *Snapshot, facts func(string)
 	}
 
 	if len(paths) > 0 {
-		prefetch(paths)
 		for _, path := range paths {
 			remember(snapshot, path, facts(path))
 		}

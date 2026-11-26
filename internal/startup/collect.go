@@ -72,6 +72,9 @@ var profileFiles = []string{
 	"/etc/zsh/zprofile",
 	"/etc/zsh/zshrc",
 	"/etc/zsh/zlogin",
+	"/etc/zsh/zlogout",
+	"/etc/fish/config.fish",
+	"/etc/fish/conf.d/*.fish",
 	"/etc/environment",
 	"/root/.bashrc",
 	"/root/.bash_profile",
@@ -82,6 +85,9 @@ var profileFiles = []string{
 	"/root/.zprofile",
 	"/root/.zshenv",
 	"/root/.zlogin",
+	"/root/.zlogout",
+	"/root/.config/fish/config.fish",
+	"/root/.config/fish/conf.d/*.fish",
 	"/home/*/.bashrc",
 	"/home/*/.bash_profile",
 	"/home/*/.bash_login",
@@ -91,6 +97,9 @@ var profileFiles = []string{
 	"/home/*/.zprofile",
 	"/home/*/.zshenv",
 	"/home/*/.zlogin",
+	"/home/*/.zlogout",
+	"/home/*/.config/fish/config.fish",
+	"/home/*/.config/fish/conf.d/*.fish",
 	// The skeleton templates are copied into every new home. A source or export
 	// here becomes a login edge for accounts created after the change.
 	"/etc/skel/.bashrc",
@@ -102,6 +111,8 @@ var profileFiles = []string{
 	"/etc/skel/.zprofile",
 	"/etc/skel/.zshenv",
 	"/etc/skel/.zlogin",
+	"/etc/skel/.zlogout",
+	"/etc/skel/.config/fish/config.fish",
 }
 
 // cronFiles are the scheduled surfaces: the system tables, the cron.d drop-ins,
@@ -199,34 +210,40 @@ var moduleFiles = []string{
 	"/usr/local/lib/modprobe.d/*.conf",
 }
 
-// Scope selects the startup surfaces one run reads. Each field turns on one
-// collector; a run that asked for services does not pay for cron, udev or the
-// login files, and a run that asked for a path can still read every surface
-// when the path may be any of them.
-type Scope struct {
-	Systemd    bool
-	Profile    bool
-	Cron       bool
-	Init       bool
-	Loader     bool
-	Udev       bool
-	SSH        bool
-	PAM        bool
-	Supervisor bool
-	XDG        bool
-	Apt        bool
-	Module     bool
-	System     bool
-}
+// Scope selects the startup surfaces one run reads. The bits follow the
+// collector table below, so a surface has one name, one bit and one collector.
+// A run that asked for services does not pay for cron, udev or the login
+// files, and a run that asked for a path can still read every surface when the
+// path may be any of them.
+type Scope uint16
+
+const (
+	Systemd Scope = 1 << iota
+	Profile
+	Cron
+	Init
+	Loader
+	Udev
+	SSH
+	PAM
+	Supervisor
+	XDG
+	Apt
+	Module
+	System
+)
 
 // AllScope reads every startup surface.
 func AllScope() Scope {
-	return Scope{
-		Systemd: true, Profile: true, Cron: true, Init: true, Loader: true,
-		Udev: true, SSH: true, PAM: true, Supervisor: true, XDG: true, Apt: true,
-		Module: true, System: true,
+	var scope Scope
+	for _, surface := range surfaceRuns {
+		scope |= surface.bit
 	}
+	return scope
 }
+
+// Has reports whether the scope selects one surface.
+func (s Scope) Has(surface Surface) bool { return s&surfaceBits[surface] != 0 }
 
 // SurfaceWords lists the startup surface names in collector order. The CLI's
 // scope vocabulary reads this table, so a new surface needs no second list.
@@ -238,43 +255,82 @@ func SurfaceWords() []string {
 	return words
 }
 
-// Collect reads every startup surface through fsys and hands the files to the
-// analysis.
-func Collect(ctx context.Context, fsys FS, facts FactSource) *Corpus {
-	return CollectScoped(ctx, fsys, facts, AllScope())
+// ScopeForWords answers the bits of a set of surface names. An unknown name
+// contributes nothing; the caller validates the vocabulary.
+func ScopeForWords(words []string) Scope {
+	var scope Scope
+	for _, surface := range surfaceRuns {
+		for _, word := range words {
+			if surface.name == word {
+				scope |= surface.bit
+				break
+			}
+		}
+	}
+	return scope
 }
+
+// SurfaceScope answers the bit of one surface.
+func SurfaceScope(surface Surface) Scope { return surfaceBits[surface] }
+
+// surfaceBits is the one mapping from the edge vocabulary to the collector
+// bits. The table order defines both.
+var surfaceBits = func() map[Surface]Scope {
+	bits := make(map[Surface]Scope, len(surfaceRuns))
+	for _, surface := range surfaceRuns {
+		bits[Surface(surface.name)] = surface.bit
+	}
+	return bits
+}()
 
 // surfaceRun is one surface's collector: the file lists it reads and the
 // link walking only systemd needs. The table is the one place a surface is
 // described; Scope, CollectScoped and the parsers all derive from it.
 type surfaceRun struct {
-	name    string
-	enabled func(Scope) bool
-	run     func(FS, *Corpus)
+	name     string
+	bit      Scope
+	patterns []string
+	run      func(FS, *Corpus)
+	match    func(string) bool
+	dialect  func(string) Dialect
+	parse    func(File, *Corpus) []rawEdge
 }
 
 var surfaceRuns = []surfaceRun{
-	{"systemd", func(s Scope) bool { return s.Systemd }, func(fsys FS, corpus *Corpus) {
-		collectSystemd(fsys, corpus)
-		collectGenerators(fsys, corpus, generatorDirs)
-		collectGenerators(fsys, corpus, userGeneratorDirs)
-		collectSystemdVendorLinks(fsys, corpus)
-	}},
-	{"profile", func(s Scope) bool { return s.Profile }, collectProfile},
-	{"cron", func(s Scope) bool { return s.Cron }, collectCron},
-	{"init", func(s Scope) bool { return s.Init }, collectInit},
-	{"loader", func(s Scope) bool { return s.Loader }, collectLoader},
-	{"udev", func(s Scope) bool { return s.Udev }, collectUdev},
-	{"ssh", func(s Scope) bool { return s.SSH }, collectSSH},
-	{"pam", func(s Scope) bool { return s.PAM }, func(fsys FS, corpus *Corpus) {
-		collectPAM(fsys, corpus)
-		collectMotd(fsys, corpus)
-	}},
-	{"supervisor", func(s Scope) bool { return s.Supervisor }, collectSupervisor},
-	{"xdg", func(s Scope) bool { return s.XDG }, collectXdg},
-	{"apt", func(s Scope) bool { return s.Apt }, collectApt},
-	{"module", func(s Scope) bool { return s.Module }, collectModule},
-	{"system", func(s Scope) bool { return s.System }, collectSystem},
+	{name: "systemd", bit: Systemd,
+		run: func(fsys FS, corpus *Corpus) {
+			collectSystemd(fsys, corpus)
+			collectGenerators(fsys, corpus, generatorDirs)
+			collectGenerators(fsys, corpus, userGeneratorDirs)
+			collectSystemdVendorLinks(fsys, corpus)
+		},
+		dialect: systemdDialect,
+		parse:   parseSystemdFile,
+	},
+	{name: "profile", bit: Profile, patterns: profileFiles,
+		match: isProfilePath, dialect: profileDialect, parse: parseProfile},
+	{name: "cron", bit: Cron, patterns: cronFiles,
+		match: isCronPath, dialect: cronDialect, parse: parseCron},
+	{name: "init", bit: Init, patterns: initFiles, run: collectInit,
+		match: isInitPath, dialect: func(string) Dialect { return ShellDialect }, parse: parseInit},
+	{name: "loader", bit: Loader, patterns: loaderFiles,
+		match: isLoaderPath, dialect: func(string) Dialect { return LoaderDialect }, parse: parseLoader},
+	{name: "udev", bit: Udev, patterns: udevFiles,
+		match: isUdevPath, dialect: func(string) Dialect { return UdevDialect }, parse: parseUdev},
+	{name: "ssh", bit: SSH, patterns: sshFiles,
+		match: isSSHPath, dialect: sshDialect, parse: parseSSH},
+	{name: "pam", bit: PAM, patterns: pamFiles, run: collectPAM,
+		match: isPAMPath, dialect: pamDialect, parse: parsePAM},
+	{name: "supervisor", bit: Supervisor, patterns: supervisorFiles,
+		match: isSupervisorPath, dialect: supervisorDialect, parse: parseSupervisor},
+	{name: "xdg", bit: XDG, patterns: xdgFiles,
+		match: isXdgPath, dialect: func(string) Dialect { return UnitDialect }, parse: parseXdg},
+	{name: "apt", bit: Apt, patterns: aptFiles,
+		match: isAptPath, dialect: func(string) Dialect { return AptDialect }, parse: parseApt},
+	{name: "module", bit: Module, patterns: moduleFiles,
+		match: isModulePath, dialect: func(string) Dialect { return ModprobeDialect }, parse: parseModule},
+	{name: "system", bit: System, patterns: systemFiles,
+		match: isSystemPath, dialect: func(string) Dialect { return SystemDialect }, parse: parseSystem},
 }
 
 // CollectScoped reads the selected startup surfaces. Facts are read through
@@ -286,13 +342,17 @@ func CollectScoped(ctx context.Context, fsys FS, facts FactSource, scope Scope) 
 	corpus.fs = fsys
 	corpus.ctx = ctx
 	for _, surface := range surfaceRuns {
-		if !surface.enabled(scope) {
+		if scope&surface.bit == 0 {
 			continue
 		}
 		if corpus.stopped() {
 			break
 		}
-		surface.run(fsys, corpus)
+		if surface.run != nil {
+			surface.run(fsys, corpus)
+		} else {
+			collectPatterns(fsys, corpus, surface.patterns)
+		}
 		if surface.name == "systemd" {
 			// A timer or socket reaches its service through Unit=, Service=
 			// or Also=, and that file may live in the distribution tree the
@@ -336,17 +396,49 @@ var unitDirsFixed = []string{
 	"/root/.config/systemd/user",
 }
 
+// UnitDirs names the layers a unit file may live in, administrator first. A
+// glob entry is a per-user home layer; callers that walk a single unit resolve
+// it through LookupUnitFile.
+func UnitDirs() []string {
+	return append([]string(nil), unitDirsFixed...)
+}
+
+// LookupUnitFile resolves a unit name through the same layers the collector
+// reads, so the object graph cannot disagree with the activation inventory.
+func LookupUnitFile(name string) string {
+	if !IsUnitName(name) {
+		return ""
+	}
+	dirs := append([]string(nil), unitDirsFixed...)
+	for _, pattern := range unitDirs {
+		if !strings.ContainsAny(pattern, "*?[") {
+			continue
+		}
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		dirs = append(dirs, matches...)
+	}
+	for _, layer := range dirs {
+		path := filepath.Join(layer, name)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return ""
+}
+
 // addUnitFile reads a named unit from the first layer that carries it. It is
 // used for the units a link, a drop-in or a timer names but the collector did
 // not walk; an already-read path is a no-op.
 func addUnitFile(fsys FS, corpus *Corpus, unit string) {
-	if unit == "" || !hasUnitSuffix(unit) || corpus.masked[unit] {
+	if unit == "" || !IsUnitName(unit) || corpus.masked[unit] {
 		return
 	}
 	for _, dir := range unitDirsFixed {
 		path := filepath.Join(dir, unit)
-		if _, err := fsys.ReadFile(path); err == nil {
-			addBody(fsys, corpus, File{Path: path, Unit: unit})
+		if addBody(fsys, corpus, File{Path: path, Unit: unit}) {
 			return
 		}
 	}
@@ -371,7 +463,7 @@ func unitReferences(body string) []string {
 		}
 		for _, name := range strings.Fields(value) {
 			name = strings.TrimPrefix(name, "-")
-			if hasUnitSuffix(name) {
+			if IsUnitName(name) {
 				units = append(units, name)
 			}
 		}
@@ -397,7 +489,7 @@ func collectSystemd(fsys FS, corpus *Corpus) {
 				name := entry.Name()
 				path := filepath.Join(dir, name)
 				switch {
-				case hasUnitSuffix(name):
+				case IsUnitName(name):
 					// A masked unit is a symlink to /dev/null. It shadows the
 					// distribution's unit of the same name, so the vendor file
 					// must not be read later as if it were active.
@@ -427,7 +519,7 @@ func collectSystemd(fsys FS, corpus *Corpus) {
 								target = filepath.Join(filepath.Dir(linkPath), target)
 							}
 							target = filepath.Clean(target)
-							if hasUnitSuffix(filepath.Base(target)) {
+							if IsUnitName(filepath.Base(target)) {
 								name := filepath.Base(target)
 								addBody(fsys, corpus, File{Path: target, Unit: name})
 								if _, seen := corpus.enabled[name]; !seen {
@@ -500,7 +592,7 @@ func collectSystemdVendorLinks(fsys FS, corpus *Corpus) {
 				}
 				target = filepath.Clean(target)
 				unit := filepath.Base(target)
-				if !hasUnitSuffix(unit) || corpus.masked[unit] {
+				if !IsUnitName(unit) || corpus.masked[unit] {
 					continue
 				}
 				if _, seen := corpus.enabled[unit]; !seen {
@@ -512,50 +604,45 @@ func collectSystemdVendorLinks(fsys FS, corpus *Corpus) {
 	}
 }
 
-func collectProfile(fsys FS, corpus *Corpus) {
-	for _, pattern := range profileFiles {
+// collectPatterns is the one glob loop every data-listed surface uses. A
+// surface with link walking or a permission filter supplies its own run.
+func collectPatterns(fsys FS, corpus *Corpus, patterns []string) {
+	for _, pattern := range patterns {
 		paths, err := fsys.Glob(pattern)
-		if err != nil {
+		if err == nil && len(paths) > 0 {
+			for _, path := range paths {
+				addBody(fsys, corpus, File{Path: path})
+			}
 			continue
 		}
-		for _, path := range paths {
-			addBody(fsys, corpus, File{Path: path})
+		if !strings.ContainsAny(pattern, "*?[") {
+			addBody(fsys, corpus, File{Path: pattern})
 		}
 	}
 }
 
-func addBody(fsys FS, corpus *Corpus, file File) {
+func addBody(fsys FS, corpus *Corpus, file File) bool {
 	if corpus.stopped() {
-		return
+		return false
 	}
 	if corpus.seen[file.Path] {
-		return
+		return true
 	}
 	data, err := fsys.ReadFile(file.Path)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			corpus.unreadable[file.Path] = true
 		}
-		return
+		return false
 	}
 	corpus.seen[file.Path] = true
 	if len(data) > maxFileBytes {
 		data = data[:maxFileBytes]
+		corpus.addGap("startup file truncated at 64KiB: " + file.Path)
 	}
 	file.Body = string(data)
 	corpus.files = append(corpus.files, file)
-}
-
-func collectCron(fsys FS, corpus *Corpus) {
-	for _, pattern := range cronFiles {
-		paths, err := fsys.Glob(pattern)
-		if err != nil {
-			continue
-		}
-		for _, path := range paths {
-			addBody(fsys, corpus, File{Path: path})
-		}
-	}
+	return true
 }
 
 func collectInit(fsys FS, corpus *Corpus) {
@@ -597,24 +684,6 @@ func collectInit(fsys FS, corpus *Corpus) {
 	}
 }
 
-func collectLoader(fsys FS, corpus *Corpus) {
-	for _, path := range loaderFiles {
-		addBody(fsys, corpus, File{Path: path})
-	}
-}
-
-func collectUdev(fsys FS, corpus *Corpus) {
-	for _, pattern := range udevFiles {
-		paths, err := fsys.Glob(pattern)
-		if err != nil {
-			continue
-		}
-		for _, path := range paths {
-			addBody(fsys, corpus, File{Path: path})
-		}
-	}
-}
-
 // isCronShellPath reports whether the cron surface file is a shell script
 // rather than a crontab table: the run-parts directories and the at spool.
 func isCronShellPath(path string) bool {
@@ -629,18 +698,6 @@ func isCronShellPath(path string) bool {
 	return false
 }
 
-func collectSSH(fsys FS, corpus *Corpus) {
-	for _, pattern := range sshFiles {
-		paths, err := fsys.Glob(pattern)
-		if err != nil {
-			continue
-		}
-		for _, path := range paths {
-			addBody(fsys, corpus, File{Path: path})
-		}
-	}
-}
-
 func collectPAM(fsys FS, corpus *Corpus) {
 	for _, pattern := range pamFiles {
 		paths, err := fsys.Glob(pattern)
@@ -651,60 +708,7 @@ func collectPAM(fsys FS, corpus *Corpus) {
 			addBody(fsys, corpus, File{Path: path})
 		}
 	}
-}
-
-func collectSupervisor(fsys FS, corpus *Corpus) {
-	for _, pattern := range supervisorFiles {
-		paths, err := fsys.Glob(pattern)
-		if err != nil {
-			continue
-		}
-		for _, path := range paths {
-			addBody(fsys, corpus, File{Path: path})
-		}
-	}
-}
-
-func collectXdg(fsys FS, corpus *Corpus) {
-	for _, pattern := range xdgFiles {
-		paths, err := fsys.Glob(pattern)
-		if err != nil {
-			continue
-		}
-		for _, path := range paths {
-			addBody(fsys, corpus, File{Path: path})
-		}
-	}
-}
-
-func collectApt(fsys FS, corpus *Corpus) {
-	for _, pattern := range aptFiles {
-		paths, err := fsys.Glob(pattern)
-		if err != nil {
-			continue
-		}
-		for _, path := range paths {
-			addBody(fsys, corpus, File{Path: path})
-		}
-	}
-}
-
-func collectModule(fsys FS, corpus *Corpus) {
-	for _, pattern := range moduleFiles {
-		paths, err := fsys.Glob(pattern)
-		if err != nil {
-			continue
-		}
-		for _, path := range paths {
-			addBody(fsys, corpus, File{Path: path})
-		}
-	}
-}
-
-func collectSystem(fsys FS, corpus *Corpus) {
-	for _, path := range systemFiles {
-		addBody(fsys, corpus, File{Path: path})
-	}
+	collectMotd(fsys, corpus)
 }
 
 func sshDialect(path string) Dialect {
@@ -740,11 +744,12 @@ func isSSHPath(path string) bool {
 		path == "/etc/ssh/sshrc" || strings.HasSuffix(path, "/.ssh/rc")
 }
 
-// hasUnitSuffix is the unit file kinds the collector reads: the ones with an
+// IsUnitName is the unit file kinds the collector reads: the ones with an
 // ExecStart, the ones that name one, and the ones that assemble or stage the
 // tree itself (mount, swap, target — a target's Requires/Wants chain is how a
-// boot pulls other units in).
-func hasUnitSuffix(name string) bool {
+// boot pulls other units in). The CLI scope grammar and the object graph use
+// the same predicate, so a unit word cannot mean different things per command.
+func IsUnitName(name string) bool {
 	switch filepath.Ext(name) {
 	case ".service", ".socket", ".timer", ".path", ".mount", ".swap", ".target":
 		return true

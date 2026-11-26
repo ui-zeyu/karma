@@ -40,14 +40,17 @@ type PackageState struct {
 
 const packageSweepLimit = 250000
 
-// packageOwnerSkip keeps the sweep out of documentation trees and the package
-// database itself; a modified manual page is not an execution surface.
+// packageOwnerSkip keeps the sweep out of documentation trees, the package
+// database itself, and scheduler state; a modified manual page or anacron
+// stamp is not an execution surface.
 var packageOwnerSkip = []string{
 	"/usr/share/doc", "/usr/share/man", "/usr/share/locale", "/usr/share/info",
 	"/usr/share/help", "/usr/share/gtk-doc", "/usr/share/icons", "/usr/share/fonts",
 	"/usr/share/zoneinfo", "/usr/share/pixmaps", "/usr/share/backgrounds",
 	"/usr/share/sounds", "/usr/share/games", "/var/lib/dpkg", "/var/lib/rpm",
 	"/var/lib/apt/lists",
+	// Anacron rewrites its stamps on the scheduler's own timetable.
+	"/var/spool/anacron",
 }
 
 // packageEntry is one recorded path before the worker-pool stat pass.
@@ -74,16 +77,22 @@ func collectPackages(ctx context.Context, snapshot *Snapshot) []string {
 		}
 		return []string{"package file list is empty: the package sweep cannot run"}
 	}
-	state.Packages = countPackages(owners)
+	state.Packages = catalog.PackageCount()
 	boundary := snapshot.Boundary.Time
 	var gaps []string
 	entries := make([]packageEntry, 0, len(owners))
 	for path, ownership := range owners {
+		if !snapshot.plan.Filter.touchesPath(path) {
+			continue
+		}
 		if len(entries) >= packageSweepLimit {
 			gaps = append(gaps, fmt.Sprintf("package sweep stopped at %d files", packageSweepLimit))
 			break
 		}
-		if packageOwnerSkipPath(path) || catalog.Diversion(path) || catalog.Conffile(path) {
+		// A package-recorded directory has no execution edge. Existing ones
+		// were skipped after the stat; a missing directory must not read as a
+		// broken file edge.
+		if !sweepEligible(path, ownership, catalog) {
 			continue
 		}
 		entries = append(entries, packageEntry{Path: path, Pkg: ownership.Name})
@@ -157,14 +166,14 @@ func collectPackages(ctx context.Context, snapshot *Snapshot) []string {
 	return gaps
 }
 
-func countPackages(owners map[string]prov.Ownership) int {
-	seen := map[string]bool{}
-	for _, ownership := range owners {
-		if ownership.Name != "" {
-			seen[ownership.Name] = true
-		}
+// sweepEligible reports whether a package-recorded path belongs in the ctime
+// sweep: a regular file outside the documentation, package and scheduler
+// state trees, not diverted and not a conffile.
+func sweepEligible(path string, ownership prov.Ownership, catalog *prov.Catalog) bool {
+	if ownership.Dir || packageOwnerSkipPath(path) {
+		return false
 	}
-	return len(seen)
+	return !catalog.Diversion(path) && !catalog.Conffile(path)
 }
 
 func packageOwnerSkipPath(path string) bool {

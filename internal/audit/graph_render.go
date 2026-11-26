@@ -5,6 +5,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	chrome "karma/internal/panel"
 )
 
 // RenderGraph prints one relation graph — a domain or one object — in the
@@ -14,17 +16,14 @@ import (
 // not read as the same kind of fact.
 func RenderGraph(w io.Writer, view *GraphView, options RenderOptions) {
 	width := reportWidth(options.Width)
-	fmt.Fprintln(w, band(" KARMA", "yuyy ", width, bannerBG, bannerFG, true, options.Color))
-	head := band(" "+versionText(options), clock(), width-2, subBandBG, subBandFG, false, options.Color)
 	root := graphRootName(view)
-	facts := []fact{
+	options.Root = graphRootPath(view)
+	writeMasthead(w, options, width, []fact{
 		{label: "root", value: valueOr(view.RootKind+" "+root, "unknown")},
 		{label: "boundary", value: boundaryText(view.Boundary), full: true},
 		{label: "graph", value: fmt.Sprintf("%d nodes · %d edges · %d findings",
 			len(view.Nodes), len(view.Edges), len(view.Findings)), full: true},
-	}
-	fmt.Fprintln(w, rail(head, factGrid(facts, width-2), width, mutedColor, options.Color))
-	fmt.Fprintln(w)
+	}, nil)
 	if len(view.Findings) == 0 {
 		fmt.Fprintln(w, rail(band(" QUIET", "", width-2, subBandBG, subBandFG, false, options.Color),
 			[]string{"no finding touches this graph; the edges below are its evidence"},
@@ -35,13 +34,17 @@ func RenderGraph(w io.Writer, view *GraphView, options RenderOptions) {
 		fmt.Fprintln(w, findingPanel(group, true, options, width))
 		fmt.Fprintln(w)
 	}
-	fmt.Fprintln(w, band(" GRAPH", root, width, bannerBG, bannerFG, true, options.Color))
+	fmt.Fprintln(w, band(" GRAPH", chrome.SafeText(root), width, bannerBG, bannerFG, true, options.Color))
 	for _, line := range graphTree(view, options, width) {
 		fmt.Fprintln(w, line)
 	}
 	fmt.Fprintln(w)
 	if len(view.Coverage) > 0 {
-		fmt.Fprintln(w, evidencePanel("COVERAGE", view.Coverage, len(view.Coverage), options, width))
+		coverage := make([]string, len(view.Coverage))
+		for index, line := range view.Coverage {
+			coverage[index] = chrome.SafeText(line)
+		}
+		fmt.Fprintln(w, evidencePanel("COVERAGE", coverage, len(coverage), options, width))
 	}
 }
 
@@ -50,12 +53,21 @@ func RenderGraph(w io.Writer, view *GraphView, options RenderOptions) {
 // rendered.
 func graphRootName(view *GraphView) string {
 	if node := viewNode(view, view.Root); node != nil {
-		if node.Kind == "file" {
+		if node.Kind == "file" || node.Kind == "dir" {
 			return node.Path
 		}
 		return node.Name
 	}
 	return view.Root
+}
+
+// graphRootPath is the filesystem object the page is rooted at, when it has
+// one. A finding on that same object does not need a second graph command.
+func graphRootPath(view *GraphView) string {
+	if node := viewNode(view, view.Root); node != nil {
+		return node.Path
+	}
+	return ""
 }
 
 func viewNode(view *GraphView, id string) *GraphNode {
@@ -94,12 +106,15 @@ func graphTree(view *GraphView, options RenderOptions, width int) []string {
 			return
 		}
 		edges := outgoing[id]
-		for index, edge := range edges {
-			child := byID[edge.To]
-			if child == nil {
-				continue
+		links := make([]GraphEdge, 0, len(edges))
+		for _, edge := range edges {
+			if byID[edge.To] != nil {
+				links = append(links, edge)
 			}
-			last := index == len(edges)-1
+		}
+		for index, edge := range links {
+			child := byID[edge.To]
+			last := index == len(links)-1
 			branch, childPrefix := "├─ ", prefix+"│  "
 			if last {
 				branch, childPrefix = "└─ ", prefix+"   "
@@ -142,22 +157,28 @@ func graphTree(view *GraphView, options RenderOptions, width int) []string {
 // the origin language gives it, and the detail that fits the line.
 func nodeLine(node *GraphNode, color bool, width int) string {
 	marker, colorCode := nodeMarker(node)
-	label := node.Kind + " " + node.Name
+	label := node.Kind + " " + chrome.SafeText(node.Name)
 	if node.Kind == "file" || node.Kind == "dir" {
-		label = node.Kind + " " + node.Path
+		label = node.Kind + " " + chrome.SafeText(node.Path)
 	}
-	detail := node.Detail
+	detail := chrome.SafeText(node.Detail)
 	if node.Content != nil {
 		switch node.Content.State {
 		case Verified:
-			detail = strings.TrimSpace("md5 verified · " + detail)
+			detail = strings.TrimSpace("content verified · " + detail)
 		case Mismatched:
-			detail = strings.TrimSpace("md5 mismatch · " + detail)
+			detail = strings.TrimSpace("content mismatch · " + detail)
 		}
 	}
-	origin := node.Origin
+	origin := chrome.SafeText(node.Origin)
 	if width > 0 {
-		room := width - displayWidth(label) - displayWidth(origin) - 4
+		// marker + space + label, then "  origin" when present, then
+		// "  detail": the optional origin shifts the detail's room by two.
+		used := 2 + displayWidth(label)
+		if origin != "" {
+			used += 2 + displayWidth(origin)
+		}
+		room := width - used - 2
 		if room > 0 {
 			detail = truncate(detail, room)
 		} else {
@@ -166,7 +187,7 @@ func nodeLine(node *GraphNode, color bool, width int) string {
 	}
 	line := paintText(color, fg(colorCode), marker) + " " + label
 	if origin != "" {
-		line += paintText(color, fg(originHue(node.origin)), "  "+origin)
+		line += paintText(color, fg(originHue(node.typedOrigin())), "  "+origin)
 	}
 	if detail != "" {
 		line += paintText(color, fg(mutedColor), "  "+detail)
@@ -178,16 +199,17 @@ func nodeLine(node *GraphNode, color bool, width int) string {
 // in the caution hue, a runtime or modified object is marked warm, an
 // unknown artifact a quiet question, and a context node a quiet dot.
 func nodeMarker(node *GraphNode) (string, int) {
+	origin := node.typedOrigin()
 	switch {
 	case node.Missing:
 		return "?", hueCaution
 	case node.Context, node.Kind == "socket":
 		return "·", mutedColor
-	case node.origin == Runtime:
+	case origin == Runtime:
 		return "!", hueAlert
-	case node.origin == Modified:
+	case origin == Modified:
 		return "!", hueCaution
-	case node.origin == Unknown && node.Kind != "package" && node.Kind != "unit":
+	case origin == Unknown && node.Kind != "package" && node.Kind != "unit":
 		return "?", mutedColor
 	}
 	return "·", mutedColor

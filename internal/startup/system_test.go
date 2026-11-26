@@ -152,7 +152,7 @@ func TestMissingPAMModuleBecomesCoverage(t *testing.T) {
 			"/etc/pam.d/*": {"/etc/pam.d/common-auth"},
 		},
 	}
-	corpus := CollectScoped(context.Background(), tree, allFiles, Scope{PAM: true})
+	corpus := CollectScoped(context.Background(), tree, allFiles, PAM)
 	Analyze(corpus)
 	gaps := corpus.Gaps()
 	if len(gaps) != 1 || !contains(gaps[0], "pam_forensics.so") {
@@ -189,7 +189,7 @@ func TestSSHClientConfigCommands(t *testing.T) {
 			"/etc/ssh/ssh_config.d/*":  nil,
 		},
 	}
-	edges := Analyze(CollectScoped(context.Background(), tree, allFiles, Scope{SSH: true}))
+	edges := Analyze(CollectScoped(context.Background(), tree, allFiles, SSH))
 	proxy, ok := findEdge(edges, "ProxyCommand", "/usr/bin/nc")
 	if !ok || proxy.Phase != Session || proxy.Subject.Class != AccountLogin {
 		t.Errorf("proxycommand edge = %+v (found %t)", proxy, ok)
@@ -215,7 +215,7 @@ func TestMountTableRowEdges(t *testing.T) {
 	if edges[0].target != "/" || edges[0].note != "ext4 defaults 0 1" {
 		t.Errorf("root row = %+v", edges[0])
 	}
-	if edges[1].target != "/usr" || edges[1].note != "nfs4 ro" || edges[1].line != 1 {
+	if edges[1].target != "/usr" || edges[1].note != "nfs4 ro" || edges[1].line != 2 {
 		t.Errorf("/usr row = %+v", edges[1])
 	}
 }
@@ -245,7 +245,7 @@ func TestMountUnitStatesWhat(t *testing.T) {
 			"/usr/local/lib/systemd/system": nil,
 		},
 	}
-	edges := Analyze(CollectScoped(context.Background(), tree, allFiles, Scope{Systemd: true}))
+	edges := Analyze(CollectScoped(context.Background(), tree, allFiles, Systemd))
 	var local, net *Edge
 	for index := range edges {
 		switch edges[index].Target {
@@ -277,7 +277,7 @@ func TestLoaderCacheIsASelfEdge(t *testing.T) {
 			"/etc/ld.so.preload": "",
 		},
 	}
-	edges := Analyze(CollectScoped(context.Background(), tree, allFiles, Scope{Loader: true}))
+	edges := Analyze(CollectScoped(context.Background(), tree, allFiles, Loader))
 	if len(edges) != 1 || edges[0].Mechanism != "ld.so.cache" ||
 		edges[0].Trigger != "/etc/ld.so.cache" || edges[0].Target != edges[0].Trigger {
 		t.Errorf("loader edges = %+v, want one cache self-edge and no binary line parse", edges)

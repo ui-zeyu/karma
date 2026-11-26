@@ -23,7 +23,7 @@ func cronEdges(file File) []rawEdge {
 		if name, _, ok := strings.Cut(line, "="); ok && !strings.ContainsAny(name, " \t") {
 			edges = append(edges, environmentEdges(line, rawEdge{
 				surface: SurfaceCron, phase: Scheduled, subject: defaultSubject,
-				trigger: file.Path, line: index,
+				trigger: file.Path, line: index + 1,
 			})...)
 			continue
 		}
@@ -79,7 +79,7 @@ func cronEdges(file File) []rawEdge {
 		// crontab line they came from.
 		edges = append(edges, shellEdges(command, rawEdge{
 			surface: SurfaceCron, phase: phase, subject: subject,
-			trigger: file.Path, line: index,
+			trigger: file.Path, line: index + 1,
 		})...)
 	}
 	return edges

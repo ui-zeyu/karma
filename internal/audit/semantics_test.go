@@ -168,11 +168,11 @@ func TestSurfaceAndPathScope(t *testing.T) {
 	if !surfaceInScope(startup.SurfaceCron, Filter{}) {
 		t.Error("a nil surface filter reads every surface")
 	}
-	narrow := Filter{Surfaces: map[string]bool{"persistence": true}}
+	narrow := Filter{Surfaces: surfacePtr(startup.AllScope())}
 	if !surfaceInScope(startup.SurfaceCron, narrow) {
 		t.Error("the persistence word stands for every activation surface")
 	}
-	one := Filter{Surfaces: map[string]bool{"systemd": true}}
+	one := Filter{Surfaces: surfacePtr(startup.Systemd)}
 	if surfaceInScope(startup.SurfaceCron, one) {
 		t.Error("a named surface must exclude the others")
 	}
@@ -191,6 +191,12 @@ func TestSurfaceAndPathScope(t *testing.T) {
 	}
 	if !pathInScope("", Filter{}) {
 		t.Error("an empty path with no path scope is in scope")
+	}
+	if !pathInScope("/etc/passwd", Filter{Paths: []string{"/"}}) {
+		t.Error("the root path scope covers every absolute path")
+	}
+	if pathInScope("/etc/passwd", Filter{ExcludePaths: []string{"/"}}) {
+		t.Error("the root exclusion removes every path")
 	}
 }
 
@@ -216,6 +222,67 @@ func TestUnitScope(t *testing.T) {
 	}
 	if !unitInScope("/etc/profile", Filter{}) {
 		t.Error("no unit scope reads every trigger")
+	}
+}
+
+func TestCapabilityFindingUsesTheEffectiveUID(t *testing.T) {
+	snapshot := &Snapshot{Processes: []Process{{
+		PID: 424242, UID: 1000, EUID: 0, CapEff: 1 << 7,
+	}}}
+	var findings []Finding
+	judgeLoaders(snapshot, newAssessor(snapshot), Filter{}, func(f Finding) {
+		findings = append(findings, f)
+	})
+	for _, finding := range findings {
+		if finding.Class == "process-capability" {
+			t.Errorf("setuid-root process was called non-root: %+v", finding)
+		}
+	}
+}
+
+func TestInterpreterClassNormalizesVersionSuffixes(t *testing.T) {
+	cases := map[string]string{
+		"/usr/bin/python3.12": "python",
+		"/usr/bin/perl5.36":   "perl",
+		"/usr/bin/ruby3.2":    "ruby",
+	}
+	for path, want := range cases {
+		got, ok := interpreterClass(Process{Exe: path})
+		if !ok || got != want {
+			t.Errorf("interpreterClass(%q) = %q, %v; want %q", path, got, ok, want)
+		}
+	}
+}
+
+func TestExcludedOnlyPIDKeepsTheComplement(t *testing.T) {
+	snapshot := &Snapshot{
+		Sockets: []Socket{
+			{Proto: "tcp", State: "LISTEN", Local: ":22", PID: 10},
+			{Proto: "tcp", State: "LISTEN", Local: ":80", PID: 11},
+		},
+		Connections: []Connection{
+			{PID: 10, PIDs: []int{10}},
+			{PID: 11, PIDs: []int{11}},
+		},
+		Processes: []Process{{PID: 10}, {PID: 11}},
+	}
+	view := NewView(snapshot, Filter{ExcludePIDs: map[int]bool{10: true}})
+	if len(view.Sockets) != 1 || view.Sockets[0].PID != 11 {
+		t.Errorf("excluded-only pid sockets = %+v, want pid 11", view.Sockets)
+	}
+	if len(view.Connections) != 1 || view.Connections[0].PID != 11 {
+		t.Errorf("excluded-only pid connections = %+v, want pid 11", view.Connections)
+	}
+}
+
+func TestPathExclusionDropsBothEndsOfAnActivation(t *testing.T) {
+	edges := []startup.Edge{{
+		Surface: startup.SurfaceCron, Trigger: "/etc/cron.d/x", Target: "/etc/cron.d/y",
+		Kind: startup.Exec, Mechanism: "run",
+	}}
+	filter := Filter{Paths: []string{"/etc"}, ExcludePaths: []string{"/etc/cron.d/x"}}
+	if got := scopeActivations(edges, filter); len(got) != 0 {
+		t.Errorf("activation with an excluded trigger stayed: %+v", got)
 	}
 }
 
@@ -279,35 +346,28 @@ func TestProcessReachUsesTheEffectiveUID(t *testing.T) {
 	}
 }
 
-func TestParseSeverityNames(t *testing.T) {
-	for name, want := range map[string]Severity{
-		"critical": Critical, "high": High, "medium": Medium, "low": Low, "info": Info,
-	} {
-		got, ok := ParseSeverity(name)
-		if !ok || got != want {
-			t.Errorf("ParseSeverity(%q) = %s %t", name, got, ok)
-		}
-	}
-	if _, ok := ParseSeverity("severe"); ok {
-		t.Error("an unknown severity name must be refused")
-	}
-}
-
 func TestScopedSocketsFollowTheSelectedProcesses(t *testing.T) {
-	sockets := []Socket{
-		{PID: 10, Proto: "tcp", Local: "10.0.0.2:22"},
-		{PID: 20, Proto: "tcp", Local: "10.0.0.2:80"},
+	snapshot := &Snapshot{
+		Sockets: []Socket{
+			{PID: 10, Proto: "tcp", Local: "10.0.0.2:22"},
+			{PID: 20, Proto: "tcp", Local: "10.0.0.2:80"},
+		},
+		Processes: []Process{
+			{PID: 10, Exe: "/usr/sbin/sshd"},
+			{PID: 20, Unit: "getty@tty1.service", Exe: "/sbin/agetty"},
+		},
 	}
-	if got := scopedSockets(sockets, nil, Filter{PIDs: map[int]bool{20: true}}); len(got) != 1 || got[0].PID != 20 {
-		t.Errorf("pid scope kept %v", got)
+	view := NewView(snapshot, Filter{PIDs: map[int]bool{20: true}})
+	if len(view.Sockets) != 1 || view.Sockets[0].PID != 20 {
+		t.Errorf("pid scope kept %v", view.Sockets)
 	}
-	processes := []Process{{PID: 20, Unit: "getty@tty1.service"}}
-	got := scopedSockets(sockets, processes, Filter{Units: map[string]bool{"getty@.service": true}})
-	if len(got) != 1 || got[0].PID != 20 {
-		t.Errorf("unit scope missed the instance unit's socket: %v", got)
+	view = NewView(snapshot, Filter{Units: map[string]bool{"getty@.service": true}})
+	if len(view.Sockets) != 1 || view.Sockets[0].PID != 20 {
+		t.Errorf("unit scope missed the instance unit's socket: %v", view.Sockets)
 	}
-	if got := scopedSockets(sockets, nil, Filter{}); got != nil {
-		t.Errorf("a scope that selects no process keeps nothing: %v", got)
+	view = NewView(snapshot, Filter{})
+	if len(view.Sockets) != 2 {
+		t.Errorf("an unscoped view changed the socket table: %v", view.Sockets)
 	}
 }
 

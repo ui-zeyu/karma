@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"karma/internal/fault"
 	"karma/internal/prov"
 	"karma/internal/startup"
 	"karma/internal/trust"
@@ -20,24 +21,34 @@ func collectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot,
 	}
 	stage("catalog", progress)
 	catalog := prov.Open(ctx)
+	classifier := trust.NewClassifier(catalog)
 	boundary, packageTimes := readBoundary(catalog.Timeline())
-	facts := func(path string) trust.Facts { return trust.Classify(path, catalog) }
+	facts := classifier.Classify
 
 	stage("startup", progress)
 	corpus := startup.CollectScoped(ctx, startup.OSFS{}, facts, plan.startupScope())
-	corpus.Prefetch(catalog.OwnedAll)
+	var activations []startup.Edge
+	analyzeErr := fault.Catch("startup analysis", func() error {
+		activations = startup.Analyze(corpus)
+		return nil
+	})
 	snapshot := &Snapshot{
 		Boundary:     boundary,
+		Boot:         readBootTime(),
 		Host:         readHost(),
-		Activations:  startup.Analyze(corpus),
+		Activations:  activations,
 		Objects:      map[string]trust.Facts{},
 		PackageTimes: packageTimes,
 		Unreadable:   corpus.Unreadable(),
 		Source:       "local",
 		Clock:        readClockState(),
 		catalog:      catalog,
+		classifier:   classifier,
 	}
 	snapshot.Coverage = append(snapshot.Coverage, corpus.Gaps()...)
+	if analyzeErr != nil {
+		snapshot.Coverage = append(snapshot.Coverage, analyzeErr.Error())
+	}
 	for _, edge := range snapshot.Activations {
 		remember(snapshot, edge.Trigger, edge.TriggerFacts)
 		remember(snapshot, edge.Target, edge.TargetFacts)
@@ -47,7 +58,7 @@ func collectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot,
 	snapshot.plan = plan
 	var gaps []string
 	for _, module := range modules {
-		if !plan.Has(module.Bit) || module.Collect == nil {
+		if !plan.collects(module.Bit) || module.Collect == nil {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
@@ -55,7 +66,13 @@ func collectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot,
 			break
 		}
 		stage(module.Name, progress)
-		gaps = append(gaps, module.Collect(ctx, snapshot)...)
+		collectErr := fault.Catch("collect "+module.Name, func() error {
+			gaps = append(gaps, module.Collect(ctx, snapshot)...)
+			return nil
+		})
+		if collectErr != nil {
+			gaps = append(gaps, collectErr.Error())
+		}
 	}
 	snapshot.Coverage = append(snapshot.Coverage, gaps...)
 
@@ -72,7 +89,6 @@ func collectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot,
 	// already holds the whole file list, so ownership is an index lookup.
 	stage("ledger", progress)
 	parents := collectParents(snapshot)
-	catalog.OwnedAll(parents)
 	for _, parent := range parents {
 		remember(snapshot, parent, facts(parent))
 	}
@@ -122,33 +138,19 @@ func attachSnapshotEvidence(ctx context.Context, snapshot *Snapshot) {
 	evidence := evidenceSet{kind: catalog.Kind(), mounts: readMounts()}
 	switch catalog.Kind() {
 	case "dpkg":
-		candidates := candidatePackages(snapshot.Objects)
-		// Keep only the entries for paths this run judges: the summary reads
-		// as coverage of the judged set, and a mounts-only run reads no hash.
-		candidateKeys := map[string]bool{}
-		for _, facts := range snapshot.Objects {
-			if facts.Kind != trust.File || facts.Real == "" {
-				continue
-			}
-			for _, key := range usrKeys(facts.Real) {
-				candidateKeys[key] = true
-			}
-		}
-		expected := map[string]ledgerEntry{}
-		for key, entry := range catalog.Hashes() {
-			if len(candidates) > 0 && !candidates[entry.Pkg] {
-				continue
-			}
-			if len(candidateKeys) > 0 && !candidateKeys[key] {
-				continue
-			}
-			expected[key] = ledgerEntry{pkg: entry.Pkg, hash: entry.Hash}
-		}
+		// Keep only the entries for paths this run judges. An empty judged
+		// set means an empty ledger, never the whole database: a mount-only or
+		// package-only run must not claim every package was checked.
+		expected := dpkgExpected(catalog.Hashes(), snapshot.Objects)
 		evidence.expected = expected
+		evidence.entries = len(expected)
+		evidence.packages = ledgerPackages(expected)
 		evidence.conffiles = catalogConf(catalog, snapshot.Objects)
 		evidence.rows = catalogLedgerFiles(catalog)
 	case "rpm":
 		evidence.rpmFlag = catalog.RPMFlags()
+		evidence.rpmVerified = catalog.RPMVerified()
+		evidence.packages = catalog.PackageCount()
 		evidence.conffiles = catalogConf(catalog, snapshot.Objects)
 		if missing := catalog.RPMMissing(); missing > 0 {
 			evidence.note = fmt.Sprintf("%d packaged file(s) are missing from disk (rpm -Va)", missing)
@@ -156,6 +158,7 @@ func attachSnapshotEvidence(ctx context.Context, snapshot *Snapshot) {
 			evidence.note = note
 		}
 	}
+	evidence.objects = snapshot.Objects
 	evidence.actual = hashFiles(ctx, snapshot.Objects, evidence.expected)
 	snapshot.attachEvidence(evidence)
 }

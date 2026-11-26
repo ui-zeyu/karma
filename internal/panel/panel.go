@@ -6,7 +6,9 @@ package panel
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -40,11 +42,11 @@ func Band(left, right string, width, bgCode, fgCode int, bold, color bool) strin
 	if width < 8 {
 		width = 8
 	}
-	if utf8.RuneCountInString(left)+utf8.RuneCountInString(right) > width {
+	if DisplayWidth(left)+DisplayWidth(right) > width {
 		right = ""
 		left = Truncate(left, width)
 	}
-	fill := width - utf8.RuneCountInString(left) - utf8.RuneCountInString(right)
+	fill := width - DisplayWidth(left) - DisplayWidth(right)
 	if fill < 0 {
 		fill = 0
 	}
@@ -60,13 +62,27 @@ func Band(left, right string, width, bgCode, fgCode int, bold, color bool) strin
 }
 
 // Rail draws one panel: a half-block rail in the rail color, a filled head
-// band, and body rows indented two columns.
+// band, and body rows indented two columns. A table row hard-wraps at the
+// width, so its columns stay aligned.
 func Rail(head string, body []string, width, railColor int, color bool) string {
-	inner := width - 2
+	return rail(head, body, width, railColor, color, Wrap)
+}
+
+// RailText draws a panel whose body is prose: every row word-wraps with a
+// two-column hanging indent. Use Rail for aligned tables; the two functions
+// make the wrap choice explicit at the call site.
+func RailText(head string, body []string, width, railColor int, color bool) string {
+	return rail(head, body, width, railColor, color, func(line string, inner int) []string {
+		return WrapProse(line, inner, 2)
+	})
+}
+
+func rail(head string, body []string, width, railColor int, color bool, wrap func(string, int) []string) string {
+	inner := width - 4
 	lines := []string{head}
 	for _, line := range body {
 		line = strings.TrimRight(line, " ")
-		for _, wrapped := range Wrap(line, inner-2) {
+		for _, wrapped := range wrap(line, inner) {
 			lines = append(lines, "  "+wrapped)
 		}
 	}
@@ -110,8 +126,10 @@ func WrapProse(text string, width, hang int) []string {
 		return []string{text}
 	}
 	runes := styledRunes(text)
+	bindStyledTimestamps(runes)
 	var lines []string
 	first := true
+	clean := func(line string) string { return strings.ReplaceAll(line, "\u00a0", " ") }
 	for len(runes) > 0 {
 		budget, prefix := width, ""
 		if !first {
@@ -122,7 +140,8 @@ func WrapProse(text string, width, hang int) []string {
 			prefix = strings.Repeat(" ", hang)
 		}
 		if len(runes) <= budget {
-			return append(lines, prefix+renderStyled(runes))
+			lines = append(lines, clean(prefix+renderStyled(runes)))
+			return lines
 		}
 		cut := budget
 		for index := budget; index > 0; index-- {
@@ -131,7 +150,7 @@ func WrapProse(text string, width, hang int) []string {
 				break
 			}
 		}
-		lines = append(lines, prefix+renderStyled(runes[:cut]))
+		lines = append(lines, clean(prefix+renderStyled(runes[:cut])))
 		runes = runes[cut:]
 		for len(runes) > 0 && runes[0].r == ' ' {
 			runes = runes[1:]
@@ -139,6 +158,34 @@ func WrapProse(text string, width, hang int) []string {
 		first = false
 	}
 	return lines
+}
+
+// dateClock is the report's timestamp shape. A reader treats the date and the
+// clock as one fact, so WrapProse binds their separator with a non-breaking
+// mark and turns it back into a space after the line is cut.
+var dateClock = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})\b`)
+
+// bindStyledTimestamps applies the binding to the visible runes: an evidence
+// line paints the date and the clock as separate tokens, so a regex over the
+// raw string would stop at the SGR sequences between them.
+func bindStyledTimestamps(runes []styledRune) {
+	var plain strings.Builder
+	for _, styled := range runes {
+		plain.WriteRune(styled.r)
+	}
+	bound := []rune(bindTimestamps(plain.String()))
+	if len(bound) != len(runes) {
+		return
+	}
+	for index := range runes {
+		if bound[index] == '\u00a0' {
+			runes[index].r = '\u00a0'
+		}
+	}
+}
+
+func bindTimestamps(text string) string {
+	return dateClock.ReplaceAllString(text, "$1\u00a0$2")
 }
 
 // styledRune is one visible rune and the SGR state it is printed under: the
@@ -237,6 +284,76 @@ func wrapWords(runes []styledRune, width int) []string {
 	return lines
 }
 
+// SafeText makes untrusted text safe for one terminal row. Host files and
+// process argv can carry escape sequences, newlines and other C0/C1 controls;
+// the report quotes that text, so it must never reach the stream as terminal
+// control. The JSON answer keeps the raw bytes.
+func SafeText(text string) string {
+	if text == "" {
+		return text
+	}
+	var out strings.Builder
+	out.Grow(len(text))
+	for index := 0; index < len(text); {
+		if text[index] == 0x1b {
+			index = skipEscape(text, index)
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(text[index:])
+		if r == utf8.RuneError && size == 1 {
+			// An invalid byte is evidence the file held non-text; keep a
+			// visible replacement rather than pass the byte to the terminal.
+			out.WriteRune(utf8.RuneError)
+			index++
+			continue
+		}
+		index += size
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			out.WriteByte(' ')
+		case r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f:
+			// C0, DEL and C1 controls have no place in a report row.
+		default:
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+// skipEscape consumes one ESC sequence: CSI to its final byte, OSC to BEL or
+// ST, and any other two-byte escape. A lone ESC is consumed alone.
+func skipEscape(text string, index int) int {
+	index++
+	if index >= len(text) {
+		return index
+	}
+	switch text[index] {
+	case '[':
+		index++
+		for index < len(text) {
+			c := text[index]
+			index++
+			if c >= 0x40 && c <= 0x7e {
+				break
+			}
+		}
+	case ']':
+		index++
+		for index < len(text) {
+			if text[index] == 0x07 {
+				return index + 1
+			}
+			if text[index] == 0x1b && index+1 < len(text) && text[index+1] == '\\' {
+				return index + 2
+			}
+			index++
+		}
+	default:
+		index++
+	}
+	return index
+}
+
 // DisplayWidth is a string's printed width: ANSI escapes take no column.
 func DisplayWidth(text string) int {
 	width := 0
@@ -248,11 +365,38 @@ func DisplayWidth(text string) int {
 			index++
 			continue
 		}
-		_, size := utf8.DecodeRuneInString(text[index:])
+		r, size := utf8.DecodeRuneInString(text[index:])
 		index += size
-		width++
+		width += runeWidth(r)
 	}
 	return width
+}
+
+// runeWidth is the terminal cell count of one visible rune. The table covers
+// the East Asian wide/fullwidth ranges and combining marks; it is the width
+// the report and its tables align to.
+func runeWidth(r rune) int {
+	if r == 0 {
+		return 0
+	}
+	if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || unicode.Is(unicode.Cf, r) {
+		return 0
+	}
+	switch {
+	case r >= 0x1100 && r <= 0x115f, // Hangul Jamo
+		r >= 0x2e80 && r <= 0xa4cf && r != 0x303f, // CJK radicals .. Yi
+		r >= 0xac00 && r <= 0xd7a3,                // Hangul syllables
+		r >= 0xf900 && r <= 0xfaff,                // CJK compatibility ideographs
+		r >= 0xfe10 && r <= 0xfe19,                // vertical forms
+		r >= 0xfe30 && r <= 0xfe6f,                // CJK compatibility forms
+		r >= 0xff00 && r <= 0xff60,                // fullwidth forms
+		r >= 0xffe0 && r <= 0xffe6,
+		r >= 0x1f300 && r <= 0x1f64f, // emoji
+		r >= 0x1f900 && r <= 0x1f9ff,
+		r >= 0x20000 && r <= 0x3fffd:
+		return 2
+	}
+	return 1
 }
 
 // StripANSI drops SGR sequences: a line that has to wrap loses its paint
@@ -273,17 +417,24 @@ func StripANSI(text string) string {
 	return out.String()
 }
 
-// Truncate shortens text to width runes, marking the cut with an ellipsis.
+// Truncate shortens text to width printed columns, marking the cut with an
+// ellipsis. ANSI sequences take no column and are kept out of the visible
+// count, so a painted cell can be cut without splitting an escape.
 func Truncate(text string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	runes := []rune(text)
-	if len(runes) <= width {
+	if DisplayWidth(text) <= width {
 		return text
 	}
-	if width == 1 {
-		return "…"
+	runes := styledRunes(text)
+	used := 0
+	for cut, styled := range runes {
+		next := used + runeWidth(styled.r)
+		if next > width-1 {
+			return renderStyled(runes[:cut]) + "…"
+		}
+		used = next
 	}
-	return string(runes[:width-1]) + "…"
+	return text
 }

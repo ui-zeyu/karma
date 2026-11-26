@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	chrome "karma/internal/panel"
 )
@@ -20,6 +20,9 @@ type RenderOptions struct {
 	Evidence bool
 	Width    int
 	Filter   Filter
+	// Root is the object a graph page is about; a finding on that object
+	// already has the page it would open.
+	Root string
 }
 
 // The report's chrome, the palette the old surface used: a dark level-one
@@ -76,15 +79,19 @@ func Render(w io.Writer, report *Report, options RenderOptions) {
 		fmt.Fprintln(w)
 	}
 	next := options.Filter.narrowed()
-	for _, group := range groupFindings(report.Findings) {
-		fmt.Fprintln(w, findingPanel(group, next, options, width))
+	for _, group := range panelGroups(report.Findings, options.Filter) {
+		fmt.Fprintln(w, findingPanelDir(group.findings, group.dir, group.files, next, options, width))
 		fmt.Fprintln(w)
 	}
 	if options.Evidence && report.view != nil {
 		renderEvidence(w, report.view, options, width)
 	}
 	if len(report.Coverage) > 0 {
-		fmt.Fprintln(w, evidencePanel("COVERAGE", report.Coverage, len(report.Coverage), options, width))
+		coverage := make([]string, len(report.Coverage))
+		for index, line := range report.Coverage {
+			coverage[index] = chrome.SafeText(line)
+		}
+		fmt.Fprintln(w, evidencePanel("COVERAGE", coverage, len(coverage), options, width))
 	}
 }
 
@@ -93,10 +100,14 @@ func Render(w io.Writer, report *Report, options RenderOptions) {
 // worksheet. The full inventory is `karma show <section>`.
 func renderEvidence(w io.Writer, view *View, options RenderOptions, width int) {
 	fmt.Fprintln(w, band(" EVIDENCE", "", width, bannerBG, bannerFG, true, options.Color))
-	for _, section := range viewPanels(view, options) {
-		if len(section.rows) > 0 {
-			fmt.Fprintln(w, evidencePanel(section.title, cappedRows(section.rows, options),
-				section.count(len(section.rows)), options, width))
+	for _, section := range sections {
+		if section.SkipEvidence {
+			continue
+		}
+		rows := sectionRows(section, view, options)
+		if len(rows) > 0 {
+			fmt.Fprintln(w, evidencePanel(section.Panel, cappedRows(rows, options),
+				section.Count(view, options), options, width))
 		}
 	}
 }
@@ -120,25 +131,39 @@ func evidencePanel(title string, rows []string, count int, options RenderOptions
 	return rail(head, rows, width, mutedColor, options.Color)
 }
 
+func sectionRows(section *Section, view *View, options RenderOptions) []string {
+	rows := section.Rows(view, options)
+	if !section.Plain {
+		return rows
+	}
+	safe := make([]string, len(rows))
+	for index, row := range rows {
+		safe[index] = chrome.SafeText(row)
+	}
+	return safe
+}
+
 // RenderShow prints one raw inventory in the page language every command
 // wears: the karma masthead with the run's context, then the section's
 // canonical panel with every row it collected.
 func RenderShow(w io.Writer, view *View, section *Section, word string, options RenderOptions) {
 	width := reportWidth(options.Width)
-	fmt.Fprintln(w, band(" KARMA", "yuyy ", width, bannerBG, bannerFG, true, options.Color))
-	head := band(" "+versionText(options), clock(), width-2, subBandBG, subBandFG, false, options.Color)
-	facts := []fact{
+	writeMasthead(w, options, width, []fact{
 		{label: "section", value: word},
 		{label: "host", value: valueOr(view.Snapshot.Host.Hostname, "unknown")},
 		{label: "boundary", value: boundaryText(view.Snapshot.Boundary), full: true},
+	}, nil)
+	rows := sectionRows(section, view, options)
+	collected := 0
+	if section.Plain {
+		collected = len(rows)
+	} else {
+		collected = section.Count(view, options)
 	}
-	fmt.Fprintln(w, rail(head, factGrid(facts, width-2), width, mutedColor, options.Color))
-	fmt.Fprintln(w)
-	rows, count := section.Rows(view, options)
 	if len(rows) == 0 {
 		rows = []string{"nothing in this section answers the selected scope"}
 	}
-	fmt.Fprintln(w, evidencePanel(section.Panel, rows, count(len(rows)), options, width))
+	fmt.Fprintln(w, evidencePanel(section.Panel, rows, collected, options, width))
 }
 
 // WriteShowJSON writes one show section as data: the section's word and its
@@ -155,12 +180,21 @@ func WriteShowJSON(w io.Writer, view *View, section *Section, word string, optio
 	return encoder.Encode(payload)
 }
 
-func renderMasthead(w io.Writer, report *Report, options RenderOptions, width int) {
-	fmt.Fprintln(w, band(" KARMA", "yuyy ", width, bannerBG, bannerFG, true, options.Color))
+func writeMasthead(w io.Writer, options RenderOptions, width int, facts []fact, extra []string) {
+	fmt.Fprintln(w, band(" KARMA", byline(), width, bannerBG, bannerFG, true, options.Color))
 	head := band(" "+versionText(options), clock(), width-2, subBandBG, subBandFG, false, options.Color)
+	body := factGrid(facts, width-4)
+	body = append(body, extra...)
+	fmt.Fprintln(w, rail(head, body, width, mutedColor, options.Color))
+	fmt.Fprintln(w)
+}
+
+func renderMasthead(w io.Writer, report *Report, options RenderOptions, width int) {
 	modules := 0
-	if report.Kernel != nil {
-		modules = len(report.Kernel.Modules)
+	trail := 0
+	if report.view != nil {
+		modules = kernelCount(report.view, options)
+		trail = len(report.view.Trail)
 	}
 	facts := []fact{
 		{label: "host", value: valueOr(report.Host.Hostname, "unknown")},
@@ -177,15 +211,22 @@ func renderMasthead(w io.Writer, report *Report, options RenderOptions, width in
 	facts = append(facts,
 		fact{label: "ledger", value: ledgerCell(report.Ledger), full: true},
 		fact{label: "boundary", value: boundaryText(report.Boundary), full: true},
-		fact{label: "judged", value: fmt.Sprintf("%d edges · %d proc · %d auth · %d svc · %d listen · %d mod",
-			report.Activated, report.Processes, report.Authority, len(report.Services), len(report.Sockets), modules), full: true},
+		fact{label: "read", value: fmt.Sprintf("%d edges · %d proc · %d auth · %d svc · %d listen · %d mod · %d trail",
+			report.Activated, report.Processes, len(report.AuthorityObjects), len(report.Services), len(report.Sockets), modules, trail), full: true},
 	)
-	body := factGrid(facts, width-2)
-	// The counts line carries paint per chip, which factGrid's rune-based
-	// truncation would corrupt, so it joins the grid after it is laid out.
-	body = append(body, findingsFact(report.Findings, factLabelWidth(facts), options.Color))
-	fmt.Fprintln(w, rail(head, body, width, mutedColor, options.Color))
-	fmt.Fprintln(w)
+	labelWidth := factLabelWidth(facts)
+	if len("findings") > labelWidth {
+		labelWidth = len("findings")
+	}
+	writeMasthead(w, options, width, facts,
+		findingsFact(report.Findings, labelWidth, width-4, options.Color))
+}
+
+func byline() string {
+	if user := os.Getenv("USER"); user != "" {
+		return chrome.SafeText(user) + " "
+	}
+	return "karma "
 }
 
 func versionText(options RenderOptions) string {
@@ -217,8 +258,11 @@ func ledgerCell(summary LedgerSummary) string {
 	case "", "none":
 		return "none"
 	}
-	cell := fmt.Sprintf("%s · %d pkgs · %s hash entries · %d verified",
+	cell := fmt.Sprintf("%s · %d pkgs · %s checked · %d verified",
 		summary.Kind, summary.Packages, compactCount(summary.Entries), summary.Verified)
+	if summary.Mismatched > 0 {
+		cell += fmt.Sprintf(" · %d deviated", summary.Mismatched)
+	}
 	if len(summary.Tampered) > 0 {
 		cell += fmt.Sprintf(" · %d tampered", len(summary.Tampered))
 	}
@@ -247,24 +291,29 @@ type fact struct {
 	full  bool
 }
 
-// factGrid lays two facts to a row while the line has room, one otherwise;
-// the label column is the longest label.
+// factGrid lays two facts to a row while the line has room, one otherwise.
+// Each cell is label + value; the two cells and the gap between them fit the
+// body width exactly, so a long value cannot push the right cell off the rail.
 func factGrid(facts []fact, width int) []string {
 	labelWidth := factLabelWidth(facts)
-	column := (width - labelWidth - 4) / 2
+	column := (width - 2*(labelWidth+2) - 2) / 2
 	if column < 16 {
 		column = 0
 	}
+	cell := func(f fact, valueWidth int) string {
+		value := chrome.SafeText(f.value)
+		return fmt.Sprintf("%-*s  %s", labelWidth, f.label, truncate(value, valueWidth))
+	}
+	cellWidth := labelWidth + 2 + column
 	var lines []string
 	for index := 0; index < len(facts); index++ {
-		left := fmt.Sprintf("%-*s  %s", labelWidth, facts[index].label, truncate(facts[index].value, width-labelWidth-2))
 		if facts[index].full || column == 0 || index+1 >= len(facts) || facts[index+1].full {
-			lines = append(lines, left)
+			lines = append(lines, cell(facts[index], width-labelWidth-2))
 			continue
 		}
-		right := fmt.Sprintf("%-*s  %s", labelWidth, facts[index+1].label,
-			truncate(facts[index+1].value, width-labelWidth-2-column-2))
-		lines = append(lines, fmt.Sprintf("%-*s  %s", width-column-2, left, right))
+		left := fmt.Sprintf("%-*s", cellWidth, cell(facts[index], column))
+		right := cell(facts[index+1], column)
+		lines = append(lines, left+"  "+right)
 		index++
 	}
 	return lines
@@ -273,7 +322,7 @@ func factGrid(facts []fact, width int) []string {
 func factLabelWidth(facts []fact) int {
 	labelWidth := 0
 	for _, f := range facts {
-		if n := utf8.RuneCountInString(f.label); n > labelWidth {
+		if n := displayWidth(f.label); n > labelWidth {
 			labelWidth = n
 		}
 	}
@@ -292,25 +341,39 @@ func accountCell(host Host) string {
 
 // findingsFact is the masthead's count line: every severity the run found,
 // in the order the report ranks them, each in the badge its panel head wears.
-func findingsFact(findings []Finding, labelWidth int, color bool) string {
-	line := fmt.Sprintf("%-*s  ", labelWidth, "findings")
+func findingsFact(findings []Finding, labelWidth, width int, color bool) []string {
+	prefix := fmt.Sprintf("%-*s  ", labelWidth, "findings")
 	if len(findings) == 0 {
-		return line + "none"
+		return []string{prefix + "none"}
 	}
 	counts := make(map[Severity]int, len(findings))
 	for _, finding := range findings {
 		counts[finding.Severity]++
 	}
-	chips := make([]string, 0, len(severityNames))
+	tokens := []string{strconv.Itoa(len(findings))}
 	for _, severity := range []Severity{Critical, High, Medium, Low, Info} {
 		if counts[severity] == 0 {
 			continue
 		}
 		text := fmt.Sprintf(" %d %s ", counts[severity], severity)
-		chips = append(chips, paintText(color,
-			bg(severityColor(severity))+fg(badgeText(severity))+"\x1b[1m", text))
+		tokens = append(tokens, severityBadge(severity, text, color))
 	}
-	return line + fmt.Sprintf("%d · ", len(findings)) + strings.Join(chips, " · ")
+	indent := strings.Repeat(" ", labelWidth+2)
+	lines := make([]string, 0, 2)
+	line := prefix
+	for index, token := range tokens {
+		if index == 0 {
+			line += token
+			continue
+		}
+		if displayWidth(line+" · "+token) > width {
+			lines = append(lines, line)
+			line = indent + token
+			continue
+		}
+		line += " · " + token
+	}
+	return append(lines, line)
 }
 
 // findingGroup is a maximal run of findings that describe one object at one
@@ -337,9 +400,120 @@ func groupRuns(findings []Finding, same func(left, right Finding) bool) []findin
 	return groups
 }
 
+// directoryRollupThreshold is the number of distinct files in one directory
+// that turns a wall of single-file panels into one directory panel. The limit
+// is the sample a rolled-up panel names; the rest stay one command away.
+const (
+	directoryRollupThreshold = 6
+	directoryRollupLimit     = 8
+)
+
+// panelGroup is one printed finding panel. dir is set when the panel rolls a
+// directory's same-judgment findings up; the JSON and the filtered report
+// still carry every finding.
+type panelGroup struct {
+	findings findingGroup
+	dir      string
+	files    int
+}
+
+type rollupKey struct {
+	dir      string
+	class    string
+	title    string
+	severity Severity
+}
+
+// panelGroups folds the exact-object groups into directory panels where a
+// directory holds enough files with one judgment. A scope that names the
+// directory itself keeps every file visible, so the rollup has a way back.
+func panelGroups(findings []Finding, filter Filter) []panelGroup {
+	groups := groupFindings(findings)
+	buckets := map[rollupKey][]findingGroup{}
+	files := map[rollupKey]map[string]bool{}
+	for _, group := range groups {
+		if group[0].Path == "" {
+			continue
+		}
+		dir := filepath.Dir(group[0].Path)
+		if dir == "/" || dir == "." {
+			continue
+		}
+		key := rollupKey{dir: dir, class: group[0].Class, title: group[0].Title, severity: group[0].Severity}
+		buckets[key] = append(buckets[key], group)
+		if files[key] == nil {
+			files[key] = map[string]bool{}
+		}
+		for _, member := range group {
+			files[key][member.Path] = true
+		}
+	}
+	rolled := map[rollupKey]string{}
+	for key, set := range files {
+		if len(set) < directoryRollupThreshold {
+			continue
+		}
+		if len(filter.Paths) > 0 && pathInScope(key.dir, filter) {
+			continue
+		}
+		// A rollup states one judgment over many files. When the files carry
+		// different sentences (different triggers, hashes or process ids),
+		// each file remains its own panel; a directory head would hide the
+		// distinction the details state.
+		detail := buckets[key][0][0].Detail
+		sameDetail := true
+		for _, bucket := range buckets[key] {
+			for _, member := range bucket {
+				if member.Detail != detail {
+					sameDetail = false
+					break
+				}
+			}
+		}
+		if !sameDetail {
+			continue
+		}
+		rolled[key] = key.dir
+	}
+	emitted := map[rollupKey]bool{}
+	out := make([]panelGroup, 0, len(groups))
+	for _, group := range groups {
+		if group[0].Path == "" {
+			out = append(out, panelGroup{findings: group})
+			continue
+		}
+		key := rollupKey{
+			dir: filepath.Dir(group[0].Path), class: group[0].Class,
+			title: group[0].Title, severity: group[0].Severity,
+		}
+		dir, ok := rolled[key]
+		if !ok {
+			out = append(out, panelGroup{findings: group})
+			continue
+		}
+		if emitted[key] {
+			continue
+		}
+		emitted[key] = true
+		var members findingGroup
+		for _, bucket := range buckets[key] {
+			members = append(members, bucket...)
+		}
+		out = append(out, panelGroup{findings: members, dir: dir, files: len(files[key])})
+	}
+	return out
+}
+
 // findingPanel draws one group: the head names the object and its severity,
 // the body states the verdict, the relation and the facts behind it.
 func findingPanel(group findingGroup, next bool, options RenderOptions, width int) string {
+	return findingPanelDir(group, "", 0, next, options, width)
+}
+
+func findingPanelDir(group findingGroup, dir string, files int, next bool, options RenderOptions, width int) string {
+	if dir != "" {
+		return findingRollup(group, dir, files, options, width)
+	}
 	finding := group[0]
 	head := findingHead(finding, width-2, options.Color)
 	var body []string
@@ -349,9 +523,9 @@ func findingPanel(group findingGroup, next bool, options RenderOptions, width in
 			return
 		}
 		seen[line] = true
-		body = append(body, chrome.WrapProse(line, width-4, 2)...)
+		body = append(body, line)
 	}
-	add(paintText(options.Color, "\x1b[1m", finding.Title))
+	add(paintText(options.Color, "\x1b[1m", chrome.SafeText(finding.Title)))
 	if len(group) == 1 {
 		add(highlightTokens(finding.Detail, 0, options.Color))
 	} else {
@@ -386,53 +560,137 @@ func findingPanel(group findingGroup, next bool, options RenderOptions, width in
 		}
 	}
 	for _, line := range quoteRows(group, options.Color) {
-		add(line)
+		// A citation block's header names the file; two accounts' histories
+		// can quote the same text, and both blocks stay readable.
+		if line != "" {
+			body = append(body, line)
+		}
 	}
-	if next && finding.Path != "" {
+	if next && finding.Path != "" && finding.Path != options.Root {
 		add(paintText(options.Color, fg(mutedColor), "· next  ") + "karma graph path:" + finding.Path)
 	}
-	return rail(head, body, width, severityColor(finding.Severity), options.Color)
+	return chrome.RailText(head, body, width, severityColor(finding.Severity), options.Color)
 }
 
-// quoteRows renders a group's source lines as citation blocks: consecutive
-// quotes of one path share a header, and the line numbers hang under it.
+// findingRollup draws a directory's same-judgment findings as one panel. The
+// head is the directory, the body samples the files, and the rest stay one
+// narrowed audit away; JSON and the per-file report are unchanged.
+func findingRollup(group findingGroup, dir string, files int, options RenderOptions, width int) string {
+	finding := group[0]
+	headFinding := finding
+	headFinding.Path = dir
+	head := findingHead(headFinding, width-2, options.Color)
+	var body []string
+	seen := make(map[string]bool, len(group)+2)
+	add := func(line string) {
+		if line == "" || seen[line] {
+			return
+		}
+		seen[line] = true
+		body = append(body, line)
+	}
+	add(paintText(options.Color, "\x1b[1m", chrome.SafeText(finding.Title)))
+	add(paintText(options.Color, fg(mutedColor),
+		fmt.Sprintf("%d files in this directory carry the same judgment", files)))
+	shared := group[0].Detail
+	for _, member := range group[1:] {
+		if member.Detail != shared {
+			shared = ""
+			break
+		}
+	}
+	add(highlightTokens(shared, 0, options.Color))
+	origins := make(map[string]bool, len(group))
+	for _, member := range group {
+		line := paintText(options.Color, fg(mutedColor), "origin ") +
+			paintText(options.Color, fg(originHue(member.Origin)), member.Origin.String()) +
+			paintText(options.Color, fg(mutedColor), " · reach "+member.Reach.String())
+		if !origins[line] {
+			origins[line] = true
+			add(line)
+		}
+	}
+	shown := 0
+	seenPath := make(map[string]bool, files)
+	for _, member := range group {
+		if seenPath[member.Path] {
+			continue
+		}
+		if shown == directoryRollupLimit {
+			break
+		}
+		seenPath[member.Path] = true
+		shown++
+		row := paintText(options.Color, fg(mutedColor), "· ") + chrome.SafeText(filepath.Base(member.Path))
+		if shared == "" && member.Detail != "" {
+			row += "  " + highlightTokens(member.Detail, mutedColor, options.Color)
+		}
+		add(row)
+	}
+	if files > shown {
+		add(paintText(options.Color, fg(mutedColor),
+			fmt.Sprintf("... %d more files; karma audit %s", files-shown, dir)))
+	}
+	add(paintText(options.Color, fg(mutedColor), "· next  ") + "karma audit " + dir)
+	return chrome.RailText(head, body, width, severityColor(finding.Severity), options.Color)
+}
+
+// quoteRows renders a group's source lines as citation blocks: every path
+// gets one header, and its line numbers hang under it. Grouping by path
+// (rather than by the adjacent run) keeps a source line and the trail lines
+// that name the same object in one block.
+type quoteBlock struct {
+	path     string
+	plain    []Quote
+	numbered []Quote
+}
+
 func quoteRows(group findingGroup, color bool) []string {
-	var quotes []Quote
 	seen := make(map[Quote]bool, len(group))
+	blocks := make([]quoteBlock, 0, len(group))
+	index := make(map[string]int, len(group))
+	addQuote := func(quote Quote) {
+		if quote.Path == "" || quote.Text == "" || seen[quote] {
+			return
+		}
+		seen[quote] = true
+		at, ok := index[quote.Path]
+		if !ok {
+			at = len(blocks)
+			index[quote.Path] = at
+			blocks = append(blocks, quoteBlock{path: quote.Path})
+		}
+		if quote.Line == 0 {
+			blocks[at].plain = append(blocks[at].plain, quote)
+			return
+		}
+		blocks[at].numbered = append(blocks[at].numbered, quote)
+	}
 	for _, member := range group {
 		for _, quote := range member.Quotes {
-			if quote.Path == "" || quote.Text == "" || seen[quote] {
-				continue
-			}
-			seen[quote] = true
-			quotes = append(quotes, quote)
+			addQuote(quote)
 		}
 	}
 	var rows []string
-	for index := 0; index < len(quotes); {
-		quote := quotes[index]
-		head := paintText(color, fg(mutedColor), "· cite  ") + highlightTokens(quote.Path, 0, color)
-		if quote.Line == 0 {
+	for _, block := range blocks {
+		head := paintText(color, fg(mutedColor), "· cite  ") + highlightTokens(block.path, 0, color)
+		for _, quote := range block.plain {
 			rows = append(rows, head+"  "+highlightTokens(quote.Text, 0, color))
-			index++
-			continue
 		}
-		end := index + 1
-		for end < len(quotes) && quotes[end].Path == quote.Path && quotes[end].Line != 0 {
-			end++
+		if len(block.numbered) == 0 {
+			continue
 		}
 		rows = append(rows, head)
 		width := 0
-		for _, row := range quotes[index:end] {
-			width = max(width, len(strconv.Itoa(row.Line)))
+		for _, quote := range block.numbered {
+			width = max(width, len(strconv.Itoa(quote.Line)))
 		}
-		indent := strings.Repeat(" ", utf8.RuneCountInString("· cite  "))
-		for _, row := range quotes[index:end] {
-			number := paintText(color, fg(mutedColor), fmt.Sprintf("%*d", width, row.Line))
+		indent := strings.Repeat(" ", displayWidth("· cite  "))
+		for _, quote := range block.numbered {
+			number := paintText(color, fg(mutedColor), fmt.Sprintf("%*d", width, quote.Line))
 			rows = append(rows, indent+number+
-				paintText(color, fg(mutedColor), " │ ")+highlightTokens(row.Text, 0, color))
+				paintText(color, fg(mutedColor), " │ ")+highlightTokens(quote.Text, 0, color))
 		}
-		index = end
 	}
 	return rows
 }
@@ -461,7 +719,7 @@ func chainRows(group findingGroup, color bool) []string {
 	}
 	if len(chains) > 1 && sharedRoot(chains) {
 		rows := []string{label + highlightTokens(chains[0][0], 0, color)}
-		indent := strings.Repeat(" ", utf8.RuneCountInString("· chain  "))
+		indent := strings.Repeat(" ", displayWidth("· chain  "))
 		var branches []string
 		for _, chain := range chains {
 			if rest := strings.Join(chain[1:], " → "); rest != "" {
@@ -503,21 +761,26 @@ func sharedRoot(chains [][]string) bool {
 // finding reads by shape before its color is compared.
 func findingHead(finding Finding, width int, color bool) string {
 	label := " " + strings.ToUpper(finding.Severity.String()) + " "
-	path := " " + finding.Path
-	if utf8.RuneCountInString(label+path) > width {
-		path = " " + truncate(finding.Path, width-utf8.RuneCountInString(label)-1)
+	path := " " + chrome.SafeText(finding.Path)
+	if displayWidth(label+path) > width {
+		path = " " + truncate(chrome.SafeText(finding.Path), width-displayWidth(label)-1)
 	}
 	plain := label + path
-	fill := width - utf8.RuneCountInString(plain)
+	fill := width - displayWidth(plain)
 	if fill < 0 {
 		fill = 0
 	}
 	if !color {
 		return strings.TrimRight(plain+strings.Repeat(" ", fill), " ")
 	}
-	return bg(severityColor(finding.Severity)) + fg(badgeText(finding.Severity)) + "\x1b[1m" +
-		label + ansiReset +
+	return severityBadge(finding.Severity, label, true) +
 		bg(subBandBG) + fg(subBandFG) + path + strings.Repeat(" ", fill) + ansiReset
+}
+
+// severityBadge is the one severity ground/ink/weight: the masthead chips and
+// every panel head read the same, so a palette change cannot split them.
+func severityBadge(severity Severity, text string, color bool) string {
+	return paintText(color, bg(severityColor(severity))+fg(badgeText(severity))+"\x1b[1m", text)
 }
 
 // badgeText is the ink the severity badge reads in: white on the deep ground
@@ -530,471 +793,41 @@ func badgeText(severity Severity) int {
 	return 0
 }
 
-// panel is one evidence section: a title, its rows, and the count the head
-// band prints.
-type panel struct {
-	title string
-	rows  []string
-	count func(int) int
-}
-
-// activationCount counts activation edges; the panel prints two rows per
-// edge, the trigger line and the run line.
-func activationCount(rows int) int {
-	if rows > 1 {
-		return (rows - 1) / 2
-	}
-	return rows
-}
-
-// headerless counts rows after the column header.
-func headerless(rows int) int {
-	if rows > 1 {
-		return rows - 1
-	}
-	return rows
-}
-
-// viewPanels builds the evidence sections of one view, in print order. The
-// rows come from the view's filtered inventories; the origins come from the
-// view's assessor, the same one the findings used.
-func viewPanels(view *View, options RenderOptions) []panel {
-	return []panel{
-		{title: "ACTIVATION", rows: activationRows(view, options), count: activationCount},
-		{title: "PROCESS", rows: processRows(view, options), count: headerless},
-		{title: "SERVICE", rows: serviceRows(view, options), count: headerless},
-		{title: "LISTEN", rows: socketRows(view, options), count: headerless},
-		{title: "CONNECTION", rows: connectionRows(view, options), count: headerless},
-		{title: "KERNEL", rows: kernelRows(view, options), count: headerless},
-		{title: "AUTHORITY", rows: authorityRows(view, options), count: headerless},
-		{title: "MOUNTS", rows: mountRows(view, options), count: headerless},
-	}
-}
-
-func activationRows(view *View, options RenderOptions) []string {
-	rows := []string{columnHeader([]string{"SURFACE", "REACH", "AS", "ORIGIN", "TRIGGER"}, []int{10, 12, 10, 10})}
-	for _, edge := range view.Activations {
-		target := edge.Target
-		if edge.Dynamic {
-			target = "(dynamic)"
-		}
-		origin := view.assessor.read(edge.TargetFacts, false).origin
-		prefix := columnRowHued(options.Color, []string{
-			string(edge.Surface), edge.Phase.String(), valueOr(edge.Subject.String(), "-"), origin.String(),
-		}, []int{10, 12, 10, 10}, []int{0, 0, 0, originHue(origin)})
-		rows = append(rows, fmt.Sprintf("%s%s:%d", prefix, edge.Trigger, edge.Line))
-		rows = append(rows, fmt.Sprintf("    %s -> %s", edge.Mechanism, target))
-	}
-	if len(rows) == 1 {
-		return nil
-	}
-	return rows
-}
-
-func processRows(view *View, options RenderOptions) []string {
-	rows := []string{columnHeader([]string{"PID", "PPID", "UID", "ORIGIN", "REACH", "COMMAND"}, []int{7, 7, 6, 10, 8})}
+// processCount is the number of process rows the panel prints: the kernel's
+// pid 0 and karma's own process carry no finding.
+func processCount(view *View, _ RenderOptions) int {
+	count := 0
 	for _, process := range view.Processes {
 		if process.PID == 0 || process.PID == selfPID() {
 			continue
 		}
-		origin := view.assessor.read(process.ExeFacts, false).origin
-		if process.Script != "" {
-			origin = weaker(origin, view.assessor.read(process.ScriptFacts, false).origin)
-		}
-		command := process.Cmdline
-		if command == "" {
-			command = process.Exe
-		}
-		if process.Script != "" {
-			command = process.Script + " (" + command + ")"
-		}
-		if process.Outbound > 0 {
-			command += fmt.Sprintf("  [%d estab]", process.Outbound)
-		}
-		prefix := columnRowHued(options.Color, []string{
-			strconv.Itoa(process.PID), strconv.Itoa(process.PPID), strconv.Itoa(process.UID),
-			origin.String(), processReach(process).String(),
-		}, []int{7, 7, 6, 10, 8}, []int{0, 0, 0, originHue(origin), 0})
-		rows = append(rows, prefix+valueOr(command, valueOr(process.Exe, process.Comm)))
+		count++
 	}
-	if len(rows) == 1 {
-		return nil
-	}
-	return rows
+	return count
 }
 
-func serviceRows(view *View, options RenderOptions) []string {
-	rows := []string{columnHeader([]string{"UNIT", "LOAD", "ACTIVE", "SUB", "DESCRIPTION"}, []int{28, 8, 8, 8})}
-	for _, service := range view.Services {
-		rows = append(rows, columnRowHued(options.Color, []string{
-			service.Unit, service.Load, service.Active, service.Sub,
-		}, []int{28, 8, 8, 8}, []int{0, 0, serviceStateHue(service.Active), 0})+service.Description)
-	}
-	if len(rows) == 1 {
-		return nil
-	}
-	return rows
-}
-
-func socketRows(view *View, options RenderOptions) []string {
-	rows := []string{columnHeader([]string{"PROTO", "STATE", "LOCAL", "PEER", "PID", "COMM"}, []int{6, 9, 24, 24, 7})}
-	for _, socket := range view.Sockets {
-		rows = append(rows, columnRowHued(options.Color, []string{
-			socket.Proto, socket.State, socket.Local, socket.Peer,
-			strconv.Itoa(socket.PID), socket.Comm,
-		}, []int{6, 9, 24, 24, 7}, []int{0, socketStateHue(socket.State), 0, 0, 0, 0}))
-	}
-	if len(rows) == 1 {
-		return nil
-	}
-	return rows
-}
-
-// connectionRows is the established-connection table: the peer side of the
-// listener inventory and the evidence behind an interpreter-socket finding.
-// The peer is information in the socket language; a shell's name carries the
-// warm hue the interpreter finding states.
-func connectionRows(view *View, options RenderOptions) []string {
-	if len(view.Connections) == 0 {
-		return nil
-	}
-	processes := make(map[int]Process, len(view.Snapshot.Processes))
-	for _, process := range view.Snapshot.Processes {
-		processes[process.PID] = process
-	}
-	rows := []string{columnHeader([]string{"PROTO", "LOCAL", "PEER", "PID", "COMM"}, []int{6, 24, 24, 7, 16})}
-	for _, connection := range view.Connections {
-		rows = append(rows, columnRowHued(options.Color, []string{
-			connection.Proto, connection.Local, connection.Peer,
-			strconv.Itoa(connection.PID), connection.Comm,
-		}, []int{6, 24, 24, 7, 16},
-			[]int{0, 0, hueInformation, 0, connectionHue(connection, processes)}))
-	}
-	return rows
-}
-
-// connectionHue answers the hue of the connection's holder: the warm runtime
-// hue when any process holding the socket is a shell or a raw-socket tool.
-func connectionHue(connection Connection, processes map[int]Process) int {
-	if interpreterHolds(connection.PID, processes) {
-		return hueAlert
-	}
-	for _, pid := range connection.PIDs {
-		if interpreterHolds(pid, processes) {
-			return hueAlert
-		}
-	}
-	return 0
-}
-
-func interpreterHolds(pid int, processes map[int]Process) bool {
-	process, ok := processes[pid]
-	if !ok {
-		return false
-	}
-	_, interpreter := interpreterClass(process)
-	return interpreter
-}
-
-// kernelRows is the loaded module inventory: name, use count, state, loader
-// flags, the module file's origin, and the file itself. Hidden registries and
-// the taint mask follow the table because they are facts about the same state.
-func kernelRows(view *View, options RenderOptions) []string {
+// kernelCount is the number of module-state rows, excluding the column head.
+func kernelCount(view *View, _ RenderOptions) int {
 	state := view.Kernel
 	if state == nil || !state.Collected {
-		return nil
-	}
-	rows := []string{columnHeader([]string{"MODULE", "USED", "STATE", "TAINT", "ORIGIN"}, []int{26, 5, 10, 6, 10})}
-	for _, module := range state.Modules {
-		origin, originCode := "-", 0
-		if module.File != "" {
-			verdict := view.assessor.read(module.Facts, false)
-			origin, originCode = verdict.origin.String(), originHue(verdict.origin)
-		}
-		file := module.File
-		if file == "" && module.FileState != "" {
-			file = "(" + module.FileState + ")"
-			// An unmapped row says nothing about one module when the whole file
-			// database belongs to another kernel.
-			if module.FileState == ModuleFileMissing ||
-				module.FileState == ModuleFileUnmapped && !state.MappingStale {
-				file = paintText(options.Color, fg(hueCaution), file)
-			}
-		}
-		rows = append(rows, columnRowHued(options.Color, []string{
-			module.Name, strconv.Itoa(module.Used), valueOr(module.State, "-"), valueOr(module.Taint, "-"), origin,
-		}, []int{26, 5, 10, 6, 10},
-			[]int{0, 0, moduleStateHue(module.State), taintHue(module.Taint), originCode})+file)
-	}
-	for _, module := range state.Dormant {
-		rows = append(rows, paintText(options.Color, fg(mutedColor), "dormant module "+module.Name)+"  "+module.File)
-	}
-	if state.Tainted != 0 {
-		rows = append(rows, paintText(options.Color, fg(hueCaution),
-			fmt.Sprintf("taint %d: %s", state.Tainted, strings.Join(state.TaintNames, ", "))))
-	}
-	for _, hidden := range state.Hidden {
-		rows = append(rows, paintText(options.Color, fg(hueAlert),
-			"hidden module "+hidden.Name+" ("+strings.Join(hidden.Views, ", ")+")"))
-	}
-	for _, pid := range state.HiddenPIDs {
-		rows = append(rows, paintText(options.Color, fg(hueAlert), fmt.Sprintf("hidden pid %d", pid)))
-	}
-	if len(state.LoaderDirs) > 0 {
-		rows = append(rows, fmt.Sprintf("loader search path: %d directories", len(state.LoaderDirs)))
-	}
-	if len(rows) == 1 {
-		return nil
-	}
-	return rows
-}
-
-func authorityRows(view *View, options RenderOptions) []string {
-	rows := []string{columnHeader([]string{"PATH", "ORIGIN", "REACH", "SETUID", "CAPS"}, []int{44, 10, 8, 7, 5})}
-	for _, path := range view.Authority {
-		facts := view.Facts(path)
-		origin := view.assessor.read(facts, true).origin
-		rows = append(rows, columnRowHued(options.Color, []string{
-			path, origin.String(), authorityReach(facts).String(),
-			strconv.FormatBool(facts.Setuid), strconv.FormatBool(facts.Caps),
-		}, []int{44, 10, 8, 7, 5}, []int{0, originHue(origin), 0, 0, 0}))
-	}
-	if len(rows) == 1 {
-		return nil
-	}
-	return rows
-}
-
-// mountRows list the mount table: where evidence lives and which of it dies
-// with the boot.
-func mountRows(view *View, options RenderOptions) []string {
-	if len(view.Mounts) == 0 {
-		return nil
-	}
-	rows := []string{columnHeader([]string{"FSTYPE", "PATH", "OPTS"}, []int{12, 26, 34})}
-	for _, mount := range view.Mounts {
-		rows = append(rows, columnRowHued(options.Color, []string{mount.FSType, mount.Path, mount.Opts},
-			[]int{12, 26, 34}, []int{mountTypeHue(mount.FSType), 0, 0}))
-	}
-	return rows
-}
-
-func severityColor(severity Severity) int {
-	switch severity {
-	case Critical:
-		return 1
-	case High:
-		return 9
-	case Medium:
-		return 11
-	case Low:
-		return 14
-	}
-	return mutedColor
-}
-
-func columnHeader(columns []string, widths []int) string {
-	return columnRow(columns, widths)
-}
-
-func columnRow(values []string, widths []int) string {
-	var out strings.Builder
-	for index, value := range values {
-		if index >= len(widths) {
-			out.WriteString(value)
-			break
-		}
-		width := widths[index]
-		out.WriteString(padRight(truncate(value, width), width))
-		out.WriteString("  ")
-	}
-	return out.String()
-}
-
-// columnRowHued is columnRow with one hue per cell: the padding is painted
-// with the cell, so the columns stay aligned; a zero hue leaves it plain.
-func columnRowHued(color bool, values []string, widths []int, hues []int) string {
-	var out strings.Builder
-	for index, value := range values {
-		if index >= len(widths) {
-			out.WriteString(value)
-			break
-		}
-		width := widths[index]
-		cell := padRight(truncate(value, width), width)
-		if index < len(hues) && hues[index] != 0 {
-			cell = paintText(color, fg(hues[index]), cell)
-		}
-		out.WriteString(cell)
-		out.WriteString("  ")
-	}
-	return out.String()
-}
-
-// originHue is the row palette's temporal verdict, the same language the
-// relation tree marks its nodes with: a runtime object warm red, a modified
-// or unknown one amber, provisioned calmer, the artifact's own origins muted.
-func originHue(origin Origin) int {
-	switch origin {
-	case Runtime:
-		return hueAlert
-	case Modified, Unknown:
-		return hueCaution
-	case Provisioned:
-		return hueProvisioned
-	}
-	return mutedColor
-}
-
-// serviceStateHue: a running service is healthy green, a failed one red, a
-// transition amber, an inactive one quiet.
-func serviceStateHue(state string) int {
-	switch state {
-	case "active":
-		return hueLive
-	case "failed":
-		return hueFailed
-	case "activating", "deactivating", "reloading":
-		return hueTransition
-	case "inactive":
-		return mutedColor
-	}
-	return 0
-}
-
-// socketStateHue: a listening socket asks for attention (amber), an
-// established peer is information (cyan), the rest is quiet.
-func socketStateHue(state string) int {
-	switch state {
-	case "LISTEN":
-		return hueTransition
-	case "ESTAB", "ESTABLISHED":
-		return hueInformation
-	}
-	return 0
-}
-
-// moduleStateHue: a loaded module is live, a load or unload in flight is a
-// transition, the rest is quiet.
-func moduleStateHue(state string) int {
-	switch state {
-	case "Live":
-		return hueLive
-	case "Loading", "Unloading":
-		return hueTransition
-	}
-	return 0
-}
-
-// taintHue: a loader flag on one module is a caution; an empty column is
-// quiet.
-func taintHue(taint string) int {
-	if taint == "" || taint == "-" {
 		return 0
 	}
-	return hueCaution
-}
-
-// mountTypeHue: a remote filesystem is information (cyan), a memory-backed
-// one is amber because its evidence dies with the boot.
-func mountTypeHue(fstype string) int {
-	switch fstype {
-	case "nfs", "nfs4", "cifs", "smb3", "smbfs", "sshfs", "fuse.sshfs", "9p", "afs", "nbd":
-		return hueInformation
-	case "tmpfs", "ramfs", "devtmpfs":
-		return hueTransition
-	}
-	return 0
-}
-
-// highlightTokens paints the object and verdict tokens inside one prose
-// line: a path keeps the information hue and an origin word keeps its
-// temporal hue, while the sentence around them stays in base. An origin word
-// is recognised only where a parenthesized explanation follows it
-// ("runtime (created ...)"), the shape the judges write.
-func highlightTokens(text string, base int, color bool) string {
-	if !color || text == "" {
-		return text
-	}
-	paintBase := func(segment string) string {
-		if base == 0 {
-			return segment
-		}
-		return paintText(true, fg(base), segment)
-	}
-	var out strings.Builder
-	for index := 0; index < len(text); {
-		if text[index] == ' ' {
-			end := index
-			for end < len(text) && text[end] == ' ' {
-				end++
-			}
-			out.WriteString(paintBase(text[index:end]))
-			index = end
+	count := 0
+	scoped := !view.Filter.globalScope()
+	for _, module := range state.Modules {
+		if scoped && (module.File == "" || !pathOrRealInScope(module.File, module.Facts.Real, view.Filter)) {
 			continue
 		}
-		end := index
-		for end < len(text) && text[end] != ' ' {
-			end++
+		count++
+	}
+	if !scoped {
+		count += len(state.Dormant) + len(state.Hidden) + len(state.HiddenPIDs)
+		if state.Tainted != 0 {
+			count++
 		}
-		token := text[index:end]
-		core, suffix := trimToken(token)
-		origin, known := originByName(core)
-		switch {
-		case strings.HasPrefix(core, "/") && len(core) > 1:
-			out.WriteString(paintText(true, fg(hueInformation), core))
-			out.WriteString(paintBase(suffix))
-		case known && parenFollows(text, end):
-			out.WriteString(paintText(true, fg(originHue(origin)), core))
-			out.WriteString(paintBase(suffix))
-		default:
-			out.WriteString(paintBase(token))
-		}
-		index = end
-	}
-	return out.String()
-}
-
-// trimToken splits the punctuation a prose token may carry after its core.
-func trimToken(token string) (core, suffix string) {
-	end := len(token)
-	for end > 0 && strings.ContainsRune(",.:;)", rune(token[end-1])) {
-		end--
-	}
-	return token[:end], token[end:]
-}
-
-// parenFollows reports whether the next non-space character opens the
-// explanation the origin slot carries.
-func parenFollows(text string, index int) bool {
-	for index < len(text) && text[index] == ' ' {
-		index++
-	}
-	return index < len(text) && text[index] == '('
-}
-
-// originByName reads an origin word back to its value.
-func originByName(name string) (Origin, bool) {
-	for index, candidate := range originNames {
-		if candidate == name {
-			return Origin(index), true
+		if len(state.LoaderDirs) > 0 {
+			count++
 		}
 	}
-	return Unknown, false
+	return count
 }
-
-func padRight(text string, width int) string {
-	if n := utf8.RuneCountInString(text); n < width {
-		return text + strings.Repeat(" ", width-n)
-	}
-	return text
-}
-
-func valueOr(value, fallback string) string {
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func selfPID() int { return os.Getpid() }

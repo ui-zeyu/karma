@@ -23,31 +23,32 @@ type verdict struct {
 }
 
 type assessor struct {
-	boundary   Boundary
-	times      map[string]time.Time
-	verify     map[string]Content
-	conffiles  map[string]bool
-	tampered   map[string]bool
-	owners     map[string]string
-	shared     map[string]bool
-	mounts     mountTable
-	remodified int
-	noLedger   map[string]bool
-	noConffile map[string]bool
+	boundary      Boundary
+	times         map[string]time.Time
+	verify        map[string]Content
+	conffiles     map[string]bool
+	tampered      map[string]bool
+	owners        map[string]string
+	shared        map[string]bool
+	mounts        mountTable
+	remodifiedSet map[string]bool
+	noLedger      map[string]bool
+	noConffile    map[string]bool
 }
 
 func newAssessor(snapshot *Snapshot) *assessor {
 	a := &assessor{
-		boundary:   snapshot.Boundary,
-		times:      snapshot.PackageTimes,
-		verify:     snapshot.Verify,
-		conffiles:  snapshot.conffiles,
-		mounts:     buildMountTable(snapshot.Mounts),
-		tampered:   map[string]bool{},
-		owners:     map[string]string{},
-		shared:     map[string]bool{},
-		noLedger:   map[string]bool{},
-		noConffile: map[string]bool{},
+		boundary:      snapshot.Boundary,
+		times:         snapshot.PackageTimes,
+		verify:        snapshot.Verify,
+		conffiles:     snapshot.conffiles,
+		mounts:        buildMountTable(snapshot.Mounts),
+		tampered:      map[string]bool{},
+		owners:        map[string]string{},
+		shared:        map[string]bool{},
+		remodifiedSet: map[string]bool{},
+		noLedger:      map[string]bool{},
+		noConffile:    map[string]bool{},
 	}
 	for _, row := range snapshot.tamper {
 		if row.Pkg != logLedgerPkg {
@@ -104,8 +105,13 @@ func (a *assessor) read(facts trust.Facts, authority bool) verdict {
 	content := a.verify[facts.Real]
 	switch content.State {
 	case Verified:
-		out.evidence = append(out.evidence, fmt.Sprintf(
-			"content verified: md5 %s matches package %s", shortHash(content.Actual), pkg))
+		if content.Method == methodRPM {
+			out.evidence = append(out.evidence, fmt.Sprintf(
+				"rpm -Va reports no deviation from package %s", pkg))
+		} else {
+			out.evidence = append(out.evidence, fmt.Sprintf(
+				"content verified: md5 %s matches package %s", shortHash(content.Actual), pkg))
+		}
 		stamp := a.times[pkg]
 		if stamp.After(a.boundary.Time) {
 			out.origin = Provisioned
@@ -115,7 +121,11 @@ func (a *assessor) read(facts trust.Facts, authority bool) verdict {
 			out.why = fmt.Sprintf("content matches package %s", pkg)
 		}
 		if !stamp.IsZero() && facts.CTime > stamp.Unix() {
-			a.remodified++
+			key := facts.Real
+			if key == "" {
+				key = facts.Path
+			}
+			a.remodifiedSet[key] = true
 			out.evidence = append(out.evidence, fmt.Sprintf(
 				"ctime %s is newer than the package's last transaction (reinstalled or touched)",
 				ctimeString(facts.CTime)))
@@ -123,8 +133,8 @@ func (a *assessor) read(facts trust.Facts, authority bool) verdict {
 	case Mismatched:
 		out.origin = Modified
 		out.why = fmt.Sprintf("content differs from package %s's ledger", pkg)
-		if content.Expected == "" {
-			out.evidence = append(out.evidence, "rpm -Va reports a content deviation for this path")
+		if content.Method == methodRPM || content.Expected == "" {
+			out.evidence = append(out.evidence, "rpm -Va reports a deviation for this path")
 		} else {
 			out.evidence = append(out.evidence,
 				fmt.Sprintf("expected md5 %s (package %s)", shortHash(content.Expected), pkg),

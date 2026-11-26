@@ -209,6 +209,119 @@ func TestSplitInfoName(t *testing.T) {
 
 const testHash = "d41d8cd98f00b204e9800998ecf8427e"
 
+// writeRPMFake puts a stand-in rpm first on PATH. The scripts answer in the
+// same shape as rpm 4.16, whose file-flag iterator pairs only same-sized
+// arrays and whose verify exits 1 when it has deviations to report.
+func writeRPMFake(t *testing.T, body string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rpm")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	previous := rpmBinaryOverride
+	rpmBinaryOverride = path
+	t.Cleanup(func() { rpmBinaryOverride = previous })
+}
+
+func TestRPMFileListPairsFlagsWithPaths(t *testing.T) {
+	writeRPMFake(t, `printf 'alpha\n1\t100644\t/etc/alpha.conf\n0\t40755\t/etc/alpha.d\n0\t100644\t/usr/bin/alpha\nbeta\n0\t100644\t/usr/lib64/libbeta.so\ngamma\ndelta\n1\t100644\t/etc/delta.conf\n'`)
+	catalog := &Catalog{kind: "rpm"}
+	if !catalog.Conffile("/etc/alpha.conf") {
+		t.Fatal("config flag was not retained")
+	}
+	if ownership := catalog.Ownership("/etc/alpha.conf"); ownership.Name != "alpha" || !ownership.Known {
+		t.Fatalf("conffile ownership = %+v, want alpha", ownership)
+	}
+	if catalog.Conffile("/usr/bin/alpha") {
+		t.Fatal("a normal file was recorded as a conffile")
+	}
+	if ownership := catalog.Ownership("/usr/bin/alpha"); ownership.Name != "alpha" || !ownership.Known || ownership.Dir {
+		t.Fatalf("alpha ownership = %+v", ownership)
+	}
+	if ownership := catalog.Ownership("/etc/alpha.d"); ownership.Name != "alpha" || !ownership.Dir {
+		t.Fatalf("directory ownership = %+v", ownership)
+	}
+	if ownership := catalog.Ownership("/usr/lib64/libbeta.so"); ownership.Name != "beta" {
+		t.Fatalf("beta ownership = %+v", ownership)
+	}
+	if count := catalog.PackageCount(); count != 4 {
+		t.Fatalf("package count = %d, want 4: a package with no regular file still counts", count)
+	}
+}
+
+func TestRPMVerifyKeepsOutputOnExitOne(t *testing.T) {
+	writeRPMFake(t, `printf 'S.5....T.  c /etc/environment\nS.5....T.    /usr/bin/passwd\nmissing     /usr/bin/free\n'; exit 1`)
+	catalog := &Catalog{kind: "rpm"}
+	catalog.ensureRPMVerify()
+	if catalog.rpmNote != "" {
+		t.Fatalf("rpm note = %q, want no failure", catalog.rpmNote)
+	}
+	if !catalog.conffiles["/etc/environment"] {
+		t.Fatal("a config row was not recorded")
+	}
+	if flags := catalog.rpmFlags["/etc/environment"]; flags != "S.5....T." {
+		t.Fatalf("conffile deviation = %q, want the content flags", flags)
+	}
+	if flags := catalog.rpmFlags["/usr/bin/passwd"]; flags != "S.5....T." {
+		t.Fatalf("passwd flags = %q", flags)
+	}
+	if catalog.rpmMissing != 1 {
+		t.Fatalf("missing count = %d, want 1", catalog.rpmMissing)
+	}
+	if !catalog.RPMVerified() {
+		t.Fatal("an exit-one deviation report is a completed verify")
+	}
+}
+
+func TestRPMVerifyMarksACleanExitVerified(t *testing.T) {
+	writeRPMFake(t, "exit 0")
+	catalog := &Catalog{kind: "rpm"}
+	if !catalog.RPMVerified() {
+		t.Fatal("a clean rpm -Va did not count as a completed verify")
+	}
+}
+
+func TestRPMVerifyAcceptsOnlyTheDeviationsExit(t *testing.T) {
+	for name, body := range map[string]string{
+		"exit one with no output":   "exit 1",
+		"a different exit status":   `printf 'S.5....T.    /usr/bin/passwd\n'; exit 2`,
+		"no output before a signal": "kill -TERM $$",
+	} {
+		t.Run(name, func(t *testing.T) {
+			writeRPMFake(t, body)
+			catalog := &Catalog{kind: "rpm"}
+			catalog.ensureRPMVerify()
+			if !strings.Contains(catalog.rpmNote, "failed") {
+				t.Fatalf("rpm note = %q, want the failure line", catalog.rpmNote)
+			}
+			if len(catalog.rpmFlags) != 0 {
+				t.Fatalf("flags = %v, want no content evidence", catalog.rpmFlags)
+			}
+			if catalog.RPMVerified() {
+				t.Fatal("a failed verify was accepted as complete")
+			}
+		})
+	}
+}
+
+func TestDpkgPackageCountCountsEmptyLists(t *testing.T) {
+	info := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(info, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("coreutils.list", "/usr/bin/ls\n")
+	write("basesystem.list", "")
+	catalog := &Catalog{kind: "dpkg"}
+	catalog.loadDpkgOwners(info)
+	if count := catalog.PackageCount(); count != 2 {
+		t.Fatalf("package count = %d, want 2 (an empty file list is still a package)", count)
+	}
+}
+
 // TestInterruptedLoadAnswersUnknownOwnership pins the interrupted-catalog
 // contract: a table cut at the interrupt answers unknown ownership for paths
 // it never reached, so a partial report cannot mint false unowned findings.

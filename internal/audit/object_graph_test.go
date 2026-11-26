@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,7 +74,7 @@ func TestBuildProfileUnitMissingTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := BuildObjectGraph(context.Background(), snapshot, seed, Info)
+	profile, err := BuildObjectGraph(context.Background(), snapshot, seed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +90,54 @@ func TestBuildProfileUnitMissingTarget(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("profile findings = %+v, want unit-target-missing", profile.Findings)
+	}
+}
+
+func TestPathSeedRootsAtTheSelectedFileNotItsPackage(t *testing.T) {
+	path := "/bin/ls"
+	facts := trust.Build(path, trust.Attrs{
+		Kind: trust.File, Mode: 0o755, UID: 0, Real: path,
+		CTime: 900, Package: "coreutils", PackageKnown: true,
+	})
+	snapshot := &Snapshot{
+		Boundary:     boundary(),
+		Objects:      map[string]trust.Facts{path: facts},
+		PackageTimes: map[string]time.Time{"coreutils": time.Unix(800, 0)},
+	}
+	seed, err := ParseGraphSeed(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := BuildObjectGraph(context.Background(), snapshot, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Root != "file:"+path || view.RootKind != "file" {
+		t.Fatalf("root = %q (%s), want the selected file", view.Root, view.RootKind)
+	}
+	if name := graphRootName(view); name != path {
+		t.Errorf("root name = %q, want %q", name, path)
+	}
+	lines := graphTree(view, RenderOptions{Width: 80}, 80)
+	if len(lines) == 0 || !strings.Contains(lines[0], "file "+path) {
+		t.Errorf("tree does not start at the selected file:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+func TestDirectorySeedKeepsTheDirectoryKind(t *testing.T) {
+	path := "/etc"
+	facts := trust.Build(path, trust.Attrs{Kind: trust.Dir, Mode: 0o755, UID: 0, Real: path, CTime: 900})
+	snapshot := &Snapshot{Boundary: boundary(), Objects: map[string]trust.Facts{path: facts}}
+	seed, err := ParseGraphSeed(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := BuildObjectGraph(context.Background(), snapshot, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.RootKind != "dir" || graphRootName(view) != path {
+		t.Errorf("directory root = %q (%s), want dir %s", view.Root, view.RootKind, path)
 	}
 }
 
@@ -110,7 +159,7 @@ func TestBuildProfileFollowsShellReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := BuildObjectGraph(context.Background(), snapshot, seed, Info)
+	profile, err := BuildObjectGraph(context.Background(), snapshot, seed)
 	if err != nil {
 		t.Fatal(err)
 	}

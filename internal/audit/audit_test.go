@@ -2,6 +2,7 @@ package audit
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -215,6 +216,77 @@ func TestPIDScopeJudgesOnlyThatProcess(t *testing.T) {
 	}
 }
 
+func TestJudgeRunsOnlyTheSelectedDomains(t *testing.T) {
+	trigger := pathFacts("/etc/profile.d/x.sh", 1200, 0o644, 0)
+	target := pathFacts("/opt/x.sh", 1200, 0o755, 0)
+	image := pathFacts("/opt/agent", 1200, 0o755, 0)
+	snapshot := &Snapshot{
+		Boundary: boundary(),
+		Objects: map[string]trust.Facts{
+			trigger.Path: trigger, target.Path: target, image.Path: image,
+		},
+		Activations: []startup.Edge{{
+			Surface: startup.SurfaceProfile, Phase: startup.Login, Subject: startup.Subject{Class: startup.AccountRoot},
+			Trigger: trigger.Path, Target: target.Path,
+			TriggerFacts: trigger, TargetFacts: target,
+		}},
+		Processes: []Process{{
+			PID: 100, UID: 0, EUID: 0, Exe: image.Path, Cmdline: image.Path,
+			ExeFacts: image,
+		}},
+	}
+	processes := Judge(snapshot, Filter{Domains: DomainProcesses})
+	if len(processes.Findings) != 1 || processes.Findings[0].Class != "runtime-process" {
+		t.Errorf("processes report = %+v, want one runtime-process", processes.Findings)
+	}
+	if slices.Contains(processes.OffDomains, "processes") || !slices.Contains(processes.OffDomains, "persistence") {
+		t.Errorf("processes off domains = %v", processes.OffDomains)
+	}
+	persistence := Judge(snapshot, Filter{Domains: DomainPersistence})
+	for _, finding := range persistence.Findings {
+		if finding.Class == "runtime-process" {
+			t.Errorf("persistence run judged a process: %+v", finding)
+		}
+	}
+	if len(persistence.Findings) == 0 || persistence.Findings[0].Class != "activation-introduction" {
+		t.Errorf("persistence report = %+v, want the activation finding", persistence.Findings)
+	}
+	if slices.Contains(persistence.OffDomains, "persistence") || !slices.Contains(persistence.OffDomains, "processes") {
+		t.Errorf("persistence off domains = %v", persistence.OffDomains)
+	}
+}
+
+func TestUnitExclusionRemovesOneUnitOnly(t *testing.T) {
+	a := pathFacts("/etc/systemd/system/a.service", 1200, 0o644, 0)
+	b := pathFacts("/etc/systemd/system/b.service", 1200, 0o644, 0)
+	target := pathFacts("/opt/agent", 1200, 0o755, 0)
+	snapshot := &Snapshot{
+		Boundary: boundary(),
+		Objects:  map[string]trust.Facts{a.Path: a, b.Path: b, target.Path: target},
+		Activations: []startup.Edge{
+			{Surface: startup.SurfaceSystemd, Phase: startup.BootEnabled, Subject: startup.Subject{Class: startup.AccountRoot},
+				Trigger: a.Path, Target: target.Path, TriggerFacts: a, TargetFacts: target},
+			{Surface: startup.SurfaceSystemd, Phase: startup.BootEnabled, Subject: startup.Subject{Class: startup.AccountRoot},
+				Trigger: b.Path, Target: target.Path, TriggerFacts: b, TargetFacts: target},
+		},
+	}
+	report := Judge(snapshot, Filter{Domains: DomainPersistence, ExcludeUnits: map[string]bool{"a.service": true}})
+	for _, finding := range report.Findings {
+		if strings.Contains(finding.Detail, "a.service") || finding.Path == a.Path {
+			t.Errorf("excluded unit still judged: %+v", finding)
+		}
+	}
+	found := false
+	for _, finding := range report.Findings {
+		if strings.Contains(finding.Detail, "b.service") || finding.Path == b.Path {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("unit exclusion removed the other unit: %+v", report.Findings)
+	}
+}
+
 func TestScopeNarrowsSurfacesAndPaths(t *testing.T) {
 	trigger := pathFacts("/etc/profile.d/x.sh", 1200, 0o644, 0)
 	target := pathFacts("/opt/x.sh", 1200, 0o755, 0)
@@ -227,7 +299,7 @@ func TestScopeNarrowsSurfacesAndPaths(t *testing.T) {
 			TriggerFacts: trigger, TargetFacts: target,
 		}},
 	}
-	if report := Judge(snapshot, Filter{Surfaces: map[string]bool{"systemd": true}}); len(report.Findings) != 0 {
+	if report := Judge(snapshot, Filter{Surfaces: surfacePtr(startup.Systemd)}); len(report.Findings) != 0 {
 		t.Errorf("a systemd scope judged a profile edge: %+v", report.Findings)
 	}
 	if report := Judge(snapshot, Filter{Paths: []string{"/opt"}}); len(report.Findings) != 1 {

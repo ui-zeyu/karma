@@ -9,6 +9,25 @@ import (
 	"time"
 )
 
+func systemctlBinary() string {
+	for _, path := range []string{"/usr/bin/systemctl", "/bin/systemctl"} {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			return path
+		}
+	}
+	return ""
+}
+
+func toolEnv() []string {
+	return []string{
+		"PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=/",
+		"TMPDIR=/tmp",
+		"LANG=C",
+		"LC_ALL=C",
+	}
+}
+
 // collectServices reads systemd's own service inventory. It is the raw list
 // behind the activation edges, and it names a running service whose unit file
 // the filesystem collector did not find.
@@ -19,14 +38,16 @@ func collectServiceScoped(ctx context.Context, name string) ([]Service, []string
 	if _, err := os.Stat("/run/systemd/system"); err != nil {
 		return nil, nil
 	}
-	binary, err := exec.LookPath("systemctl")
-	if err != nil {
-		return nil, []string{"systemd is running but systemctl is not on PATH; the service state is missing"}
+	binary := systemctlBinary()
+	if binary == "" {
+		return nil, []string{"systemd is running but systemctl is not in the system directories; the service state is missing"}
 	}
 	bound, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(bound, binary, "show", name, "--no-pager",
-		"--property=LoadState,ActiveState,SubState,Description").Output()
+	cmd := exec.CommandContext(bound, binary, "show", name, "--no-pager",
+		"--property=LoadState,ActiveState,SubState,Description")
+	cmd.Env = toolEnv()
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, []string{"systemctl show " + name + " did not answer: " + err.Error()}
 	}
@@ -54,14 +75,16 @@ func collectServices(ctx context.Context) ([]Service, []string) {
 	if _, err := os.Stat("/run/systemd/system"); err != nil {
 		return nil, nil
 	}
-	binary, err := exec.LookPath("systemctl")
-	if err != nil {
-		return nil, []string{"systemd is running but systemctl is not on PATH; the service inventory is missing"}
+	binary := systemctlBinary()
+	if binary == "" {
+		return nil, []string{"systemd is running but systemctl is not in the system directories; the service inventory is missing"}
 	}
 	bound, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(bound, binary,
-		"list-units", "--type=service", "--all", "--no-pager", "--no-legend").Output()
+	cmd := exec.CommandContext(bound, binary,
+		"list-units", "--type=service", "--all", "--no-pager", "--no-legend")
+	cmd.Env = toolEnv()
+	out, err := cmd.Output()
 	if len(out) == 0 && err != nil {
 		return nil, []string{"systemctl list-units did not answer: " + err.Error()}
 	}

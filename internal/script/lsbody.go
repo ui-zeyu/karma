@@ -4,9 +4,10 @@
 package script
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
+
+	chrome "karma/internal/panel"
 )
 
 // LSBodyPrintf is the ls -l row shape: permissions links owner group size date
@@ -121,19 +122,36 @@ func AlignLsBodies(rows []string) []string {
 		}
 	}
 	// perms, links, owner, group, size, then the date, the clock, and the path
-	format := fmt.Sprintf("%%-%ds %%%ds %%-%ds %%-%ds %%%ds %%s %%s %%s %%s",
-		width[0], width[1], width[2], width[3], width[4])
 	aligned := make([]string, len(rows))
 	for index, fields := range split {
 		if fields == nil {
 			aligned[index] = rows[index]
 			continue
 		}
-		aligned[index] = fmt.Sprintf(format,
-			fields[0], fields[1], fields[2], fields[3], fields[4],
-			fields[5], fields[6], fields[7], fields[LsBodyPath])
+		var line strings.Builder
+		for column := 0; column < 8; column++ {
+			if column > 0 {
+				line.WriteByte(' ')
+			}
+			line.WriteString(padCell(fields[column], width[column], column == 1 || column == 4))
+		}
+		line.WriteByte(' ')
+		line.WriteString(fields[LsBodyPath])
+		aligned[index] = line.String()
 	}
 	return aligned
+}
+
+func padCell(text string, width int, right bool) string {
+	gap := width - chrome.DisplayWidth(text)
+	if gap <= 0 {
+		return text
+	}
+	padding := strings.Repeat(" ", gap)
+	if right {
+		return padding + text
+	}
+	return text + padding
 }
 
 // linkRow is one row with a symlink's target separated the way ls -l writes it.

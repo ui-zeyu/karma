@@ -52,7 +52,7 @@ func (p *socketPoll) Run(ctx context.Context, out chan<- Event) error {
 					inodes[state.Key.Inode] = true
 				}
 			}
-			owners := netdiag.Owners(inodes)
+			owners := netdiag.Owners(ctx, inodes)
 			for _, state := range added {
 				for _, event := range socketEvents(fs, state, owners[state.Key.Inode], now) {
 					if !send(ctx, out, event) {
@@ -120,6 +120,7 @@ func socketEvents(fs procfs.FS, state sockState, owners []netdiag.Owner, at time
 		if p, err := fs.Proc(owner.PID); err == nil {
 			sock.Exe, _ = p.Executable()
 			if cmd, err := p.CmdLine(); err == nil {
+				sock.Args = cmd
 				sock.Cmdline = strings.Join(cmd, " ")
 			}
 			sock.Cwd, _ = p.Cwd()

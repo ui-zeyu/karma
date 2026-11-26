@@ -385,10 +385,8 @@ func judgeSSHD(state *IdentityState, filter Filter, add func(Finding)) []string 
 }
 
 func identityGraph(snapshot *Snapshot) *GraphView {
-	root := NewGraphBuilder(&GraphNode{
-		ID: nodeKey("domain", "identity"), Kind: "domain", Name: "identity",
-		Origin: Unknown.String(), Detail: "accounts, groups, sudo grants, shadow state and SSH keys",
-	})
+	root := domainRoot("domain", "identity",
+		"accounts, groups, sudo grants, shadow state and SSH keys", UserAsset)
 	for _, group := range snapshot.Identity.Groups {
 		root.Node("group", group.Name, group.Name, group.Source, Unknown, UserAsset,
 			fmt.Sprintf("gid %d members %d", group.GID, len(group.Members)))

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	chrome "karma/internal/panel"
+	"karma/internal/startup"
 )
 
 func layoutReport(findings []Finding) *Report {
@@ -370,12 +371,12 @@ func TestFilterNarrowed(t *testing.T) {
 		want   bool
 	}{
 		{"bare", Filter{}, false},
-		{"surfaces", Filter{Surfaces: map[string]bool{"systemd": true}}, true},
+		{"surfaces", Filter{Surfaces: surfacePtr(startup.Systemd)}, true},
 		{"paths", Filter{Paths: []string{"/etc"}}, true},
 		{"excluded paths", Filter{ExcludePaths: []string{"/tmp"}}, true},
 		{"pids", Filter{PIDs: map[int]bool{1: true}}, true},
 		{"units", Filter{Units: map[string]bool{"ssh.service": true}}, true},
-		{"off domains", Filter{OffDomains: []string{"kernel"}}, true},
+		{"off domains", Filter{Domains: AllDomains &^ DomainKernel}, true},
 	}
 	for _, test := range cases {
 		if got := test.filter.narrowed(); got != test.want {

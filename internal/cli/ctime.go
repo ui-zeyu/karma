@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	chrome "karma/internal/panel"
 	"karma/internal/trust"
 )
 
@@ -81,9 +82,6 @@ func runCtime(ctx context.Context, w io.Writer, dirs []string) error {
 			heap.Fix(kept, 0)
 		}
 	})
-	if err != nil {
-		return err
-	}
 	rows := make([]ctimeRow, kept.Len())
 	for index := range rows {
 		rows[index] = heap.Pop(kept).(ctimeRow)
@@ -96,12 +94,19 @@ func runCtime(ctx context.Context, w io.Writer, dirs []string) error {
 	})
 	for _, row := range rows {
 		fmt.Fprintf(w, "%s  %s  %8d  %s\n",
-			time.Unix(row.seconds, 0).Format(stampLayout), row.mode, row.size, row.path)
+			time.Unix(row.seconds, 0).Format(stampLayout), row.mode, row.size, chrome.SafeText(row.path))
 	}
 	if total > len(rows) {
 		fmt.Fprintf(w, "... %d more rows\n", total-len(rows))
 	}
-	return nil
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, context.Canceled):
+		return failf(ExitInterrupted, "%s", err)
+	default:
+		return failf(ExitRead, "%s", err)
+	}
 }
 
 func newer(left, right ctimeRow) bool {

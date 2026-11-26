@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 
+	"karma/internal/localfs"
 	"karma/internal/startup"
 	"karma/internal/trust"
 )
@@ -54,7 +55,7 @@ func ParseGraphSeed(word string) (GraphSeed, error) {
 		kind = "path"
 	case isDigits(word):
 		kind = "pid"
-	case hasUnitName(word):
+	case startup.IsUnitName(word):
 		kind = "unit"
 	default:
 		kind = "package"
@@ -109,9 +110,7 @@ type GraphNode struct {
 	Content    *Content `json:"content,omitempty"`
 	Evidence   []string `json:"evidence,omitempty"`
 
-	origin Origin
-	reach  Reach
-	depth  int
+	depth int
 }
 
 // GraphEdge is one relation. Source is kernel, unit, package, tree, shell,
@@ -126,29 +125,28 @@ type GraphEdge struct {
 }
 
 type graphBuilder struct {
-	ctx         context.Context
-	snapshot    *Snapshot
-	assessor    *assessor
-	graph       *GraphBuilder
-	queue       []string
-	expanded    map[string]bool
-	processes   map[int]Process
-	trees       map[string]bool
-	reverse     bool // a path seed reads the objects that name it
-	findings    []Finding
-	coverage    []string
-	skippedFD   int
-	skippedMap  int
-	skippedLib  int
-	dynamic     int
-	budget      int
-	minSeverity Severity
+	ctx        context.Context
+	snapshot   *Snapshot
+	assessor   *assessor
+	graph      *GraphBuilder
+	queue      []string
+	expanded   map[string]bool
+	processes  map[int]Process
+	trees      map[string]bool
+	reverse    bool // a path seed reads the objects that name it
+	findings   []Finding
+	coverage   []string
+	skippedFD  int
+	skippedMap int
+	skippedLib int
+	dynamic    int
+	budget     int
 }
 
 // BuildObjectGraph walks one object's relation closure over the snapshot.
 // The seed arrives parsed, so a mistyped selector fails before the run
 // collects anything; the builder only answers whether the object is visible.
-func BuildObjectGraph(ctx context.Context, snapshot *Snapshot, seed GraphSeed, minSeverity Severity) (*GraphView, error) {
+func BuildObjectGraph(ctx context.Context, snapshot *Snapshot, seed GraphSeed) (*GraphView, error) {
 	if snapshot == nil {
 		return nil, fmt.Errorf("graph: no snapshot")
 	}
@@ -156,7 +154,7 @@ func BuildObjectGraph(ctx context.Context, snapshot *Snapshot, seed GraphSeed, m
 		ctx: ctx, snapshot: snapshot, assessor: newAssessor(snapshot),
 		graph:    &GraphBuilder{nodes: map[string]*GraphNode{}, edgeSeen: map[string]bool{}},
 		expanded: map[string]bool{}, processes: map[int]Process{},
-		trees: map[string]bool{}, budget: objectMaxNodes, minSeverity: minSeverity,
+		trees: map[string]bool{}, budget: objectMaxNodes,
 	}
 	for _, process := range snapshot.Processes {
 		b.processes[process.PID] = process
@@ -165,6 +163,7 @@ func BuildObjectGraph(ctx context.Context, snapshot *Snapshot, seed GraphSeed, m
 	if err != nil {
 		return nil, err
 	}
+	b.graph.setRoot(root)
 	b.queue = append(b.queue, root)
 	for len(b.queue) > 0 {
 		if err := ctx.Err(); err != nil {
@@ -240,16 +239,6 @@ func isDigits(word string) bool {
 	return true
 }
 
-func hasUnitName(name string) bool {
-	switch {
-	case strings.HasSuffix(name, ".service"), strings.HasSuffix(name, ".socket"),
-		strings.HasSuffix(name, ".timer"), strings.HasSuffix(name, ".path"),
-		strings.HasSuffix(name, ".target"), strings.HasSuffix(name, ".mount"):
-		return true
-	}
-	return false
-}
-
 // rootNodeKind reads the root node's kind; a graph without its root falls
 // back to the selector's own word.
 func rootNodeKind(graph *GraphBuilder, root string) string {
@@ -274,12 +263,14 @@ func (b *graphBuilder) finish(root string) *GraphView {
 	if b.dynamic > 0 {
 		b.coverage = append(b.coverage, fmt.Sprintf("%d reference(s) were dynamic and could not be resolved statically", b.dynamic))
 	}
-	view.Coverage = uniqueStrings(b.coverage)
+	coverage := append([]string(nil), b.snapshot.Coverage...)
+	coverage = append(coverage, b.coverage...)
+	view.Coverage = uniqueStrings(coverage)
 	return view
 }
 
 func (b *graphBuilder) localFindings() []Finding {
-	report := Judge(b.snapshot, Filter{MinSeverity: b.minSeverity})
+	report := Judge(b.snapshot, b.snapshot.plan.Filter)
 	paths := map[string]bool{}
 	b.graph.each(func(node *GraphNode) {
 		if node.Path != "" {
@@ -295,9 +286,6 @@ func (b *graphBuilder) localFindings() []Finding {
 	var out []Finding
 	covered := map[string]bool{}
 	for _, finding := range report.Findings {
-		if finding.Severity < b.minSeverity {
-			continue
-		}
 		if paths[finding.Path] {
 			out = append(out, finding)
 			covered[finding.Path] = true
@@ -315,7 +303,7 @@ func (b *graphBuilder) localFindings() []Finding {
 		if !facts.PackageKnown || facts.Package != "" || !facts.Executable {
 			continue
 		}
-		if node.origin != Runtime && node.origin != Modified {
+		if node.typedOrigin() != Runtime && node.typedOrigin() != Modified {
 			continue
 		}
 		severity := Medium
@@ -324,15 +312,12 @@ func (b *graphBuilder) localFindings() []Finding {
 			severity = High
 			reach = RootAsset
 		}
-		if severity < b.minSeverity {
-			continue
-		}
 		evidence := append([]string{
 			"no package's file list records this path",
 			"the file was selected or discovered by the graph",
 		}, node.Evidence...)
 		out = append(out, Finding{
-			Class: "unowned-file", Domain: DomainFiles, Severity: severity, Origin: node.origin, Reach: reach,
+			Class: "unowned-file", Severity: severity, Origin: node.typedOrigin(), Reach: reach,
 			Title:    "runtime executable no package owns",
 			Path:     node.Path,
 			Detail:   "it is neither an activation target nor a running process; the graph found it",
@@ -340,16 +325,26 @@ func (b *graphBuilder) localFindings() []Finding {
 		})
 		covered[node.Path] = true
 	}
-	for _, finding := range b.findings {
-		if finding.Severity >= b.minSeverity {
-			out = append(out, finding)
-		}
-	}
+	out = append(out, b.findings...)
 	sortFindings(out)
 	return out
 }
 
 // addNode registers one node and keeps insertion order for the tree.
+func (n *GraphNode) setOrigin(origin Origin) {
+	n.Origin = origin.String()
+}
+
+// typedOrigin reads the one origin field the graph carries. Display and
+// judgment share it, so there is no second state to drift.
+func (n *GraphNode) typedOrigin() Origin {
+	if n.Origin == "" {
+		return Unknown
+	}
+	origin, _ := originByName(n.Origin)
+	return origin
+}
+
 func (b *graphBuilder) addNode(node *GraphNode) *GraphNode {
 	b.graph.add(node)
 	return b.graph.node(node.ID)
@@ -393,16 +388,23 @@ func (b *graphBuilder) addFile(path string, depth int) *GraphNode {
 	if path == "" || !filepath.IsAbs(path) {
 		return &GraphNode{ID: "file:" + path, Kind: "file", Name: path}
 	}
-	id := "file:" + path
-	if node := b.graph.node(id); node != nil {
+	if node := b.graph.node(nodeKey("file", path)); node != nil {
+		return node
+	}
+	if node := b.graph.node(nodeKey("dir", path)); node != nil {
 		return node
 	}
 	b.snapshot.ensureFacts([]string{path})
 	facts := b.snapshot.Facts(path)
 	story := b.assessor.read(facts, false)
+	kind := "file"
+	if facts.Kind == trust.Dir {
+		kind = "dir"
+	}
+	id := nodeKey(kind, path)
 	node := &GraphNode{
-		ID: id, Kind: "file", Name: filepath.Base(path), Path: path,
-		Origin: story.origin.String(), origin: story.origin,
+		ID: id, Kind: kind, Name: filepath.Base(path), Path: path,
+		Origin: story.origin.String(),
 		Detail: story.why, Evidence: story.evidence, depth: depth,
 		Discovered: depth > 0,
 	}
@@ -436,7 +438,6 @@ func (b *graphBuilder) addFile(path string, depth int) *GraphNode {
 		}
 	}
 	if facts.Setuid || facts.Caps {
-		node.reach = RootAsset
 		node.Reach = RootAsset.String()
 	}
 	return b.addNode(node)
@@ -490,7 +491,7 @@ func (b *graphBuilder) addProcess(pid, depth int) *GraphNode {
 	}
 	node := &GraphNode{
 		ID: id, Kind: "process", Name: process.Comm, Path: process.Exe,
-		Origin: origin.String(), origin: origin, Reach: reach.String(), reach: reach,
+		Origin: origin.String(), Reach: reach.String(),
 		Detail:   fmt.Sprintf("pid %d uid %d %s", process.PID, process.UID, process.Cmdline),
 		Evidence: append(append([]string(nil), evidence...), context...),
 		depth:    depth, Discovered: depth > 0,
@@ -528,22 +529,9 @@ func (b *graphBuilder) addPackage(name string, depth int) *GraphNode {
 }
 
 func (b *graphBuilder) addDir(path string, depth int) *GraphNode {
-	if path == "" {
-		return &GraphNode{ID: "dir:" + path, Kind: "dir", Name: path}
-	}
-	id := "dir:" + path
-	if node := b.graph.node(id); node != nil {
-		return node
-	}
-	b.snapshot.ensureFacts([]string{path})
-	facts := b.snapshot.Facts(path)
-	story := b.assessor.read(facts, false)
-	return b.addNode(&GraphNode{
-		ID: id, Kind: "dir", Name: filepath.Base(path), Path: path,
-		Origin: story.origin.String(), origin: story.origin,
-		Detail: story.why, Evidence: story.evidence, Context: true,
-		depth: depth, Discovered: depth > 0,
-	})
+	node := b.addFile(path, depth)
+	node.Context = true
+	return node
 }
 
 func (b *graphBuilder) addPeer(peer string, depth int) *GraphNode {
@@ -584,7 +572,10 @@ func (b *graphBuilder) expandFile(node *GraphNode) {
 		return
 	}
 	facts := b.snapshot.Facts(path)
-	if facts.Kind == trust.Missing {
+	if facts.Kind != trust.File {
+		// A directory, FIFO, device or socket has no readable content body.
+		// Refusing it here keeps every content parser below on a regular file
+		// even when the path was planted after the facts were read.
 		return
 	}
 	if unit := unitForFile(path); unit != "" {
@@ -730,7 +721,12 @@ func extractPaths(data []byte) []string {
 }
 
 func (b *graphBuilder) elfRefs(node *GraphNode) {
-	file, err := elf.Open(node.Path)
+	raw, err := localfs.Open(node.Path)
+	if err != nil {
+		return
+	}
+	defer raw.Close()
+	file, err := elf.NewFile(raw)
 	if err != nil {
 		return
 	}
@@ -776,11 +772,19 @@ func (b *graphBuilder) elfRefs(node *GraphNode) {
 }
 
 func (b *graphBuilder) jarRefs(node *GraphNode) {
-	reader, err := zip.OpenReader(node.Path)
+	raw, err := localfs.Open(node.Path)
 	if err != nil {
 		return
 	}
-	defer reader.Close()
+	defer raw.Close()
+	info, err := raw.Stat()
+	if err != nil {
+		return
+	}
+	reader, err := zip.NewReader(raw, info.Size())
+	if err != nil {
+		return
+	}
 	for _, entry := range reader.File {
 		if entry.Name != "META-INF/MANIFEST.MF" {
 			continue
@@ -834,14 +838,14 @@ func (b *graphBuilder) containment(node *GraphNode) {
 		return
 	}
 	b.trees[root] = true
-	b.snapshot.ensureFacts([]string{root})
-	story := b.assessor.read(b.snapshot.Facts(root), false)
-	dir := b.addNode(&GraphNode{
-		ID: "dir:" + root, Kind: "dir", Name: filepath.Base(root), Path: root,
-		Origin: story.origin.String(), origin: story.origin, Context: true,
-		Detail: "application tree · " + story.why,
-		depth:  node.depth + 1, Discovered: true,
-	})
+	dir := b.addDir(root, node.depth+1)
+	dir.Context = true
+	if dir.Detail == "" {
+		dir.Detail = "application tree"
+	} else {
+		dir.Detail = "application tree · " + dir.Detail
+	}
+	dir.Discovered = true
 	b.addEdge(node.ID, dir.ID, "in-tree", "tree", "medium", "")
 	count := 0
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
@@ -899,7 +903,11 @@ func (b *graphBuilder) expandProcess(node *GraphNode) {
 		b.addEdge(node.ID, unit.ID, "member-of", "cgroup", "high", process.Cgroup)
 		b.enqueue(unit.ID)
 	}
-	for _, path := range cmdlinePaths(process.Cmdline) {
+	paths := cmdlinePathArgs(process.Args)
+	if len(paths) == 0 {
+		paths = cmdlinePaths(process.Cmdline)
+	}
+	for _, path := range paths {
 		target := b.addFile(path, node.depth+1)
 		b.addEdge(node.ID, target.ID, "references", "cmdline", "high", "")
 		b.enqueue(target.ID)
@@ -977,9 +985,8 @@ func (b *graphBuilder) expandUnit(node *GraphNode) {
 		found++
 		trigger := b.addFile(edge.Trigger, node.depth+1)
 		b.addEdge(node.ID, trigger.ID, "configured-by", "unit", "high", "")
-		if node.origin == Unknown {
-			node.origin = trigger.origin
-			node.Origin = trigger.Origin
+		if node.typedOrigin() == Unknown {
+			node.setOrigin(trigger.typedOrigin())
 			if node.Detail == "" {
 				node.Detail = trigger.Detail
 			} else if trigger.Detail != "" {
@@ -1007,7 +1014,7 @@ func (b *graphBuilder) expandUnit(node *GraphNode) {
 		b.addEdge(node.ID, target.ID, kind, source, "high", string(edge.Mechanism))
 		if target.Missing && !edge.Context {
 			b.findings = append(b.findings, Finding{
-				Class: "unit-target-missing", Domain: DomainPersistence, Severity: Medium, Origin: Unknown, Reach: RootAsset,
+				Class: "unit-target-missing", Severity: Medium, Origin: Unknown, Reach: RootAsset,
 				Title:  "unit names a file the disk does not carry",
 				Path:   target.Path,
 				Detail: fmt.Sprintf("unit %s: %s", name, edge.Mechanism),
@@ -1031,12 +1038,11 @@ func (b *graphBuilder) expandUnit(node *GraphNode) {
 		b.enqueue(processNode.ID)
 	}
 	if found == 0 {
-		if path := findUnitFile(name); path != "" {
+		if path := startup.LookupUnitFile(name); path != "" {
 			file := b.addFile(path, node.depth+1)
 			b.addEdge(node.ID, file.ID, "configured-by", "unit", "high", "")
-			if node.origin == Unknown {
-				node.origin = file.origin
-				node.Origin = file.Origin
+			if node.typedOrigin() == Unknown {
+				node.setOrigin(file.typedOrigin())
 				node.Detail = file.Detail
 			}
 			b.enqueue(file.ID)
@@ -1045,7 +1051,7 @@ func (b *graphBuilder) expandUnit(node *GraphNode) {
 		}
 	}
 	// Drop-ins exist even when the unit has no ExecStart edge of its own.
-	for _, dir := range unitDirs {
+	for _, dir := range startup.UnitDirs() {
 		dropDir := filepath.Join(dir, name+".d")
 		entries, err := os.ReadDir(dropDir)
 		if err != nil {
@@ -1081,45 +1087,25 @@ func (b *graphBuilder) expandPackage(node *GraphNode) {
 // unitForFile names the unit a unit file or drop-in belongs to.
 func unitForFile(path string) string {
 	base := filepath.Base(path)
-	if hasUnitName(base) {
+	if startup.IsUnitName(base) {
 		return base
 	}
 	dir := filepath.Base(filepath.Dir(path))
 	if strings.HasSuffix(dir, ".d") {
 		name := strings.TrimSuffix(dir, ".d")
-		if hasUnitName(name) {
+		if startup.IsUnitName(name) {
 			return name
 		}
 	}
 	return ""
 }
 
-var unitDirs = []string{
-	"/etc/systemd/system",
-	"/run/systemd/system",
-	"/usr/local/lib/systemd/system",
-	"/usr/lib/systemd/system",
-	"/lib/systemd/system",
-}
-
-func findUnitFile(name string) string {
-	for _, dir := range unitDirs {
-		path := filepath.Join(dir, name)
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return path
-		}
-	}
-	return ""
-}
-
 func shebang(path string) (string, bool) {
-	file, err := os.Open(path)
+	buf, err := localfs.ReadFile(path, 256)
 	if err != nil {
 		return "", false
 	}
-	defer file.Close()
-	buf := make([]byte, 256)
-	n, _ := file.Read(buf)
+	n := len(buf)
 	if n < 3 || buf[0] != '#' || buf[1] != '!' {
 		return "", false
 	}
@@ -1163,25 +1149,15 @@ func isShellScript(path string, facts trust.Facts) bool {
 }
 
 func isELF(path string) bool {
-	file, err := os.Open(path)
-	if err != nil {
+	data, err := localfs.ReadFile(path, 4)
+	if err != nil || len(data) < 4 {
 		return false
 	}
-	defer file.Close()
-	var magic [4]byte
-	if _, err := io.ReadFull(file, magic[:]); err != nil {
-		return false
-	}
-	return bytes.Equal(magic[:], []byte{0x7f, 'E', 'L', 'F'})
+	return bytes.Equal(data[:4], []byte{0x7f, 'E', 'L', 'F'})
 }
 
 func readFileCapped(path string, limit int64) ([]byte, bool) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, false
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, limit))
+	data, err := localfs.ReadFile(path, limit)
 	if err != nil {
 		return nil, false
 	}
@@ -1232,7 +1208,10 @@ func isConfigPath(path string) bool {
 }
 
 func cmdlinePaths(cmdline string) []string {
-	fields := strings.Fields(cmdline)
+	return cmdlinePathArgs(strings.Fields(cmdline))
+}
+
+func cmdlinePathArgs(fields []string) []string {
 	var out []string
 	seen := map[string]bool{}
 	add := func(value string) {

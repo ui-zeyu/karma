@@ -105,9 +105,9 @@ func TestCollectSystemd(t *testing.T) {
 			"/home/*/.zlogin":               nil,
 		},
 	}
-	corpus := Collect(context.Background(), tree, func(path string) trust.Facts {
+	corpus := CollectScoped(context.Background(), tree, func(path string) trust.Facts {
 		return trust.Build(path, trust.Attrs{Kind: trust.File, Mode: 0o644, UID: 0, Real: path})
-	})
+	}, AllScope())
 	if len(corpus.files) != 3 {
 		t.Fatalf("collected %d files, want 3: %+v", len(corpus.files), corpus.files)
 	}
@@ -135,9 +135,9 @@ func TestCollectSkelTemplate(t *testing.T) {
 		files: map[string]string{"/etc/skel/.profile": "export LOADER=/opt/vendor/.loader.sh\n"},
 		globs: map[string][]string{"/etc/skel/.profile": {"/etc/skel/.profile"}},
 	}
-	corpus := Collect(context.Background(), tree, func(path string) trust.Facts {
+	corpus := CollectScoped(context.Background(), tree, func(path string) trust.Facts {
 		return trust.Build(path, trust.Attrs{Kind: trust.File, Mode: 0o644, UID: 0, Real: path})
-	})
+	}, AllScope())
 	if len(corpus.files) != 1 {
 		t.Fatalf("collected %d files, want 1: %+v", len(corpus.files), corpus.files)
 	}
@@ -155,7 +155,7 @@ func TestCollectUnreadable(t *testing.T) {
 		globs: map[string][]string{"/etc/profile": {"/etc/profile"}},
 		fail:  map[string]error{"/etc/profile": fs.ErrPermission},
 	}
-	corpus := Collect(context.Background(), tree, func(path string) trust.Facts { return trust.Facts{Path: path} })
+	corpus := CollectScoped(context.Background(), tree, func(path string) trust.Facts { return trust.Facts{Path: path} }, AllScope())
 	if len(corpus.files) != 0 {
 		t.Fatalf("an unreadable file should not enter the corpus: %+v", corpus.files)
 	}
@@ -167,6 +167,24 @@ func TestCollectUnreadable(t *testing.T) {
 // The native collector and the sh parser classify paths with one function, so
 // a path in a collector list cannot land on a different surface depending on
 // the source. This table names a representative path for every surface.
+func TestFishAndZlogoutAreProfileSurfaces(t *testing.T) {
+	tree := fakeFS{files: map[string]string{
+		"/etc/fish/config.fish": "set -x APP_HOME /opt/agent\n",
+		"/root/.zlogout":        "source /opt/logout.sh\n",
+	}}
+	corpus := CollectScoped(context.Background(), tree, func(path string) trust.Facts {
+		return trust.Facts{Path: path}
+	}, Profile)
+	if len(corpus.files) != 2 {
+		t.Fatalf("profile files = %+v, want fish and zlogout", corpus.files)
+	}
+	for _, file := range corpus.files {
+		if file.Surface != SurfaceProfile || file.Dialect != ShellDialect {
+			t.Errorf("%s = %s/%d, want profile/shell", file.Path, file.Surface, file.Dialect)
+		}
+	}
+}
+
 func TestClassifyPathCoversEverySurface(t *testing.T) {
 	cases := []struct {
 		path    string
@@ -223,7 +241,7 @@ func TestCollectCapsOneFile(t *testing.T) {
 		files: map[string]string{"/etc/profile": string(big)},
 		globs: map[string][]string{"/etc/profile": {"/etc/profile"}},
 	}
-	corpus := Collect(context.Background(), tree, func(path string) trust.Facts { return trust.Facts{Path: path} })
+	corpus := CollectScoped(context.Background(), tree, func(path string) trust.Facts { return trust.Facts{Path: path} }, AllScope())
 	if len(corpus.files) != 1 {
 		t.Fatalf("files = %+v", corpus.files)
 	}
@@ -261,9 +279,9 @@ func TestCollectEnabledVendorUnit(t *testing.T) {
 			"/etc/systemd/system/multi-user.target.wants/vendor.service": vendor,
 		},
 	}
-	corpus := Collect(context.Background(), tree, func(path string) trust.Facts {
+	corpus := CollectScoped(context.Background(), tree, func(path string) trust.Facts {
 		return trust.Build(path, trust.Attrs{Kind: trust.File, Mode: 0o755, UID: 0, Real: path})
-	})
+	}, AllScope())
 	found := false
 	for _, file := range corpus.files {
 		if file.Path == vendor {
@@ -291,7 +309,7 @@ func TestCollectScopedStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	tree := fakeFS{files: map[string]string{"/etc/ld.so.preload": "/tmp/zz.so\n"}}
-	corpus := CollectScoped(ctx, tree, func(path string) trust.Facts { return trust.Facts{Path: path} }, Scope{Loader: true})
+	corpus := CollectScoped(ctx, tree, func(path string) trust.Facts { return trust.Facts{Path: path} }, Loader)
 	if len(corpus.files) != 0 {
 		t.Fatalf("a canceled walk read %d files", len(corpus.files))
 	}

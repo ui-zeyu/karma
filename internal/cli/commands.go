@@ -101,7 +101,7 @@ func newShowCmd() *cobra.Command {
 		Use:   "show <section> [scope...]",
 		Short: "Print one collected inventory without judging it",
 		Long: "Print one collected inventory without judging it: activation, process, services, " +
-			"listeners, connections, kernel, authority, mounts, or coverage. A section prints every " +
+			"listeners, connections, kernel, authority, mounts, trail, or coverage. A section prints every " +
 			"row it collected, and the scope words narrow it by the relations its rows answer: a " +
 			"unit narrows the services, processes, sockets and activation edges it owns; a path " +
 			"narrows the paths; a pid narrows the processes and their sockets.",
@@ -138,8 +138,9 @@ func newListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List the audit vocabulary",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			writePage(cmd.OutOrStdout(), cmd, listSections(), listFooter)
+			writePage(cmd.OutOrStdout(), cmd, listSections(cmd), listFooter)
 			return nil
 		},
 	}
@@ -148,11 +149,18 @@ func newListCmd() *cobra.Command {
 // listSections is the listing's whole table, in reading order. Each row comes
 // from the registry that defines the words, so the page cannot drift from the
 // grammar the commands parse.
-func listSections() []pageSection {
+func listSections(cmd *cobra.Command) []pageSection {
 	line := func(words ...string) []string { return []string{strings.Join(words, " ")} }
+	modes := []string{"audit (default)"}
+	for _, sub := range cmd.Root().Commands() {
+		if !sub.IsAvailableCommand() || sub.Name() == "completion" {
+			continue
+		}
+		modes = append(modes, sub.Name())
+	}
 	return []pageSection{
 		{"start", startRows},
-		{"modes", line("audit (default)", "graph", "show", "cat", "ls", "ctime", "watch")},
+		{"modes", line(modes...)},
 		{"domains", line(audit.DomainWords()...)},
 		{"graph", line(audit.GraphWords()...)},
 		{"show", line(audit.ShowWords()...)},

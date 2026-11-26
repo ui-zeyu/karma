@@ -37,7 +37,7 @@ func TestGeneratorEdges(t *testing.T) {
 			"/usr/lib/systemd/system-generators": {},
 		},
 	}
-	edges := Analyze(CollectScoped(context.Background(), tree, allFiles, Scope{Systemd: true}))
+	edges := Analyze(CollectScoped(context.Background(), tree, allFiles, Systemd))
 	if len(edges) != 1 {
 		t.Fatalf("edges = %+v, want one generator self-edge", edges)
 	}
@@ -51,7 +51,7 @@ func TestGeneratorEdges(t *testing.T) {
 	// skip is stated in coverage — a silent skip is how vendor enablement
 	// once vanished on a healthy host.
 	tree.files["/proc/1/comm"] = "supervisord\n"
-	corpus := CollectScoped(context.Background(), tree, allFiles, Scope{Systemd: true})
+	corpus := CollectScoped(context.Background(), tree, allFiles, Systemd)
 	if edges := Analyze(corpus); len(edges) != 0 {
 		t.Errorf("edges under a non-systemd init = %+v", edges)
 	}
@@ -61,7 +61,7 @@ func TestGeneratorEdges(t *testing.T) {
 	}
 	// A comm the collector cannot read is a gap too, for its own reason.
 	delete(tree.files, "/proc/1/comm")
-	corpus = CollectScoped(context.Background(), tree, allFiles, Scope{Systemd: true})
+	corpus = CollectScoped(context.Background(), tree, allFiles, Systemd)
 	Analyze(corpus)
 	gaps = corpus.Gaps()
 	if len(gaps) != 1 || !contains(gaps[0], "init check failed") {

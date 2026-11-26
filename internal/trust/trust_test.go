@@ -15,6 +15,9 @@ func TestUnderAndHidden(t *testing.T) {
 		{"/optfoo", "/opt", false},
 		{"/etc/profile.d/x.sh", "/etc/profile.d", true},
 		{"/etc/profile.dx", "/etc/profile.d", false},
+		{"/", "/", true},
+		{"/usr", "/", true},
+		{"/etc/passwd", "/", true},
 	}
 	for _, c := range cases {
 		if got := Under(c.path, c.root); got != c.want {

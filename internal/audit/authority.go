@@ -125,11 +125,11 @@ func trustedProgramInterpreter(path string) bool {
 		strings.HasPrefix(base, "ld-musl") || strings.HasPrefix(base, "ld64")
 }
 
-func collectAuthority(ctx context.Context) ([]string, []string) {
+func collectAuthority(ctx context.Context, filter Filter) ([]string, []string) {
 	seen := map[string]bool{}
 	var paths []string
 	add := func(path string) {
-		if path == "" || seen[path] {
+		if path == "" || seen[path] || !filter.touchesPath(path) {
 			return
 		}
 		seen[path] = true
@@ -141,7 +141,9 @@ func collectAuthority(ctx context.Context) ([]string, []string) {
 			continue
 		}
 		for _, path := range matches {
-			add(path)
+			if pathInScope(path, filter) {
+				add(path)
+			}
 		}
 	}
 	var gaps []string
@@ -149,6 +151,9 @@ func collectAuthority(ctx context.Context) ([]string, []string) {
 	for _, root := range authorityRoots {
 		if err := ctx.Err(); err != nil {
 			break
+		}
+		if !filter.touchesPath(root) {
+			continue
 		}
 		if _, err := os.Stat(root); err != nil {
 			continue
@@ -163,6 +168,9 @@ func collectAuthority(ctx context.Context) ([]string, []string) {
 				return filepath.SkipAll
 			}
 			if entry.IsDir() {
+				if !filter.touchesPath(path) {
+					return filepath.SkipDir
+				}
 				if authoritySkipNames[entry.Name()] {
 					return filepath.SkipDir
 				}
