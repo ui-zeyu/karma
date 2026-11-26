@@ -414,17 +414,33 @@ func TestContextRiskRule(t *testing.T) {
 	if len(report.Findings) != 2 {
 		t.Fatalf("findings = %+v, want the root and the non-sticky world-writable declaration", report.Findings)
 	}
+	high, medium := false, false
 	for _, finding := range report.Findings {
 		if finding.Class != "activation-context" {
 			t.Errorf("finding class = %s, want activation-context", finding.Class)
 			continue
 		}
-		if finding.Path == "/" && finding.Severity != High {
-			t.Errorf("a root declaration = %s, want high", finding.Severity)
+		if finding.Path != unit.Path {
+			t.Errorf("finding path = %s, want the declaring unit %s", finding.Path, unit.Path)
 		}
-		if finding.Path == "/var/tmp/share" && finding.Severity != Medium {
-			t.Errorf("a world-writable declaration = %s, want medium", finding.Severity)
+		switch finding.Severity {
+		case High:
+			high = true
+			if !strings.HasSuffix(finding.Detail, "writes /") {
+				t.Errorf("the root declaration detail = %q, want it to end in \"writes /\"", finding.Detail)
+			}
+		case Medium:
+			medium = true
+			if !strings.Contains(finding.Detail, "/var/tmp/share") {
+				t.Errorf("the world-writable declaration detail = %q, want the written path", finding.Detail)
+			}
 		}
+		if finding.Path == "/" {
+			t.Errorf("a context finding names the root as its object: %+v", finding)
+		}
+	}
+	if !high || !medium {
+		t.Errorf("findings = %+v, want one high root declaration and one medium world-writable one", report.Findings)
 	}
 }
 

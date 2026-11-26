@@ -281,3 +281,41 @@ func TestKernelFindingsHonorPathScope(t *testing.T) {
 		t.Errorf("unit scope kept kernel findings: %+v", unit.Findings)
 	}
 }
+
+func TestKernelConfigFindingsCiteTheirSources(t *testing.T) {
+	loader := "/etc/ld.so.conf.d/zz-local.conf"
+	declaration := "/etc/modules-load.d/zz.conf"
+	loaderFacts := pathFacts(loader, 1200, 0o644, 0)
+	declarationFacts := pathFacts(declaration, 1200, 0o644, 0)
+	snapshot := &Snapshot{
+		Boundary: boundary(),
+		Objects:  map[string]trust.Facts{loader: loaderFacts, declaration: declarationFacts},
+		Kernel: KernelState{
+			Collected:        true,
+			LoaderConfig:     []string{loader},
+			DeclarationFiles: []string{declaration},
+			Sources: map[string]Quote{
+				loader:      {Path: loader, Line: 2, Text: "/var/lib/vendor/runtime"},
+				declaration: {Path: declaration, Line: 1, Text: "vendor_module"},
+			},
+		},
+	}
+	report := Judge(snapshot, Filter{})
+	findings := map[string]Finding{}
+	for _, finding := range report.Findings {
+		findings[finding.Class] = finding
+	}
+	for class, want := range map[string]Quote{
+		"loader-config":      snapshot.Kernel.Sources[loader],
+		"module-declaration": snapshot.Kernel.Sources[declaration],
+	} {
+		finding, ok := findings[class]
+		if !ok {
+			t.Errorf("findings = %+v, want %s", report.Findings, class)
+			continue
+		}
+		if len(finding.Quotes) != 1 || finding.Quotes[0] != want {
+			t.Errorf("%s quotes = %+v, want %+v", class, finding.Quotes, want)
+		}
+	}
+}

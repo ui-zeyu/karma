@@ -31,8 +31,8 @@ func RenderGraph(w io.Writer, view *GraphView, options RenderOptions) {
 			width, mutedColor, options.Color))
 		fmt.Fprintln(w)
 	}
-	for _, finding := range view.Findings {
-		fmt.Fprintln(w, findingPanel(finding, options, width))
+	for _, group := range groupFindings(view.Findings) {
+		fmt.Fprintln(w, findingPanel(group, true, options, width))
 		fmt.Fprintln(w)
 	}
 	fmt.Fprintln(w, band(" GRAPH", root, width, bannerBG, bannerFG, true, options.Color))

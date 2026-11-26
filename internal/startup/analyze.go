@@ -200,6 +200,16 @@ func Analyze(corpus *Corpus) []Edge {
 		}
 	}
 
+	// The trigger lines are the quotes a finding can carry; one split per
+	// path keeps the lookup cheap when a file states many edges.
+	sourceLines := make(map[string][]string, len(corpus.files))
+	for _, file := range corpus.files {
+		if _, ok := sourceLines[file.Path]; ok {
+			continue
+		}
+		sourceLines[file.Path] = strings.Split(file.Body, "\n")
+	}
+
 	targets := make([]string, 0, len(raw)*2)
 	for _, edge := range raw {
 		// Prefetch both ends: every unit file, drop-in and profile script is a
@@ -243,6 +253,11 @@ func Analyze(corpus *Corpus) []Edge {
 			Dynamic:   edge.dynamic,
 			Context:   edge.context,
 			Note:      edge.note,
+		}
+		if edge.line > 0 {
+			if lines, ok := sourceLines[edge.trigger]; ok && edge.line <= len(lines) {
+				judged.Source = strings.TrimSpace(lines[edge.line-1])
+			}
 		}
 		if !edge.dynamic {
 			target := facts(edge.target)

@@ -260,9 +260,45 @@ func TestRenderKeepsThePanelLanguageAndTheRawInventory(t *testing.T) {
 		Version: "9.9.9", Width: 100, Evidence: true,
 	})
 	text := out.String()
-	for _, want := range []string{"KARMA", "9.9.9", "CRITICAL", "EVIDENCE", "ACTIVATION", "SERVICE", "LISTEN", "x.service", "0.0.0.0:22"} {
+	for _, want := range []string{"KARMA", "9.9.9", "findings  1 ·  1 critical",
+		"CRITICAL", "EVIDENCE", "ACTIVATION", "SERVICE", "LISTEN", "x.service", "0.0.0.0:22"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("report does not contain %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestActivationFindingCitesTheTriggerLine(t *testing.T) {
+	trigger := pathFacts("/etc/profile.d/vendor.sh", 1200, 0o644, 0)
+	target := pathFacts("/var/lib/vendor/.loader.sh", 1200, 0o755, 0)
+	source := "export VENDOR_LOADER=/var/lib/vendor/.loader.sh"
+	snapshot := &Snapshot{
+		Boundary: boundary(),
+		Objects:  map[string]trust.Facts{trigger.Path: trigger, target.Path: target},
+		Activations: []startup.Edge{{
+			Surface: startup.SurfaceProfile, Phase: startup.Login, Subject: startup.Subject{Class: startup.AccountRoot},
+			Trigger: trigger.Path, Line: 2, Source: source, Target: target.Path, Kind: startup.Source,
+			TriggerFacts: trigger, TargetFacts: target,
+		}},
+	}
+	report := Judge(snapshot, Filter{})
+	if len(report.Findings) != 1 {
+		t.Fatalf("findings = %+v, want one", report.Findings)
+	}
+	want := Quote{Path: trigger.Path, Line: 2, Text: source}
+	if quotes := report.Findings[0].Quotes; len(quotes) != 1 || quotes[0] != want {
+		t.Errorf("quotes = %+v, want %+v", quotes, want)
+	}
+	quiet := &Snapshot{
+		Boundary: boundary(),
+		Objects:  map[string]trust.Facts{trigger.Path: trigger, target.Path: target},
+		Activations: []startup.Edge{{
+			Surface: startup.SurfaceProfile, Phase: startup.Login, Subject: startup.Subject{Class: startup.AccountRoot},
+			Trigger: trigger.Path, Target: target.Path, Kind: startup.Source,
+			TriggerFacts: trigger, TargetFacts: target,
+		}},
+	}
+	if quotes := Judge(quiet, Filter{}).Findings[0].Quotes; len(quotes) != 0 {
+		t.Errorf("a sourceless edge cited %+v", quotes)
 	}
 }

@@ -57,3 +57,80 @@ func TestWrapLeavesAShortLineAlone(t *testing.T) {
 		t.Errorf("a short painted line was rewritten: %q", lines)
 	}
 }
+
+func TestWrapProseBreaksAtWordsWithAHangingIndent(t *testing.T) {
+	text := "alpha bravo charlie delta echo"
+	lines := WrapProse(text, 18, 2)
+	if len(lines) != 3 {
+		t.Fatalf("wrapped into %d lines, want 3: %q", len(lines), lines)
+	}
+	if lines[0] != "alpha bravo" {
+		t.Errorf("first line = %q", lines[0])
+	}
+	for _, line := range lines[1:] {
+		if !strings.HasPrefix(line, "  ") {
+			t.Errorf("a continuation line lost its hang: %q", line)
+		}
+	}
+	for _, token := range strings.Fields(text) {
+		found := false
+		for _, line := range lines {
+			if strings.Contains(strings.TrimPrefix(line, "  "), token) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("token %q was cut: %q", token, lines)
+		}
+	}
+}
+
+func TestWrapProseReopensPaintedStateOnContinuations(t *testing.T) {
+	lines := WrapProse(Paint(true, Fg(MutedColor), "one two three four five six"), 12, 2)
+	if len(lines) < 3 {
+		t.Fatalf("wrapped into %d lines, want at least 3: %q", len(lines), lines)
+	}
+	for index, line := range lines {
+		if width := DisplayWidth(line); width > 12 {
+			t.Errorf("line %d is %d columns wide: %q", index, width, line)
+		}
+		if !strings.HasSuffix(line, Reset) {
+			t.Errorf("line %d leaves its paint open: %q", index, line)
+		}
+		if index == 0 {
+			if !strings.HasPrefix(line, Fg(MutedColor)) {
+				t.Errorf("the first line lost its paint: %q", line)
+			}
+			continue
+		}
+		if !strings.HasPrefix(line, "  "+Fg(MutedColor)) {
+			t.Errorf("continuation %d did not re-open its state: %q", index, line)
+		}
+	}
+}
+
+func TestWrapProseHardCutsATokenWiderThanTheLine(t *testing.T) {
+	text := strings.Repeat("x", 30)
+	lines := WrapProse(text, 10, 2)
+	if len(lines) != 4 {
+		t.Fatalf("wrapped into %d lines, want 4: %q", len(lines), lines)
+	}
+	var rebuilt strings.Builder
+	for index, line := range lines {
+		if width := DisplayWidth(line); width > 10 {
+			t.Errorf("line %d is %d columns wide: %q", index, width, line)
+		}
+		rebuilt.WriteString(strings.TrimPrefix(line, "  "))
+	}
+	if rebuilt.String() != text {
+		t.Errorf("the hard cut lost bytes: %q", rebuilt.String())
+	}
+}
+
+func TestWrapProseLeavesAShortLineAlone(t *testing.T) {
+	line := Paint(true, Fg(203), "short prose")
+	if lines := WrapProse(line, 40, 2); len(lines) != 1 || lines[0] != line {
+		t.Errorf("a short painted line was rewritten: %q", lines)
+	}
+}

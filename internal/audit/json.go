@@ -29,6 +29,7 @@ type findingData struct {
 	Chain    []string `json:"chain,omitempty"`
 	Nodes    []string `json:"nodes,omitempty"`
 	Evidence []string `json:"evidence,omitempty"`
+	Quotes   []Quote  `json:"quotes,omitempty"`
 }
 
 func boundaryDataOf(boundary Boundary) boundaryData {
@@ -55,6 +56,7 @@ func findingDataOf(finding Finding) findingData {
 		Chain:    traceTexts(finding.Trace),
 		Nodes:    traceNodes(finding.Trace),
 		Evidence: finding.Evidence,
+		Quotes:   finding.Quotes,
 	}
 }
 

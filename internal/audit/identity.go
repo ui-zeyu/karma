@@ -30,6 +30,13 @@ type Account struct {
 	Locked      bool
 	System      bool
 	Source      string
+	// Line and Raw are the passwd row the account was read from; the
+	// Shadow* fields are the shadow row that answered for its password.
+	Line       int
+	Raw        string
+	ShadowFile string
+	ShadowLine int
+	ShadowRaw  string
 }
 
 // Group is one /etc/group row.
@@ -39,6 +46,8 @@ type Group struct {
 	Members  []string
 	Password string
 	Source   string
+	Line     int
+	Raw      string
 }
 
 // SudoGrant is one command a sudoers row grants.
@@ -50,6 +59,8 @@ type SudoGrant struct {
 	NoPasswd bool
 	File     string
 	Line     int
+	// Raw is the logical line after continuation joining, trimmed.
+	Raw string
 }
 
 // SSHDConfig is the security-relevant part of sshd_config.
@@ -58,6 +69,11 @@ type SSHDConfig struct {
 	AuthorizedKeysFile     []string
 	PermitRootLogin        string
 	PasswordAuthentication string
+	// KeyFile, KeyLine and KeyRaw name the first AuthorizedKeysFile
+	// directive: the line that redirected the key search.
+	KeyFile string
+	KeyLine int
+	KeyRaw  string
 	// MatchBlocks counts conditional blocks; their directives apply to the
 	// matched connections only, so the parser keeps them out of the global
 	// posture.
@@ -148,13 +164,19 @@ func collectIdentity(ctx context.Context, snapshot *Snapshot, facts func(string)
 	return gaps
 }
 
+// nisCompatRow reports a NIS compatibility entry (`+` or `-` in the name
+// column): a directory reference, not a local record.
+func nisCompatRow(line string) bool {
+	return strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-")
+}
+
 // parsePasswd reads colon-separated passwd records. Malformed rows are
 // returned as coverage rather than guessed at.
 func parsePasswd(text, source string) []Account {
 	var accounts []Account
-	for _, line := range strings.Split(text, "\n") {
+	for index, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" || strings.HasPrefix(line, "#") || nisCompatRow(line) {
 			continue
 		}
 		fields := strings.Split(line, ":")
@@ -169,6 +191,7 @@ func parsePasswd(text, source string) []Account {
 		accounts = append(accounts, Account{
 			Name: fields[0], UID: uid, GID: gid, Home: fields[5], Shell: fields[6],
 			Password: fields[1], System: uid < 1000 && uid != 0, Source: source,
+			Line: index + 1, Raw: line,
 		})
 	}
 	return accounts
@@ -180,6 +203,9 @@ func applyShadow(accounts []Account, shadow map[string]Account) {
 			accounts[index].Shadow = row.Shadow
 			accounts[index].ShadowKnown = true
 			accounts[index].Locked = row.Locked
+			accounts[index].ShadowFile = row.Source
+			accounts[index].ShadowLine = row.Line
+			accounts[index].ShadowRaw = row.Raw
 		}
 	}
 }
@@ -187,9 +213,9 @@ func applyShadow(accounts []Account, shadow map[string]Account) {
 // parseShadow keeps only the fields the identity graph uses.
 func parseShadow(text, source string) map[string]Account {
 	rows := map[string]Account{}
-	for _, line := range strings.Split(text, "\n") {
+	for index, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" || strings.HasPrefix(line, "#") || nisCompatRow(line) {
 			continue
 		}
 		fields := strings.Split(line, ":")
@@ -198,16 +224,16 @@ func parseShadow(text, source string) map[string]Account {
 		}
 		hash := fields[1]
 		locked := strings.HasPrefix(hash, "!") || hash == "*"
-		rows[fields[0]] = Account{Name: fields[0], Shadow: hash, Locked: locked, Source: source}
+		rows[fields[0]] = Account{Name: fields[0], Shadow: hash, Locked: locked, Source: source, Line: index + 1, Raw: line}
 	}
 	return rows
 }
 
 func parseGroup(text, source string) []Group {
 	var groups []Group
-	for _, line := range strings.Split(text, "\n") {
+	for index, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" || strings.HasPrefix(line, "#") || nisCompatRow(line) {
 			continue
 		}
 		fields := strings.Split(line, ":")
@@ -221,7 +247,10 @@ func parseGroup(text, source string) []Group {
 				members = append(members, member)
 			}
 		}
-		groups = append(groups, Group{Name: fields[0], GID: gid, Members: members, Password: fields[1], Source: source})
+		groups = append(groups, Group{
+			Name: fields[0], GID: gid, Members: members, Password: fields[1], Source: source,
+			Line: index + 1, Raw: line,
+		})
 	}
 	return groups
 }
@@ -359,7 +388,7 @@ func parseSudoers(text, file string, tables *sudoersTables) []SudoGrant {
 				for _, user := range users {
 					grants = append(grants, SudoGrant{
 						User: user, Host: host, RunAs: runAs,
-						Command: command, NoPasswd: noPasswd, File: file, Line: index + 1,
+						Command: command, NoPasswd: noPasswd, File: file, Line: index + 1, Raw: line,
 					})
 				}
 			}
@@ -449,11 +478,12 @@ func parseSSHDFile(state *sshdState, file string, depth int) {
 		return
 	}
 	state.config.Files = append(state.config.Files, file)
-	for _, line := range strings.Split(string(data), "\n") {
+	for index, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		raw := line
 		// sshd accepts `Key value` and `Key=value`; normalize the latter.
 		line = strings.Replace(line, "=", " ", 1)
 		fields := strings.Fields(line)
@@ -494,6 +524,9 @@ func parseSSHDFile(state *sshdState, file string, depth int) {
 		switch key {
 		case "authorizedkeysfile":
 			state.config.AuthorizedKeysFile = append(state.config.AuthorizedKeysFile, fields[1:]...)
+			state.config.KeyFile = file
+			state.config.KeyLine = index + 1
+			state.config.KeyRaw = raw
 		case "permitrootlogin":
 			state.config.PermitRootLogin = strings.ToLower(value)
 		case "passwordauthentication":

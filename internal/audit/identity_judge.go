@@ -89,6 +89,47 @@ type identityFactor struct {
 	text     string
 	severity Severity
 	path     string
+	quotes   []Quote
+}
+
+// accountQuotes cites the passwd row an account was read from.
+func accountQuotes(account Account) []Quote {
+	if account.Raw == "" {
+		return nil
+	}
+	return []Quote{{Path: account.Source, Line: account.Line, Text: account.Raw}}
+}
+
+// shadowQuotes cites the shadow row that answered for an account's password.
+func shadowQuotes(account Account) []Quote {
+	if account.ShadowRaw == "" {
+		return nil
+	}
+	return []Quote{{Path: account.ShadowFile, Line: account.ShadowLine, Text: account.ShadowRaw}}
+}
+
+// groupQuotes cites the group row a membership was read from.
+func groupQuotes(group Group) []Quote {
+	if group.Raw == "" {
+		return nil
+	}
+	return []Quote{{Path: group.Source, Line: group.Line, Text: group.Raw}}
+}
+
+// grantQuotes cites the sudoers row a grant was read from.
+func grantQuotes(grant SudoGrant) []Quote {
+	if grant.Raw == "" {
+		return nil
+	}
+	return []Quote{{Path: grant.File, Line: grant.Line, Text: grant.Raw}}
+}
+
+// sshdQuotes cites the directive that redirected the authorized key search.
+func sshdQuotes(config SSHDConfig) []Quote {
+	if config.KeyRaw == "" {
+		return nil
+	}
+	return []Quote{{Path: config.KeyFile, Line: config.KeyLine, Text: config.KeyRaw}}
 }
 
 // identityFactors collects the independent root paths on one account.
@@ -97,6 +138,7 @@ func identityFactors(account Account, groups []Group, grants []SudoGrant, keys [
 	if account.UID == 0 && account.Name != "root" {
 		factors = append(factors, identityFactor{
 			class: "identity-uid0", text: "non-root account with uid 0", severity: Critical, path: account.Source,
+			quotes: accountQuotes(account),
 		})
 	}
 	if emptyPassword(account) {
@@ -106,6 +148,7 @@ func identityFactors(account Account, groups []Group, grants []SudoGrant, keys [
 		}
 		factors = append(factors, identityFactor{
 			class: "identity-empty-password", text: "empty password", severity: severity, path: "/etc/shadow",
+			quotes: shadowQuotes(account),
 		})
 	}
 	if passwordInPasswd(account.Password) {
@@ -117,6 +160,7 @@ func identityFactors(account Account, groups []Group, grants []SudoGrant, keys [
 	if account.System && account.Name != "root" && isLoginShell(account.Shell) {
 		factors = append(factors, identityFactor{
 			class: "identity-system-shell", text: "system account has a login shell", severity: Medium, path: account.Source,
+			quotes: accountQuotes(account),
 		})
 	}
 	for _, group := range accountGroups(account, groups) {
@@ -131,14 +175,14 @@ func identityFactors(account Account, groups []Group, grants []SudoGrant, keys [
 		}
 		factors = append(factors, identityFactor{
 			class: "identity-privileged-group", text: "member of privileged group " + group.Name,
-			severity: severity, path: "/etc/group",
+			severity: severity, path: "/etc/group", quotes: groupQuotes(group),
 		})
 	}
 	for _, grant := range grants {
 		if grant.NoPasswd && grantApplies(grant, account, groups) {
 			factors = append(factors, identityFactor{
 				class: "identity-sudo-nopasswd", text: "passwordless sudo " + grant.Command,
-				severity: High, path: grant.File,
+				severity: High, path: grant.File, quotes: grantQuotes(grant),
 			})
 			break
 		}
@@ -244,7 +288,7 @@ func judgeIdentity(snapshot *Snapshot, a *assessor, filter Filter, add func(Find
 			Title: "account holds multiple independent authority paths",
 			Path:  "/etc/passwd", Origin: Unknown, Reach: RootAsset,
 			Detail:   fmt.Sprintf("account %s: %d independent root paths", account.Name, len(factors)),
-			Evidence: evidence, Trace: trace,
+			Evidence: evidence, Quotes: accountQuotes(account), Trace: trace,
 		})
 	}
 	for _, account := range state.Accounts {
@@ -259,7 +303,7 @@ func judgeIdentity(snapshot *Snapshot, a *assessor, filter Filter, add func(Find
 				Class: factor.class, Severity: identitySeverity(snapshot, a, factor),
 				Title: factor.text, Path: factor.path, Origin: Unknown, Reach: RootAsset,
 				Detail: fmt.Sprintf("account %s", account.Name),
-				Trace:  steps("account "+account.Name, factor.text),
+				Quotes: factor.quotes, Trace: steps("account "+account.Name, factor.text),
 			})
 		}
 	}
@@ -286,6 +330,7 @@ func judgeIdentity(snapshot *Snapshot, a *assessor, filter Filter, add func(Find
 			Title: "passwordless sudo grant", Path: grant.File, Origin: Unknown, Reach: RootAsset,
 			Detail:   fmt.Sprintf("%s may run %s without a password", grant.User, grant.Command),
 			Evidence: []string{fmt.Sprintf("%s:%d host %s runas %s", grant.File, grant.Line, grant.Host, grant.RunAs)},
+			Quotes:   grantQuotes(grant),
 			Trace:    steps("sudoers "+grant.File, "grant "+grant.User, "command "+grant.Command),
 		})
 	}
@@ -300,6 +345,7 @@ func judgeIdentity(snapshot *Snapshot, a *assessor, filter Filter, add func(Find
 				Title: "group password set", Path: group.Source, Origin: Unknown, Reach: RootAsset,
 				Detail:   fmt.Sprintf("group %s can be entered with newgrp", group.Name),
 				Evidence: []string{"the group password field is not x, * or !"},
+				Quotes:   groupQuotes(group),
 				Trace:    steps("group "+group.Name, "password set"),
 			})
 		}
@@ -330,6 +376,7 @@ func judgeSSHD(state *IdentityState, filter Filter, add func(Finding)) []string 
 			Path:  sshPath, Origin: Unknown, Reach: RootAsset,
 			Detail:   "a redirected key file is a key-based backdoor surface",
 			Evidence: []string{"AuthorizedKeysFile " + strings.Join(state.SSHD.AuthorizedKeysFile, " ")},
+			Quotes:   sshdQuotes(state.SSHD),
 			Trace:    steps("sshd_config", "AuthorizedKeysFile", value),
 		})
 		break

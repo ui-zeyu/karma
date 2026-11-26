@@ -109,3 +109,54 @@ func TestDormantModuleName(t *testing.T) {
 		t.Errorf("module name lost")
 	}
 }
+
+func TestWebHeadQuotesTheScript(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shell.php")
+	body := "<?php\n\n// dropper\nsystem($_GET['c']);\nheader('x');\necho 1;\n?>\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	quotes := webHead(path)
+	if len(quotes) != 5 {
+		t.Fatalf("quotes = %+v, want five non-empty lines", quotes)
+	}
+	if quotes[0].Line != 1 || quotes[1].Line != 3 || quotes[2].Line != 4 || quotes[4].Line != 6 {
+		t.Errorf("line numbers = %d %d %d %d, want 1 3 4 6", quotes[0].Line, quotes[1].Line, quotes[2].Line, quotes[4].Line)
+	}
+	if quotes[1].Text != "// dropper" {
+		t.Errorf("second line = %q", quotes[1].Text)
+	}
+	long := filepath.Join(t.TempDir(), "long.php")
+	if err := os.WriteFile(long, []byte(strings.Repeat("a", 300)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	capped := webHead(long)
+	if len(capped) != 1 || len([]rune(capped[0].Text)) != 200 {
+		t.Errorf("a long line is %d runes, want 200", len([]rune(capped[0].Text)))
+	}
+}
+
+func TestWebScriptFindingCitesItsHead(t *testing.T) {
+	path := "/var/www/html/uploads/shell.php"
+	facts := pathFacts(path, 1200, 0o644, 33)
+	head := []Quote{{Path: path, Line: 1, Text: "<?php system($_GET['c']); ?>"}}
+	snapshot := &Snapshot{
+		Boundary: boundary(),
+		Objects:  map[string]trust.Facts{path: facts},
+		Web: WebState{
+			Roots: []string{"/var/www"},
+			Files: []WebFile{{Path: path, Root: "/var/www", Facts: facts, Head: head}},
+		},
+	}
+	report := Judge(snapshot, Filter{})
+	for _, finding := range report.Findings {
+		if finding.Class != "web-script" {
+			continue
+		}
+		if len(finding.Quotes) != 1 || finding.Quotes[0] != head[0] {
+			t.Errorf("quotes = %+v, want %+v", finding.Quotes, head)
+		}
+		return
+	}
+	t.Fatalf("findings = %+v, want web-script", report.Findings)
+}

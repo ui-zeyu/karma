@@ -29,6 +29,9 @@ func TestAnalyzeStatesTheEdgeAndBothEndsFacts(t *testing.T) {
 	if edge.Subject != Account("alice") || edge.Phase != BootStaged {
 		t.Errorf("account = %q phase = %s", edge.Subject, edge.Phase)
 	}
+	if edge.Source != "ExecStart=/opt/agent --sync" || edge.Line != 3 {
+		t.Errorf("source = %q line = %d", edge.Source, edge.Line)
+	}
 	if edge.TriggerFacts.Kind != trust.File || edge.TargetFacts.Kind != trust.File {
 		t.Errorf("facts = trigger %+v target %+v", edge.TriggerFacts, edge.TargetFacts)
 	}

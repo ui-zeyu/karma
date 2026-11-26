@@ -4,7 +4,7 @@ Read-only incident-response audit for Linux. Karma runs on the target host and
 answers one question: **what appeared after the artifact was built, and what
 authority can it reach?**
 
-The version is `0.44.0`.
+The version is `0.45.0`.
 
 ## Model
 
@@ -146,28 +146,29 @@ or excludes.
 
 ```text
  KARMA                                                          yuyy
-▌ 0.44.0                                    2026-11-25 19:25:48 +0800
+▌ 0.45.0                                    2026-11-25 19:25:48 +0800
 ▌  host      web-1                    distro    Ubuntu 24.04
 ▌  account   root (uid 0)             kernel    5.15.0
 ▌  source    local                    ledger    dpkg · 64 pkgs · 380 hash entries · 351 verified
 ▌  boundary  container start 2026-11-25 06:33:28
 ▌  judged    32 edges · 15 proc · 17 auth · 4 svc · 4 listen · 62 mod
-▌  severity ● critical  ● high  ● medium  ● low
+▌  findings  3 ·  2 critical  ·  1 high
 
-▌ CRITICAL  /etc/profile.d/vendor-runtime-loader.sh
+▌ CRITICAL  /etc/profile.d/vendor-runtime.sh
 ▌  runtime object in an activation surface
-▌  export VENDOR_RUNTIME_LOADER in /etc/profile.d/vendor-runtime-loader.sh activates
-▌  /var/lib/vendor/runtime/.attach-loader.sh
+▌  profile in /etc/profile.d/vendor-runtime.sh activates /var/lib/vendor/runtime/.attach-loader.sh
+▌  profile in /etc/profile.d/vendor-runtime.sh activates /var/lib/vendor/.login-loader.sh
 ▌  origin runtime · reach root
-▌  · chain  profile → /etc/profile.d/vendor-runtime-loader.sh → runtime
-▌  · trigger /etc/profile.d/vendor-runtime-loader.sh: runtime (created after the boundary)
-▌  · no package owns it; the nearest owned ancestor /etc belongs to base-files
+▌  · chain  profile → /etc/profile.d/vendor-runtime.sh → runtime
+▌  · trigger /etc/profile.d/vendor-runtime.sh: runtime (created after the boundary)
 ▌  · runs as root, reach root (profile)
+▌  · cite  /etc/profile.d/vendor-runtime.sh
+▌          1 │ export VENDOR_RUNTIME_LOADER=/var/lib/vendor/runtime/.attach-loader.sh
 
  EVIDENCE
 ▌ ACTIVATION                                             32
 ▌  SURFACE     REACH         AS          ORIGIN      TRIGGER
-▌  profile     login         login       runtime     /etc/profile.d/vendor-runtime-loader.sh:1
+▌  profile     login         login       runtime     /etc/profile.d/vendor-runtime.sh:1
 ▌      export VENDOR_RUNTIME_LOADER -> /var/lib/vendor/runtime/.attach-loader.sh
 ...
 ▌ SERVICE                                                12
@@ -175,6 +176,27 @@ or excludes.
 ▌ AUTHORITY                                              17
 ▌ MOUNTS                                                 24
 ```
+
+The masthead's `findings` line counts what the run found, one badge per
+severity present in the same ground, ink and weight as the panel head's badge,
+in the order the report ranks them (a quiet run says `findings  none`). The
+findings are ordered by severity, then object, then class, so one object's
+relations sit together. Panels group one object's same-title relations at one
+severity: the shared origin, chain and evidence lines print once, and each
+relation's detail prints in turn. Each panel reads top to bottom: the severity
+is a filled badge in its own hue beside the object, the bold title is the
+verdict, the plain details say what the object does, the origin line names the
+origin in its hue and the reach, the chain is the relation path, the evidence
+lines are the facts behind it, and the `cite` block quotes the source lines a
+reader can check: the trigger line, the passwd or sudoers row, the config
+directive, the webshell's head. The quoted text is the bright part; the file
+path, the line number and the `│` bar are quiet. Paths carry the information
+hue and an origin word keeps its temporal hue inside the detail, chain and
+evidence lines, so the object and the verdict stand out of the prose. A scoped
+run or a graph page closes each panel with `next`, the graph command that
+opens the object; a bare audit leaves it off, because the whole report already
+is the answer. Prose lines wrap at word boundaries with a two-column hanging
+indent, so a path or a timestamp is never cut down the middle.
 
 The evidence panels are the raw rows behind the findings: every activation edge,
 process, systemd service, listening socket, authority object, and mount in

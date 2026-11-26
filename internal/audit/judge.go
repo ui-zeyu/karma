@@ -491,16 +491,19 @@ func processInScope(process Process, filter Filter) bool {
 	return true
 }
 
+// sortFindings orders the report for reading: severity first, then the
+// object, then the class, so one object's relations stay together while
+// severity stays the primary axis.
 func sortFindings(findings []Finding) {
 	sort.SliceStable(findings, func(i, j int) bool {
 		left, right := findings[i], findings[j]
 		if left.Severity != right.Severity {
 			return left.Severity > right.Severity
 		}
-		if left.Class != right.Class {
-			return left.Class < right.Class
+		if left.Path != right.Path {
+			return left.Path < right.Path
 		}
-		return left.Path < right.Path
+		return left.Class < right.Class
 	})
 }
 

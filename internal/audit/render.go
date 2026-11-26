@@ -75,8 +75,9 @@ func Render(w io.Writer, report *Report, options RenderOptions) {
 			[]string{body}, width, mutedColor, options.Color))
 		fmt.Fprintln(w)
 	}
-	for _, finding := range report.Findings {
-		fmt.Fprintln(w, findingPanel(finding, options, width))
+	next := options.Filter.narrowed()
+	for _, group := range groupFindings(report.Findings) {
+		fmt.Fprintln(w, findingPanel(group, next, options, width))
 		fmt.Fprintln(w)
 	}
 	if options.Evidence && report.view != nil {
@@ -180,7 +181,9 @@ func renderMasthead(w io.Writer, report *Report, options RenderOptions, width in
 			report.Activated, report.Processes, report.Authority, len(report.Services), len(report.Sockets), modules), full: true},
 	)
 	body := factGrid(facts, width-2)
-	body = append(body, "severity "+severityLegend(options.Color))
+	// The counts line carries paint per chip, which factGrid's rune-based
+	// truncation would corrupt, so it joins the grid after it is laid out.
+	body = append(body, findingsFact(report.Findings, factLabelWidth(facts), options.Color))
 	fmt.Fprintln(w, rail(head, body, width, mutedColor, options.Color))
 	fmt.Fprintln(w)
 }
@@ -247,12 +250,7 @@ type fact struct {
 // factGrid lays two facts to a row while the line has room, one otherwise;
 // the label column is the longest label.
 func factGrid(facts []fact, width int) []string {
-	labelWidth := 0
-	for _, f := range facts {
-		if n := utf8.RuneCountInString(f.label); n > labelWidth {
-			labelWidth = n
-		}
-	}
+	labelWidth := factLabelWidth(facts)
 	column := (width - labelWidth - 4) / 2
 	if column < 16 {
 		column = 0
@@ -272,6 +270,16 @@ func factGrid(facts []fact, width int) []string {
 	return lines
 }
 
+func factLabelWidth(facts []fact) int {
+	labelWidth := 0
+	for _, f := range facts {
+		if n := utf8.RuneCountInString(f.label); n > labelWidth {
+			labelWidth = n
+		}
+	}
+	return labelWidth
+}
+
 func accountCell(host Host) string {
 	switch {
 	case host.UID == 0:
@@ -282,41 +290,224 @@ func accountCell(host Host) string {
 	return ""
 }
 
-func severityLegend(color bool) string {
-	var chips []string
-	for _, severity := range []Severity{Critical, High, Medium, Low} {
-		chips = append(chips, paintText(color, fg(severityColor(severity)), "● "+severity.String()))
+// findingsFact is the masthead's count line: every severity the run found,
+// in the order the report ranks them, each in the badge its panel head wears.
+func findingsFact(findings []Finding, labelWidth int, color bool) string {
+	line := fmt.Sprintf("%-*s  ", labelWidth, "findings")
+	if len(findings) == 0 {
+		return line + "none"
 	}
-	return strings.Join(chips, "  ")
+	counts := make(map[Severity]int, len(findings))
+	for _, finding := range findings {
+		counts[finding.Severity]++
+	}
+	chips := make([]string, 0, len(severityNames))
+	for _, severity := range []Severity{Critical, High, Medium, Low, Info} {
+		if counts[severity] == 0 {
+			continue
+		}
+		text := fmt.Sprintf(" %d %s ", counts[severity], severity)
+		chips = append(chips, paintText(color,
+			bg(severityColor(severity))+fg(badgeText(severity))+"\x1b[1m", text))
+	}
+	return line + fmt.Sprintf("%d · ", len(findings)) + strings.Join(chips, " · ")
 }
 
-func findingPanel(finding Finding, options RenderOptions, width int) string {
+// findingGroup is a maximal run of findings that describe one object at one
+// severity, class and title; one panel prints the run.
+type findingGroup []Finding
+
+func groupFindings(findings []Finding) []findingGroup {
+	return groupRuns(findings, func(left, right Finding) bool {
+		return left.Path != "" && left.Path == right.Path &&
+			left.Class == right.Class && left.Severity == right.Severity && left.Title == right.Title
+	})
+}
+
+// groupRuns folds the report's runs of like findings into panel groups.
+func groupRuns(findings []Finding, same func(left, right Finding) bool) []findingGroup {
+	var groups []findingGroup
+	for _, finding := range findings {
+		if n := len(groups); n > 0 && same(groups[n-1][0], finding) {
+			groups[n-1] = append(groups[n-1], finding)
+			continue
+		}
+		groups = append(groups, findingGroup{finding})
+	}
+	return groups
+}
+
+// findingPanel draws one group: the head names the object and its severity,
+// the body states the verdict, the relation and the facts behind it.
+func findingPanel(group findingGroup, next bool, options RenderOptions, width int) string {
+	finding := group[0]
 	head := findingHead(finding, width-2, options.Color)
-	body := []string{finding.Title}
-	if finding.Detail != "" {
-		body = append(body, finding.Detail)
+	var body []string
+	seen := make(map[string]bool, len(group))
+	add := func(line string) {
+		if line == "" || seen[line] {
+			return
+		}
+		seen[line] = true
+		body = append(body, chrome.WrapProse(line, width-4, 2)...)
 	}
-	body = append(body, paintText(options.Color, fg(mutedColor),
-		fmt.Sprintf("origin %s · reach %s", finding.Origin, finding.Reach)))
-	if chain := traceTexts(finding.Trace); len(chain) > 0 {
-		body = append(body, paintText(options.Color, fg(mutedColor),
-			"· chain  "+strings.Join(chain, " → ")))
+	add(paintText(options.Color, "\x1b[1m", finding.Title))
+	if len(group) == 1 {
+		add(highlightTokens(finding.Detail, 0, options.Color))
+	} else {
+		// A group states its relations once: identical details print once,
+		// and a member whose chain already carries the relation drops its
+		// per-relation sentence.
+		shared := group[0].Detail
+		for _, member := range group[1:] {
+			if member.Detail != shared {
+				shared = ""
+				break
+			}
+		}
+		add(highlightTokens(shared, 0, options.Color))
+		for _, member := range group {
+			if len(member.Trace) == 0 {
+				add(highlightTokens(member.Detail, 0, options.Color))
+			}
+		}
 	}
-	for _, line := range finding.Evidence {
-		body = append(body, paintText(options.Color, fg(mutedColor), "· "+line))
+	for _, member := range group {
+		add(paintText(options.Color, fg(mutedColor), "origin ") +
+			paintText(options.Color, fg(originHue(member.Origin)), member.Origin.String()) +
+			paintText(options.Color, fg(mutedColor), " · reach "+member.Reach.String()))
+	}
+	for _, line := range chainRows(group, options.Color) {
+		add(line)
+	}
+	for _, member := range group {
+		for _, line := range member.Evidence {
+			add(paintText(options.Color, fg(mutedColor), "· ") + highlightTokens(line, mutedColor, options.Color))
+		}
+	}
+	for _, line := range quoteRows(group, options.Color) {
+		add(line)
+	}
+	if next && finding.Path != "" {
+		add(paintText(options.Color, fg(mutedColor), "· next  ") + "karma graph path:" + finding.Path)
 	}
 	return rail(head, body, width, severityColor(finding.Severity), options.Color)
 }
 
-func findingHead(finding Finding, width int, color bool) string {
-	label := strings.ToUpper(finding.Severity.String())
-	plainLabel := " " + label
-	plainPath := "  " + finding.Path
-	plain := plainLabel + plainPath
-	if utf8.RuneCountInString(plain) > width {
-		plainPath = "  " + truncate(finding.Path, width-utf8.RuneCountInString(plainLabel)-2)
-		plain = plainLabel + plainPath
+// quoteRows renders a group's source lines as citation blocks: consecutive
+// quotes of one path share a header, and the line numbers hang under it.
+func quoteRows(group findingGroup, color bool) []string {
+	var quotes []Quote
+	seen := make(map[Quote]bool, len(group))
+	for _, member := range group {
+		for _, quote := range member.Quotes {
+			if quote.Path == "" || quote.Text == "" || seen[quote] {
+				continue
+			}
+			seen[quote] = true
+			quotes = append(quotes, quote)
+		}
 	}
+	var rows []string
+	for index := 0; index < len(quotes); {
+		quote := quotes[index]
+		head := paintText(color, fg(mutedColor), "· cite  ") + highlightTokens(quote.Path, 0, color)
+		if quote.Line == 0 {
+			rows = append(rows, head+"  "+highlightTokens(quote.Text, 0, color))
+			index++
+			continue
+		}
+		end := index + 1
+		for end < len(quotes) && quotes[end].Path == quote.Path && quotes[end].Line != 0 {
+			end++
+		}
+		rows = append(rows, head)
+		width := 0
+		for _, row := range quotes[index:end] {
+			width = max(width, len(strconv.Itoa(row.Line)))
+		}
+		indent := strings.Repeat(" ", utf8.RuneCountInString("· cite  "))
+		for _, row := range quotes[index:end] {
+			number := paintText(color, fg(mutedColor), fmt.Sprintf("%*d", width, row.Line))
+			rows = append(rows, indent+number+
+				paintText(color, fg(mutedColor), " │ ")+highlightTokens(row.Text, 0, color))
+		}
+		index = end
+	}
+	return rows
+}
+
+// chainRows renders a group's relation paths: when every chain leaves the
+// same root, the root prints once and the hops hang under it as a tree;
+// otherwise each chain stays a flat arrow line.
+func chainRows(group findingGroup, color bool) []string {
+	label := paintText(color, fg(mutedColor), "· chain  ")
+	var chains [][]string
+	seen := make(map[string]bool, len(group))
+	for _, member := range group {
+		steps := traceTexts(member.Trace)
+		if len(steps) == 0 {
+			continue
+		}
+		key := strings.Join(steps, "\x00")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		chains = append(chains, steps)
+	}
+	if len(chains) == 0 {
+		return nil
+	}
+	if len(chains) > 1 && sharedRoot(chains) {
+		rows := []string{label + highlightTokens(chains[0][0], 0, color)}
+		indent := strings.Repeat(" ", utf8.RuneCountInString("· chain  "))
+		var branches []string
+		for _, chain := range chains {
+			if rest := strings.Join(chain[1:], " → "); rest != "" {
+				branches = append(branches, highlightTokens(rest, 0, color))
+			}
+		}
+		for index, branch := range branches {
+			mark := "├─ "
+			if index == len(branches)-1 {
+				mark = "└─ "
+			}
+			rows = append(rows, indent+paintText(color, fg(mutedColor), mark)+branch)
+		}
+		return rows
+	}
+	rows := make([]string, 0, len(chains))
+	for _, chain := range chains {
+		steps := make([]string, len(chain))
+		for index, step := range chain {
+			steps[index] = highlightTokens(step, 0, color)
+		}
+		rows = append(rows, label+strings.Join(steps, paintText(color, fg(mutedColor), " → ")))
+	}
+	return rows
+}
+
+// sharedRoot reports whether every chain starts at the same step.
+func sharedRoot(chains [][]string) bool {
+	for _, chain := range chains[1:] {
+		if chain[0] != chains[0][0] {
+			return false
+		}
+	}
+	return true
+}
+
+// findingHead draws the severity as a filled badge beside the object it
+// judges. The badge carries the severity hue as a ground, so the worst
+// finding reads by shape before its color is compared.
+func findingHead(finding Finding, width int, color bool) string {
+	label := " " + strings.ToUpper(finding.Severity.String()) + " "
+	path := " " + finding.Path
+	if utf8.RuneCountInString(label+path) > width {
+		path = " " + truncate(finding.Path, width-utf8.RuneCountInString(label)-1)
+	}
+	plain := label + path
 	fill := width - utf8.RuneCountInString(plain)
 	if fill < 0 {
 		fill = 0
@@ -324,9 +515,19 @@ func findingHead(finding Finding, width int, color bool) string {
 	if !color {
 		return strings.TrimRight(plain+strings.Repeat(" ", fill), " ")
 	}
-	return fmt.Sprintf("%s%s%s\x1b[1m%s%s%s%s%s",
-		bg(subBandBG), fg(severityColor(finding.Severity)), plainLabel,
-		ansiReset, bg(subBandBG), fg(subBandFG), plainPath+strings.Repeat(" ", fill), ansiReset)
+	return bg(severityColor(finding.Severity)) + fg(badgeText(finding.Severity)) + "\x1b[1m" +
+		label + ansiReset +
+		bg(subBandBG) + fg(subBandFG) + path + strings.Repeat(" ", fill) + ansiReset
+}
+
+// badgeText is the ink the severity badge reads in: white on the deep ground
+// of critical and low, black on the bright high and medium grounds.
+func badgeText(severity Severity) int {
+	switch severity {
+	case Critical, Low:
+		return 15
+	}
+	return 0
 }
 
 // panel is one evidence section: a title, its rows, and the count the head
@@ -704,6 +905,82 @@ func mountTypeHue(fstype string) int {
 		return hueTransition
 	}
 	return 0
+}
+
+// highlightTokens paints the object and verdict tokens inside one prose
+// line: a path keeps the information hue and an origin word keeps its
+// temporal hue, while the sentence around them stays in base. An origin word
+// is recognised only where a parenthesized explanation follows it
+// ("runtime (created ...)"), the shape the judges write.
+func highlightTokens(text string, base int, color bool) string {
+	if !color || text == "" {
+		return text
+	}
+	paintBase := func(segment string) string {
+		if base == 0 {
+			return segment
+		}
+		return paintText(true, fg(base), segment)
+	}
+	var out strings.Builder
+	for index := 0; index < len(text); {
+		if text[index] == ' ' {
+			end := index
+			for end < len(text) && text[end] == ' ' {
+				end++
+			}
+			out.WriteString(paintBase(text[index:end]))
+			index = end
+			continue
+		}
+		end := index
+		for end < len(text) && text[end] != ' ' {
+			end++
+		}
+		token := text[index:end]
+		core, suffix := trimToken(token)
+		origin, known := originByName(core)
+		switch {
+		case strings.HasPrefix(core, "/") && len(core) > 1:
+			out.WriteString(paintText(true, fg(hueInformation), core))
+			out.WriteString(paintBase(suffix))
+		case known && parenFollows(text, end):
+			out.WriteString(paintText(true, fg(originHue(origin)), core))
+			out.WriteString(paintBase(suffix))
+		default:
+			out.WriteString(paintBase(token))
+		}
+		index = end
+	}
+	return out.String()
+}
+
+// trimToken splits the punctuation a prose token may carry after its core.
+func trimToken(token string) (core, suffix string) {
+	end := len(token)
+	for end > 0 && strings.ContainsRune(",.:;)", rune(token[end-1])) {
+		end--
+	}
+	return token[:end], token[end:]
+}
+
+// parenFollows reports whether the next non-space character opens the
+// explanation the origin slot carries.
+func parenFollows(text string, index int) bool {
+	for index < len(text) && text[index] == ' ' {
+		index++
+	}
+	return index < len(text) && text[index] == '('
+}
+
+// originByName reads an origin word back to its value.
+func originByName(name string) (Origin, bool) {
+	for index, candidate := range originNames {
+		if candidate == name {
+			return Origin(index), true
+		}
+	}
+	return Unknown, false
 }
 
 func padRight(text string, width int) string {

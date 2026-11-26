@@ -110,6 +110,9 @@ type KernelState struct {
 	LoaderConfig     []string     `json:"loader_config,omitempty"`
 	LoaderDirs       []LoaderDir  `json:"loader_dirs,omitempty"`
 	LoaderFiles      []LoaderFile `json:"-"`
+	// Sources are the first meaningful line of each loader or module
+	// declaration file, the quote a finding carries.
+	Sources map[string]Quote `json:"-"`
 }
 
 // moduleRow is one /proc/modules line before the file join.
@@ -563,6 +566,9 @@ func readModuleDeclarations(snapshot *Snapshot, facts func(string) trust.Facts) 
 		}
 		paths = append(paths, path)
 		remember(snapshot, path, facts(path))
+		if quote, ok := sourceQuote(path, data); ok {
+			quoteInto(&snapshot.Kernel, path, quote)
+		}
 		for _, row := range parseModuleDeclarations(string(data)) {
 			declared[row.Name] = append(declared[row.Name], fmt.Sprintf("%s:%d", path, row.Line))
 		}
@@ -614,6 +620,39 @@ func validModuleToken(name string) bool {
 		}
 	}
 	return true
+}
+
+// quoteInto stores one config source line, allocating the map on first use.
+func quoteInto(state *KernelState, path string, quote Quote) {
+	if state.Sources == nil {
+		state.Sources = map[string]Quote{}
+	}
+	state.Sources[path] = quote
+}
+
+// kernelQuotes cites the configuration line behind a loader or module-list
+// finding.
+func kernelQuotes(state *KernelState, path string) []Quote {
+	if quote, ok := state.Sources[path]; ok {
+		return []Quote{quote}
+	}
+	return nil
+}
+
+// sourceQuote reads the first meaningful line of a configuration file: the
+// first non-empty line outside a comment, within the first 4 KiB.
+func sourceQuote(path string, data []byte) (Quote, bool) {
+	if len(data) > 4<<10 {
+		data = data[:4<<10]
+	}
+	for index, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return Quote{Path: path, Line: index + 1, Text: line}, true
+	}
+	return Quote{}, false
 }
 
 // readCapped reads at most limit bytes of a file.
@@ -874,6 +913,9 @@ func collectLoader(ctx context.Context, state *KernelState, snapshot *Snapshot, 
 		visited[path] = true
 		state.LoaderConfig = append(state.LoaderConfig, path)
 		remember(snapshot, path, facts(path))
+		if quote, ok := sourceQuote(path, data); ok {
+			quoteInto(state, path, quote)
+		}
 		includes, parsedDirs := parseLdSoConf(string(data))
 		for _, pattern := range includes {
 			if !filepath.IsAbs(pattern) {
@@ -1211,12 +1253,14 @@ func judgeKernel(snapshot *Snapshot, a *assessor, filter Filter, add func(Findin
 			fmt.Sprintf("owner %d, mode %s", facts.Owner, facts.Mode.Perm()),
 		}
 		evidence = append(evidence, story.evidence...)
+		quotes := kernelQuotes(state, path)
 		if story.origin == Runtime || story.origin == Modified {
 			add(Finding{
 				Class: "loader-config", Severity: severityFor(story.origin, RootAsset),
 				Title: "dynamic loader search path changed after the artifact",
 				Path:  path, Origin: story.origin, Reach: RootAsset,
 				Detail: "every dynamic execution searches the directories this file names", Evidence: evidence,
+				Quotes: quotes,
 			})
 		}
 		if facts.Writable || facts.ParentOpen {
@@ -1225,6 +1269,7 @@ func judgeKernel(snapshot *Snapshot, a *assessor, filter Filter, add func(Findin
 				Title: "dynamic loader search path writable by someone other than its owner",
 				Path:  path, Origin: story.origin, Reach: RootAsset,
 				Detail: "a writer can add a directory every root process searches", Evidence: evidence,
+				Quotes: quotes,
 			})
 		}
 	}
@@ -1240,12 +1285,14 @@ func judgeKernel(snapshot *Snapshot, a *assessor, filter Filter, add func(Findin
 			fmt.Sprintf("owner %d, mode %s", facts.Owner, facts.Mode.Perm()),
 		}
 		evidence = append(evidence, story.evidence...)
+		quotes := kernelQuotes(state, path)
 		if story.origin == Runtime || story.origin == Modified {
 			add(Finding{
 				Class: "module-declaration", Severity: severityFor(story.origin, RootAsset),
 				Title: "boot module list changed after the artifact",
 				Path:  path, Origin: story.origin, Reach: RootAsset,
 				Detail: "the modules named here load at boot with kernel authority", Evidence: evidence,
+				Quotes: quotes,
 			})
 		}
 		if facts.Writable || facts.ParentWritable {
@@ -1254,6 +1301,7 @@ func judgeKernel(snapshot *Snapshot, a *assessor, filter Filter, add func(Findin
 				Title: "boot module list writable by someone other than its owner",
 				Path:  path, Origin: story.origin, Reach: RootAsset,
 				Detail: "a writer can choose a module the next boot loads as root", Evidence: evidence,
+				Quotes: quotes,
 			})
 		}
 	}

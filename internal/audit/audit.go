@@ -297,6 +297,14 @@ func (s *Snapshot) ensureFacts(paths []string) {
 	}
 }
 
+// Quote is one source line a finding rests on: the file, its 1-based
+// line, and the text as read.
+type Quote struct {
+	Path string `json:"path"`
+	Line int    `json:"line,omitempty"`
+	Text string `json:"text"`
+}
+
 // Finding is one judged relation. Path is the object the operator should look
 // at; Detail names what it activates or what activates it.
 type Finding struct {
@@ -311,6 +319,9 @@ type Finding struct {
 	Reach    Reach
 	Detail   string
 	Evidence []string
+	// Quotes are the source lines behind the finding: the file text a
+	// reader can check, not a restatement of the evidence.
+	Quotes []Quote
 	// Trace is the relation path that produced the finding: account deploy →
 	// group docker → sudo NOPASSWD. Each step can name the graph node it
 	// speaks for, so a finding and a graph cannot drift apart.
@@ -410,6 +421,13 @@ type Filter struct {
 	// OffDomains names the bounded domains this run did not judge, so the
 	// report can say what its quiet covers.
 	OffDomains []string
+}
+
+// narrowed reports whether the filter selects less than the whole bounded
+// host: a scope word, a path, pid, unit or a domain left unjudged.
+func (f Filter) narrowed() bool {
+	return f.Surfaces != nil || len(f.Paths)+len(f.ExcludePaths)+len(f.PIDs)+len(f.Units) > 0 ||
+		len(f.OffDomains) > 0
 }
 
 // Progress reports the collection stage a run entered. The stage words are

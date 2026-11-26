@@ -16,6 +16,14 @@ import (
 	"karma/internal/trust"
 )
 
+// edgeQuotes cites the trigger line the activation edge was read from.
+func edgeQuotes(edge startup.Edge) []Quote {
+	if edge.Source == "" {
+		return nil
+	}
+	return []Quote{{Path: edge.Trigger, Line: edge.Line, Text: edge.Source}}
+}
+
 // judgeActivations states every activation edge the filter selects: an
 // introduced or modified end, a writable end, or an executable target no
 // package owns.
@@ -47,13 +55,13 @@ func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Fi
 				add(Finding{
 					Class: "activation-context", Severity: severity,
 					Title: "a unit's declared write access plants files",
-					Path:  edge.Target, Origin: a.read(edge.TargetFacts, false).origin, Reach: reach,
+					Path:  edge.Trigger, Origin: a.read(edge.TriggerFacts, false).origin, Reach: reach,
 					Detail: fmt.Sprintf("%s in %s writes %s", edge.Mechanism, edge.Trigger, edge.Target),
 					Evidence: []string{
 						fmt.Sprintf("declared by %s (%s)", edge.Trigger, edge.Phase),
 						fmt.Sprintf("runs as %s, reach %s", edge.Subject, reach),
 					},
-					Trace: edgeTrace(edge),
+					Quotes: edgeQuotes(edge), Trace: edgeTrace(edge),
 				})
 			}
 			continue
@@ -86,7 +94,7 @@ func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Fi
 				Evidence: append(evidence,
 					"row: "+edge.Note,
 					"the tree's code arrives from another host at every boot"),
-				Trace: edgeTrace(edge),
+				Quotes: edgeQuotes(edge), Trace: edgeTrace(edge),
 			})
 		case origin == Runtime || origin == Modified:
 			if triggerStory.origin.Rank() <= targetStory.origin.Rank() {
@@ -106,14 +114,14 @@ func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Fi
 			add(Finding{
 				Class: class, Severity: severity, Title: titleFor(class),
 				Path: path, Origin: origin, Reach: reach, Detail: detail, Evidence: evidence,
-				Trace: edgeTrace(edge),
+				Quotes: edgeQuotes(edge), Trace: edgeTrace(edge),
 			})
 		case writableEdge(edge):
 			add(Finding{
 				Class: "activation-writable", Severity: writableSeverity(reach),
 				Title: "activation surface writable by someone other than its owner",
 				Path:  edge.Trigger, Origin: triggerStory.origin, Reach: reach, Detail: detail, Evidence: evidence,
-				Trace: edgeTrace(edge),
+				Quotes: edgeQuotes(edge), Trace: edgeTrace(edge),
 			})
 		case unownedTarget(edge):
 			severity := unownedSeverity(reach)
@@ -128,7 +136,7 @@ func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Fi
 				Class: "unowned-target", Severity: severity,
 				Title: "activation target no package owns",
 				Path:  edge.Target, Origin: targetStory.origin, Reach: reach, Detail: detail, Evidence: evidence,
-				Trace: edgeTrace(edge),
+				Quotes: edgeQuotes(edge), Trace: edgeTrace(edge),
 			})
 		}
 	}

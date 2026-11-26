@@ -147,11 +147,14 @@ type Mechanism string
 // structure; the facts on both ends let the judge answer what the relation
 // means without parsing a name.
 type Edge struct {
-	Surface   Surface   `json:"surface"`
-	Phase     Phase     `json:"phase"`
-	Subject   Subject   `json:"subject"`
-	Trigger   string    `json:"trigger"`
-	Line      int       `json:"line,omitempty"`
+	Surface Surface `json:"surface"`
+	Phase   Phase   `json:"phase"`
+	Subject Subject `json:"subject"`
+	Trigger string  `json:"trigger"`
+	Line    int     `json:"line,omitempty"`
+	// Source is the raw trigger line the edge was read from, trimmed: the
+	// quote a finding can carry.
+	Source    string    `json:"source,omitempty"`
 	Mechanism Mechanism `json:"mechanism,omitempty"`
 	Target    string    `json:"target,omitempty"`
 	Kind      Kind      `json:"kind"`

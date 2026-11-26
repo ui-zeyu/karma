@@ -21,6 +21,9 @@ type WebFile struct {
 	Path  string
 	Root  string
 	Facts trust.Facts
+	// Head is the first lines of the script, the source a webshell is read
+	// by.
+	Head []Quote
 }
 
 // WebState is the web-root provenance graph.
@@ -84,7 +87,7 @@ func collectWeb(ctx context.Context, snapshot *Snapshot, facts func(string) trus
 			if !webScript(path, entry) {
 				return nil
 			}
-			state.Files = append(state.Files, WebFile{Path: path, Root: root})
+			state.Files = append(state.Files, WebFile{Path: path, Root: root, Head: webHead(path)})
 			return nil
 		})
 		if err != nil {
@@ -105,6 +108,27 @@ func collectWeb(ctx context.Context, snapshot *Snapshot, facts func(string) trus
 	}
 	sort.Slice(state.Files, func(i, j int) bool { return state.Files[i].Path < state.Files[j].Path })
 	return gaps
+}
+
+// webHead reads a script's first five non-empty lines, 1-based, each
+// capped so one long line cannot flood the report.
+func webHead(path string) []Quote {
+	data, err := readCapped(path, 1<<10)
+	if err != nil {
+		return nil
+	}
+	var quotes []Quote
+	for index, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		quotes = append(quotes, Quote{Path: path, Line: index + 1, Text: truncate(line, 200)})
+		if len(quotes) == 5 {
+			break
+		}
+	}
+	return quotes
 }
 
 func webScript(path string, entry fs.DirEntry) bool {
@@ -155,8 +179,8 @@ func judgeWeb(snapshot *Snapshot, a *assessor, filter Filter, add func(Finding))
 			Title: "web-root script introduced after the artifact",
 			Path:  file.Path, Origin: story.origin, Reach: ServiceAsset,
 			Detail:   "the web server executes this tree",
-			Evidence: evidence,
-			Trace:    steps("web root "+file.Root, file.Path, story.origin.String()),
+			Evidence: evidence, Quotes: file.Head,
+			Trace: steps("web root "+file.Root, file.Path, story.origin.String()),
 		})
 	}
 	return coverage

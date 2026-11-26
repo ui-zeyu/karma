@@ -99,6 +99,48 @@ func Wrap(text string, width int) []string {
 	return wrapWords(runes, width)
 }
 
+// WrapProse wraps a prose line at word boundaries, indenting every
+// continuation line by hang columns. A token wider than the line is hard-cut
+// like Wrap's fallback; painted lines re-open their SGR state per line.
+func WrapProse(text string, width, hang int) []string {
+	if width < 8 {
+		width = 8
+	}
+	if DisplayWidth(text) <= width {
+		return []string{text}
+	}
+	runes := styledRunes(text)
+	var lines []string
+	first := true
+	for len(runes) > 0 {
+		budget, prefix := width, ""
+		if !first {
+			budget = width - hang
+			if budget < 1 {
+				budget = 1
+			}
+			prefix = strings.Repeat(" ", hang)
+		}
+		if len(runes) <= budget {
+			return append(lines, prefix+renderStyled(runes))
+		}
+		cut := budget
+		for index := budget; index > 0; index-- {
+			if runes[index].r == ' ' {
+				cut = index
+				break
+			}
+		}
+		lines = append(lines, prefix+renderStyled(runes[:cut]))
+		runes = runes[cut:]
+		for len(runes) > 0 && runes[0].r == ' ' {
+			runes = runes[1:]
+		}
+		first = false
+	}
+	return lines
+}
+
 // styledRune is one visible rune and the SGR state it is printed under: the
 // sequences open at that point, which a wrapped continuation line re-emits.
 type styledRune struct {
