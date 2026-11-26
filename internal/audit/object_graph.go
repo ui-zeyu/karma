@@ -1,10 +1,10 @@
 package audit
 
-// The profile is one object's relation graph: what the unit, process or file
-// declares, what the kernel observes, what its package owns, what sits in its
-// installation tree, and which paths its content mentions. Edges carry the
-// source that produced them and a confidence, so a kernel observation and a
-// lexical lead do not read alike.
+// An object graph is one object's relation graph: what the unit, process or
+// file declares, what the kernel observes, what its package owns, what sits
+// in its installation tree, and which paths its content mentions. Edges
+// carry the source that produced them and a confidence, so a kernel
+// observation and a lexical lead do not read alike.
 
 import (
 	"archive/zip"
@@ -25,29 +25,76 @@ import (
 )
 
 const (
-	profileMaxDepth   = 3
-	profileMaxNodes   = 2000
-	profileMaxFiles   = 200
-	profileMaxLexical = 40
-	profileTextBytes  = 2 << 20
-	profileBinBytes   = 8 << 20
+	objectMaxDepth   = 3
+	objectMaxNodes   = 2000
+	objectMaxFiles   = 200
+	objectMaxLexical = 40
+	objectTextBytes  = 2 << 20
+	objectBinBytes   = 8 << 20
 )
 
-// Profile is one object's evidence graph.
-type Profile struct {
-	Root     string        `json:"root"`
-	RootKind string        `json:"root_kind"`
-	Boundary Boundary      `json:"-"`
-	Nodes    []ProfileNode `json:"nodes"`
-	Edges    []ProfileEdge `json:"edges"`
-	Findings []Finding     `json:"findings"`
-	Coverage []string      `json:"coverage,omitempty"`
+// ParseGraphSeed reads an object selector: an explicit unit:/pid:/path:/pkg:
+// prefix, an absolute path, a bare pid, a unit name, or a package name. A
+// bare word names a unit when the services list carries it, a package
+// otherwise; the syntax check runs before the collection, so a mistyped
+// selector fails in milliseconds rather than after the budget.
+func ParseGraphSeed(word string) (GraphSeed, error) {
+	word = strings.TrimSpace(word)
+	kind, value := "", word
+	switch {
+	case strings.HasPrefix(word, "unit:"):
+		kind, value = "unit", strings.TrimPrefix(word, "unit:")
+	case strings.HasPrefix(word, "pid:"):
+		kind, value = "pid", strings.TrimPrefix(word, "pid:")
+	case strings.HasPrefix(word, "path:"):
+		kind, value = "path", strings.TrimPrefix(word, "path:")
+	case strings.HasPrefix(word, "pkg:"):
+		kind, value = "package", strings.TrimPrefix(word, "pkg:")
+	case strings.HasPrefix(word, "/"):
+		kind = "path"
+	case isDigits(word):
+		kind = "pid"
+	case hasUnitName(word):
+		kind = "unit"
+	default:
+		kind = "package"
+	}
+	switch kind {
+	case "unit":
+		if value == "" {
+			return GraphSeed{}, fmt.Errorf("graph: empty unit name")
+		}
+	case "pid":
+		if _, err := strconv.Atoi(value); err != nil {
+			return GraphSeed{}, fmt.Errorf("graph: %q is not a pid", value)
+		}
+	case "path":
+		if !filepath.IsAbs(value) {
+			return GraphSeed{}, fmt.Errorf("graph: %q is not an absolute path", value)
+		}
+	case "package":
+		if value == "" {
+			return GraphSeed{}, fmt.Errorf("graph: empty package name")
+		}
+	}
+	return GraphSeed{Kind: kind, Value: value}, nil
 }
 
-// ProfileNode is one object in the graph. Origin and Reach are the same
+// GraphView is one object's evidence graph.
+type GraphView struct {
+	Root     string      `json:"root"`
+	RootKind string      `json:"root_kind"`
+	Boundary Boundary    `json:"-"`
+	Nodes    []GraphNode `json:"nodes"`
+	Edges    []GraphEdge `json:"edges"`
+	Findings []Finding   `json:"findings"`
+	Coverage []string    `json:"coverage,omitempty"`
+}
+
+// GraphNode is one object in the graph. Origin and Reach are the same
 // evidence the report uses; Missing marks a path an edge named that the disk
 // does not carry.
-type ProfileNode struct {
+type GraphNode struct {
 	ID         string   `json:"id"`
 	Kind       string   `json:"kind"`
 	Name       string   `json:"name"`
@@ -67,9 +114,9 @@ type ProfileNode struct {
 	depth  int
 }
 
-// ProfileEdge is one relation. Source is kernel, unit, package, tree, shell,
+// GraphEdge is one relation. Source is kernel, unit, package, tree, shell,
 // elf, jar, cmdline or lexical; Confidence is high, medium or low.
-type ProfileEdge struct {
+type GraphEdge struct {
 	From       string `json:"from"`
 	To         string `json:"to"`
 	Kind       string `json:"kind"`
@@ -78,11 +125,11 @@ type ProfileEdge struct {
 	Note       string `json:"note,omitempty"`
 }
 
-type profileBuilder struct {
+type graphBuilder struct {
 	ctx         context.Context
 	snapshot    *Snapshot
 	assessor    *assessor
-	graph       *Graph
+	graph       *GraphBuilder
 	queue       []string
 	expanded    map[string]bool
 	processes   map[int]Process
@@ -98,32 +145,34 @@ type profileBuilder struct {
 	minSeverity Severity
 }
 
-// BuildProfile reads selector and walks its relation closure over snapshot.
-func BuildProfile(ctx context.Context, snapshot *Snapshot, word string, minSeverity Severity) (*Profile, error) {
+// BuildObjectGraph walks one object's relation closure over the snapshot.
+// The seed arrives parsed, so a mistyped selector fails before the run
+// collects anything; the builder only answers whether the object is visible.
+func BuildObjectGraph(ctx context.Context, snapshot *Snapshot, seed GraphSeed, minSeverity Severity) (*GraphView, error) {
 	if snapshot == nil {
-		return nil, fmt.Errorf("profile: no snapshot")
+		return nil, fmt.Errorf("graph: no snapshot")
 	}
-	b := &profileBuilder{
+	b := &graphBuilder{
 		ctx: ctx, snapshot: snapshot, assessor: newAssessor(snapshot),
-		graph:    &Graph{nodes: map[string]*ProfileNode{}, edgeSeen: map[string]bool{}},
+		graph:    &GraphBuilder{nodes: map[string]*GraphNode{}, edgeSeen: map[string]bool{}},
 		expanded: map[string]bool{}, processes: map[int]Process{},
-		trees: map[string]bool{}, budget: profileMaxNodes, minSeverity: minSeverity,
+		trees: map[string]bool{}, budget: objectMaxNodes, minSeverity: minSeverity,
 	}
 	for _, process := range snapshot.Processes {
 		b.processes[process.PID] = process
 	}
-	root, err := b.seed(word)
+	root, err := b.seed(seed)
 	if err != nil {
 		return nil, err
 	}
 	b.queue = append(b.queue, root)
 	for len(b.queue) > 0 {
 		if err := ctx.Err(); err != nil {
-			b.coverage = append(b.coverage, "profile stopped: "+err.Error())
+			b.coverage = append(b.coverage, "graph stopped: "+err.Error())
 			break
 		}
 		if b.budget == 0 {
-			b.coverage = append(b.coverage, "profile stopped at its node budget")
+			b.coverage = append(b.coverage, "graph stopped at its node budget")
 			break
 		}
 		id := b.queue[0]
@@ -133,51 +182,27 @@ func BuildProfile(ctx context.Context, snapshot *Snapshot, word string, minSever
 	return b.finish(root), nil
 }
 
-func (b *profileBuilder) seed(word string) (string, error) {
-	word = strings.TrimSpace(word)
-	kind, value := "", word
-	switch {
-	case strings.HasPrefix(word, "unit:"):
-		kind, value = "unit", strings.TrimPrefix(word, "unit:")
-	case strings.HasPrefix(word, "pid:"):
-		kind, value = "pid", strings.TrimPrefix(word, "pid:")
-	case strings.HasPrefix(word, "path:"):
-		kind, value = "path", strings.TrimPrefix(word, "path:")
-	case strings.HasPrefix(word, "pkg:"):
-		kind, value = "package", strings.TrimPrefix(word, "pkg:")
-	case strings.HasPrefix(word, "/"):
-		kind = "path"
-	case isDigits(word):
-		kind = "pid"
-	case hasUnitName(value):
-		kind = "unit"
-	}
-	switch kind {
+func (b *graphBuilder) seed(seed GraphSeed) (string, error) {
+	switch seed.Kind {
 	case "unit":
-		if value == "" {
-			return "", fmt.Errorf("profile: empty unit name")
-		}
-		node := b.addUnit(value, 0)
+		node := b.addUnit(seed.Value, 0)
 		node.Selected = true
 		b.enqueue(node.ID)
 		return node.ID, nil
 	case "pid":
-		pid, err := strconv.Atoi(value)
+		pid, err := strconv.Atoi(seed.Value)
 		if err != nil {
-			return "", fmt.Errorf("profile: %q is not a pid", value)
+			return "", fmt.Errorf("graph: %q is not a pid", seed.Value)
 		}
 		if _, ok := b.processes[pid]; !ok {
-			return "", fmt.Errorf("profile: process %d is not visible", pid)
+			return "", fmt.Errorf("graph: process %d is not visible", pid)
 		}
 		node := b.addProcess(pid, 0)
 		node.Selected = true
 		b.enqueue(node.ID)
 		return node.ID, nil
 	case "path":
-		if !filepath.IsAbs(value) {
-			return "", fmt.Errorf("profile: %q is not an absolute path", value)
-		}
-		node := b.addFile(filepath.Clean(value), 0)
+		node := b.addFile(filepath.Clean(seed.Value), 0)
 		node.Selected = true
 		// A path seed reads the units/scripts that name it; a unit itself is
 		// expanded forward, so its shared targets do not pull in every unit
@@ -186,27 +211,21 @@ func (b *profileBuilder) seed(word string) (string, error) {
 		b.enqueue(node.ID)
 		return node.ID, nil
 	case "package":
-		if value == "" {
-			return "", fmt.Errorf("profile: empty package name")
+		// A bare word can still be a unit in the services list.
+		for _, service := range b.snapshot.Services {
+			if service.Unit == seed.Value {
+				node := b.addUnit(seed.Value, 0)
+				node.Selected = true
+				b.enqueue(node.ID)
+				return node.ID, nil
+			}
 		}
-		node := b.addPackage(value, 0)
+		node := b.addPackage(seed.Value, 0)
 		node.Selected = true
 		b.enqueue(node.ID)
 		return node.ID, nil
 	}
-	// A bare word can still be a package or a unit in the services list.
-	for _, service := range b.snapshot.Services {
-		if service.Unit == value {
-			node := b.addUnit(value, 0)
-			node.Selected = true
-			b.enqueue(node.ID)
-			return node.ID, nil
-		}
-	}
-	node := b.addPackage(value, 0)
-	node.Selected = true
-	b.enqueue(node.ID)
-	return node.ID, nil
+	return "", fmt.Errorf("graph: unknown selector kind %q", seed.Kind)
 }
 
 func isDigits(word string) bool {
@@ -233,16 +252,16 @@ func hasUnitName(name string) bool {
 
 // rootNodeKind reads the root node's kind; a graph without its root falls
 // back to the selector's own word.
-func rootNodeKind(graph *Graph, root string) string {
+func rootNodeKind(graph *GraphBuilder, root string) string {
 	if node := graph.node(root); node != nil {
 		return node.Kind
 	}
 	return ""
 }
 
-func (b *profileBuilder) finish(root string) *Profile {
-	profile := b.graph.Profile(rootNodeKind(b.graph, root), b.snapshot)
-	profile.Findings = b.localFindings()
+func (b *graphBuilder) finish(root string) *GraphView {
+	view := b.graph.GraphView(rootNodeKind(b.graph, root), b.snapshot)
+	view.Findings = b.localFindings()
 	if b.skippedFD > 0 {
 		b.coverage = append(b.coverage, fmt.Sprintf("%d open file(s) skipped as package-owned base context", b.skippedFD))
 	}
@@ -255,14 +274,14 @@ func (b *profileBuilder) finish(root string) *Profile {
 	if b.dynamic > 0 {
 		b.coverage = append(b.coverage, fmt.Sprintf("%d reference(s) were dynamic and could not be resolved statically", b.dynamic))
 	}
-	profile.Coverage = uniqueStrings(b.coverage)
-	return profile
+	view.Coverage = uniqueStrings(b.coverage)
+	return view
 }
 
-func (b *profileBuilder) localFindings() []Finding {
+func (b *graphBuilder) localFindings() []Finding {
 	report := Judge(b.snapshot, Filter{MinSeverity: b.minSeverity})
 	paths := map[string]bool{}
-	b.graph.each(func(node *ProfileNode) {
+	b.graph.each(func(node *GraphNode) {
 		if node.Path != "" {
 			paths[node.Path] = true
 		}
@@ -310,7 +329,7 @@ func (b *profileBuilder) localFindings() []Finding {
 		}
 		evidence := append([]string{
 			"no package's file list records this path",
-			"the file was selected or discovered by the profile",
+			"the file was selected or discovered by the graph",
 		}, node.Evidence...)
 		out = append(out, Finding{
 			Class: "unowned-file", Domain: DomainFiles, Severity: severity, Origin: node.origin, Reach: reach,
@@ -331,24 +350,24 @@ func (b *profileBuilder) localFindings() []Finding {
 }
 
 // addNode registers one node and keeps insertion order for the tree.
-func (b *profileBuilder) addNode(node *ProfileNode) *ProfileNode {
+func (b *graphBuilder) addNode(node *GraphNode) *GraphNode {
 	b.graph.add(node)
 	return b.graph.node(node.ID)
 }
 
-func (b *profileBuilder) addEdge(from, to, kind, source, confidence, note string) {
+func (b *graphBuilder) addEdge(from, to, kind, source, confidence, note string) {
 	b.graph.link(from, to, kind, source, confidence, note)
 }
 
-func (b *profileBuilder) enqueue(id string) {
+func (b *graphBuilder) enqueue(id string) {
 	node := b.graph.node(id)
-	if node == nil || node.depth > profileMaxDepth || b.expanded[id] {
+	if node == nil || node.depth > objectMaxDepth || b.expanded[id] {
 		return
 	}
 	b.queue = append(b.queue, id)
 }
 
-func (b *profileBuilder) expand(id string) {
+func (b *graphBuilder) expand(id string) {
 	if b.expanded[id] {
 		return
 	}
@@ -370,9 +389,9 @@ func (b *profileBuilder) expand(id string) {
 	}
 }
 
-func (b *profileBuilder) addFile(path string, depth int) *ProfileNode {
+func (b *graphBuilder) addFile(path string, depth int) *GraphNode {
 	if path == "" || !filepath.IsAbs(path) {
-		return &ProfileNode{ID: "file:" + path, Kind: "file", Name: path}
+		return &GraphNode{ID: "file:" + path, Kind: "file", Name: path}
 	}
 	id := "file:" + path
 	if node := b.graph.node(id); node != nil {
@@ -381,7 +400,7 @@ func (b *profileBuilder) addFile(path string, depth int) *ProfileNode {
 	b.snapshot.ensureFacts([]string{path})
 	facts := b.snapshot.Facts(path)
 	story := b.assessor.read(facts, false)
-	node := &ProfileNode{
+	node := &GraphNode{
 		ID: id, Kind: "file", Name: filepath.Base(path), Path: path,
 		Origin: story.origin.String(), origin: story.origin,
 		Detail: story.why, Evidence: story.evidence, depth: depth,
@@ -423,10 +442,10 @@ func (b *profileBuilder) addFile(path string, depth int) *ProfileNode {
 	return b.addNode(node)
 }
 
-// nearestOwner names the closest ancestor a package owns. The profile reads
+// nearestOwner names the closest ancestor a package owns. The graph reads
 // ancestors the collection did not judge, so the orphan still carries the tree
 // it sits in as evidence.
-func (b *profileBuilder) nearestOwner(path string) (pkg, dir string, shared, ok bool) {
+func (b *graphBuilder) nearestOwner(path string) (pkg, dir string, shared, ok bool) {
 	var dirs []string
 	for dir = filepath.Dir(path); dir != "/" && dir != "."; dir = filepath.Dir(dir) {
 		dirs = append(dirs, dir)
@@ -444,14 +463,14 @@ func (b *profileBuilder) nearestOwner(path string) (pkg, dir string, shared, ok 
 	return "", "", false, false
 }
 
-func (b *profileBuilder) addProcess(pid, depth int) *ProfileNode {
+func (b *graphBuilder) addProcess(pid, depth int) *GraphNode {
 	id := "process:" + strconv.Itoa(pid)
 	if node := b.graph.node(id); node != nil {
 		return node
 	}
 	process, ok := b.processes[pid]
 	if !ok {
-		return b.addNode(&ProfileNode{
+		return b.addNode(&GraphNode{
 			ID: id, Kind: "process", Name: strconv.Itoa(pid), depth: depth,
 			Detail: "process not visible", Missing: true, Discovered: depth > 0,
 		})
@@ -469,7 +488,7 @@ func (b *profileBuilder) addProcess(pid, depth int) *ProfileNode {
 	if process.Cwd != "" && process.Cwd != "/" {
 		context = append(context, "cwd "+process.Cwd)
 	}
-	node := &ProfileNode{
+	node := &GraphNode{
 		ID: id, Kind: "process", Name: process.Comm, Path: process.Exe,
 		Origin: origin.String(), origin: origin, Reach: reach.String(), reach: reach,
 		Detail:   fmt.Sprintf("pid %d uid %d %s", process.PID, process.UID, process.Cmdline),
@@ -479,12 +498,12 @@ func (b *profileBuilder) addProcess(pid, depth int) *ProfileNode {
 	return b.addNode(node)
 }
 
-func (b *profileBuilder) addUnit(name string, depth int) *ProfileNode {
+func (b *graphBuilder) addUnit(name string, depth int) *GraphNode {
 	id := "unit:" + name
 	if node := b.graph.node(id); node != nil {
 		return node
 	}
-	node := &ProfileNode{ID: id, Kind: "unit", Name: name, depth: depth, Discovered: depth > 0}
+	node := &GraphNode{ID: id, Kind: "unit", Name: name, depth: depth, Discovered: depth > 0}
 	if service, ok := b.service(name); ok {
 		node.Detail = service.Load + " " + service.Active + " " + service.Sub
 		if service.Description != "" {
@@ -496,21 +515,21 @@ func (b *profileBuilder) addUnit(name string, depth int) *ProfileNode {
 	return b.addNode(node)
 }
 
-func (b *profileBuilder) addPackage(name string, depth int) *ProfileNode {
+func (b *graphBuilder) addPackage(name string, depth int) *GraphNode {
 	id := "package:" + name
 	if node := b.graph.node(id); node != nil {
 		return node
 	}
-	node := &ProfileNode{ID: id, Kind: "package", Name: name, depth: depth, Discovered: depth > 0}
+	node := &GraphNode{ID: id, Kind: "package", Name: name, depth: depth, Discovered: depth > 0}
 	if stamp, ok := b.snapshot.PackageTimes[name]; ok {
 		node.Detail = "last transaction " + stamp.Format(stampLayout)
 	}
 	return b.addNode(node)
 }
 
-func (b *profileBuilder) addDir(path string, depth int) *ProfileNode {
+func (b *graphBuilder) addDir(path string, depth int) *GraphNode {
 	if path == "" {
-		return &ProfileNode{ID: "dir:" + path, Kind: "dir", Name: path}
+		return &GraphNode{ID: "dir:" + path, Kind: "dir", Name: path}
 	}
 	id := "dir:" + path
 	if node := b.graph.node(id); node != nil {
@@ -519,7 +538,7 @@ func (b *profileBuilder) addDir(path string, depth int) *ProfileNode {
 	b.snapshot.ensureFacts([]string{path})
 	facts := b.snapshot.Facts(path)
 	story := b.assessor.read(facts, false)
-	return b.addNode(&ProfileNode{
+	return b.addNode(&GraphNode{
 		ID: id, Kind: "dir", Name: filepath.Base(path), Path: path,
 		Origin: story.origin.String(), origin: story.origin,
 		Detail: story.why, Evidence: story.evidence, Context: true,
@@ -527,30 +546,30 @@ func (b *profileBuilder) addDir(path string, depth int) *ProfileNode {
 	})
 }
 
-func (b *profileBuilder) addPeer(peer string, depth int) *ProfileNode {
+func (b *graphBuilder) addPeer(peer string, depth int) *GraphNode {
 	id := "peer:" + peer
 	if node := b.graph.node(id); node != nil {
 		return node
 	}
-	return b.addNode(&ProfileNode{
+	return b.addNode(&GraphNode{
 		ID: id, Kind: "peer", Name: peer, Detail: "established peer",
 		Context: true, depth: depth, Discovered: depth > 0,
 	})
 }
 
-func (b *profileBuilder) addSocket(socket Socket, depth int) *ProfileNode {
+func (b *graphBuilder) addSocket(socket Socket, depth int) *GraphNode {
 	id := "socket:" + socket.Proto + ":" + socket.Local + ":" + strconv.Itoa(socket.PID)
 	if node := b.graph.node(id); node != nil {
 		return node
 	}
-	return b.addNode(&ProfileNode{
+	return b.addNode(&GraphNode{
 		ID: id, Kind: "socket", Name: socket.Local,
 		Detail: socket.Proto + " " + socket.State + " pid " + strconv.Itoa(socket.PID),
 		depth:  depth, Discovered: depth > 0,
 	})
 }
 
-func (b *profileBuilder) service(name string) (Service, bool) {
+func (b *graphBuilder) service(name string) (Service, bool) {
 	for _, service := range b.snapshot.Services {
 		if service.Unit == name || templateUnit(service.Unit) == name {
 			return service, true
@@ -559,7 +578,7 @@ func (b *profileBuilder) service(name string) (Service, bool) {
 	return Service{}, false
 }
 
-func (b *profileBuilder) expandFile(node *ProfileNode) {
+func (b *graphBuilder) expandFile(node *GraphNode) {
 	path := node.Path
 	if path == "" || node.Missing {
 		return
@@ -613,10 +632,10 @@ func (b *profileBuilder) expandFile(node *ProfileNode) {
 	if isShellScript(path, facts) {
 		b.shellRefs(node)
 	}
-	if data, ok := readFileCapped(path, profileTextBytes); ok && isText(data) {
+	if data, ok := readFileCapped(path, objectTextBytes); ok && isText(data) {
 		b.lexicalRefs(node, data, "lexical")
 	} else if facts.Executable {
-		if data, ok := readFileCapped(path, profileBinBytes); ok {
+		if data, ok := readFileCapped(path, objectBinBytes); ok {
 			b.lexicalRefs(node, data, "strings")
 		}
 	}
@@ -631,7 +650,7 @@ func (b *profileBuilder) expandFile(node *ProfileNode) {
 	}
 }
 
-func (b *profileBuilder) shellRefs(node *ProfileNode) {
+func (b *graphBuilder) shellRefs(node *GraphNode) {
 	data, ok := readFileCapped(node.Path, 256<<10)
 	if !ok {
 		return
@@ -657,14 +676,14 @@ func (b *profileBuilder) shellRefs(node *ProfileNode) {
 	}
 }
 
-func (b *profileBuilder) lexicalRefs(node *ProfileNode, data []byte, source string) {
+func (b *graphBuilder) lexicalRefs(node *GraphNode, data []byte, source string) {
 	if strings.HasSuffix(node.Path, ".log") || strings.Contains(node.Path, "/logs/") {
 		return
 	}
 	paths := extractPaths(data)
 	shown := 0
 	for _, path := range paths {
-		if shown >= profileMaxLexical {
+		if shown >= objectMaxLexical {
 			b.coverage = append(b.coverage, "lexical scan of "+node.Path+" stopped at its path budget")
 			break
 		}
@@ -710,7 +729,7 @@ func extractPaths(data []byte) []string {
 	return out
 }
 
-func (b *profileBuilder) elfRefs(node *ProfileNode) {
+func (b *graphBuilder) elfRefs(node *GraphNode) {
 	file, err := elf.Open(node.Path)
 	if err != nil {
 		return
@@ -756,7 +775,7 @@ func (b *profileBuilder) elfRefs(node *ProfileNode) {
 	}
 }
 
-func (b *profileBuilder) jarRefs(node *ProfileNode) {
+func (b *graphBuilder) jarRefs(node *GraphNode) {
 	reader, err := zip.OpenReader(node.Path)
 	if err != nil {
 		return
@@ -809,7 +828,7 @@ func manifestClassPath(body string) []string {
 	return strings.Fields(joined)
 }
 
-func (b *profileBuilder) containment(node *ProfileNode) {
+func (b *graphBuilder) containment(node *GraphNode) {
 	root := appRoot(node.Path)
 	if root == "" || root == node.Path || b.trees[root] {
 		return
@@ -817,7 +836,7 @@ func (b *profileBuilder) containment(node *ProfileNode) {
 	b.trees[root] = true
 	b.snapshot.ensureFacts([]string{root})
 	story := b.assessor.read(b.snapshot.Facts(root), false)
-	dir := b.addNode(&ProfileNode{
+	dir := b.addNode(&GraphNode{
 		ID: "dir:" + root, Kind: "dir", Name: filepath.Base(root), Path: root,
 		Origin: story.origin.String(), origin: story.origin, Context: true,
 		Detail: "application tree · " + story.why,
@@ -848,7 +867,7 @@ func (b *profileBuilder) containment(node *ProfileNode) {
 				return nil
 			}
 		}
-		if count >= profileMaxFiles {
+		if count >= objectMaxFiles {
 			b.coverage = append(b.coverage, "application tree "+root+" stopped at its file budget")
 			return filepath.SkipAll
 		}
@@ -859,7 +878,7 @@ func (b *profileBuilder) containment(node *ProfileNode) {
 	})
 }
 
-func (b *profileBuilder) expandProcess(node *ProfileNode) {
+func (b *graphBuilder) expandProcess(node *GraphNode) {
 	pid, _ := strconv.Atoi(strings.TrimPrefix(node.ID, "process:"))
 	process, ok := b.processes[pid]
 	if !ok {
@@ -939,12 +958,12 @@ func (b *profileBuilder) expandProcess(node *ProfileNode) {
 		}
 	}
 	if parent, ok := b.processes[process.PPID]; ok && parent.PID != process.PID {
-		parentNode := b.addProcess(parent.PID, profileMaxDepth+1)
+		parentNode := b.addProcess(parent.PID, objectMaxDepth+1)
 		b.addEdge(node.ID, parentNode.ID, "parent", "kernel", "high", "")
 	}
 }
 
-func (b *profileBuilder) expandUnit(node *ProfileNode) {
+func (b *graphBuilder) expandUnit(node *GraphNode) {
 	name := node.Name
 	found := 0
 	for _, edge := range b.snapshot.Activations {
@@ -1043,7 +1062,7 @@ func (b *profileBuilder) expandUnit(node *ProfileNode) {
 	}
 }
 
-func (b *profileBuilder) expandPackage(node *ProfileNode) {
+func (b *graphBuilder) expandPackage(node *GraphNode) {
 	shown := 0
 	for path, facts := range b.snapshot.Objects {
 		if !facts.PackageKnown || facts.Package != node.Name {

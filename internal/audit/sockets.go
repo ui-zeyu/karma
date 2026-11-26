@@ -21,8 +21,8 @@ func collectSockets(ctx context.Context) ([]Socket, []Connection, map[int]int, [
 	return buildSocketRows(dump, netdiag.Owners(inodes), established, false)
 }
 
-// collectSocketsScoped answers the same table for a profile's selected pids.
-// It reads only those fd tables, so a one-service profile does not pay for the
+// collectSocketsScoped answers the same table for an object graph's selected pids.
+// It reads only those fd tables, so a one-service graph does not pay for the
 // whole host's socket owners.
 func collectSocketsScoped(ctx context.Context, pids map[int]bool) ([]Socket, []Connection, map[int]int, []string) {
 	if len(pids) == 0 {

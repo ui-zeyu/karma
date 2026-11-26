@@ -118,10 +118,10 @@ type Boundary struct {
 
 // Host is the target's identity, enough to read the report without context.
 type Host struct {
-	Hostname string
-	Kernel   string
-	OS       string
-	UID      int
+	Hostname string `json:"hostname"`
+	Kernel   string `json:"kernel"`
+	OS       string `json:"os"`
+	UID      int    `json:"uid"`
 }
 
 // Process is one running principal: the image, the script an interpreter
@@ -129,48 +129,48 @@ type Host struct {
 // link, which differs from / on a chroot; Outbound counts its established
 // connections.
 type Process struct {
-	PID  int
-	PPID int
-	UID  int
-	GID  int
+	PID  int `json:"pid"`
+	PPID int `json:"ppid"`
+	UID  int `json:"uid"`
+	GID  int `json:"gid"`
 	// EUID and EGID are the effective ids the kernel enforces. A setuid
 	// process runs with these, so reach follows them and not the real id.
-	EUID    int
-	EGID    int
-	Start   uint64
-	State   string
-	Comm    string
-	Exe     string
-	Cmdline string
-	Cwd     string
-	Root    string
-	Script  string
+	EUID    int    `json:"euid"`
+	EGID    int    `json:"egid"`
+	Start   uint64 `json:"start"`
+	State   string `json:"state,omitempty"`
+	Comm    string `json:"comm,omitempty"`
+	Exe     string `json:"exe,omitempty"`
+	Cmdline string `json:"cmdline,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`
+	Root    string `json:"root,omitempty"`
+	Script  string `json:"script,omitempty"`
 	// Cgroup is the process's cgroup path; Unit is the systemd unit named by
-	// it. The profile uses the edge from a unit to its live processes.
-	Cgroup string
-	Unit   string
+	// it. The object graph uses the edge from a unit to its live processes.
+	Cgroup string `json:"cgroup,omitempty"`
+	Unit   string `json:"unit,omitempty"`
 	// LoaderTargets are the libraries LD_PRELOAD/LD_AUDIT named, and
 	// LibraryPath is the raw LD_LIBRARY_PATH value.
-	LoaderTargets []LoaderTarget
-	LibraryPath   string
+	LoaderTargets []LoaderTarget `json:"loader_targets,omitempty"`
+	LibraryPath   string         `json:"library_path,omitempty"`
 	// CapEff is the effective capability mask, Seccomp the filter mode, and
 	// NoNewPrivs the prctl bit; together they state what the process can do
 	// beyond its uid.
-	CapEff      uint64
-	Seccomp     int
-	NoNewPrivs  bool
-	Outbound    int
-	ExeFacts    trust.Facts
-	ScriptFacts trust.Facts
-	Deleted     bool
+	CapEff      uint64      `json:"cap_eff,omitempty"`
+	Seccomp     int         `json:"seccomp,omitempty"`
+	NoNewPrivs  bool        `json:"no_new_privs,omitempty"`
+	Outbound    int         `json:"outbound,omitempty"`
+	ExeFacts    trust.Facts `json:"-"`
+	ScriptFacts trust.Facts `json:"-"`
+	Deleted     bool        `json:"deleted,omitempty"`
 }
 
 // LoaderTarget is one library a dynamic-loader variable names. Variable is
 // LD_PRELOAD or LD_AUDIT; a soname remains a lead with no facts.
 type LoaderTarget struct {
-	Variable string
-	Path     string
-	Facts    trust.Facts
+	Variable string      `json:"variable"`
+	Path     string      `json:"path,omitempty"`
+	Facts    trust.Facts `json:"-"`
 }
 
 // Connection is one established TCP connection. It is kept apart from the
@@ -270,7 +270,7 @@ func (s *Snapshot) Facts(path string) trust.Facts {
 	return trust.Facts{Path: path, Kind: trust.Missing, Owner: -1, Group: -1}
 }
 
-// ensureFacts reads paths the profile discovered after collection. Package
+// ensureFacts reads paths the object graph discovered after collection. Package
 // ownership is answered in one batch before the facts are read, so a tree of
 // discovered files costs one package-manager call rather than one per file.
 func (s *Snapshot) ensureFacts(paths []string) {
@@ -377,9 +377,9 @@ type Report struct {
 	AuthorityObjects []string
 	Unowned          []UnownedFile
 
-	// snapshot is the collected facts behind the panels. It is render-side
-	// state, not part of the JSON answer.
-	snapshot *Snapshot
+	// view is the inventories the scope filtered once; the evidence panels
+	// read it instead of re-filtering the collected rows.
+	view *View
 }
 
 // ownedAll prefills the package answers for paths; the catalog answers from

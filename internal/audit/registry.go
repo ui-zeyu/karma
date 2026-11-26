@@ -1,15 +1,14 @@
 package audit
 
 // The module registry is the one place a bounded domain is described: its
-// word, its bit, the startup surfaces it reads, its collector, its judge, its
-// graph and its show panels. The plan grammar, the collection loop, the
-// judgment loop, `karma graph`, `karma show` and `karma list` are all derived
-// from this table, so a new domain is one entry and the vocabulary cannot
-// drift.
+// word, its bit, the startup surfaces it reads, its collector, its judge and
+// its relation graph. The plan grammar, the collection loop, the judgment
+// loop and `karma graph` are all derived from this table, so a new domain is
+// one entry and the vocabulary cannot drift. The `karma show` sections have
+// their own table in sections.go, one entry per raw inventory.
 
 import (
 	"context"
-	"sort"
 
 	"karma/internal/startup"
 )
@@ -17,6 +16,34 @@ import (
 // JudgeFunc judges one domain over a collected snapshot. Report is available
 // for the domains that count their own rows.
 type JudgeFunc func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string
+
+// GraphSpec is the relation graph a domain draws: the word it answers to,
+// the findings it shows, what its collection needs, and the builder.
+type GraphSpec struct {
+	// Word is the `karma graph` word when it differs from the module's name.
+	Word string
+	// Domain is the finding set the graph shows.
+	Domain Domain
+	// Collect names the domains the graph's collection needs beyond its own
+	// module's bit; zero falls back to the bit.
+	Collect Domain
+	// AllSurfaces reports whether the graph reads every activation surface
+	// rather than the module's own selection.
+	AllSurfaces bool
+	// Build draws the graph from a collected snapshot.
+	Build func(*Snapshot) *GraphView
+}
+
+// Plan reads the domains one domain graph needs.
+func (s *GraphSpec) Plan(bit Domain) Plan {
+	plan := Plan{Domains: DomainBase | bit | s.Collect}
+	if s.AllSurfaces {
+		plan.Surfaces = nil
+	} else {
+		plan.Surfaces = map[string]bool{}
+	}
+	return plan
+}
 
 // Module is one bounded domain.
 type Module struct {
@@ -29,20 +56,8 @@ type Module struct {
 	Collect func(context.Context, *Snapshot) []string
 	// Judge turns the collected state into findings and coverage.
 	Judge JudgeFunc
-	// Graph draws the domain as relations.
-	Graph func(*Snapshot) *Profile
-	// GraphWord is the `karma graph` word when it differs from Name.
-	GraphWord string
-	// Show names the raw inventory sections the domain answers: section word
-	// -> panel title, plus the extra domains the section needs collected.
-	Show map[string]ShowSpec
-}
-
-// ShowSpec is one `show` section: the panel it prints and the domains the
-// collector must read for it.
-type ShowSpec struct {
-	Domain Domain
-	Panel  string
+	// GraphBuilder draws the domain as relations.
+	GraphBuilder *GraphSpec
 }
 
 // modules is the registry, in collection order. A later module may read an
@@ -55,7 +70,6 @@ var modules = []Module{
 		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
 			return collectServicesModule(ctx, snapshot)
 		},
-		Show: map[string]ShowSpec{"services": {Domain: DomainServices, Panel: "SERVICE"}},
 	},
 	{
 		Name: "processes", Bit: DomainProcesses,
@@ -65,10 +79,6 @@ var modules = []Module{
 		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
 			judgeLoaders(snapshot, a, filter, add)
 			return nil
-		},
-		Show: map[string]ShowSpec{
-			"process":  {Domain: DomainProcesses | DomainNetwork, Panel: "PROCESS"},
-			"activity": {Domain: DomainProcesses | DomainNetwork, Panel: "PROCESS"},
 		},
 	},
 	{
@@ -80,30 +90,22 @@ var modules = []Module{
 			judgeConnections(snapshot, filter, add)
 			return nil
 		},
-		Graph: networkGraph,
-		Show: map[string]ShowSpec{
-			"listeners":   {Domain: DomainProcesses | DomainNetwork, Panel: "LISTEN"},
-			"sockets":     {Domain: DomainProcesses | DomainNetwork, Panel: "LISTEN"},
-			"listen":      {Domain: DomainProcesses | DomainNetwork, Panel: "LISTEN"},
-			"connections": {Domain: DomainProcesses | DomainNetwork, Panel: "CONNECTION"},
-			"connection":  {Domain: DomainProcesses | DomainNetwork, Panel: "CONNECTION"},
-			"network":     {Domain: DomainProcesses | DomainNetwork, Panel: "CONNECTION"},
+		GraphBuilder: &GraphSpec{
+			Domain:  DomainProcesses | DomainNetwork,
+			Collect: DomainProcesses,
+			Build:   networkGraph,
 		},
 	},
 	{
-		Name: "persistence", Bit: DomainPersistence,
-		Startup:   startup.AllScope,
-		Judge:     judgeActivations,
-		Graph:     bootGraph,
-		GraphWord: "boot",
-		Show: map[string]ShowSpec{
-			"activation":  {Domain: DomainPersistence, Panel: "ACTIVATION"},
-			"persistence": {Domain: DomainPersistence, Panel: "ACTIVATION"},
-			"boot":        {Domain: DomainPersistence, Panel: "ACTIVATION"},
-			"login":       {Domain: DomainPersistence, Panel: "ACTIVATION"},
-			"service":     {Domain: DomainPersistence, Panel: "ACTIVATION"},
-			"device":      {Domain: DomainPersistence, Panel: "ACTIVATION"},
-			"schedule":    {Domain: DomainPersistence, Panel: "ACTIVATION"},
+		Name:    "persistence",
+		Bit:     DomainPersistence,
+		Startup: startup.AllScope,
+		Judge:   judgeActivations,
+		GraphBuilder: &GraphSpec{
+			Word:        "boot",
+			Domain:      DomainPersistence,
+			AllSurfaces: true,
+			Build:       bootGraph,
 		},
 	},
 	{
@@ -111,9 +113,8 @@ var modules = []Module{
 		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
 			return collectAuthorityModule(ctx, snapshot)
 		},
-		Judge: judgeAuthority,
-		Graph: authorityGraph,
-		Show:  map[string]ShowSpec{"authority": {Domain: DomainAuthority, Panel: "AUTHORITY"}},
+		Judge:        judgeAuthority,
+		GraphBuilder: &GraphSpec{Domain: DomainAuthority, Build: authorityGraph},
 	},
 	{
 		Name: "files", Bit: DomainFiles,
@@ -135,8 +136,7 @@ var modules = []Module{
 		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
 			return judgeKernel(snapshot, a, filter, add)
 		},
-		Graph: kernelGraph,
-		Show:  map[string]ShowSpec{"kernel": {Domain: DomainKernel, Panel: "KERNEL"}},
+		GraphBuilder: &GraphSpec{Domain: DomainKernel, Build: kernelGraph},
 	},
 	{
 		Name: "packages", Bit: DomainPackages,
@@ -144,7 +144,7 @@ var modules = []Module{
 		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
 			return judgePackages(snapshot, filter, add)
 		},
-		Graph: packageGraph,
+		GraphBuilder: &GraphSpec{Domain: DomainPackages, Build: packageGraph},
 	},
 	{
 		Name: "web", Bit: DomainWeb,
@@ -154,7 +154,7 @@ var modules = []Module{
 		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
 			return judgeWeb(snapshot, a, filter, add)
 		},
-		Graph: webGraph,
+		GraphBuilder: &GraphSpec{Domain: DomainWeb, Build: webGraph},
 	},
 	{
 		Name: "identity", Bit: DomainIdentity,
@@ -164,7 +164,7 @@ var modules = []Module{
 		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
 			return judgeIdentity(snapshot, a, filter, add)
 		},
-		Graph: identityGraph,
+		GraphBuilder: &GraphSpec{Domain: DomainIdentity, Build: identityGraph},
 	},
 }
 
@@ -184,29 +184,22 @@ func moduleByWord(word string) (Module, bool) {
 	return Module{}, false
 }
 
-// moduleByGraphWord answers the module a `karma graph` word selects.
-func moduleByGraphWord(word string) (Module, bool) {
+// GraphTarget answers the module and the graph a `karma graph` word selects.
+func GraphTarget(word string) (Module, *GraphSpec, bool) {
 	for _, module := range modules {
-		name := module.GraphWord
+		spec := module.GraphBuilder
+		if spec == nil {
+			continue
+		}
+		name := spec.Word
 		if name == "" {
 			name = module.Name
 		}
-		if name == word && module.Graph != nil {
-			return module, true
-		}
-	}
-	return Module{}, false
-}
-
-// moduleByShowWord answers the module a `karma show` word selects, with the
-// section spec.
-func moduleByShowWord(word string) (Module, ShowSpec, bool) {
-	for _, module := range modules {
-		if spec, ok := module.Show[word]; ok {
+		if name == word {
 			return module, spec, true
 		}
 	}
-	return Module{}, ShowSpec{}, false
+	return Module{}, nil, false
 }
 
 // DomainWords lists the scope words in registry order.
@@ -222,96 +215,14 @@ func DomainWords() []string {
 func GraphWords() []string {
 	var words []string
 	for _, module := range modules {
-		if module.Graph == nil {
+		if module.GraphBuilder == nil {
 			continue
 		}
-		name := module.GraphWord
+		name := module.GraphBuilder.Word
 		if name == "" {
 			name = module.Name
 		}
 		words = append(words, name)
 	}
 	return words
-}
-
-// IsGraphWord answers whether a word names a relation domain `graph` draws.
-func IsGraphWord(word string) bool {
-	for _, module := range modules {
-		if module.Graph == nil {
-			continue
-		}
-		name := module.GraphWord
-		if name == "" {
-			name = module.Name
-		}
-		if name == word {
-			return true
-		}
-	}
-	return false
-}
-
-// IsShowWord answers whether a word names a show section.
-func IsShowWord(word string) bool {
-	if word == "coverage" || word == "mounts" {
-		return true
-	}
-	_, _, ok := moduleByShowWord(word)
-	return ok
-}
-
-// ShowWords lists the `karma show` words, sorted.
-func ShowWords() []string {
-	var words []string
-	for _, module := range modules {
-		for word := range module.Show {
-			words = append(words, word)
-		}
-	}
-	words = append(words, "coverage", "mounts")
-	sort.Strings(words)
-	return words
-}
-
-// GraphPlan reads only the domains one graph word needs.
-func GraphPlan(word string) (Plan, bool) {
-	module, ok := moduleByGraphWord(word)
-	if !ok {
-		return Plan{}, false
-	}
-	plan := Plan{Domains: DomainBase | module.Bit}
-	if module.Bit&DomainNetwork != 0 {
-		plan.Domains |= DomainProcesses
-	}
-	if module.Name == "persistence" {
-		// The boot graph reads every activation surface, not only the ones
-		// the selected domains' collectors read.
-		plan.Surfaces = nil
-	} else {
-		plan.Surfaces = map[string]bool{}
-	}
-	return plan, true
-}
-
-// ShowPlan reads the domains one show section needs. The section's module
-// answers first; the spec may add domains, and coverage is the full host.
-func ShowPlan(word string, base Plan) (Plan, bool) {
-	if word == "coverage" {
-		return FullPlan(), true
-	}
-	if word == "mounts" {
-		base.Domains = DomainBase
-		base.Surfaces = map[string]bool{}
-		return base, true
-	}
-	module, spec, ok := moduleByShowWord(word)
-	if !ok {
-		return Plan{}, false
-	}
-	base.Domains = DomainBase | module.Bit | spec.Domain
-	base.Surfaces = map[string]bool{}
-	if module.Bit == DomainPersistence {
-		base.Surfaces = nil
-	}
-	return base, true
 }

@@ -69,11 +69,15 @@ func TestBuildProfileUnitMissingTarget(t *testing.T) {
 			TriggerFacts: unitFacts, TargetFacts: targetFacts,
 		}},
 	}
-	profile, err := BuildProfile(context.Background(), snapshot, "unit:x.service", Info)
+	seed, err := ParseGraphSeed("unit:x.service")
 	if err != nil {
 		t.Fatal(err)
 	}
-	missing := profileNode(profile, "file:"+target)
+	profile, err := BuildObjectGraph(context.Background(), snapshot, seed, Info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := viewNode(profile, "file:"+target)
 	if missing == nil || !missing.Missing {
 		t.Fatalf("missing target node = %+v", missing)
 	}
@@ -102,11 +106,15 @@ func TestBuildProfileFollowsShellReference(t *testing.T) {
 		Boundary: Boundary{Time: time.Unix(1, 0), Kind: "container", Source: "pid1", Confidence: HighConfidence},
 		Objects:  map[string]trust.Facts{},
 	}
-	profile, err := BuildProfile(context.Background(), snapshot, source, Info)
+	seed, err := ParseGraphSeed(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if node := profileNode(profile, "file:"+target); node == nil {
+	profile, err := BuildObjectGraph(context.Background(), snapshot, seed, Info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node := viewNode(profile, "file:"+target); node == nil {
 		t.Fatalf("target node missing; nodes = %+v", profile.Nodes)
 	}
 	linked := false

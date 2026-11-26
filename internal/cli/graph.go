@@ -32,18 +32,18 @@ func newGraphCmd() *cobra.Command {
 			return runGraph(cmd.Context(), cmd.OutOrStdout(), args[0], flags)
 		},
 	}
-	addRunFlags(cmd)
+	graphFlags(cmd.Flags())
 	return cmd
 }
 
 // runGraph builds one relation graph: a domain word draws that domain, and
 // any other word names one object the graph grows from.
 func runGraph(ctx context.Context, w io.Writer, word string, flags auditFlags) error {
-	if !audit.IsGraphWord(word) {
+	module, spec, ok := audit.GraphTarget(word)
+	if !ok {
 		return runObjectGraph(ctx, w, word, flags)
 	}
-	plan, _ := audit.GraphPlan(word)
-	snapshot, collectErr := collectSnapshot(ctx, plan, flags.timeout, flags.json)
+	snapshot, collectErr := collectSnapshot(ctx, spec.Plan(module.Bit), flags.timeout, flags.json)
 	if snapshot == nil {
 		return collectErr
 	}
@@ -51,19 +51,14 @@ func runGraph(ctx context.Context, w io.Writer, word string, flags auditFlags) e
 		return err
 	}
 	report := audit.Judge(snapshot, audit.Filter{MinSeverity: flags.minSeverity})
-	graph, err := audit.BuildDomainGraph(word, snapshot, report.Findings, report.Coverage)
-	if err != nil {
-		return usagef(nil, "%s", err)
-	}
+	view := spec.Build(snapshot)
+	view.AttachFindings(spec.Domain, report.Findings, report.Coverage)
 	if flags.json {
-		if err := audit.WriteGraphJSON(w, graph); err != nil {
+		if err := audit.WriteGraphJSON(w, view); err != nil {
 			return err
 		}
 		return collectErr
 	}
-	audit.RenderGraph(w, graph, renderOptions(w, flags, audit.Filter{MinSeverity: flags.minSeverity}))
+	audit.RenderGraph(w, view, renderOptions(w, flags, audit.Filter{MinSeverity: flags.minSeverity}))
 	return collectErr
 }
-
-// graphPlan is answered by the audit registry; the command stays a thin view
-// over it.

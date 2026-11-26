@@ -3,8 +3,8 @@ package audit
 // Domain graphs are the picture behind the findings. The audit states one
 // broken relation; the graph shows the objects that touch it, so an operator
 // reads a chain instead of a file dump. The builders read the same typed
-// snapshot state the judges read, and BuildDomainGraph selects findings by
-// the domain each judge stamped on them.
+// snapshot state the judges read; AttachFindings selects findings by the
+// domain each judge stamped on them.
 
 import (
 	"fmt"
@@ -12,28 +12,18 @@ import (
 	"strings"
 )
 
-// graphDomain maps a graph command word to the domain bit the findings carry.
-var graphDomain = map[string]Domain{
-	"identity":  DomainIdentity,
-	"network":   DomainProcesses | DomainNetwork,
-	"packages":  DomainPackages,
-	"boot":      DomainPersistence,
-	"web":       DomainWeb,
-	"kernel":    DomainKernel,
-	"authority": DomainAuthority,
-}
-
-// domainRoot builds the root node one domain graph hangs from.
-func domainRoot(kind, name, detail string, reach Reach) *Graph {
-	return NewGraph(&ProfileNode{
-		ID: nodeKey("domain", name), Kind: kind, Name: name,
-		Origin: Unknown.String(), Reach: reach.String(), Detail: detail,
+// domainRoot builds the root node one domain graph hangs from. The root is
+// the page's spine, so it is context: no origin, no unknown marker.
+func domainRoot(kind, name, detail string, reach Reach) *GraphBuilder {
+	return NewGraphBuilder(&GraphNode{
+		ID: nodeKey(kind, name), Kind: kind, Name: name,
+		Reach: reach.String(), Detail: detail, Context: true,
 	})
 }
 
 // networkGraph is process -> socket -> peer, with each process's image and
 // origin on the node.
-func networkGraph(snapshot *Snapshot) *Profile {
+func networkGraph(snapshot *Snapshot) *GraphView {
 	graph := domainRoot("domain", "network", "processes, listeners and established peers", NoAsset)
 	a := newAssessor(snapshot)
 	byListener := map[int][]Socket{}
@@ -77,11 +67,11 @@ func networkGraph(snapshot *Snapshot) *Profile {
 			graph.link(s.ID, peer.ID, "peer", "kernel", "high", "")
 		}
 	}
-	return graph.Profile("domain", snapshot)
+	return graph.GraphView("domain", snapshot)
 }
 
 // packageGraph is package -> broken file edge.
-func packageGraph(snapshot *Snapshot) *Profile {
+func packageGraph(snapshot *Snapshot) *GraphView {
 	graph := domainRoot("domain", "packages",
 		fmt.Sprintf("%d packages · %d files · %d anomalies",
 			snapshot.Packages.Packages, snapshot.Packages.Files, len(snapshot.Packages.Anomalies)),
@@ -104,11 +94,11 @@ func packageGraph(snapshot *Snapshot) *Profile {
 		graph.link(pkg.ID, file.ID, "owns", "package", "high",
 			fmt.Sprintf("ctime %s · transaction %s", ctimeString(anomaly.CTime), anomaly.Transaction.Format(stampLayout)))
 	}
-	return graph.Profile("domain", snapshot)
+	return graph.GraphView("domain", snapshot)
 }
 
 // kernelGraph is module -> file/registry state.
-func kernelGraph(snapshot *Snapshot) *Profile {
+func kernelGraph(snapshot *Snapshot) *GraphView {
 	graph := domainRoot("domain", "kernel", "module registries, taint and hidden pids", KernelAsset)
 	a := newAssessor(snapshot)
 	for _, module := range snapshot.Kernel.Modules {
@@ -149,11 +139,11 @@ func kernelGraph(snapshot *Snapshot) *Profile {
 		node.Missing = true
 		graph.link(graph.root, node.ID, "hidden", "kernel", "high", "")
 	}
-	return graph.Profile("domain", snapshot)
+	return graph.GraphView("domain", snapshot)
 }
 
 // authorityGraph is the setuid/setgid/capability surface with its bits.
-func authorityGraph(snapshot *Snapshot) *Profile {
+func authorityGraph(snapshot *Snapshot) *GraphView {
 	graph := domainRoot("domain", "authority", "setuid, setgid and capability objects", RootAsset)
 	a := newAssessor(snapshot)
 	for _, path := range snapshot.Authority {
@@ -168,17 +158,17 @@ func authorityGraph(snapshot *Snapshot) *Profile {
 		}
 		graph.link(graph.root, node.ID, kind, "stat", "high", bit)
 	}
-	return graph.Profile("domain", snapshot)
+	return graph.GraphView("domain", snapshot)
 }
 
 // bootGraph is the activation tree: the surfaces, the triggers that hang from
 // them, and the targets the triggers act on, with each end's origin on the
 // node. It is the persistence module's graph; the findings it overlays come
 // from the same edges' judge.
-func bootGraph(snapshot *Snapshot) *Profile {
+func bootGraph(snapshot *Snapshot) *GraphView {
 	graph := domainRoot("domain", "boot", "the activation surfaces the host acts on", RootAsset)
 	a := newAssessor(snapshot)
-	surfaces := map[string]*ProfileNode{}
+	surfaces := map[string]*GraphNode{}
 	for _, edge := range snapshot.Activations {
 		if edge.Context {
 			continue
@@ -187,6 +177,10 @@ func bootGraph(snapshot *Snapshot) *Profile {
 		if !ok {
 			surface = graph.Node("surface", string(edge.Surface), string(edge.Surface), "",
 				Unknown, RootAsset, "")
+			// A surface is the graph's structure, so it is context: no origin
+			// to read and no unknown marker to carry.
+			surface.Context = true
+			surface.Origin = ""
 			surfaces[string(edge.Surface)] = surface
 			graph.link(graph.root, surface.ID, "acts-at", "boot", "high", "")
 		}
@@ -212,25 +206,15 @@ func bootGraph(snapshot *Snapshot) *Profile {
 			targetStory.origin, edgeReach(edge), string(edge.Mechanism))
 		graph.link(trigger.ID, target.ID, "runs", "startup", "high", string(edge.Mechanism))
 	}
-	return graph.Profile("domain", snapshot)
+	return graph.GraphView("domain", snapshot)
 }
 
-// BuildDomainGraph chooses the domain graph from the registry and attaches
-// the findings that belong to it. The graph is the picture; the findings are
-// its broken edges.
-func BuildDomainGraph(word string, snapshot *Snapshot, findings []Finding, coverage []string) (*Profile, error) {
-	bit, ok := graphDomain[word]
-	if !ok {
-		return nil, fmt.Errorf("graph: unknown domain %q", word)
-	}
-	module, ok := moduleByGraphWord(word)
-	if !ok {
-		return nil, fmt.Errorf("graph: unknown domain %q", word)
-	}
-	graph := module.Graph(snapshot)
-	graph.Findings = domainFindings(bit, findings)
-	graph.Coverage = coverage
-	return graph, nil
+// AttachFindings attaches the findings the domain stamped and the coverage
+// the run answered. The graph is the picture; the findings are its broken
+// edges.
+func (p *GraphView) AttachFindings(domain Domain, findings []Finding, coverage []string) {
+	p.Findings = domainFindings(domain, findings)
+	p.Coverage = coverage
 }
 
 // domainFindings keeps the findings the domain stamped.

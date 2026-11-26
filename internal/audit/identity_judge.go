@@ -337,8 +337,8 @@ func judgeSSHD(state *IdentityState, filter Filter, add func(Finding)) []string 
 	return coverage
 }
 
-func identityGraph(snapshot *Snapshot) *Profile {
-	root := NewGraph(&ProfileNode{
+func identityGraph(snapshot *Snapshot) *GraphView {
+	root := NewGraphBuilder(&GraphNode{
 		ID: nodeKey("domain", "identity"), Kind: "domain", Name: "identity",
 		Origin: Unknown.String(), Detail: "accounts, groups, sudo grants, shadow state and SSH keys",
 	})
@@ -393,5 +393,5 @@ func identityGraph(snapshot *Snapshot) *Profile {
 				valueOr(snapshot.Identity.SSHD.PasswordAuthentication, "default")))
 		root.link(root.root, ssh.ID, "contains", "sshd", "high", "")
 	}
-	return root.Profile("domain", snapshot)
+	return root.GraphView("domain", snapshot)
 }

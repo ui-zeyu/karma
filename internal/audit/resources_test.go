@@ -94,8 +94,10 @@ func TestBootGraphAndGraphFindings(t *testing.T) {
 	if len(findings) != 1 || findings[0].Class != "activation-introduction" {
 		t.Errorf("graph findings = %+v", findings)
 	}
-	if _, err := BuildDomainGraph("boot", snapshot, nil, nil); err != nil {
-		t.Errorf("boot graph command failed: %v", err)
+	if module, spec, ok := GraphTarget("boot"); !ok {
+		t.Errorf("the boot graph word is missing from the registry")
+	} else if spec.Build == nil || module.Bit != DomainPersistence {
+		t.Errorf("the boot graph spec = %+v for module %+v", spec, module)
 	}
 }
 

@@ -6,6 +6,7 @@ package audit
 
 import (
 	"context"
+	"strconv"
 )
 
 // collectServicesModule reads systemd's inventory, scoped to one unit when
@@ -14,8 +15,8 @@ func collectServicesModule(ctx context.Context, snapshot *Snapshot) []string {
 	var services []Service
 	var gaps []string
 	switch {
-	case snapshot.plan.ProfileUnit != "":
-		services, gaps = collectServiceScoped(ctx, snapshot.plan.ProfileUnit)
+	case snapshot.plan.seedUnit() != "":
+		services, gaps = collectServiceScoped(ctx, snapshot.plan.seedUnit())
 	case len(snapshot.plan.Units) == 1:
 		for unit := range snapshot.plan.Units {
 			services, gaps = collectServiceScoped(ctx, unit)
@@ -28,9 +29,14 @@ func collectServicesModule(ctx context.Context, snapshot *Snapshot) []string {
 }
 
 // collectProcessesModule reads the running principals, scoped by the plan's
-// pids, one unit or one profile process.
+// pids, one unit or one object graph's process.
 func collectProcessesModule(ctx context.Context, snapshot *Snapshot) []string {
-	scope := processScope{unit: snapshot.plan.ProfileUnit, pids: snapshot.plan.ProfilePIDs}
+	scope := processScope{unit: snapshot.plan.seedUnit()}
+	if snapshot.plan.Seed.Kind == "pid" {
+		if pid, err := strconv.Atoi(snapshot.plan.Seed.Value); err == nil {
+			scope.pids = map[int]bool{pid: true}
+		}
+	}
 	if pids := positivePIDs(snapshot.plan.PIDs); pids != nil {
 		scope.pids = pids
 	}
@@ -44,11 +50,11 @@ func collectProcessesModule(ctx context.Context, snapshot *Snapshot) []string {
 }
 
 // collectSocketsModule reads the listening surface and the established
-// connections, scoped to the plan's pids or the profile's processes.
+// connections, scoped to the plan's pids or an object graph's processes.
 func collectSocketsModule(ctx context.Context, snapshot *Snapshot) []string {
 	var scopePIDs map[int]bool
-	if snapshot.plan.Profile != "" {
-		scopePIDs = profilePids(snapshot.plan.Profile, snapshot.Processes)
+	if snapshot.plan.Seed.Kind != "" {
+		scopePIDs = seedPids(snapshot.plan.Seed, snapshot.Processes)
 	}
 	if pids := positivePIDs(snapshot.plan.PIDs); pids != nil {
 		scopePIDs = pids

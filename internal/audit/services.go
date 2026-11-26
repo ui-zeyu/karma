@@ -13,7 +13,7 @@ import (
 // behind the activation edges, and it names a running service whose unit file
 // the filesystem collector did not find.
 // collectServiceScoped answers one unit's state with `systemctl show`. A
-// profile of one unit does not need the host's whole unit inventory, and
+// graph of one unit does not need the host's whole unit inventory, and
 // listing every unit can take seconds on a busy host.
 func collectServiceScoped(ctx context.Context, name string) ([]Service, []string) {
 	if _, err := os.Stat("/run/systemd/system"); err != nil {

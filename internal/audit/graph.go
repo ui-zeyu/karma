@@ -1,7 +1,7 @@
 package audit
 
-// Graph is the one relation store behind every picture karma draws: a
-// profile's object closure, a domain graph, and the nodes a finding's trace
+// GraphBuilder is the one relation store behind every picture karma draws: a
+// object graphs' relation closure, a domain graph, and the nodes a finding's trace
 // points at. Node identity is `kind:key`, where key is the object's own
 // name — a path, a pid, an account — and the display text is a field, so a
 // formatting change cannot silently change what a graph join means.
@@ -11,26 +11,26 @@ import "sort"
 // nodeKey builds a node's identity.
 func nodeKey(kind, key string) string { return kind + ":" + key }
 
-// Graph accumulates nodes in insertion order and edges deduplicated by their
+// GraphBuilder accumulates nodes in insertion order and edges deduplicated by their
 // full relation.
-type Graph struct {
+type GraphBuilder struct {
 	root     string
-	nodes    map[string]*ProfileNode
+	nodes    map[string]*GraphNode
 	order    []string
-	edges    []ProfileEdge
+	edges    []GraphEdge
 	edgeSeen map[string]bool
 }
 
-// NewGraph starts a graph with its root node.
-func NewGraph(root *ProfileNode) *Graph {
-	graph := &Graph{nodes: map[string]*ProfileNode{}, edgeSeen: map[string]bool{}}
+// NewGraphBuilder starts a graph with its root node.
+func NewGraphBuilder(root *GraphNode) *GraphBuilder {
+	graph := &GraphBuilder{nodes: map[string]*GraphNode{}, edgeSeen: map[string]bool{}}
 	return graph.add(root)
 }
 
 // add registers one node and keeps insertion order for the tree. The first
 // registration of an identity wins; callers that want a detail updated should
 // build the node once and link to it.
-func (g *Graph) add(node *ProfileNode) *Graph {
+func (g *GraphBuilder) add(node *GraphNode) *GraphBuilder {
 	if _, ok := g.nodes[node.ID]; ok {
 		return g
 	}
@@ -42,13 +42,13 @@ func (g *Graph) add(node *ProfileNode) *Graph {
 	return g
 }
 
-func (g *Graph) node(id string) *ProfileNode {
+func (g *GraphBuilder) node(id string) *GraphNode {
 	return g.nodes[id]
 }
 
 // Node builds and registers one node from its parts.
-func (g *Graph) Node(kind, key, name, path string, origin Origin, reach Reach, detail string) *ProfileNode {
-	candidate := &ProfileNode{
+func (g *GraphBuilder) Node(kind, key, name, path string, origin Origin, reach Reach, detail string) *GraphNode {
+	candidate := &GraphNode{
 		ID: nodeKey(kind, key), Kind: kind, Name: name, Path: path,
 		Origin: origin.String(), Reach: reach.String(),
 		Detail: detail, origin: origin, reach: reach,
@@ -60,7 +60,7 @@ func (g *Graph) Node(kind, key, name, path string, origin Origin, reach Reach, d
 // link records one relation. Source states who produced it (kernel, unit,
 // package, tree, shell, elf, jar, cmdline, lexical) and confidence how much
 // the read trusts it.
-func (g *Graph) link(from, to, kind, source, confidence, note string) {
+func (g *GraphBuilder) link(from, to, kind, source, confidence, note string) {
 	if from == "" || to == "" || from == to {
 		return
 	}
@@ -69,27 +69,27 @@ func (g *Graph) link(from, to, kind, source, confidence, note string) {
 		return
 	}
 	g.edgeSeen[key] = true
-	g.edges = append(g.edges, ProfileEdge{
+	g.edges = append(g.edges, GraphEdge{
 		From: from, To: to, Kind: kind, Source: source, Confidence: confidence, Note: note,
 	})
 }
 
-// Profile converts the accumulated graph into the rendered value, with the
+// GraphView converts the accumulated graph into the rendered value, with the
 // edges sorted for a stable output.
-func (g *Graph) Profile(rootKind string, snapshot *Snapshot) *Profile {
-	profile := &Profile{
+func (g *GraphBuilder) GraphView(rootKind string, snapshot *Snapshot) *GraphView {
+	view := &GraphView{
 		Root:     g.root,
 		RootKind: rootKind,
 	}
 	if snapshot != nil {
-		profile.Boundary = snapshot.Boundary
+		view.Boundary = snapshot.Boundary
 	}
 	for _, id := range g.order {
-		profile.Nodes = append(profile.Nodes, *g.nodes[id])
+		view.Nodes = append(view.Nodes, *g.nodes[id])
 	}
-	profile.Edges = append([]ProfileEdge(nil), g.edges...)
-	sort.Slice(profile.Edges, func(i, j int) bool {
-		left, right := profile.Edges[i], profile.Edges[j]
+	view.Edges = append([]GraphEdge(nil), g.edges...)
+	sort.Slice(view.Edges, func(i, j int) bool {
+		left, right := view.Edges[i], view.Edges[j]
 		if left.From != right.From {
 			return left.From < right.From
 		}
@@ -98,7 +98,7 @@ func (g *Graph) Profile(rootKind string, snapshot *Snapshot) *Profile {
 		}
 		return left.Kind < right.Kind
 	})
-	return profile
+	return view
 }
 
 // steps builds a trace from display texts.
@@ -111,7 +111,7 @@ func steps(texts ...string) []Step {
 }
 
 // each walks the nodes in insertion order.
-func (g *Graph) each(visit func(*ProfileNode)) {
+func (g *GraphBuilder) each(visit func(*GraphNode)) {
 	for _, id := range g.order {
 		visit(g.nodes[id])
 	}

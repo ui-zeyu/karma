@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +21,9 @@ func runAudit(ctx context.Context, w io.Writer, words []string, flags auditFlags
 	parsed, err := parseScope(words)
 	if err != nil {
 		return usagef(nil, "%s", err)
+	}
+	if flags.json && flags.evidence {
+		return usagef(nil, "--evidence prints the text inventories after a text report; the machine-readable inventories are \"karma show <section> --json\"")
 	}
 	snapshot, collectErr := collectSnapshot(ctx, parsed.plan(), flags.timeout, flags.json)
 	if snapshot == nil {
@@ -41,69 +43,63 @@ func runAudit(ctx context.Context, w io.Writer, words []string, flags auditFlags
 	return collectErr
 }
 
-// runShow prints one collected inventory without judging it.
+// runShow prints one collected inventory without judging it. The section
+// decides what the collection reads; the scope's units, pids and paths
+// narrow the rows to the relations they name.
 func runShow(ctx context.Context, w io.Writer, words []string, flags auditFlags) error {
-	section := words[0]
-	if !audit.IsShowWord(section) {
-		return usagef(nil, "unknown show target %q (%s)", section, strings.Join(audit.ShowWords(), ", "))
+	section, ok := audit.SectionFor(words[0])
+	if !ok {
+		return usagef(nil, "unknown show target %q (%s)", words[0], strings.Join(audit.ShowWords(), ", "))
 	}
 	parsed, err := parseScope(words[1:])
 	if err != nil {
 		return usagef(nil, "%s", err)
 	}
-	plan, _ := audit.ShowPlan(section, parsed.plan())
-	snapshot, collectErr := collectSnapshot(ctx, plan, flags.timeout, flags.json)
-	if snapshot == nil {
-		return collectErr
-	}
-	options := audit.RenderOptions{
-		Version: buildVersion, Color: isTerminal(w), Evidence: flags.evidence,
-		Width: terminalWidth(w), Filter: parsed.filter(audit.Info),
-	}
-	if flags.json {
-		if err := audit.WriteShowJSON(w, snapshot, section, options); err != nil {
-			return err
-		}
-		return collectErr
-	}
-	audit.RenderShow(w, snapshot, section, options)
-	return collectErr
-}
-
-// runObjectGraph prints one object's relation graph and the findings that touch it.
-func runObjectGraph(ctx context.Context, w io.Writer, word string, flags auditFlags) error {
-	plan := audit.ProfilePlan()
-	plan.Profile = word
-	if unit := profileUnitSelector(word); unit != "" {
-		plan.ProfileUnit = unit
-		plan.Surfaces = map[string]bool{"systemd": true}
-		plan.Domains = audit.DomainBase | audit.DomainServices | audit.DomainProcesses | audit.DomainNetwork
-	} else if pid, ok := profilePIDSelector(word); ok {
-		plan.ProfilePIDs = map[int]bool{pid: true}
-		plan.Surfaces = map[string]bool{}
-		plan.Domains = audit.DomainBase | audit.DomainProcesses | audit.DomainNetwork
-	} else {
-		plan.Surfaces = nil
-		plan.Domains = audit.DomainBase | audit.DomainPersistence
-	}
-	snapshot, collectErr := collectSnapshot(ctx, plan, flags.timeout, flags.json)
+	snapshot, collectErr := collectSnapshot(ctx, section.Plan(parsed.plan()), flags.timeout, flags.json)
 	if snapshot == nil {
 		return collectErr
 	}
 	if err := applySince(snapshot, flags.since); err != nil {
 		return err
 	}
-	profile, err := audit.BuildProfile(ctx, snapshot, word, flags.minSeverity)
-	if err != nil {
-		return usagef(nil, "%s", err)
-	}
+	options := renderOptions(w, flags, parsed.filter(audit.Info))
+	view := audit.NewView(snapshot, options.Filter)
 	if flags.json {
-		if err := audit.WriteGraphJSON(w, profile); err != nil {
+		if err := audit.WriteShowJSON(w, view, section, words[0], options); err != nil {
 			return err
 		}
 		return collectErr
 	}
-	audit.RenderGraph(w, profile, renderOptions(w, flags, audit.Filter{MinSeverity: flags.minSeverity}))
+	audit.RenderShow(w, view, section, words[0], options)
+	return collectErr
+}
+
+// runObjectGraph prints one object's relation graph and the findings that
+// touch it. The seed is parsed before the collection, so a mistyped selector
+// fails in milliseconds rather than after the budget.
+func runObjectGraph(ctx context.Context, w io.Writer, word string, flags auditFlags) error {
+	seed, err := audit.ParseGraphSeed(word)
+	if err != nil {
+		return usagef(nil, "%s", err)
+	}
+	snapshot, collectErr := collectSnapshot(ctx, audit.ObjectGraphPlan(seed), flags.timeout, flags.json)
+	if snapshot == nil {
+		return collectErr
+	}
+	if err := applySince(snapshot, flags.since); err != nil {
+		return err
+	}
+	view, err := audit.BuildObjectGraph(ctx, snapshot, seed, flags.minSeverity)
+	if err != nil {
+		return usagef(nil, "%s", err)
+	}
+	if flags.json {
+		if err := audit.WriteGraphJSON(w, view); err != nil {
+			return err
+		}
+		return collectErr
+	}
+	audit.RenderGraph(w, view, renderOptions(w, flags, audit.Filter{MinSeverity: flags.minSeverity}))
 	return collectErr
 }
 
@@ -156,37 +152,6 @@ func terminalWidth(w io.Writer) int {
 		return size
 	}
 	return 100
-}
-
-// profileUnitSelector names the unit a profile word selects, or "" when the
-// word is a pid, path or package.
-func profileUnitSelector(word string) string {
-	if value, ok := strings.CutPrefix(word, "unit:"); ok {
-		return value
-	}
-	value := word
-	switch {
-	case strings.HasSuffix(value, ".service"), strings.HasSuffix(value, ".socket"),
-		strings.HasSuffix(value, ".timer"), strings.HasSuffix(value, ".path"),
-		strings.HasSuffix(value, ".target"), strings.HasSuffix(value, ".mount"):
-		return value
-	}
-	return ""
-}
-
-// profilePIDSelector reads a pid word, with or without the pid: prefix.
-func profilePIDSelector(word string) (int, bool) {
-	value := strings.TrimPrefix(word, "pid:")
-	if value == "" {
-		return 0, false
-	}
-	for _, c := range value {
-		if c < '0' || c > '9' {
-			return 0, false
-		}
-	}
-	pid, err := strconv.Atoi(value)
-	return pid, err == nil
 }
 
 // sinceTime reads --since: empty and "auto" keep the collected boundary;

@@ -45,6 +45,13 @@ const (
 const AllDomains = DomainBase | DomainServices | DomainProcesses | DomainNetwork |
 	DomainPersistence | DomainAuthority | DomainFiles | DomainKernel | DomainPackages | DomainWeb | DomainIdentity
 
+// GraphSeed is one object-graph selector, parsed once for the plan, the
+// collection and the walk.
+type GraphSeed struct {
+	Kind  string // unit, pid, path, package
+	Value string
+}
+
 // Plan is what one run reads. Surfaces selects the startup collectors; a nil
 // map derives them from the domains, and an empty non-nil map reads none.
 // Units narrows a service run to the named units.
@@ -56,15 +63,19 @@ type Plan struct {
 	PIDs           map[int]bool
 	Units          map[string]bool
 	InventoryRoots []string
-	// Profile names the object a profile command selected. The collector uses
-	// it to scope the socket owner scan to the object's processes.
-	Profile string
-	// ProfileUnit is the unit a profile selected, when the selector is one.
-	// It turns the systemd inventory into a single `systemctl show` instead of
-	// listing every unit on the host, and the process scan to that cgroup.
-	ProfileUnit string
-	// ProfilePIDs scopes the process scan to one process and its parent.
-	ProfilePIDs map[int]bool
+	// Seed is the object an object graph grew from, when the run named one.
+	// The collector scopes the unit inventory, the process scan and the
+	// socket owner scan to it; every other run leaves it zero.
+	Seed GraphSeed
+}
+
+// seedUnit is the unit an object graph selected, or "" when the seed names
+// another kind of object.
+func (p Plan) seedUnit() string {
+	if p.Seed.Kind == "unit" {
+		return p.Seed.Value
+	}
+	return ""
 }
 
 // FullPlan reads every bounded domain. The static inventory walks the program
@@ -73,11 +84,24 @@ func FullPlan() Plan {
 	return Plan{Domains: AllDomains}
 }
 
-// ProfilePlan reads the context a profile can need: every startup surface, the
-// process table, services and sockets. The authority walk and the static
-// inventory are not needed to explain one object, so a profile stays cheap.
-func ProfilePlan() Plan {
-	return Plan{Domains: DomainBase | DomainServices | DomainProcesses | DomainNetwork | DomainPersistence}
+// ObjectGraphPlan reads the context one object's graph needs. A unit explains
+// itself through systemd, its processes and their sockets; a pid through the
+// process table and its sockets; a path or a package may be named by any
+// activation surface, so the walk reads them all. The authority walk and the
+// static inventory explain no single object, so an object graph stays cheap.
+func ObjectGraphPlan(seed GraphSeed) Plan {
+	plan := Plan{Domains: DomainBase | DomainServices | DomainProcesses | DomainNetwork | DomainPersistence, Seed: seed}
+	switch seed.Kind {
+	case "unit":
+		plan.Domains = DomainBase | DomainServices | DomainProcesses | DomainNetwork
+		plan.Surfaces = map[string]bool{"systemd": true}
+	case "pid":
+		plan.Domains = DomainBase | DomainProcesses | DomainNetwork
+		plan.Surfaces = map[string]bool{}
+	default:
+		plan.Surfaces = nil
+	}
+	return plan
 }
 
 // Has reports whether the plan selected a domain.
@@ -166,11 +190,10 @@ func positivePIDs(pids map[int]bool) map[int]bool {
 	return out
 }
 
-// profilePids names the processes a profile's socket scan needs: the selected
+// seedPids names the processes an object graph's socket scan needs: the selected
 // pid, the pids in the selected unit's cgroup, the processes running a selected
 // path, or the processes whose image belongs to a selected package.
-func profilePids(word string, processes []Process) map[int]bool {
-	word = strings.TrimSpace(word)
+func seedPids(seed GraphSeed, processes []Process) map[int]bool {
 	pids := map[int]bool{}
 	addUnit := func(unit string) {
 		for _, process := range processes {
@@ -194,27 +217,17 @@ func profilePids(word string, processes []Process) map[int]bool {
 			}
 		}
 	}
-	switch {
-	case strings.HasPrefix(word, "pid:"):
-		if pid, err := strconv.Atoi(strings.TrimPrefix(word, "pid:")); err == nil {
+	switch seed.Kind {
+	case "pid":
+		if pid, err := strconv.Atoi(seed.Value); err == nil {
 			pids[pid] = true
 		}
-	case isDigits(word):
-		if pid, err := strconv.Atoi(word); err == nil {
-			pids[pid] = true
-		}
-	case strings.HasPrefix(word, "unit:"):
-		addUnit(strings.TrimPrefix(word, "unit:"))
-	case strings.HasPrefix(word, "path:"):
-		addPath(strings.TrimPrefix(word, "path:"))
-	case strings.HasPrefix(word, "pkg:"):
-		addPackage(strings.TrimPrefix(word, "pkg:"))
-	case strings.HasPrefix(word, "/"):
-		addPath(word)
-	case hasUnitName(word):
-		addUnit(word)
-	default:
-		addPackage(word)
+	case "unit":
+		addUnit(seed.Value)
+	case "path":
+		addPath(seed.Value)
+	case "package":
+		addPackage(seed.Value)
 	}
 	return pids
 }

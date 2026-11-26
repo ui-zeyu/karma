@@ -118,8 +118,10 @@ func parseScope(words []string) (scope, error) {
 			} else {
 				parsed.domains |= audit.DomainServices
 			}
-			parsed.selectSurfaces(excluded)
-			parsed.surfaces["systemd"] = !excluded
+			// A unit word names a relation, so it stays out of the surface
+			// selection: the services domain's own startup scope collects the
+			// unit's systemd rows, and the panels the unit can answer narrow
+			// by the unit itself.
 			continue
 		}
 		names, group := surfaceGroups[name]

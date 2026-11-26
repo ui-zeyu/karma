@@ -54,14 +54,20 @@ func TestEveryFindingClassIsRoutedToADomain(t *testing.T) {
 }
 
 func TestGraphWordsCoverTheDomains(t *testing.T) {
-	for word, bit := range graphDomain {
-		if bit == 0 {
+	for _, word := range []string{"identity", "authority", "network", "packages", "boot", "web", "kernel"} {
+		module, spec, ok := GraphTarget(word)
+		if !ok {
+			t.Errorf("graph word %q missing from the registry", word)
+			continue
+		}
+		if spec.Domain == 0 {
 			t.Errorf("graph word %q maps to no domain", word)
 		}
-	}
-	for _, word := range []string{"identity", "authority", "network", "packages", "boot", "web", "kernel"} {
-		if _, ok := graphDomain[word]; !ok {
-			t.Errorf("graph word %q missing from the domain table", word)
+		if module.Bit == 0 {
+			t.Errorf("graph word %q selected a module with no bit", word)
 		}
+	}
+	if _, _, ok := GraphTarget("unknown"); ok {
+		t.Errorf("unknown graph word was accepted")
 	}
 }

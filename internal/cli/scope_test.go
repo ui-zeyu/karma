@@ -35,9 +35,8 @@ func TestScopePlanDomains(t *testing.T) {
 		{name: "identity", words: []string{"identity"},
 			domains: audit.DomainBase | audit.DomainIdentity},
 		{name: "unit", words: []string{"sshd.service"},
-			domains:  audit.DomainBase | audit.DomainServices,
-			surfaces: map[string]bool{"systemd": true},
-			units:    map[string]bool{"sshd.service": true}},
+			domains: audit.DomainBase | audit.DomainServices,
+			units:   map[string]bool{"sshd.service": true}},
 		{name: "pid", words: []string{"/proc/1"},
 			domains: audit.DomainBase | audit.DomainProcesses | audit.DomainNetwork},
 	}
@@ -90,12 +89,16 @@ func TestGraphPlanReadsOneDomain(t *testing.T) {
 		"authority": audit.DomainBase | audit.DomainAuthority,
 	}
 	for word, want := range cases {
-		plan, ok := audit.GraphPlan(word)
-		if !ok || plan.Domains != want {
-			t.Errorf("graphPlan(%q) = %+v ok=%t, want domains %b", word, plan, ok, want)
+		module, spec, ok := audit.GraphTarget(word)
+		if !ok {
+			t.Errorf("graph word %q is missing from the registry", word)
+			continue
+		}
+		if plan := spec.Plan(module.Bit); plan.Domains != want {
+			t.Errorf("graphPlan(%q) = %+v, want domains %b", word, plan, want)
 		}
 	}
-	if _, ok := audit.GraphPlan("unknown"); ok {
+	if _, _, ok := audit.GraphTarget("unknown"); ok {
 		t.Errorf("unknown graph domain was accepted")
 	}
 }

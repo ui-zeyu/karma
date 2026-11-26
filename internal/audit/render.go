@@ -35,6 +35,19 @@ const (
 	ansiReset  = chrome.Reset
 )
 
+// The semantic hues the evidence tables share: the warm pair states a live
+// anomaly and a caution, the pale pair a provisioned object and a healthy
+// state, and the cool pair information and a transition.
+const (
+	hueAlert       = 203
+	hueCaution     = 214
+	hueProvisioned = 110
+	hueLive        = 2
+	hueFailed      = 1
+	hueTransition  = 3
+	hueInformation = 6
+)
+
 var (
 	band         = chrome.Band
 	rail         = chrome.Rail
@@ -45,8 +58,8 @@ var (
 	truncate     = chrome.Truncate
 )
 
-// Render writes the audit as the operator's worksheet: masthead, findings, the
-// raw inventories behind them, and coverage.
+// Render writes the audit as the operator's worksheet: masthead, findings,
+// the raw inventories behind them, and coverage.
 func Render(w io.Writer, report *Report, options RenderOptions) {
 	width := reportWidth(options.Width)
 	renderMasthead(w, report, options, width)
@@ -66,21 +79,84 @@ func Render(w io.Writer, report *Report, options RenderOptions) {
 		fmt.Fprintln(w, findingPanel(finding, options, width))
 		fmt.Fprintln(w)
 	}
-	if options.Evidence && report.snapshot != nil {
-		renderEvidence(w, report, options, width)
+	if options.Evidence && report.view != nil {
+		renderEvidence(w, report.view, options, width)
 	}
 	if len(report.Coverage) > 0 {
 		fmt.Fprintln(w, evidencePanel("COVERAGE", report.Coverage, len(report.Coverage), options, width))
 	}
 }
 
-func renderMasthead(w io.Writer, report *Report, options RenderOptions, width int) {
-	version := options.Version
-	if version == "" {
-		version = "dev"
+// renderEvidence prints the raw inventories behind the findings: one panel
+// per evidence type, each capped so a whole-surface run still reads as a
+// worksheet. The full inventory is `karma show <section>`.
+func renderEvidence(w io.Writer, view *View, options RenderOptions, width int) {
+	fmt.Fprintln(w, band(" EVIDENCE", "", width, bannerBG, bannerFG, true, options.Color))
+	for _, section := range viewPanels(view, options) {
+		if len(section.rows) > 0 {
+			fmt.Fprintln(w, evidencePanel(section.title, cappedRows(section.rows, options),
+				section.count(len(section.rows)), options, width))
+		}
 	}
+}
+
+// evidenceLimit is the rows one evidence panel prints. The rest folds into a
+// note that names the narrower answer; `karma show <section>` prints every
+// row uncapped.
+const evidenceLimit = 200
+
+func cappedRows(rows []string, options RenderOptions) []string {
+	if len(rows) <= evidenceLimit {
+		return rows
+	}
+	shown := append([]string(nil), rows[:evidenceLimit]...)
+	return append(shown, paintText(options.Color, fg(mutedColor),
+		fmt.Sprintf("... %d more; narrow the scope or use show", len(rows)-evidenceLimit)))
+}
+
+func evidencePanel(title string, rows []string, count int, options RenderOptions, width int) string {
+	head := band(" "+title, strconv.Itoa(count)+" ", width-2, subBandBG, subBandFG, false, options.Color)
+	return rail(head, rows, width, mutedColor, options.Color)
+}
+
+// RenderShow prints one raw inventory in the page language every command
+// wears: the karma masthead with the run's context, then the section's
+// canonical panel with every row it collected.
+func RenderShow(w io.Writer, view *View, section *Section, word string, options RenderOptions) {
+	width := reportWidth(options.Width)
 	fmt.Fprintln(w, band(" KARMA", "yuyy ", width, bannerBG, bannerFG, true, options.Color))
-	head := band(" "+version, clock(), width-2, subBandBG, subBandFG, false, options.Color)
+	head := band(" "+versionText(options), clock(), width-2, subBandBG, subBandFG, false, options.Color)
+	facts := []fact{
+		{label: "section", value: word},
+		{label: "host", value: valueOr(view.Snapshot.Host.Hostname, "unknown")},
+		{label: "boundary", value: boundaryText(view.Snapshot.Boundary), full: true},
+	}
+	fmt.Fprintln(w, rail(head, factGrid(facts, width-2), width, mutedColor, options.Color))
+	fmt.Fprintln(w)
+	rows, count := section.Rows(view, options)
+	if len(rows) == 0 {
+		rows = []string{"nothing in this section answers the selected scope"}
+	}
+	fmt.Fprintln(w, evidencePanel(section.Panel, rows, count(len(rows)), options, width))
+}
+
+// WriteShowJSON writes one show section as data: the section's word and its
+// collected structures under the section's own key. The text rows stay a
+// terminal view; the JSON answer is the inventory itself, so a column the
+// text gains or loses cannot change the machine answer's shape.
+func WriteShowJSON(w io.Writer, view *View, section *Section, word string, options RenderOptions) error {
+	payload := map[string]any{
+		"section":       word,
+		section.JSONKey: section.Data(view, options),
+	}
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(payload)
+}
+
+func renderMasthead(w io.Writer, report *Report, options RenderOptions, width int) {
+	fmt.Fprintln(w, band(" KARMA", "yuyy ", width, bannerBG, bannerFG, true, options.Color))
+	head := band(" "+versionText(options), clock(), width-2, subBandBG, subBandFG, false, options.Color)
 	modules := 0
 	if report.Kernel != nil {
 		modules = len(report.Kernel.Modules)
@@ -107,6 +183,13 @@ func renderMasthead(w io.Writer, report *Report, options RenderOptions, width in
 	body = append(body, "severity "+severityLegend(options.Color))
 	fmt.Fprintln(w, rail(head, body, width, mutedColor, options.Color))
 	fmt.Fprintln(w)
+}
+
+func versionText(options RenderOptions) string {
+	if options.Version != "" {
+		return options.Version
+	}
+	return "dev"
 }
 
 func clock() string { return time.Now().Format("2006-01-02 15:04:05 -0700") }
@@ -247,38 +330,20 @@ func findingHead(finding Finding, width int, color bool) string {
 }
 
 // panel is one evidence section: a title, its rows, and the count the head
-// band prints. Both the full report and `show` print the same panels.
+// band prints.
 type panel struct {
 	title string
 	rows  []string
 	count func(int) int
 }
 
-func (p panel) head(options RenderOptions, width int) string {
-	return evidencePanel(p.title, p.rows, p.count(len(p.rows)), options, width)
-}
-
-// reportPanels builds the evidence sections of one report, in print order.
-// The rows are read from the report's own inventories; the origins come from
-// the same assessor the findings used.
-func reportPanels(report *Report, options RenderOptions) []panel {
-	a := newAssessor(report.snapshot)
-	filter := options.Filter
-	return []panel{
-		{title: "ACTIVATION", rows: activationRows(report, a, filter, options.Color), count: func(n int) int {
-			if n > 1 {
-				return (n - 1) / 2
-			}
-			return n
-		}},
-		{title: "PROCESS", rows: processRows(report, a, filter, options.Color), count: headerless},
-		{title: "SERVICE", rows: serviceRows(report, options.Color), count: headerless},
-		{title: "LISTEN", rows: socketRows(report, options.Color), count: headerless},
-		{title: "CONNECTION", rows: connectionRows(report), count: headerless},
-		{title: "KERNEL", rows: kernelRows(report), count: headerless},
-		{title: "AUTHORITY", rows: authorityRows(report, a, filter, options.Color), count: headerless},
-		{title: "MOUNTS", rows: mountRows(report, options.Color), count: headerless},
+// activationCount counts activation edges; the panel prints two rows per
+// edge, the trigger line and the run line.
+func activationCount(rows int) int {
+	if rows > 1 {
+		return (rows - 1) / 2
 	}
+	return rows
 }
 
 // headerless counts rows after the column header.
@@ -289,45 +354,31 @@ func headerless(rows int) int {
 	return rows
 }
 
-func renderEvidence(w io.Writer, report *Report, options RenderOptions, width int) {
-	fmt.Fprintln(w, band(" EVIDENCE", "", width, bannerBG, bannerFG, true, options.Color))
-	for _, section := range reportPanels(report, options) {
-		if len(section.rows) > 0 {
-			fmt.Fprintln(w, section.head(options, width))
-		}
+// viewPanels builds the evidence sections of one view, in print order. The
+// rows come from the view's filtered inventories; the origins come from the
+// view's assessor, the same one the findings used.
+func viewPanels(view *View, options RenderOptions) []panel {
+	return []panel{
+		{title: "ACTIVATION", rows: activationRows(view, options), count: activationCount},
+		{title: "PROCESS", rows: processRows(view, options), count: headerless},
+		{title: "SERVICE", rows: serviceRows(view, options), count: headerless},
+		{title: "LISTEN", rows: socketRows(view, options), count: headerless},
+		{title: "CONNECTION", rows: connectionRows(view, options), count: headerless},
+		{title: "KERNEL", rows: kernelRows(view, options), count: headerless},
+		{title: "AUTHORITY", rows: authorityRows(view, options), count: headerless},
+		{title: "MOUNTS", rows: mountRows(view, options), count: headerless},
 	}
 }
 
-func evidencePanel(title string, rows []string, count int, options RenderOptions, width int) string {
-	meta := strconv.Itoa(count) + " "
-	shown := rows
-	if len(shown) > 200 {
-		shown = shown[:200]
-	}
-	body := append([]string(nil), shown...)
-	if len(rows) > len(shown) {
-		body = append(body, paintText(options.Color, fg(mutedColor),
-			fmt.Sprintf("... %d more; narrow the scope or use show", len(rows)-len(shown))))
-	}
-	head := band(" "+title, meta, width-2, subBandBG, subBandFG, false, options.Color)
-	return rail(head, body, width, mutedColor, options.Color)
-}
-
-func activationRows(report *Report, a *assessor, filter Filter, color bool) []string {
-	if len(filter.PIDs) > 0 {
-		return nil
-	}
+func activationRows(view *View, options RenderOptions) []string {
 	rows := []string{columnHeader([]string{"SURFACE", "REACH", "AS", "ORIGIN", "TRIGGER"}, []int{10, 12, 10, 10})}
-	for _, edge := range report.Activations {
-		if !surfaceInScope(edge.Surface, filter) || !pathInScope(edge.Trigger, filter) && !pathInScope(edge.Target, filter) {
-			continue
-		}
+	for _, edge := range view.Activations {
 		target := edge.Target
 		if edge.Dynamic {
 			target = "(dynamic)"
 		}
-		origin := a.read(edge.TargetFacts, false).origin
-		prefix := columnRowHued(color, []string{
+		origin := view.assessor.read(edge.TargetFacts, false).origin
+		prefix := columnRowHued(options.Color, []string{
 			string(edge.Surface), edge.Phase.String(), valueOr(edge.Subject.String(), "-"), origin.String(),
 		}, []int{10, 12, 10, 10}, []int{0, 0, 0, originHue(origin)})
 		rows = append(rows, fmt.Sprintf("%s%s:%d", prefix, edge.Trigger, edge.Line))
@@ -339,15 +390,15 @@ func activationRows(report *Report, a *assessor, filter Filter, color bool) []st
 	return rows
 }
 
-func processRows(report *Report, a *assessor, filter Filter, color bool) []string {
+func processRows(view *View, options RenderOptions) []string {
 	rows := []string{columnHeader([]string{"PID", "PPID", "UID", "ORIGIN", "REACH", "COMMAND"}, []int{7, 7, 6, 10, 8})}
-	for _, process := range report.ProcessRows {
-		if process.PID == 0 || process.PID == selfPID() || !processInScope(process, filter) {
+	for _, process := range view.Processes {
+		if process.PID == 0 || process.PID == selfPID() {
 			continue
 		}
-		origin := a.read(process.ExeFacts, false).origin
+		origin := view.assessor.read(process.ExeFacts, false).origin
 		if process.Script != "" {
-			origin = weaker(origin, a.read(process.ScriptFacts, false).origin)
+			origin = weaker(origin, view.assessor.read(process.ScriptFacts, false).origin)
 		}
 		command := process.Cmdline
 		if command == "" {
@@ -359,7 +410,7 @@ func processRows(report *Report, a *assessor, filter Filter, color bool) []strin
 		if process.Outbound > 0 {
 			command += fmt.Sprintf("  [%d estab]", process.Outbound)
 		}
-		prefix := columnRowHued(color, []string{
+		prefix := columnRowHued(options.Color, []string{
 			strconv.Itoa(process.PID), strconv.Itoa(process.PPID), strconv.Itoa(process.UID),
 			origin.String(), processReach(process).String(),
 		}, []int{7, 7, 6, 10, 8}, []int{0, 0, 0, originHue(origin), 0})
@@ -371,10 +422,10 @@ func processRows(report *Report, a *assessor, filter Filter, color bool) []strin
 	return rows
 }
 
-func serviceRows(report *Report, color bool) []string {
+func serviceRows(view *View, options RenderOptions) []string {
 	rows := []string{columnHeader([]string{"UNIT", "LOAD", "ACTIVE", "SUB", "DESCRIPTION"}, []int{28, 8, 8, 8})}
-	for _, service := range report.Services {
-		rows = append(rows, columnRowHued(color, []string{
+	for _, service := range view.Services {
+		rows = append(rows, columnRowHued(options.Color, []string{
 			service.Unit, service.Load, service.Active, service.Sub,
 		}, []int{28, 8, 8, 8}, []int{0, 0, serviceStateHue(service.Active), 0})+service.Description)
 	}
@@ -384,10 +435,10 @@ func serviceRows(report *Report, color bool) []string {
 	return rows
 }
 
-func socketRows(report *Report, color bool) []string {
+func socketRows(view *View, options RenderOptions) []string {
 	rows := []string{columnHeader([]string{"PROTO", "STATE", "LOCAL", "PEER", "PID", "COMM"}, []int{6, 9, 24, 24, 7})}
-	for _, socket := range report.Sockets {
-		rows = append(rows, columnRowHued(color, []string{
+	for _, socket := range view.Sockets {
+		rows = append(rows, columnRowHued(options.Color, []string{
 			socket.Proto, socket.State, socket.Local, socket.Peer,
 			strconv.Itoa(socket.PID), socket.Comm,
 		}, []int{6, 9, 24, 24, 7}, []int{0, socketStateHue(socket.State), 0, 0, 0, 0}))
@@ -398,38 +449,95 @@ func socketRows(report *Report, color bool) []string {
 	return rows
 }
 
+// connectionRows is the established-connection table: the peer side of the
+// listener inventory and the evidence behind an interpreter-socket finding.
+// The peer is information in the socket language; a shell's name carries the
+// warm hue the interpreter finding states.
+func connectionRows(view *View, options RenderOptions) []string {
+	if len(view.Connections) == 0 {
+		return nil
+	}
+	processes := make(map[int]Process, len(view.Snapshot.Processes))
+	for _, process := range view.Snapshot.Processes {
+		processes[process.PID] = process
+	}
+	rows := []string{columnHeader([]string{"PROTO", "LOCAL", "PEER", "PID", "COMM"}, []int{6, 24, 24, 7, 16})}
+	for _, connection := range view.Connections {
+		rows = append(rows, columnRowHued(options.Color, []string{
+			connection.Proto, connection.Local, connection.Peer,
+			strconv.Itoa(connection.PID), connection.Comm,
+		}, []int{6, 24, 24, 7, 16},
+			[]int{0, 0, hueInformation, 0, connectionHue(connection, processes)}))
+	}
+	return rows
+}
+
+// connectionHue answers the hue of the connection's holder: the warm runtime
+// hue when any process holding the socket is a shell or a raw-socket tool.
+func connectionHue(connection Connection, processes map[int]Process) int {
+	if interpreterHolds(connection.PID, processes) {
+		return hueAlert
+	}
+	for _, pid := range connection.PIDs {
+		if interpreterHolds(pid, processes) {
+			return hueAlert
+		}
+	}
+	return 0
+}
+
+func interpreterHolds(pid int, processes map[int]Process) bool {
+	process, ok := processes[pid]
+	if !ok {
+		return false
+	}
+	_, interpreter := interpreterClass(process)
+	return interpreter
+}
+
 // kernelRows is the loaded module inventory: name, use count, state, loader
-// flags and the file the module database maps it to. Hidden registries and
+// flags, the module file's origin, and the file itself. Hidden registries and
 // the taint mask follow the table because they are facts about the same state.
-func kernelRows(report *Report) []string {
-	if report.Kernel == nil {
+func kernelRows(view *View, options RenderOptions) []string {
+	state := view.Kernel
+	if state == nil || !state.Collected {
 		return nil
 	}
-	state := report.Kernel
-	if !state.Collected {
-		return nil
-	}
-	rows := []string{columnHeader([]string{"MODULE", "USED", "STATE", "TAINT"}, []int{26, 5, 10, 6})}
+	rows := []string{columnHeader([]string{"MODULE", "USED", "STATE", "TAINT", "ORIGIN"}, []int{26, 5, 10, 6, 10})}
 	for _, module := range state.Modules {
+		origin, originCode := "-", 0
+		if module.File != "" {
+			verdict := view.assessor.read(module.Facts, false)
+			origin, originCode = verdict.origin.String(), originHue(verdict.origin)
+		}
 		file := module.File
 		if file == "" && module.FileState != "" {
 			file = "(" + module.FileState + ")"
+			// An unmapped row says nothing about one module when the whole file
+			// database belongs to another kernel.
+			if module.FileState == ModuleFileMissing ||
+				module.FileState == ModuleFileUnmapped && !state.MappingStale {
+				file = paintText(options.Color, fg(hueCaution), file)
+			}
 		}
-		rows = append(rows, columnRow([]string{
-			module.Name, strconv.Itoa(module.Used), valueOr(module.State, "-"), valueOr(module.Taint, "-"),
-		}, []int{26, 5, 10, 6})+file)
+		rows = append(rows, columnRowHued(options.Color, []string{
+			module.Name, strconv.Itoa(module.Used), valueOr(module.State, "-"), valueOr(module.Taint, "-"), origin,
+		}, []int{26, 5, 10, 6, 10},
+			[]int{0, 0, moduleStateHue(module.State), taintHue(module.Taint), originCode})+file)
 	}
 	for _, module := range state.Dormant {
-		rows = append(rows, "dormant module "+module.Name+"  "+module.File)
+		rows = append(rows, paintText(options.Color, fg(mutedColor), "dormant module "+module.Name)+"  "+module.File)
 	}
 	if state.Tainted != 0 {
-		rows = append(rows, fmt.Sprintf("taint %d: %s", state.Tainted, strings.Join(state.TaintNames, ", ")))
+		rows = append(rows, paintText(options.Color, fg(hueCaution),
+			fmt.Sprintf("taint %d: %s", state.Tainted, strings.Join(state.TaintNames, ", "))))
 	}
 	for _, hidden := range state.Hidden {
-		rows = append(rows, "hidden module "+hidden.Name+" ("+strings.Join(hidden.Views, ", ")+")")
+		rows = append(rows, paintText(options.Color, fg(hueAlert),
+			"hidden module "+hidden.Name+" ("+strings.Join(hidden.Views, ", ")+")"))
 	}
 	for _, pid := range state.HiddenPIDs {
-		rows = append(rows, fmt.Sprintf("hidden pid %d", pid))
+		rows = append(rows, paintText(options.Color, fg(hueAlert), fmt.Sprintf("hidden pid %d", pid)))
 	}
 	if len(state.LoaderDirs) > 0 {
 		rows = append(rows, fmt.Sprintf("loader search path: %d directories", len(state.LoaderDirs)))
@@ -440,34 +548,12 @@ func kernelRows(report *Report) []string {
 	return rows
 }
 
-// connectionRows is the established-connection table: the peer side of the
-// listener inventory and the evidence behind an interpreter-socket finding.
-func connectionRows(report *Report) []string {
-	if len(report.Connections) == 0 {
-		return nil
-	}
-	rows := []string{columnHeader([]string{"PROTO", "LOCAL", "PEER", "PID", "COMM"}, []int{6, 24, 24, 7})}
-	for _, connection := range report.Connections {
-		rows = append(rows, columnRow([]string{
-			connection.Proto, connection.Local, connection.Peer,
-			strconv.Itoa(connection.PID), connection.Comm,
-		}, []int{6, 24, 24, 7}))
-	}
-	return rows
-}
-
-func authorityRows(report *Report, a *assessor, filter Filter, color bool) []string {
-	if filter.Surfaces != nil && !filter.Surfaces["authority"] {
-		return nil
-	}
+func authorityRows(view *View, options RenderOptions) []string {
 	rows := []string{columnHeader([]string{"PATH", "ORIGIN", "REACH", "SETUID", "CAPS"}, []int{44, 10, 8, 7, 5})}
-	for _, path := range report.AuthorityObjects {
-		if !pathInScope(path, filter) {
-			continue
-		}
-		facts := report.snapshot.Facts(path)
-		origin := a.read(facts, true).origin
-		rows = append(rows, columnRowHued(color, []string{
+	for _, path := range view.Authority {
+		facts := view.Facts(path)
+		origin := view.assessor.read(facts, true).origin
+		rows = append(rows, columnRowHued(options.Color, []string{
 			path, origin.String(), authorityReach(facts).String(),
 			strconv.FormatBool(facts.Setuid), strconv.FormatBool(facts.Caps),
 		}, []int{44, 10, 8, 7, 5}, []int{0, originHue(origin), 0, 0, 0}))
@@ -480,169 +566,16 @@ func authorityRows(report *Report, a *assessor, filter Filter, color bool) []str
 
 // mountRows list the mount table: where evidence lives and which of it dies
 // with the boot.
-func mountRows(report *Report, color bool) []string {
-	if len(report.Mounts) == 0 {
+func mountRows(view *View, options RenderOptions) []string {
+	if len(view.Mounts) == 0 {
 		return nil
 	}
 	rows := []string{columnHeader([]string{"FSTYPE", "PATH", "OPTS"}, []int{12, 26, 34})}
-	for _, mount := range report.Mounts {
-		rows = append(rows, columnRowHued(color, []string{mount.FSType, mount.Path, mount.Opts},
+	for _, mount := range view.Mounts {
+		rows = append(rows, columnRowHued(options.Color, []string{mount.FSType, mount.Path, mount.Opts},
 			[]int{12, 26, 34}, []int{mountTypeHue(mount.FSType), 0, 0}))
 	}
 	return rows
-}
-
-// showSection is one `show` word and the panel title it prints. The words are
-// the same vocabulary the audit's scope grammar already accepts.
-var showSection = map[string]string{
-	"activation": "ACTIVATION", "persistence": "ACTIVATION", "boot": "ACTIVATION",
-	"login": "ACTIVATION", "service": "ACTIVATION", "device": "ACTIVATION",
-	"schedule": "ACTIVATION",
-	"process":  "PROCESS", "activity": "PROCESS",
-	"services":  "SERVICE",
-	"listeners": "LISTEN", "sockets": "LISTEN", "listen": "LISTEN",
-	"connections": "CONNECTION", "connection": "CONNECTION", "network": "CONNECTION",
-	"kernel":    "KERNEL",
-	"authority": "AUTHORITY",
-	"mounts":    "MOUNTS",
-}
-
-// showRows answers one show section's rows and its count function, so the
-// text renderer and the JSON encoder print the same answer.
-func showRows(snapshot *Snapshot, section string, options RenderOptions) ([]string, func(int) int) {
-	if section == "coverage" {
-		return Judge(snapshot, options.Filter).Coverage, func(rows int) int { return rows }
-	}
-	title, ok := showSection[section]
-	if !ok {
-		return []string{"nothing collected for this section"}, headerless
-	}
-	report := &Report{
-		Services:         snapshot.Services,
-		Sockets:          snapshot.Sockets,
-		Connections:      snapshot.Connections,
-		Mounts:           snapshot.Mounts,
-		Activations:      snapshot.Activations,
-		ProcessRows:      snapshot.Processes,
-		AuthorityObjects: snapshot.Authority,
-		snapshot:         snapshot,
-	}
-	if len(options.Filter.Units) > 0 {
-		var services []Service
-		for _, service := range snapshot.Services {
-			if options.Filter.Units[service.Unit] {
-				services = append(services, service)
-			}
-		}
-		report.Services = services
-	}
-	if section == "kernel" {
-		kernel := snapshot.Kernel
-		report.Kernel = &kernel
-	}
-	for _, found := range reportPanels(report, options) {
-		if found.title == title {
-			return found.rows, found.count
-		}
-	}
-	return []string{"nothing collected for this section"}, headerless
-}
-
-// RenderShow prints one raw inventory in the same panel language the report
-// prints. It builds the same document the audit renders, then shows one panel.
-func RenderShow(w io.Writer, snapshot *Snapshot, section string, options RenderOptions) {
-	width := reportWidth(options.Width)
-	fmt.Fprintln(w, band(" karma show "+section, "yuyy ", width, bannerBG, bannerFG, true, options.Color))
-	rows, count := showRows(snapshot, section, options)
-	if len(rows) == 0 {
-		rows = []string{"nothing collected for this section"}
-	}
-	fmt.Fprintln(w, evidencePanel(strings.ToUpper(section), rows, count(len(rows)), options, width))
-}
-
-// WriteShowJSON writes one show section as data. JSON carries text, so the
-// rows are built without their terminal hues.
-func WriteShowJSON(w io.Writer, snapshot *Snapshot, section string, options RenderOptions) error {
-	options.Color = false
-	rows, _ := showRows(snapshot, section, options)
-	out := struct {
-		Section string   `json:"section"`
-		Rows    []string `json:"rows"`
-	}{Section: section, Rows: rows}
-	if out.Rows == nil {
-		out.Rows = []string{}
-	}
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(out)
-}
-
-// WriteJSON writes the report as one object.
-func WriteJSON(w io.Writer, report *Report) error {
-	type boundaryJSON struct {
-		Time       string `json:"time,omitempty"`
-		Kind       string `json:"kind"`
-		Source     string `json:"source"`
-		Confidence string `json:"confidence"`
-	}
-	type findingJSON struct {
-		Class    string   `json:"class"`
-		Severity string   `json:"severity"`
-		Title    string   `json:"title"`
-		Path     string   `json:"path"`
-		Origin   string   `json:"origin"`
-		Reach    string   `json:"reach"`
-		Detail   string   `json:"detail,omitempty"`
-		Chain    []string `json:"chain,omitempty"`
-		Nodes    []string `json:"nodes,omitempty"`
-		Evidence []string `json:"evidence,omitempty"`
-	}
-	type reportJSON struct {
-		Source      string         `json:"source"`
-		Host        Host           `json:"host"`
-		Boundary    boundaryJSON   `json:"boundary"`
-		Findings    []findingJSON  `json:"findings"`
-		Services    []Service      `json:"services,omitempty"`
-		Listeners   []Socket       `json:"listeners,omitempty"`
-		Connections []Connection   `json:"connections,omitempty"`
-		Mounts      []Mount        `json:"mounts,omitempty"`
-		Ledger      *LedgerSummary `json:"ledger,omitempty"`
-		Kernel      *KernelState   `json:"kernel,omitempty"`
-		Coverage    []string       `json:"coverage,omitempty"`
-	}
-	out := reportJSON{
-		Source: report.Source,
-		Host:   report.Host,
-		Boundary: boundaryJSON{
-			Kind: report.Boundary.Kind, Source: report.Boundary.Source,
-			Confidence: report.Boundary.Confidence.String(),
-		},
-		Findings:    make([]findingJSON, 0, len(report.Findings)),
-		Services:    report.Services,
-		Listeners:   report.Sockets,
-		Connections: report.Connections,
-		Mounts:      report.Mounts,
-		Kernel:      report.Kernel,
-		Coverage:    report.Coverage,
-	}
-	if report.Ledger.Kind != "" && report.Ledger.Kind != "none" {
-		ledger := report.Ledger
-		out.Ledger = &ledger
-	}
-	if !report.Boundary.Time.IsZero() {
-		out.Boundary.Time = report.Boundary.Time.Format(time.RFC3339)
-	}
-	for _, finding := range report.Findings {
-		out.Findings = append(out.Findings, findingJSON{
-			Class: finding.Class, Severity: finding.Severity.String(), Title: finding.Title,
-			Path: finding.Path, Origin: finding.Origin.String(), Reach: finding.Reach.String(),
-			Detail: finding.Detail, Chain: traceTexts(finding.Trace),
-			Nodes: traceNodes(finding.Trace), Evidence: finding.Evidence,
-		})
-	}
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(out)
 }
 
 func severityColor(severity Severity) int {
@@ -703,11 +636,11 @@ func columnRowHued(color bool, values []string, widths []int, hues []int) string
 func originHue(origin Origin) int {
 	switch origin {
 	case Runtime:
-		return 203
+		return hueAlert
 	case Modified, Unknown:
-		return 214
+		return hueCaution
 	case Provisioned:
-		return 110
+		return hueProvisioned
 	}
 	return mutedColor
 }
@@ -717,11 +650,11 @@ func originHue(origin Origin) int {
 func serviceStateHue(state string) int {
 	switch state {
 	case "active":
-		return 2
+		return hueLive
 	case "failed":
-		return 1
+		return hueFailed
 	case "activating", "deactivating", "reloading":
-		return 3
+		return hueTransition
 	case "inactive":
 		return mutedColor
 	}
@@ -733,11 +666,32 @@ func serviceStateHue(state string) int {
 func socketStateHue(state string) int {
 	switch state {
 	case "LISTEN":
-		return 3
+		return hueTransition
 	case "ESTAB", "ESTABLISHED":
-		return 6
+		return hueInformation
 	}
 	return 0
+}
+
+// moduleStateHue: a loaded module is live, a load or unload in flight is a
+// transition, the rest is quiet.
+func moduleStateHue(state string) int {
+	switch state {
+	case "Live":
+		return hueLive
+	case "Loading", "Unloading":
+		return hueTransition
+	}
+	return 0
+}
+
+// taintHue: a loader flag on one module is a caution; an empty column is
+// quiet.
+func taintHue(taint string) int {
+	if taint == "" || taint == "-" {
+		return 0
+	}
+	return hueCaution
 }
 
 // mountTypeHue: a remote filesystem is information (cyan), a memory-backed
@@ -745,9 +699,9 @@ func socketStateHue(state string) int {
 func mountTypeHue(fstype string) int {
 	switch fstype {
 	case "nfs", "nfs4", "cifs", "smb3", "smbfs", "sshfs", "fuse.sshfs", "9p", "afs", "nbd":
-		return 6
+		return hueInformation
 	case "tmpfs", "ramfs", "devtmpfs":
-		return 3
+		return hueTransition
 	}
 	return 0
 }

@@ -182,14 +182,18 @@ scope. They are hidden by default; `--evidence` prints them (the `EVIDENCE`
 block above). Every finding always carries its evidence lines — the origins of
 both ends, the content comparison, the account it runs as, an unowned file's
 nearest owned ancestor, a process's established connections. `--json` prints the
-findings, services, listeners, mounts, ledger summary, and coverage as one object.
+findings, services, listeners, mounts, ledger summary, and coverage as one object;
+`--evidence` is a text view, so the pair is rejected — a section of
+`karma show <section> --json` is the machine-readable inventory.
 
 The text views carry their heuristics on a terminal: evidence and `show` rows
 color the origin column (runtime warm red, modified/unknown amber, provisioned
 calm, base muted), service states (active green, failed red, transition amber),
-socket states (LISTEN amber, established cyan) and mount types (remote cyan,
-memory-backed amber). `karma ls` wears the ls -l palette (permissions by bit,
-fresh dates green, names by file kind), and `karma cat` paints shell and
+socket states (LISTEN amber, established cyan), connection peers (cyan) with a
+shell's name in the warm red, module states, taint flags and file origins, and
+mount types (remote cyan, memory-backed amber). A row that wraps keeps its
+colors across the break. `karma ls` wears the ls -l palette (permissions by
+bit, fresh dates green, names by file kind), and `karma cat` paints shell and
 PowerShell scripts, ssh configs and key/value files. A pipe gets plain bytes.
 
 ## Graph
@@ -236,6 +240,18 @@ karma show kernel                           # loaded modules and the taint mask
 karma show authority                        # setuid, capabilities, keys, sudoers
 karma show mounts                           # the mount table
 karma show coverage                         # what could not be read and why
+```
+
+A section prints every row it collected, uncapped. The scope words narrow it
+by the relations its rows answer: a unit narrows the services, processes,
+sockets and activation edges it owns; a path narrows the paths; a pid narrows
+the processes and their sockets; a surface word narrows the activation rows.
+`show <section> --json` prints the collected structures themselves — services
+as service objects, listeners as socket objects — under the section's own
+key, so a column the text view gains never changes the machine answer's
+shape.
+
+```bash
 
 karma cat /etc/profile.d/x.sh               # read in process, no host cat
 karma ls /var/www                           # list in process
@@ -302,8 +318,8 @@ remote channel will place the binary first and then run this same local audit.
 - The static inventory defaults to the program directories. `files <path>`
   extends it; the audit never walks the whole disk. Generated files under
   `/usr/lib` are only reviewed when you name that tree.
-- A profile reads declared metadata, kernel state, the application tree, ELF
-  and JAR dependencies, and path-shaped strings. A reference built at runtime
-  that none of those exposes is counted in coverage, not guessed. Config
-  formats are not parsed for includes; a config is reviewed as a file and its
-  text only for path-like leads.
+- An object graph reads declared metadata, kernel state, the application
+  tree, ELF and JAR dependencies, and path-shaped strings. A reference built
+  at runtime that none of those exposes is counted in coverage, not guessed.
+  Config formats are not parsed for includes; a config is reviewed as a file
+  and its text only for path-like leads.

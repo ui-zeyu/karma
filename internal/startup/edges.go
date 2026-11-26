@@ -1,6 +1,10 @@
 package startup
 
-import "karma/internal/trust"
+import (
+	"encoding/json"
+
+	"karma/internal/trust"
+)
 
 // Surface is the family of activation mechanism the trigger belongs to.
 type Surface string
@@ -51,6 +55,9 @@ func (p Phase) String() string {
 	return phaseNames[p]
 }
 
+// MarshalJSON writes the phase as the word the panels print.
+func (p Phase) MarshalJSON() ([]byte, error) { return json.Marshal(p.String()) }
+
 // SubjectClass is the structural class of the account an activation runs as.
 type SubjectClass uint8
 
@@ -69,10 +76,23 @@ const (
 
 // Subject is the account an activation runs as.
 type Subject struct {
-	Class SubjectClass
+	Class SubjectClass `json:"class"`
 	// User carries the account name when Class is AccountNamed.
-	User string
+	User string `json:"user,omitempty"`
 }
+
+var subjectClassNames = [...]string{"named", "root", "all", "login", "dynamic"}
+
+// String renders the subject class the way the audit's panels print it.
+func (c SubjectClass) String() string {
+	if int(c) >= len(subjectClassNames) {
+		return "named"
+	}
+	return subjectClassNames[c]
+}
+
+// MarshalJSON writes the subject class as its word.
+func (c SubjectClass) MarshalJSON() ([]byte, error) { return json.Marshal(c.String()) }
 
 // Account returns the subject for a named account.
 func Account(name string) Subject { return Subject{Class: AccountNamed, User: name} }
@@ -127,31 +147,32 @@ type Mechanism string
 // structure; the facts on both ends let the judge answer what the relation
 // means without parsing a name.
 type Edge struct {
-	Surface   Surface
-	Phase     Phase
-	Subject   Subject
-	Trigger   string
-	Line      int
-	Mechanism Mechanism
-	Target    string
-	Kind      Kind
+	Surface   Surface   `json:"surface"`
+	Phase     Phase     `json:"phase"`
+	Subject   Subject   `json:"subject"`
+	Trigger   string    `json:"trigger"`
+	Line      int       `json:"line,omitempty"`
+	Mechanism Mechanism `json:"mechanism,omitempty"`
+	Target    string    `json:"target,omitempty"`
+	Kind      Kind      `json:"kind"`
 	// TriggerFacts and TargetFacts are the provenance of the two ends. They
-	// are zero facts when the collector could not state them.
-	TriggerFacts trust.Facts
-	TargetFacts  trust.Facts
+	// are render-side state: the origins they carry are judged facts, and
+	// the JSON answer carries the judged edges alone.
+	TriggerFacts trust.Facts `json:"-"`
+	TargetFacts  trust.Facts `json:"-"`
 	// Dynamic is a target the collector could not name statically (a variable
 	// command, a PATH lookup). It is reported as coverage, never judged.
-	Dynamic bool
+	Dynamic bool `json:"dynamic,omitempty"`
 	// Context is a declared directory or path a unit works in
-	// (WorkingDirectory, RuntimeDirectory, ...). The profile renders it as a
+	// (WorkingDirectory, RuntimeDirectory, ...). The graph renders it as a
 	// relation; the judge does not turn it into a finding of its own unless
 	// the declared write access names a dangerous target.
-	Context bool
+	Context bool `json:"context,omitempty"`
 	// Note is the row's own remaining fields where a parser reads a table
 	// line by line (a fstab row's filesystem type and options, a crypttab
 	// row's device and key file). The judge reads it for the shapes a row
 	// can state on its own.
-	Note string
+	Note string `json:"note,omitempty"`
 }
 
 // rawEdge is an edge before its ends' facts are read.

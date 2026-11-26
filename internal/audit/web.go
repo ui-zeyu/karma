@@ -162,7 +162,7 @@ func judgeWeb(snapshot *Snapshot, a *assessor, filter Filter, add func(Finding))
 	return coverage
 }
 
-func webGraph(snapshot *Snapshot) *Profile {
+func webGraph(snapshot *Snapshot) *GraphView {
 	graph := domainRoot("domain", "web", "web-root script provenance", NoAsset)
 	for _, dir := range snapshot.Web.Roots {
 		node := graph.Node("dir", dir, dir, dir, Unknown, ServiceAsset, "web root")
@@ -174,5 +174,5 @@ func webGraph(snapshot *Snapshot) *Profile {
 		node := graph.Node("file", file.Path, file.Path, file.Path, story.origin, ServiceAsset, story.why)
 		graph.link(nodeKey("dir", file.Root), node.ID, "contains", "tree", "high", "")
 	}
-	return graph.Profile("domain", snapshot)
+	return graph.GraphView("domain", snapshot)
 }

@@ -41,19 +41,19 @@ type Content struct {
 
 // Mount is one mounted filesystem: context for where evidence lives.
 type Mount struct {
-	FSType string
-	Path   string
-	Opts   string
+	FSType string `json:"fstype"`
+	Path   string `json:"path"`
+	Opts   string `json:"opts"`
 }
 
 // LedgerSummary says which content ledger the run used and how far it reached.
 type LedgerSummary struct {
-	Kind     string   // dpkg, rpm, none
-	Packages int      // packages whose content hashes were compared
-	Entries  int      // ledger hash entries read for those packages
-	Verified int      // judged files whose content matched the ledger
-	Tampered []string // packages whose ledger files changed after their last transaction
-	Note     string   // a degraded answer worth a coverage line
+	Kind     string   `json:"kind"`               // dpkg, rpm, none
+	Packages int      `json:"packages"`           // packages whose content hashes were compared
+	Entries  int      `json:"entries"`            // ledger hash entries read for those packages
+	Verified int      `json:"verified"`           // judged files whose content matched the ledger
+	Tampered []string `json:"tampered,omitempty"` // packages whose ledger files changed after their last transaction
+	Note     string   `json:"note,omitempty"`     // a degraded answer worth a coverage line
 }
 
 // logLedgerPkg marks the transaction log's own row in the ledger's file set:

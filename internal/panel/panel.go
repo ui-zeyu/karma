@@ -83,6 +83,8 @@ func Rail(head string, body []string, width, railColor int, color bool) string {
 // Wrap breaks a body line inside a panel: between words first, then by
 // character only when one token is wider than the line. A line carrying runs
 // of spaces (a table row) is hard-wrapped instead, which keeps columns aligned.
+// Painted lines keep their colors across the break: each continuation line
+// re-opens the SGR state it started under.
 func Wrap(text string, width int) []string {
 	if width < 8 {
 		width = 8
@@ -90,38 +92,107 @@ func Wrap(text string, width int) []string {
 	if DisplayWidth(text) <= width {
 		return []string{text}
 	}
-	text = StripANSI(text)
-	if strings.Contains(text, "  ") {
-		var out []string
-		runes := []rune(text)
-		for len(runes) > width {
-			out = append(out, string(runes[:width]))
-			runes = runes[width:]
-		}
-		return append(out, string(runes))
+	runes := styledRunes(text)
+	if strings.Contains(StripANSI(text), "  ") {
+		return wrapHard(runes, width)
 	}
-	var lines []string
-	for _, word := range strings.Fields(text) {
-		if len(lines) == 0 {
-			lines = append(lines, word)
+	return wrapWords(runes, width)
+}
+
+// styledRune is one visible rune and the SGR state it is printed under: the
+// sequences open at that point, which a wrapped continuation line re-emits.
+type styledRune struct {
+	r     rune
+	state string
+}
+
+// styledRunes reads a painted line into visible runes, folding every SGR
+// sequence into the state of the runes that follow it.
+func styledRunes(text string) []styledRune {
+	out := make([]styledRune, 0, len(text))
+	state := ""
+	for index := 0; index < len(text); {
+		if text[index] == 0x1b && index+1 < len(text) && text[index+1] == '[' {
+			end := index + 2
+			for end < len(text) && (text[end] < 0x40 || text[end] > 0x7e) {
+				end++
+			}
+			if end < len(text) {
+				end++
+			}
+			sequence := text[index:end]
+			if sequence[len(sequence)-1] == 'm' {
+				if sequence == Reset || sequence == "\x1b[m" {
+					state = ""
+				} else {
+					state += sequence
+				}
+			}
+			index = end
 			continue
 		}
-		if utf8.RuneCountInString(lines[len(lines)-1])+1+utf8.RuneCountInString(word) <= width {
-			lines[len(lines)-1] += " " + word
-			continue
-		}
-		lines = append(lines, word)
-	}
-	var out []string
-	for _, line := range lines {
-		for utf8.RuneCountInString(line) > width {
-			runes := []rune(line)
-			out = append(out, string(runes[:width]))
-			line = string(runes[width:])
-		}
-		out = append(out, line)
+		r, size := utf8.DecodeRuneInString(text[index:])
+		out = append(out, styledRune{r: r, state: state})
+		index += size
 	}
 	return out
+}
+
+// renderStyled writes the runes back, opening each state once and closing the
+// last one, so every line is self-contained.
+func renderStyled(runes []styledRune) string {
+	var out strings.Builder
+	open := ""
+	for _, styled := range runes {
+		if styled.state != open {
+			if open != "" {
+				out.WriteString(Reset)
+			}
+			if styled.state != "" {
+				out.WriteString(styled.state)
+			}
+			open = styled.state
+		}
+		out.WriteRune(styled.r)
+	}
+	if open != "" {
+		out.WriteString(Reset)
+	}
+	return out.String()
+}
+
+// wrapHard cuts at the line width, keeping a table row's columns in place.
+func wrapHard(runes []styledRune, width int) []string {
+	var lines []string
+	for len(runes) > width {
+		lines = append(lines, renderStyled(runes[:width]))
+		runes = runes[width:]
+	}
+	return append(lines, renderStyled(runes))
+}
+
+// wrapWords breaks at the last space before the line width, falling back to a
+// hard cut inside a token wider than the line.
+func wrapWords(runes []styledRune, width int) []string {
+	var lines []string
+	for len(runes) > 0 {
+		if len(runes) <= width {
+			return append(lines, renderStyled(runes))
+		}
+		cut := width
+		for index := width; index > 0; index-- {
+			if runes[index].r == ' ' {
+				cut = index
+				break
+			}
+		}
+		lines = append(lines, renderStyled(runes[:cut]))
+		runes = runes[cut:]
+		for len(runes) > 0 && runes[0].r == ' ' {
+			runes = runes[1:]
+		}
+	}
+	return lines
 }
 
 // DisplayWidth is a string's printed width: ANSI escapes take no column.

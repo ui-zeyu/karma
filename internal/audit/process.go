@@ -12,8 +12,8 @@ import (
 	"karma/internal/trust"
 )
 
-// processScope narrows the process scan. A unit profile reads the cgroup of
-// every pid (cheap) and details only the unit's own processes; a pid profile
+// processScope narrows the process scan. A unit seed reads the cgroup of
+// every pid (cheap) and details only the unit's own processes; a pid seed
 // reads that process. The zero scope is the whole host.
 type processScope struct {
 	unit string

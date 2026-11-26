@@ -37,8 +37,8 @@ func newRootCmd(version string) *cobra.Command {
 		Long: "Read-only incident-response audit of the local Linux host: judge the artifact delta, " +
 			"the activation surfaces and the kernel state, and print the findings with their evidence. " +
 			"With no command every bounded domain is audited; scope words narrow it to a domain, a " +
-			"surface, a path, a pid or a unit. profile and graph read the same collected facts as " +
-			"relations; show prints one raw inventory unjudged.",
+			"surface, a path, a pid or a unit. graph reads the same collected facts as relations; " +
+			"show prints one raw inventory unjudged.",
 	}
 	root.SetVersionTemplate("karma {{.Version}}\n")
 	root.SuggestionsMinimumDistance = 2
@@ -101,7 +101,10 @@ func newShowCmd() *cobra.Command {
 		Use:   "show <section> [scope...]",
 		Short: "Print one collected inventory without judging it",
 		Long: "Print one collected inventory without judging it: activation, process, services, " +
-			"listeners, connections, authority, mounts, kernel, or coverage. Scope words narrow it the way the audit's do.",
+			"listeners, connections, kernel, authority, mounts, or coverage. A section prints every " +
+			"row it collected, and the scope words narrow it by the relations its rows answer: a " +
+			"unit narrows the services, processes, sockets and activation edges it owns; a path " +
+			"narrows the paths; a pid narrows the processes and their sockets.",
 		Example: "karma show activation\nkarma show listeners\nkarma show coverage",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -114,7 +117,7 @@ func newShowCmd() *cobra.Command {
 			return runShow(cmd.Context(), cmd.OutOrStdout(), args, flags)
 		},
 	}
-	addRunFlags(cmd)
+	showFlags(cmd.Flags())
 	return cmd
 }
 

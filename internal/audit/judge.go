@@ -81,38 +81,24 @@ var classDomain = map[string]Domain{
 }
 
 func Judge(snapshot *Snapshot, filter Filter) *Report {
+	view := NewView(snapshot, filter)
 	report := &Report{
 		Boundary:         snapshot.Boundary,
 		Host:             snapshot.Host,
 		Source:           snapshot.Source,
-		Services:         snapshot.Services,
-		Sockets:          snapshot.Sockets,
-		Connections:      snapshot.Connections,
-		Mounts:           snapshot.Mounts,
+		Services:         view.Services,
+		Sockets:          view.Sockets,
+		Connections:      view.Connections,
+		Mounts:           view.Mounts,
 		Ledger:           snapshot.Ledger,
-		Activations:      snapshot.Activations,
-		ProcessRows:      snapshot.Processes,
-		AuthorityObjects: snapshot.Authority,
+		Activations:      view.Activations,
+		ProcessRows:      view.Processes,
+		AuthorityObjects: view.Authority,
+		Kernel:           view.Kernel,
 		Unowned:          snapshot.Unowned,
 		OffDomains:       filter.OffDomains,
 	}
-	report.snapshot = snapshot
-	if len(filter.Units) > 0 {
-		var services []Service
-		for _, service := range snapshot.Services {
-			if filter.Units[service.Unit] {
-				services = append(services, service)
-			}
-		}
-		report.Services = services
-	}
-	if len(filter.Units) > 0 || len(filter.PIDs) > 0 {
-		report.Sockets = scopedSockets(snapshot.Sockets, snapshot.Processes, filter)
-	}
-	if snapshot.Kernel.Collected {
-		kernel := snapshot.Kernel
-		report.Kernel = &kernel
-	}
+	report.view = view
 	if snapshot.Boundary.Time.IsZero() {
 		report.Coverage = append(report.Coverage, "no artifact boundary: origins are unknown and only structural findings remain")
 	} else if snapshot.Boundary.Confidence < HighConfidence {
@@ -200,11 +186,8 @@ func Judge(snapshot *Snapshot, filter Filter) *Report {
 		report.Coverage = append(report.Coverage, module.Judge(snapshot, report, a, filter, add)...)
 	}
 
-	for _, process := range snapshot.Processes {
-		if process.PID == os.Getpid() || !processInScope(process, filter) {
-			continue
-		}
-		if len(filter.Units) > 0 && !filter.Units[process.Unit] {
+	for _, process := range view.Processes {
+		if process.PID == os.Getpid() {
 			continue
 		}
 		report.Processes++
