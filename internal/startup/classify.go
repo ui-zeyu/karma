@@ -37,6 +37,8 @@ func surfaceFor(path string) Surface {
 		return SurfaceApt
 	case isModulePath(path):
 		return SurfaceModule
+	case isSystemPath(path):
+		return SurfaceSystem
 	}
 	return SurfaceSystemd
 }
@@ -47,6 +49,8 @@ func dialectFor(path string) Dialect {
 		return EnvDialect
 	case isLoaderPath(path):
 		return LoaderDialect
+	case isGeneratorPath(path):
+		return GeneratorsDialect
 	case isUdevPath(path):
 		return UdevDialect
 	case isInitPath(path):
@@ -59,8 +63,14 @@ func dialectFor(path string) Dialect {
 	case isSSHPath(path):
 		return sshDialect(path)
 	case isPAMPath(path):
+		if isMotdPath(path) {
+			return ShellDialect
+		}
 		return PAMDialect
 	case isSupervisorPath(path):
+		if isXinetdPath(path) {
+			return XinetdDialect
+		}
 		if strings.HasSuffix(path, ".conf") || strings.HasSuffix(path, ".ini") {
 			return UnitDialect
 		}
@@ -71,6 +81,8 @@ func dialectFor(path string) Dialect {
 		return AptDialect
 	case isModulePath(path):
 		return ModprobeDialect
+	case isSystemPath(path):
+		return SystemDialect
 	case isProfilePath(path):
 		return ShellDialect
 	}
@@ -125,7 +137,7 @@ func isInitPath(path string) bool {
 }
 
 func isLoaderPath(path string) bool {
-	return path == "/etc/ld.so.preload"
+	return path == "/etc/ld.so.preload" || path == "/etc/ld.so.cache"
 }
 
 func isUdevPath(path string) bool {
@@ -134,10 +146,36 @@ func isUdevPath(path string) bool {
 }
 
 func isPAMPath(path string) bool {
-	return strings.HasPrefix(path, "/etc/pam.d/")
+	return strings.HasPrefix(path, "/etc/pam.d/") || isMotdPath(path)
+}
+
+// isMotdPath names the login banner's run-parts directory.
+func isMotdPath(path string) bool {
+	return strings.HasPrefix(path, "/etc/update-motd.d/")
+}
+
+func isSystemPath(path string) bool {
+	switch path {
+	case "/etc/fstab", "/etc/crypttab", "/etc/nsswitch.conf",
+		"/etc/hosts.allow", "/etc/hosts.deny":
+		return true
+	}
+	return false
+}
+
+func isGeneratorPath(path string) bool {
+	for _, dir := range append(append([]string(nil), generatorDirs...), userGeneratorDirs...) {
+		if strings.HasPrefix(path, dir+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func isSupervisorPath(path string) bool {
+	if isXinetdPath(path) {
+		return true
+	}
 	for _, prefix := range []string{
 		"/etc/supervisor/", "/etc/supervisord.conf", "/etc/supervisord.d/",
 		"/etc/s6/", "/etc/services.d/", "/etc/s6-overlay/",
@@ -148,6 +186,11 @@ func isSupervisorPath(path string) bool {
 		}
 	}
 	return false
+}
+
+// isXinetdPath names the internet superserver's configuration layers.
+func isXinetdPath(path string) bool {
+	return path == "/etc/xinetd.conf" || strings.HasPrefix(path, "/etc/xinetd.d/")
 }
 
 func isXdgPath(path string) bool {

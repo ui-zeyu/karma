@@ -29,6 +29,7 @@ type assessor struct {
 	conffiles  map[string]bool
 	tampered   map[string]bool
 	owners     map[string]string
+	shared     map[string]bool
 	mounts     mountTable
 	remodified int
 	noLedger   map[string]bool
@@ -44,6 +45,7 @@ func newAssessor(snapshot *Snapshot) *assessor {
 		mounts:     buildMountTable(snapshot.Mounts),
 		tampered:   map[string]bool{},
 		owners:     map[string]string{},
+		shared:     map[string]bool{},
 		noLedger:   map[string]bool{},
 		noConffile: map[string]bool{},
 	}
@@ -55,11 +57,7 @@ func newAssessor(snapshot *Snapshot) *assessor {
 	for path, facts := range snapshot.Objects {
 		if facts.PackageKnown && facts.Package != "" {
 			a.owners[path] = facts.Package
-		}
-	}
-	for path, pkg := range snapshot.ownerOf {
-		if _, seen := a.owners[path]; !seen {
-			a.owners[path] = pkg
+			a.shared[path] = facts.PackageShared
 		}
 	}
 	return a
@@ -83,9 +81,14 @@ func (a *assessor) read(facts trust.Facts, authority bool) verdict {
 	if facts.PackageKnown && facts.Package == "" {
 		// An orphan: the nearest owned ancestor names the tree it sits in,
 		// which separates a planted payload from a home-directory tool.
-		if pkg, dir, ok := a.ancestorOwner(facts.Real); ok {
-			out.evidence = append(out.evidence, fmt.Sprintf(
-				"no package owns it; the nearest owned ancestor %s belongs to %s", dir, pkg))
+		if pkg, dir, shared, ok := a.ancestorOwner(facts.Real); ok {
+			if shared {
+				out.evidence = append(out.evidence, fmt.Sprintf(
+					"no package owns it; the nearest owned ancestor %s is shared by several packages", dir))
+			} else {
+				out.evidence = append(out.evidence, fmt.Sprintf(
+					"no package owns it; the nearest owned ancestor %s belongs to %s", dir, pkg))
+			}
 		}
 		return out
 	}
@@ -147,11 +150,13 @@ func (a *assessor) read(facts trust.Facts, authority bool) verdict {
 }
 
 // ancestorOwner walks a path's directories to the nearest one a package owns.
-func (a *assessor) ancestorOwner(path string) (string, string, bool) {
-	for dir := filepath.Dir(path); dir != "/" && dir != "."; dir = filepath.Dir(dir) {
-		if pkg, ok := a.owners[dir]; ok {
-			return pkg, dir, true
+// shared reports a directory row that several packages claim, where the first
+// name is a citation rather than the tree's owner.
+func (a *assessor) ancestorOwner(path string) (pkg, dir string, shared, ok bool) {
+	for dir = filepath.Dir(path); dir != "/" && dir != "."; dir = filepath.Dir(dir) {
+		if value, found := a.owners[dir]; found {
+			return value, dir, a.shared[dir], true
 		}
 	}
-	return "", "", false
+	return "", "", false, false
 }

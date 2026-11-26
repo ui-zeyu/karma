@@ -9,7 +9,7 @@ import "strings"
 func supervisorEdges(file File) []rawEdge {
 	if file.Dialect == ShellDialect {
 		return shellEdges(file.Body, rawEdge{
-			surface: SurfaceSupervisor, reach: BootStaged, as: "root", trigger: file.Path,
+			surface: SurfaceSupervisor, phase: BootStaged, subject: Subject{Class: AccountRoot}, trigger: file.Path,
 		})
 	}
 	directives := parseUnit(file.Body)
@@ -24,12 +24,12 @@ func supervisorEdges(file File) []rawEdge {
 		if !supervisorSection(d.section) || d.key != "command" || d.value == "" {
 			continue
 		}
-		as := "root"
+		subject := Subject{Class: AccountRoot}
 		if user, ok := users[d.section]; ok {
-			as = user
+			subject = Account(user)
 		}
 		edges = append(edges, shellEdges(d.value, rawEdge{
-			surface: SurfaceSupervisor, reach: BootStaged, as: as,
+			surface: SurfaceSupervisor, phase: BootStaged, subject: subject,
 			trigger: file.Path, line: d.line - 1, mechanism: "command",
 		})...)
 	}
@@ -46,7 +46,7 @@ func supervisorSection(section string) bool {
 // TryExec is the program the session checks before offering the entry; the
 // account is the one whose autostart directory holds the file.
 func desktopEdges(file File) []rawEdge {
-	as := accountFor(file.Path)
+	subject := accountFor(file.Path)
 	var edges []rawEdge
 	for _, d := range parseUnit(file.Body) {
 		if d.section != "Desktop Entry" {
@@ -58,8 +58,8 @@ func desktopEdges(file File) []rawEdge {
 				continue
 			}
 			edges = append(edges, shellEdges(d.value, rawEdge{
-				surface: SurfaceXdg, reach: Session, as: as,
-				trigger: file.Path, line: d.line - 1, mechanism: d.key,
+				surface: SurfaceXdg, phase: Session, subject: subject,
+				trigger: file.Path, line: d.line - 1, mechanism: Mechanism(d.key),
 			})...)
 		}
 	}

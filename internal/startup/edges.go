@@ -18,19 +18,88 @@ const (
 	SurfaceXdg        Surface = "xdg"
 	SurfaceApt        Surface = "apt"
 	SurfaceModule     Surface = "module"
+	SurfaceSystem     Surface = "system"
 )
 
-// Reach is when the trigger runs.
-type Reach string
+// Phase is when the trigger acts. The audit maps a phase and a subject onto
+// its own authority reach; this vocabulary stays about time.
+type Phase uint8
 
 const (
-	BootEnabled Reach = "boot-enabled"
-	BootStaged  Reach = "boot-staged"
-	Login       Reach = "login"
-	Session     Reach = "session"
-	Scheduled   Reach = "scheduled"
-	Device      Reach = "device"
+	// BootEnabled acts at boot and the init is committed to it: the unit is
+	// enabled, the runlevel link exists.
+	BootEnabled Phase = iota
+	// BootStaged is present for boot but the init has not committed to it.
+	BootStaged
+	// Login acts when a login session opens.
+	Login
+	// Session acts inside an interactive session.
+	Session
+	// Scheduled acts on a timer.
+	Scheduled
+	// Device acts when a device appears.
+	Device
 )
+
+var phaseNames = [...]string{"boot-enabled", "boot-staged", "login", "session", "scheduled", "device"}
+
+// String renders the phase the way the audit's panels print it.
+func (p Phase) String() string {
+	if int(p) >= len(phaseNames) {
+		return "unknown"
+	}
+	return phaseNames[p]
+}
+
+// SubjectClass is the structural class of the account an activation runs as.
+type SubjectClass uint8
+
+const (
+	// AccountNamed is one specific account; Subject.User names it.
+	AccountNamed SubjectClass = iota
+	// AccountRoot is root itself.
+	AccountRoot
+	// AccountAll is every account: loader preloads run in each process.
+	AccountAll
+	// AccountLogin is whichever account opens the session.
+	AccountLogin
+	// AccountDynamic is a systemd dynamic user.
+	AccountDynamic
+)
+
+// Subject is the account an activation runs as.
+type Subject struct {
+	Class SubjectClass
+	// User carries the account name when Class is AccountNamed.
+	User string
+}
+
+// Account returns the subject for a named account.
+func Account(name string) Subject { return Subject{Class: AccountNamed, User: name} }
+
+// IsRoot reports whether the subject is root: the root class, or a named
+// account that is root. A unit that writes User=root states root authority in
+// its own file, and the judgment reads it as root.
+func (s Subject) IsRoot() bool {
+	return s.Class == AccountRoot || (s.Class == AccountNamed && s.User == "root")
+}
+
+// String renders the subject the way the audit's panels print it.
+func (s Subject) String() string {
+	switch s.Class {
+	case AccountNamed:
+		return s.User
+	case AccountRoot:
+		return "root"
+	case AccountAll:
+		return "all"
+	case AccountLogin:
+		return "login"
+	case AccountDynamic:
+		return "dynamic"
+	}
+	return ""
+}
 
 // Kind is what the target is to the trigger.
 type Kind string
@@ -46,18 +115,24 @@ const (
 	Config Kind = "config"
 	// Preload hands the target to the dynamic loader before the program runs.
 	Preload Kind = "preload"
+	// Library is mapped into a process the system runs (a PAM or NSS module).
+	Library Kind = "library"
 )
+
+// Mechanism is how the trigger acts on the target: a systemd key, a shell
+// statement, a udev key. The set is open; each parser owns its names.
+type Mechanism string
 
 // Edge is one trigger → mechanism → target relation. The parser states the
 // structure; the facts on both ends let the judge answer what the relation
 // means without parsing a name.
 type Edge struct {
 	Surface   Surface
-	Reach     Reach
-	AS        string
+	Phase     Phase
+	Subject   Subject
 	Trigger   string
 	Line      int
-	Mechanism string
+	Mechanism Mechanism
 	Target    string
 	Kind      Kind
 	// TriggerFacts and TargetFacts are the provenance of the two ends. They
@@ -67,18 +142,30 @@ type Edge struct {
 	// Dynamic is a target the collector could not name statically (a variable
 	// command, a PATH lookup). It is reported as coverage, never judged.
 	Dynamic bool
+	// Context is a declared directory or path a unit works in
+	// (WorkingDirectory, RuntimeDirectory, ...). The profile renders it as a
+	// relation; the judge does not turn it into a finding of its own unless
+	// the declared write access names a dangerous target.
+	Context bool
+	// Note is the row's own remaining fields where a parser reads a table
+	// line by line (a fstab row's filesystem type and options, a crypttab
+	// row's device and key file). The judge reads it for the shapes a row
+	// can state on its own.
+	Note string
 }
 
 // rawEdge is an edge before its ends' facts are read.
 type rawEdge struct {
 	surface        Surface
-	reach          Reach
-	as             string
+	phase          Phase
+	subject        Subject
 	trigger        string
 	line           int
-	mechanism      string
+	mechanism      Mechanism
 	target         string
 	kind           Kind
 	viaInterpreter bool
 	dynamic        bool
+	context        bool
+	note           string
 }

@@ -29,10 +29,11 @@ func newWatchCmd() *cobra.Command {
 			"working directory, or an interpreter carrying a script. An exec event also carries the " +
 			"audit's origin, reach and severity for the image it runs. The process view prefers the kernel's " +
 			"proc connector and falls back to the read-only /proc poll when the container refuses the " +
-			"subscription; the socket view prefers conntrack notifications and falls back to the sock_diag " +
-			"poll. Both fallbacks are available in a default container.",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error { return cmd.Help() },
+			"subscription; the socket view's default is the sock_diag poll, the source that can name the " +
+			"owning process, with conntrack notifications behind --source conntrack.",
+		Example: "karma watch proc\nkarma watch socket",
+		Args:    cobra.NoArgs,
+		RunE:    func(cmd *cobra.Command, args []string) error { return cmd.Help() },
 	}
 	cmd.AddCommand(newWatchSocketCmd(), newWatchProcCmd())
 	return cmd
@@ -42,12 +43,12 @@ func newWatchSocketCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "socket",
 		Short: "Watch new sockets",
-		Long: "Watch new sockets. The default source is conntrack: the kernel pushes a new/destroy event for " +
-			"every flow, so a short TCP or UDP connection a poll can miss is still seen. Conntrack has no " +
-			"owning process, so its rows print pid=-. When conntrack is refused, the sock_diag poll takes " +
-			"over; --source poll selects it explicitly and keeps the owning process. The poll prints a " +
-			"socket when its proto, endpoints and inode first appear: a state change on the same socket is " +
-			"quiet, while the TIME-WAIT socket the kernel creates after close is a new inode and prints.",
+		Long: "Watch new sockets. The default source is the sock_diag poll: it is the source that can name the " +
+			"owning process. It prints a socket when its proto, endpoints and inode first appear: a state " +
+			"change on the same socket is quiet, while the TIME-WAIT socket the kernel creates after close " +
+			"is a new inode and prints. --source conntrack switches to the kernel's flow notifications, which " +
+			"see a short TCP or UDP connection a poll can miss; their four-tuple is joined against the " +
+			"socket table, so the owner's process still answers where the table knows it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWatch(cmd, watch.FamilySocket)

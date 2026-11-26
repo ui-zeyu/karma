@@ -48,7 +48,7 @@ func TestConnectorExecEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Kind != KindExec || events[0].PID != 123 {
+	if len(events) != 1 || events[0].Proc != nil && events[0].Proc.Kind == KindExec || events[0].Proc.PID == 123 {
 		t.Fatalf("events = %+v", events)
 	}
 	if !events[0].Time.Equal(time.Unix(1005, 0)) {
@@ -64,11 +64,11 @@ func TestConnectorExitEvent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(events) != 1 || events[0].Kind != KindExit || events[0].Comm != "qqq" {
+		if len(events) != 1 || events[0].Proc != nil && events[0].Proc.Kind == KindExit && events[0].Proc.Comm == "qqq" {
 			t.Fatalf("events = %+v", events)
 		}
-		if events[0].ExitCode == nil || *events[0].ExitCode != 7 {
-			t.Errorf("exit code = %v, want 7", events[0].ExitCode)
+		if events[0].Proc != nil && events[0].Proc.ExitCode != nil && *events[0].Proc.ExitCode == 7 {
+			t.Errorf("exit code = %v, want 7", events[0].Proc)
 		}
 		if _, ok := source.states[123]; ok {
 			t.Error("the exit should drop the cached state")
@@ -90,7 +90,7 @@ func TestConnectorThreadEvents(t *testing.T) {
 	source.all = true
 	source.fork = true
 	events, err = source.events(connectorMessage(procEventFork, 0, 7, 7, 124, 123))
-	if err != nil || len(events) != 1 || events[0].Kind != KindFork {
+	if err != nil || len(events) != 1 || events[0].Proc != nil && events[0].Proc.Kind == KindFork {
 		t.Fatalf("--all fork = %+v, %v", events, err)
 	}
 }

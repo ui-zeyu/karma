@@ -3,6 +3,7 @@ package trust
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -27,8 +28,9 @@ type Resolver struct {
 }
 
 type answer struct {
-	pkg   string
-	known bool
+	pkg    string
+	known  bool
+	shared bool
 }
 
 // NewResolver looks up the package manager once. A missing manager is a valid
@@ -48,20 +50,28 @@ func NewResolver() *Resolver {
 // manager answered (missing binary, timeout); an empty package with known true
 // means the path is unowned.
 func (r *Resolver) Owned(path string) (string, bool) {
+	pkg, known, _ := r.OwnedShared(path)
+	return pkg, known
+}
+
+// OwnedShared is Owned with the directory fact: a row that names several
+// packages means the path is a shared directory, so its first name is a
+// citation rather than the tree's owner.
+func (r *Resolver) OwnedShared(path string) (string, bool, bool) {
 	if r == nil || path == "" || (r.dpkg == "" && r.rpm == "") {
-		return "", false
+		return "", false, false
 	}
 	r.mu.Lock()
 	cached, ok := r.cache[path]
 	r.mu.Unlock()
 	if ok {
-		return cached.pkg, cached.known
+		return cached.pkg, cached.known, cached.shared
 	}
 	result := r.query(path)
 	r.mu.Lock()
 	r.cache[path] = result
 	r.mu.Unlock()
-	return result.pkg, result.known
+	return result.pkg, result.known, result.shared
 }
 
 // BatchSize bounds one package-manager argument list. A startup surface names
@@ -132,12 +142,25 @@ func (r *Resolver) dpkgBatch(paths []string) map[string]answer {
 		}
 		path := line[cut+2:]
 		pkg := line[:cut]
+		if strings.HasPrefix(pkg, "local diversion") {
+			// The diversion target is a local file, not a package's.
+			answers[path] = answer{known: true}
+			continue
+		}
+		shared := false
+		if comma := strings.IndexByte(pkg, ','); comma >= 0 {
+			// A directory row lists every package with a file inside it; the
+			// first name is enough for a citation.
+			pkg = pkg[:comma]
+			shared = true
+		}
+		pkg = strings.TrimSpace(pkg)
 		if strings.Contains(pkg, ":") {
 			// a multiarch row's `package:arch` spelling
 			pkg, _, _ = strings.Cut(pkg, ":")
 		}
 		if _, seen := answers[path]; !seen {
-			answers[path] = answer{pkg: pkg, known: true}
+			answers[path] = answer{pkg: pkg, known: true, shared: shared}
 		}
 	}
 	for _, path := range paths {
@@ -154,7 +177,7 @@ func (r *Resolver) dpkgBatch(paths []string) map[string]answer {
 // the unowned ones.
 func (r *Resolver) rpmBatch(paths []string) map[string]answer {
 	answers := make(map[string]answer, len(paths))
-	args := append([]string{"-qf", "--qf", "%{NAME} %{FILENAMES}\n"}, paths...)
+	args := append([]string{"-qf", "--qf", "%{NAME}\t%{FILENAMES}\n"}, paths...)
 	out, err := run(r.rpm, args...)
 	if err != nil && !exitFailure(err) {
 		for _, path := range paths {
@@ -163,7 +186,7 @@ func (r *Resolver) rpmBatch(paths []string) map[string]answer {
 		return answers
 	}
 	for _, line := range strings.Split(out, "\n") {
-		name, path, ok := strings.Cut(strings.TrimSpace(line), " ")
+		name, path, ok := strings.Cut(strings.TrimSpace(line), "\t")
 		if !ok || name == "" || path == "" {
 			continue
 		}
@@ -191,7 +214,7 @@ func (r *Resolver) query(path string) answer {
 			}
 			return answer{}
 		}
-		return answer{pkg: dpkgRow(out), known: true}
+		return dpkgAnswer(out)
 	}
 	out, err := run(r.rpm, "-qf", path)
 	if err != nil {
@@ -206,15 +229,24 @@ func (r *Resolver) query(path string) answer {
 // dpkgRow reads the package out of a dpkg -S line: `package: path` for a normal
 // row, `package:arch: path` for a multiarch one, so the path follows the last
 // separator and the architecture suffix is dropped.
-func dpkgRow(out string) string {
+func dpkgAnswer(out string) answer {
 	line := firstLine(out)
+	if strings.HasPrefix(line, "local diversion") {
+		return answer{known: true}
+	}
 	if cut := strings.LastIndex(line, ": "); cut >= 0 {
 		line = line[:cut]
 	}
-	if name, _, ok := strings.Cut(line, ":"); ok {
-		return name
+	shared := false
+	if comma := strings.IndexByte(line, ','); comma >= 0 {
+		line = line[:comma]
+		shared = true
 	}
-	return line
+	line = strings.TrimSpace(line)
+	if name, _, ok := strings.Cut(line, ":"); ok {
+		line = name
+	}
+	return answer{pkg: line, known: true, shared: shared}
 }
 
 func firstLine(out string) string {
@@ -228,7 +260,11 @@ func firstLine(out string) string {
 func run(binary string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binary, args...).Output()
+	cmd := exec.CommandContext(ctx, binary, args...)
+	// The parsers match dpkg's own English words; a localized manager would
+	// turn a diversion row into a package name.
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
 	return string(out), err
 }
 
@@ -236,5 +272,11 @@ func run(binary string, args ...string) (string, error) {
 // answer), rather than a timeout or an exec failure (no answer).
 func exitFailure(err error) bool {
 	var exit *exec.ExitError
-	return errors.As(err, &exit)
+	if !errors.As(err, &exit) {
+		return false
+	}
+	// A process killed by the context deadline is an ExitError whose process
+	// did not exit; treating that as an answer would turn every path in the
+	// batch into "unowned". Only a real non-zero exit is an answer.
+	return exit.ProcessState != nil && exit.ProcessState.Exited()
 }

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	chrome "karma/internal/panel"
 )
 
 // RenderOptions carries what the report needs to read well on this stream.
@@ -21,23 +23,38 @@ type RenderOptions struct {
 }
 
 // The report's chrome, the palette the old surface used: a dark level-one
-// band, a lighter level-two band, muted grey, and the severity hues.
+// band, a lighter level-two band, muted grey, and the severity hues. The
+// drawing primitives live in internal/panel, shared with the CLI's help
+// screens; the names stay local so the report reads as before.
 const (
-	bannerBG   = 236
-	bannerFG   = 15
-	subBandBG  = 238
-	subBandFG  = 250
-	mutedColor = 244
-	ansiReset  = "\x1b[0m"
+	bannerBG   = chrome.BannerBG
+	bannerFG   = chrome.BannerFG
+	subBandBG  = chrome.SubBandBG
+	subBandFG  = chrome.SubBandFG
+	mutedColor = chrome.MutedColor
+	ansiReset  = chrome.Reset
+)
+
+var (
+	band         = chrome.Band
+	rail         = chrome.Rail
+	paintText    = chrome.Paint
+	fg           = chrome.Fg
+	bg           = chrome.Bg
+	displayWidth = chrome.DisplayWidth
+	truncate     = chrome.Truncate
 )
 
 // Render writes the audit as the operator's worksheet: masthead, findings, the
 // raw inventories behind them, and coverage.
-func Render(w io.Writer, report *Report, snapshot *Snapshot, options RenderOptions) {
+func Render(w io.Writer, report *Report, options RenderOptions) {
 	width := reportWidth(options.Width)
 	renderMasthead(w, report, options, width)
 	if len(report.Findings) == 0 {
 		body := "no findings: the artifact delta is empty and no activation path is writable"
+		if report.Kernel != nil {
+			body = "no findings: the artifact delta, activation surfaces and kernel state are clean"
+		}
 		if report.Boundary.Time.IsZero() {
 			body = "no findings: the boundary is unknown, so only structural checks ran"
 		}
@@ -49,8 +66,8 @@ func Render(w io.Writer, report *Report, snapshot *Snapshot, options RenderOptio
 		fmt.Fprintln(w, findingPanel(finding, options, width))
 		fmt.Fprintln(w)
 	}
-	if options.Evidence && snapshot != nil {
-		renderEvidence(w, report, snapshot, options, width)
+	if options.Evidence && report.snapshot != nil {
+		renderEvidence(w, report, options, width)
 	}
 	if len(report.Coverage) > 0 {
 		fmt.Fprintln(w, evidencePanel("COVERAGE", report.Coverage, len(report.Coverage), options, width))
@@ -64,17 +81,28 @@ func renderMasthead(w io.Writer, report *Report, options RenderOptions, width in
 	}
 	fmt.Fprintln(w, band(" KARMA", "yuyy ", width, bannerBG, bannerFG, true, options.Color))
 	head := band(" "+version, clock(), width-2, subBandBG, subBandFG, false, options.Color)
+	modules := 0
+	if report.Kernel != nil {
+		modules = len(report.Kernel.Modules)
+	}
 	facts := []fact{
 		{label: "host", value: valueOr(report.Host.Hostname, "unknown")},
 		{label: "distro", value: valueOr(report.Host.OS, "unknown distro")},
 		{label: "account", value: accountCell(report.Host)},
 		{label: "kernel", value: valueOr(report.Host.Kernel, "unknown")},
 		{label: "source", value: valueOr(report.Source, "unknown")},
-		{label: "ledger", value: ledgerCell(report.Ledger), full: true},
-		{label: "boundary", value: boundaryText(report.Boundary), full: true},
-		{label: "judged", value: fmt.Sprintf("%d edges · %d proc · %d auth · %d svc · %d listen",
-			report.Activated, report.Processes, report.Authority, len(report.Services), len(report.Sockets)), full: true},
 	}
+	if len(report.OffDomains) > 0 {
+		// A scoped run's quiet is only about the domains it judged; the
+		// masthead names the ones that stayed off.
+		facts = append(facts, fact{label: "off domains", value: strings.Join(report.OffDomains, ", "), full: true})
+	}
+	facts = append(facts,
+		fact{label: "ledger", value: ledgerCell(report.Ledger), full: true},
+		fact{label: "boundary", value: boundaryText(report.Boundary), full: true},
+		fact{label: "judged", value: fmt.Sprintf("%d edges · %d proc · %d auth · %d svc · %d listen · %d mod",
+			report.Activated, report.Processes, report.Authority, len(report.Services), len(report.Sockets), modules), full: true},
+	)
 	body := factGrid(facts, width-2)
 	body = append(body, "severity "+severityLegend(options.Color))
 	fmt.Fprintln(w, rail(head, body, width, mutedColor, options.Color))
@@ -187,6 +215,10 @@ func findingPanel(finding Finding, options RenderOptions, width int) string {
 	}
 	body = append(body, paintText(options.Color, fg(mutedColor),
 		fmt.Sprintf("origin %s · reach %s", finding.Origin, finding.Reach)))
+	if chain := traceTexts(finding.Trace); len(chain) > 0 {
+		body = append(body, paintText(options.Color, fg(mutedColor),
+			"· chain  "+strings.Join(chain, " → ")))
+	}
 	for _, line := range finding.Evidence {
 		body = append(body, paintText(options.Color, fg(mutedColor), "· "+line))
 	}
@@ -214,26 +246,55 @@ func findingHead(finding Finding, width int, color bool) string {
 		ansiReset, bg(subBandBG), fg(subBandFG), plainPath+strings.Repeat(" ", fill), ansiReset)
 }
 
-func renderEvidence(w io.Writer, report *Report, snapshot *Snapshot, options RenderOptions, width int) {
+// panel is one evidence section: a title, its rows, and the count the head
+// band prints. Both the full report and `show` print the same panels.
+type panel struct {
+	title string
+	rows  []string
+	count func(int) int
+}
+
+func (p panel) head(options RenderOptions, width int) string {
+	return evidencePanel(p.title, p.rows, p.count(len(p.rows)), options, width)
+}
+
+// reportPanels builds the evidence sections of one report, in print order.
+// The rows are read from the report's own inventories; the origins come from
+// the same assessor the findings used.
+func reportPanels(report *Report, options RenderOptions) []panel {
+	a := newAssessor(report.snapshot)
+	filter := options.Filter
+	return []panel{
+		{title: "ACTIVATION", rows: activationRows(report, a, filter, options.Color), count: func(n int) int {
+			if n > 1 {
+				return (n - 1) / 2
+			}
+			return n
+		}},
+		{title: "PROCESS", rows: processRows(report, a, filter, options.Color), count: headerless},
+		{title: "SERVICE", rows: serviceRows(report, options.Color), count: headerless},
+		{title: "LISTEN", rows: socketRows(report, options.Color), count: headerless},
+		{title: "CONNECTION", rows: connectionRows(report), count: headerless},
+		{title: "KERNEL", rows: kernelRows(report), count: headerless},
+		{title: "AUTHORITY", rows: authorityRows(report, a, filter, options.Color), count: headerless},
+		{title: "MOUNTS", rows: mountRows(report, options.Color), count: headerless},
+	}
+}
+
+// headerless counts rows after the column header.
+func headerless(rows int) int {
+	if rows > 1 {
+		return rows - 1
+	}
+	return rows
+}
+
+func renderEvidence(w io.Writer, report *Report, options RenderOptions, width int) {
 	fmt.Fprintln(w, band(" EVIDENCE", "", width, bannerBG, bannerFG, true, options.Color))
-	a := newAssessor(snapshot)
-	if rows := activationRows(snapshot, a, options.Filter); len(rows) > 0 {
-		fmt.Fprintln(w, evidencePanel("ACTIVATION", rows, (len(rows)-1)/2, options, width))
-	}
-	if rows := processRows(snapshot, a, options.Filter); len(rows) > 0 {
-		fmt.Fprintln(w, evidencePanel("PROCESS", rows, len(rows)-1, options, width))
-	}
-	if rows := serviceRows(snapshot); len(rows) > 0 {
-		fmt.Fprintln(w, evidencePanel("SERVICE", rows, len(rows)-1, options, width))
-	}
-	if rows := socketRows(snapshot); len(rows) > 0 {
-		fmt.Fprintln(w, evidencePanel("LISTEN", rows, len(rows)-1, options, width))
-	}
-	if rows := authorityRows(snapshot, a, options.Filter); len(rows) > 0 {
-		fmt.Fprintln(w, evidencePanel("AUTHORITY", rows, len(rows)-1, options, width))
-	}
-	if rows := mountRows(snapshot); len(rows) > 0 {
-		fmt.Fprintln(w, evidencePanel("MOUNTS", rows, len(rows)-1, options, width))
+	for _, section := range reportPanels(report, options) {
+		if len(section.rows) > 0 {
+			fmt.Fprintln(w, section.head(options, width))
+		}
 	}
 }
 
@@ -252,12 +313,12 @@ func evidencePanel(title string, rows []string, count int, options RenderOptions
 	return rail(head, body, width, mutedColor, options.Color)
 }
 
-func activationRows(snapshot *Snapshot, a *assessor, filter Filter) []string {
+func activationRows(report *Report, a *assessor, filter Filter, color bool) []string {
 	if len(filter.PIDs) > 0 {
 		return nil
 	}
 	rows := []string{columnHeader([]string{"SURFACE", "REACH", "AS", "ORIGIN", "TRIGGER"}, []int{10, 12, 10, 10})}
-	for _, edge := range snapshot.Activations {
+	for _, edge := range report.Activations {
 		if !surfaceInScope(edge.Surface, filter) || !pathInScope(edge.Trigger, filter) && !pathInScope(edge.Target, filter) {
 			continue
 		}
@@ -266,9 +327,9 @@ func activationRows(snapshot *Snapshot, a *assessor, filter Filter) []string {
 			target = "(dynamic)"
 		}
 		origin := a.read(edge.TargetFacts, false).origin
-		prefix := columnRow([]string{
-			string(edge.Surface), string(edge.Reach), valueOr(edge.AS, "-"), origin.String(),
-		}, []int{10, 12, 10, 10})
+		prefix := columnRowHued(color, []string{
+			string(edge.Surface), edge.Phase.String(), valueOr(edge.Subject.String(), "-"), origin.String(),
+		}, []int{10, 12, 10, 10}, []int{0, 0, 0, originHue(origin)})
 		rows = append(rows, fmt.Sprintf("%s%s:%d", prefix, edge.Trigger, edge.Line))
 		rows = append(rows, fmt.Sprintf("    %s -> %s", edge.Mechanism, target))
 	}
@@ -278,9 +339,9 @@ func activationRows(snapshot *Snapshot, a *assessor, filter Filter) []string {
 	return rows
 }
 
-func processRows(snapshot *Snapshot, a *assessor, filter Filter) []string {
+func processRows(report *Report, a *assessor, filter Filter, color bool) []string {
 	rows := []string{columnHeader([]string{"PID", "PPID", "UID", "ORIGIN", "REACH", "COMMAND"}, []int{7, 7, 6, 10, 8})}
-	for _, process := range snapshot.Processes {
+	for _, process := range report.ProcessRows {
 		if process.PID == 0 || process.PID == selfPID() || !processInScope(process, filter) {
 			continue
 		}
@@ -298,10 +359,10 @@ func processRows(snapshot *Snapshot, a *assessor, filter Filter) []string {
 		if process.Outbound > 0 {
 			command += fmt.Sprintf("  [%d estab]", process.Outbound)
 		}
-		prefix := columnRow([]string{
+		prefix := columnRowHued(color, []string{
 			strconv.Itoa(process.PID), strconv.Itoa(process.PPID), strconv.Itoa(process.UID),
 			origin.String(), processReach(process).String(),
-		}, []int{7, 7, 6, 10, 8})
+		}, []int{7, 7, 6, 10, 8}, []int{0, 0, 0, originHue(origin), 0})
 		rows = append(rows, prefix+valueOr(command, valueOr(process.Exe, process.Comm)))
 	}
 	if len(rows) == 1 {
@@ -310,12 +371,12 @@ func processRows(snapshot *Snapshot, a *assessor, filter Filter) []string {
 	return rows
 }
 
-func serviceRows(snapshot *Snapshot) []string {
+func serviceRows(report *Report, color bool) []string {
 	rows := []string{columnHeader([]string{"UNIT", "LOAD", "ACTIVE", "SUB", "DESCRIPTION"}, []int{28, 8, 8, 8})}
-	for _, service := range snapshot.Services {
-		rows = append(rows, columnRow([]string{
+	for _, service := range report.Services {
+		rows = append(rows, columnRowHued(color, []string{
 			service.Unit, service.Load, service.Active, service.Sub,
-		}, []int{28, 8, 8, 8})+service.Description)
+		}, []int{28, 8, 8, 8}, []int{0, 0, serviceStateHue(service.Active), 0})+service.Description)
 	}
 	if len(rows) == 1 {
 		return nil
@@ -323,13 +384,13 @@ func serviceRows(snapshot *Snapshot) []string {
 	return rows
 }
 
-func socketRows(snapshot *Snapshot) []string {
+func socketRows(report *Report, color bool) []string {
 	rows := []string{columnHeader([]string{"PROTO", "STATE", "LOCAL", "PEER", "PID", "COMM"}, []int{6, 9, 24, 24, 7})}
-	for _, socket := range snapshot.Sockets {
-		rows = append(rows, columnRow([]string{
+	for _, socket := range report.Sockets {
+		rows = append(rows, columnRowHued(color, []string{
 			socket.Proto, socket.State, socket.Local, socket.Peer,
 			strconv.Itoa(socket.PID), socket.Comm,
-		}, []int{6, 9, 24, 24, 7}))
+		}, []int{6, 9, 24, 24, 7}, []int{0, socketStateHue(socket.State), 0, 0, 0, 0}))
 	}
 	if len(rows) == 1 {
 		return nil
@@ -337,21 +398,79 @@ func socketRows(snapshot *Snapshot) []string {
 	return rows
 }
 
-func authorityRows(snapshot *Snapshot, a *assessor, filter Filter) []string {
+// kernelRows is the loaded module inventory: name, use count, state, loader
+// flags and the file the module database maps it to. Hidden registries and
+// the taint mask follow the table because they are facts about the same state.
+func kernelRows(report *Report) []string {
+	if report.Kernel == nil {
+		return nil
+	}
+	state := report.Kernel
+	if !state.Collected {
+		return nil
+	}
+	rows := []string{columnHeader([]string{"MODULE", "USED", "STATE", "TAINT"}, []int{26, 5, 10, 6})}
+	for _, module := range state.Modules {
+		file := module.File
+		if file == "" && module.FileState != "" {
+			file = "(" + module.FileState + ")"
+		}
+		rows = append(rows, columnRow([]string{
+			module.Name, strconv.Itoa(module.Used), valueOr(module.State, "-"), valueOr(module.Taint, "-"),
+		}, []int{26, 5, 10, 6})+file)
+	}
+	for _, module := range state.Dormant {
+		rows = append(rows, "dormant module "+module.Name+"  "+module.File)
+	}
+	if state.Tainted != 0 {
+		rows = append(rows, fmt.Sprintf("taint %d: %s", state.Tainted, strings.Join(state.TaintNames, ", ")))
+	}
+	for _, hidden := range state.Hidden {
+		rows = append(rows, "hidden module "+hidden.Name+" ("+strings.Join(hidden.Views, ", ")+")")
+	}
+	for _, pid := range state.HiddenPIDs {
+		rows = append(rows, fmt.Sprintf("hidden pid %d", pid))
+	}
+	if len(state.LoaderDirs) > 0 {
+		rows = append(rows, fmt.Sprintf("loader search path: %d directories", len(state.LoaderDirs)))
+	}
+	if len(rows) == 1 {
+		return nil
+	}
+	return rows
+}
+
+// connectionRows is the established-connection table: the peer side of the
+// listener inventory and the evidence behind an interpreter-socket finding.
+func connectionRows(report *Report) []string {
+	if len(report.Connections) == 0 {
+		return nil
+	}
+	rows := []string{columnHeader([]string{"PROTO", "LOCAL", "PEER", "PID", "COMM"}, []int{6, 24, 24, 7})}
+	for _, connection := range report.Connections {
+		rows = append(rows, columnRow([]string{
+			connection.Proto, connection.Local, connection.Peer,
+			strconv.Itoa(connection.PID), connection.Comm,
+		}, []int{6, 24, 24, 7}))
+	}
+	return rows
+}
+
+func authorityRows(report *Report, a *assessor, filter Filter, color bool) []string {
 	if filter.Surfaces != nil && !filter.Surfaces["authority"] {
 		return nil
 	}
 	rows := []string{columnHeader([]string{"PATH", "ORIGIN", "REACH", "SETUID", "CAPS"}, []int{44, 10, 8, 7, 5})}
-	for _, path := range snapshot.Authority {
+	for _, path := range report.AuthorityObjects {
 		if !pathInScope(path, filter) {
 			continue
 		}
-		facts := snapshot.Facts(path)
+		facts := report.snapshot.Facts(path)
 		origin := a.read(facts, true).origin
-		rows = append(rows, columnRow([]string{
+		rows = append(rows, columnRowHued(color, []string{
 			path, origin.String(), authorityReach(facts).String(),
 			strconv.FormatBool(facts.Setuid), strconv.FormatBool(facts.Caps),
-		}, []int{44, 10, 8, 7, 5}))
+		}, []int{44, 10, 8, 7, 5}, []int{0, originHue(origin), 0, 0, 0}))
 	}
 	if len(rows) == 1 {
 		return nil
@@ -361,54 +480,101 @@ func authorityRows(snapshot *Snapshot, a *assessor, filter Filter) []string {
 
 // mountRows list the mount table: where evidence lives and which of it dies
 // with the boot.
-func mountRows(snapshot *Snapshot) []string {
-	if len(snapshot.Mounts) == 0 {
+func mountRows(report *Report, color bool) []string {
+	if len(report.Mounts) == 0 {
 		return nil
 	}
 	rows := []string{columnHeader([]string{"FSTYPE", "PATH", "OPTS"}, []int{12, 26, 34})}
-	for _, mount := range snapshot.Mounts {
-		rows = append(rows, columnRow([]string{mount.FSType, mount.Path, mount.Opts}, []int{12, 26, 34}))
+	for _, mount := range report.Mounts {
+		rows = append(rows, columnRowHued(color, []string{mount.FSType, mount.Path, mount.Opts},
+			[]int{12, 26, 34}, []int{mountTypeHue(mount.FSType), 0, 0}))
 	}
 	return rows
 }
 
-// RenderShow prints one raw inventory in the same panel language.
+// showSection is one `show` word and the panel title it prints. The words are
+// the same vocabulary the audit's scope grammar already accepts.
+var showSection = map[string]string{
+	"activation": "ACTIVATION", "persistence": "ACTIVATION", "boot": "ACTIVATION",
+	"login": "ACTIVATION", "service": "ACTIVATION", "device": "ACTIVATION",
+	"schedule": "ACTIVATION",
+	"process":  "PROCESS", "activity": "PROCESS",
+	"services":  "SERVICE",
+	"listeners": "LISTEN", "sockets": "LISTEN", "listen": "LISTEN",
+	"connections": "CONNECTION", "connection": "CONNECTION", "network": "CONNECTION",
+	"kernel":    "KERNEL",
+	"authority": "AUTHORITY",
+	"mounts":    "MOUNTS",
+}
+
+// showRows answers one show section's rows and its count function, so the
+// text renderer and the JSON encoder print the same answer.
+func showRows(snapshot *Snapshot, section string, options RenderOptions) ([]string, func(int) int) {
+	if section == "coverage" {
+		return Judge(snapshot, options.Filter).Coverage, func(rows int) int { return rows }
+	}
+	title, ok := showSection[section]
+	if !ok {
+		return []string{"nothing collected for this section"}, headerless
+	}
+	report := &Report{
+		Services:         snapshot.Services,
+		Sockets:          snapshot.Sockets,
+		Connections:      snapshot.Connections,
+		Mounts:           snapshot.Mounts,
+		Activations:      snapshot.Activations,
+		ProcessRows:      snapshot.Processes,
+		AuthorityObjects: snapshot.Authority,
+		snapshot:         snapshot,
+	}
+	if len(options.Filter.Units) > 0 {
+		var services []Service
+		for _, service := range snapshot.Services {
+			if options.Filter.Units[service.Unit] {
+				services = append(services, service)
+			}
+		}
+		report.Services = services
+	}
+	if section == "kernel" {
+		kernel := snapshot.Kernel
+		report.Kernel = &kernel
+	}
+	for _, found := range reportPanels(report, options) {
+		if found.title == title {
+			return found.rows, found.count
+		}
+	}
+	return []string{"nothing collected for this section"}, headerless
+}
+
+// RenderShow prints one raw inventory in the same panel language the report
+// prints. It builds the same document the audit renders, then shows one panel.
 func RenderShow(w io.Writer, snapshot *Snapshot, section string, options RenderOptions) {
 	width := reportWidth(options.Width)
 	fmt.Fprintln(w, band(" karma show "+section, "yuyy ", width, bannerBG, bannerFG, true, options.Color))
-	a := newAssessor(snapshot)
-	var rows []string
-	switch section {
-	case "activation", "persistence", "boot", "login", "service", "device", "schedule":
-		rows = activationRows(snapshot, a, options.Filter)
-	case "process", "activity":
-		rows = processRows(snapshot, a, options.Filter)
-	case "services":
-		rows = serviceRows(snapshot)
-	case "listeners", "sockets", "listen":
-		rows = socketRows(snapshot)
-	case "authority":
-		rows = authorityRows(snapshot, a, options.Filter)
-	case "mounts":
-		rows = mountRows(snapshot)
-	case "coverage":
-		rows = append(rows, Judge(snapshot, options.Filter).Coverage...)
-	}
+	rows, count := showRows(snapshot, section, options)
 	if len(rows) == 0 {
 		rows = []string{"nothing collected for this section"}
 	}
-	count := len(rows)
-	switch section {
-	case "activation", "persistence", "boot", "login", "service", "device", "schedule":
-		if len(rows) > 1 {
-			count = (len(rows) - 1) / 2
-		}
-	case "process", "activity", "services", "authority", "listeners", "sockets", "listen", "mounts":
-		if len(rows) > 1 {
-			count = len(rows) - 1
-		}
+	fmt.Fprintln(w, evidencePanel(strings.ToUpper(section), rows, count(len(rows)), options, width))
+}
+
+// WriteShowJSON writes one show section as data. JSON carries text, so the
+// rows are built without their terminal hues.
+func WriteShowJSON(w io.Writer, snapshot *Snapshot, section string, options RenderOptions) error {
+	options.Color = false
+	rows, _ := showRows(snapshot, section, options)
+	out := struct {
+		Section string   `json:"section"`
+		Rows    []string `json:"rows"`
+	}{Section: section, Rows: rows}
+	if out.Rows == nil {
+		out.Rows = []string{}
 	}
-	fmt.Fprintln(w, evidencePanel(strings.ToUpper(section), rows, count, options, width))
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(out)
 }
 
 // WriteJSON writes the report as one object.
@@ -427,18 +593,22 @@ func WriteJSON(w io.Writer, report *Report) error {
 		Origin   string   `json:"origin"`
 		Reach    string   `json:"reach"`
 		Detail   string   `json:"detail,omitempty"`
+		Chain    []string `json:"chain,omitempty"`
+		Nodes    []string `json:"nodes,omitempty"`
 		Evidence []string `json:"evidence,omitempty"`
 	}
 	type reportJSON struct {
-		Source    string         `json:"source"`
-		Host      Host           `json:"host"`
-		Boundary  boundaryJSON   `json:"boundary"`
-		Findings  []findingJSON  `json:"findings"`
-		Services  []Service      `json:"services,omitempty"`
-		Listeners []Socket       `json:"listeners,omitempty"`
-		Mounts    []Mount        `json:"mounts,omitempty"`
-		Ledger    *LedgerSummary `json:"ledger,omitempty"`
-		Coverage  []string       `json:"coverage,omitempty"`
+		Source      string         `json:"source"`
+		Host        Host           `json:"host"`
+		Boundary    boundaryJSON   `json:"boundary"`
+		Findings    []findingJSON  `json:"findings"`
+		Services    []Service      `json:"services,omitempty"`
+		Listeners   []Socket       `json:"listeners,omitempty"`
+		Connections []Connection   `json:"connections,omitempty"`
+		Mounts      []Mount        `json:"mounts,omitempty"`
+		Ledger      *LedgerSummary `json:"ledger,omitempty"`
+		Kernel      *KernelState   `json:"kernel,omitempty"`
+		Coverage    []string       `json:"coverage,omitempty"`
 	}
 	out := reportJSON{
 		Source: report.Source,
@@ -447,11 +617,13 @@ func WriteJSON(w io.Writer, report *Report) error {
 			Kind: report.Boundary.Kind, Source: report.Boundary.Source,
 			Confidence: report.Boundary.Confidence.String(),
 		},
-		Findings:  make([]findingJSON, 0, len(report.Findings)),
-		Services:  report.Services,
-		Listeners: report.Sockets,
-		Mounts:    report.Mounts,
-		Coverage:  report.Coverage,
+		Findings:    make([]findingJSON, 0, len(report.Findings)),
+		Services:    report.Services,
+		Listeners:   report.Sockets,
+		Connections: report.Connections,
+		Mounts:      report.Mounts,
+		Kernel:      report.Kernel,
+		Coverage:    report.Coverage,
 	}
 	if report.Ledger.Kind != "" && report.Ledger.Kind != "none" {
 		ledger := report.Ledger
@@ -464,67 +636,13 @@ func WriteJSON(w io.Writer, report *Report) error {
 		out.Findings = append(out.Findings, findingJSON{
 			Class: finding.Class, Severity: finding.Severity.String(), Title: finding.Title,
 			Path: finding.Path, Origin: finding.Origin.String(), Reach: finding.Reach.String(),
-			Detail: finding.Detail, Evidence: finding.Evidence,
+			Detail: finding.Detail, Chain: traceTexts(finding.Trace),
+			Nodes: traceNodes(finding.Trace), Evidence: finding.Evidence,
 		})
 	}
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(out)
-}
-
-// rail draws one panel: a half-block rail in the severity color, a filled head
-// band, and body rows indented two columns.
-func rail(head string, body []string, width, railColor int, color bool) string {
-	inner := width - 2
-	lines := []string{head}
-	for _, line := range body {
-		line = strings.TrimRight(line, " ")
-		for _, wrapped := range wrapText(line, inner-2) {
-			lines = append(lines, "  "+wrapped)
-		}
-	}
-	prefix := paintText(color, fg(railColor), "▌")
-	var out strings.Builder
-	for _, line := range lines {
-		out.WriteString(prefix)
-		out.WriteString(line)
-		out.WriteString("\n")
-	}
-	return strings.TrimRight(out.String(), "\n")
-}
-
-// band fills one line: the label on the left, the metadata on the right.
-func band(left, right string, width, bgCode, fgCode int, bold, color bool) string {
-	if width < 8 {
-		width = 8
-	}
-	if utf8.RuneCountInString(left)+utf8.RuneCountInString(right) > width {
-		right = ""
-		left = truncate(left, width)
-	}
-	fill := width - utf8.RuneCountInString(left) - utf8.RuneCountInString(right)
-	if fill < 0 {
-		fill = 0
-	}
-	plain := left + strings.Repeat(" ", fill) + right
-	if !color {
-		return strings.TrimRight(plain, " ")
-	}
-	style := bg(bgCode) + fg(fgCode)
-	if bold {
-		style += "\x1b[1m"
-	}
-	return style + plain + ansiReset
-}
-
-func fg(code int) string { return fmt.Sprintf("\x1b[38;5;%dm", code) }
-func bg(code int) string { return fmt.Sprintf("\x1b[48;5;%dm", code) }
-
-func paintText(color bool, codes, text string) string {
-	if !color || codes == "" {
-		return text
-	}
-	return codes + text + ansiReset
 }
 
 func severityColor(severity Severity) int {
@@ -559,104 +677,86 @@ func columnRow(values []string, widths []int) string {
 	return out.String()
 }
 
+// columnRowHued is columnRow with one hue per cell: the padding is painted
+// with the cell, so the columns stay aligned; a zero hue leaves it plain.
+func columnRowHued(color bool, values []string, widths []int, hues []int) string {
+	var out strings.Builder
+	for index, value := range values {
+		if index >= len(widths) {
+			out.WriteString(value)
+			break
+		}
+		width := widths[index]
+		cell := padRight(truncate(value, width), width)
+		if index < len(hues) && hues[index] != 0 {
+			cell = paintText(color, fg(hues[index]), cell)
+		}
+		out.WriteString(cell)
+		out.WriteString("  ")
+	}
+	return out.String()
+}
+
+// originHue is the row palette's temporal verdict, the same language the
+// relation tree marks its nodes with: a runtime object warm red, a modified
+// or unknown one amber, provisioned calmer, the artifact's own origins muted.
+func originHue(origin Origin) int {
+	switch origin {
+	case Runtime:
+		return 203
+	case Modified, Unknown:
+		return 214
+	case Provisioned:
+		return 110
+	}
+	return mutedColor
+}
+
+// serviceStateHue: a running service is healthy green, a failed one red, a
+// transition amber, an inactive one quiet.
+func serviceStateHue(state string) int {
+	switch state {
+	case "active":
+		return 2
+	case "failed":
+		return 1
+	case "activating", "deactivating", "reloading":
+		return 3
+	case "inactive":
+		return mutedColor
+	}
+	return 0
+}
+
+// socketStateHue: a listening socket asks for attention (amber), an
+// established peer is information (cyan), the rest is quiet.
+func socketStateHue(state string) int {
+	switch state {
+	case "LISTEN":
+		return 3
+	case "ESTAB", "ESTABLISHED":
+		return 6
+	}
+	return 0
+}
+
+// mountTypeHue: a remote filesystem is information (cyan), a memory-backed
+// one is amber because its evidence dies with the boot.
+func mountTypeHue(fstype string) int {
+	switch fstype {
+	case "nfs", "nfs4", "cifs", "smb3", "smbfs", "sshfs", "fuse.sshfs", "9p", "afs", "nbd":
+		return 6
+	case "tmpfs", "ramfs", "devtmpfs":
+		return 3
+	}
+	return 0
+}
+
 func padRight(text string, width int) string {
 	if n := utf8.RuneCountInString(text); n < width {
 		return text + strings.Repeat(" ", width-n)
 	}
 	return text
-}
-
-func truncate(text string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	runes := []rune(text)
-	if len(runes) <= width {
-		return text
-	}
-	if width == 1 {
-		return "…"
-	}
-	return string(runes[:width-1]) + "…"
-}
-
-// wrapText breaks a body line inside the panel: between words first, then at a
-// slash, and by character only when one token is wider than the line.
-func wrapText(text string, width int) []string {
-	if width < 8 {
-		width = 8
-	}
-	if displayWidth(text) <= width {
-		return []string{text}
-	}
-	text = stripANSI(text)
-	if strings.Contains(text, "  ") {
-		var out []string
-		runes := []rune(text)
-		for len(runes) > width {
-			out = append(out, string(runes[:width]))
-			runes = runes[width:]
-		}
-		return append(out, string(runes))
-	}
-	var lines []string
-	for _, word := range strings.Fields(text) {
-		if len(lines) == 0 {
-			lines = append(lines, word)
-			continue
-		}
-		if utf8.RuneCountInString(lines[len(lines)-1])+1+utf8.RuneCountInString(word) <= width {
-			lines[len(lines)-1] += " " + word
-			continue
-		}
-		lines = append(lines, word)
-	}
-	var out []string
-	for _, line := range lines {
-		for utf8.RuneCountInString(line) > width {
-			runes := []rune(line)
-			out = append(out, string(runes[:width]))
-			line = string(runes[width:])
-		}
-		out = append(out, line)
-	}
-	return out
-}
-
-// displayWidth is a string's printed width: ANSI escapes take no column.
-func displayWidth(text string) int {
-	width := 0
-	for index := 0; index < len(text); {
-		if text[index] == 0x1b {
-			for index < len(text) && text[index] != 'm' {
-				index++
-			}
-			index++
-			continue
-		}
-		_, size := utf8.DecodeRuneInString(text[index:])
-		index += size
-		width++
-	}
-	return width
-}
-
-// stripANSI drops SGR sequences: a line that has to wrap loses its paint rather
-// than letting a wrap land inside an escape.
-func stripANSI(text string) string {
-	var out strings.Builder
-	for index := 0; index < len(text); {
-		if text[index] == 0x1b {
-			for index < len(text) && text[index] != 'm' {
-				index++
-			}
-			index++
-			continue
-		}
-		out.WriteByte(text[index])
-		index++
-	}
-	return out.String()
 }
 
 func valueOr(value, fallback string) string {

@@ -13,15 +13,18 @@ import (
 	"github.com/spf13/cobra"
 
 	"karma/internal/localfs"
+	chrome "karma/internal/panel"
 )
 
 func newCatCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "cat FILE...",
-		Short: "Print files, read in process",
-		Args:  atLeastOneArg("cat needs at least one file: karma cat FILE..."),
+		Use:     "cat FILE...",
+		Short:   "Print files, read in process",
+		Args:    atLeastOneArg("cat needs at least one file: karma cat FILE..."),
+		Example: "karma cat /etc/passwd",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
+			color := isTerminal(w)
 			var first error
 			for _, path := range args {
 				data, err := localfs.Cat(path)
@@ -32,7 +35,7 @@ func newCatCmd() *cobra.Command {
 					}
 					continue
 				}
-				if _, err = w.Write(data); err != nil {
+				if _, err = w.Write(highlightContent(path, data, color)); err != nil {
 					return err
 				}
 			}
@@ -43,16 +46,26 @@ func newCatCmd() *cobra.Command {
 
 func newLsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ls [PATH...]",
-		Short: "List directories, read in process",
+		Use:     "ls [PATH...]",
+		Short:   "List directories, read in process",
+		Example: "karma ls /etc /var/log",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths := args
 			if len(paths) == 0 {
 				paths = []string{"."}
 			}
 			text, err := localfs.Ls(paths)
+			w := cmd.OutOrStdout()
+			color := isTerminal(w)
 			if text != "" {
-				fmt.Fprintln(cmd.OutOrStdout(), strings.TrimSuffix(text, "\n"))
+				for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+					if strings.HasPrefix(line, "== ") {
+						// A section header reads like the panels' source titles.
+						fmt.Fprintln(w, chrome.Paint(color, "\x1b[1m", line))
+						continue
+					}
+					fmt.Fprintln(w, lsRow(color, line))
+				}
 			}
 			if err != nil {
 				var pathErr *fs.PathError

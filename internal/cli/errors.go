@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -37,14 +36,17 @@ func usagef(cmd *cobra.Command, format string, args ...any) error {
 func reportError(w io.Writer, err error) int {
 	fmt.Fprintln(w, "karma: "+err.Error())
 	var usage usageError
-	if errors.As(err, &usage) && usage.cmd != nil {
-		fmt.Fprintln(w, strings.TrimRight(usage.cmd.UsageString(), "\n"))
+	if errors.As(err, &usage) {
+		if usage.cmd != nil {
+			writeUsage(w, usage.cmd)
+		}
+		return int(ExitEnvironment)
 	}
 	var coded exitError
 	if errors.As(err, &coded) {
 		return int(coded.code)
 	}
-	return int(ExitOK)
+	return int(ExitInternal)
 }
 
 func flagErrorText(err error) string {

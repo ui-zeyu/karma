@@ -127,26 +127,17 @@ func readProcStateByPID(fs procfs.FS, pid int) (procState, error) {
 
 func (s procState) event(kind Kind, at time.Time) Event {
 	return Event{
-		Time:    at,
-		Kind:    kind,
-		PID:     s.Key.PID,
-		PPID:    s.PPID,
-		UID:     s.UID,
-		Comm:    s.Comm,
-		Exe:     s.Exe,
-		Cmdline: s.Cmdline,
-		Cwd:     s.Cwd,
-		Source:  "poll",
-	}
-}
-
-// send hands one event to the runner, stopping when the reader is gone. Both
-// poll sources share it.
-func send(ctx context.Context, out chan<- Event, ev Event) bool {
-	select {
-	case out <- ev:
-		return true
-	case <-ctx.Done():
-		return false
+		Time:   at,
+		Source: SourcePoll,
+		Proc: &Proc{
+			Kind:    kind,
+			PID:     s.Key.PID,
+			PPID:    s.PPID,
+			UID:     s.UID,
+			Comm:    s.Comm,
+			Exe:     s.Exe,
+			Cmdline: s.Cmdline,
+			Cwd:     s.Cwd,
+		},
 	}
 }

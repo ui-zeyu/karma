@@ -19,19 +19,14 @@ func defaultInterval(family Family) time.Duration {
 
 // Open selects a source. The process view prefers the kernel's proc connector
 // and falls back to the /proc poll when the kernel or the container refuses the
-// subscription; the socket view uses sock_diag. The named event sources land
-// behind this function as they are implemented, and auto takes the first that
-// opens.
+// subscription. The socket view's auto is the sock_diag poll: it is the source
+// that can name the owning process, which is the reason to watch sockets;
+// conntrack's flow events carry no owner and stay behind --source conntrack.
 func Open(family Family, opt Options) (Source, error) {
 	switch opt.Backend {
 	case "", "auto":
-		switch family {
-		case FamilyProcess:
+		if family == FamilyProcess {
 			if source, err := newConnector(opt); err == nil {
-				return source, nil
-			}
-		case FamilySocket:
-			if source, err := newConntrack(opt); err == nil {
 				return source, nil
 			}
 		}

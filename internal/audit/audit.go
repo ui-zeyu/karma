@@ -7,6 +7,7 @@ import (
 	"context"
 	"time"
 
+	"karma/internal/prov"
 	"karma/internal/startup"
 	"karma/internal/trust"
 )
@@ -128,22 +129,62 @@ type Host struct {
 // link, which differs from / on a chroot; Outbound counts its established
 // connections.
 type Process struct {
-	PID         int
-	PPID        int
-	UID         int
-	GID         int
-	Start       uint64
-	State       string
-	Comm        string
-	Exe         string
-	Cmdline     string
-	Cwd         string
-	Root        string
-	Script      string
+	PID  int
+	PPID int
+	UID  int
+	GID  int
+	// EUID and EGID are the effective ids the kernel enforces. A setuid
+	// process runs with these, so reach follows them and not the real id.
+	EUID    int
+	EGID    int
+	Start   uint64
+	State   string
+	Comm    string
+	Exe     string
+	Cmdline string
+	Cwd     string
+	Root    string
+	Script  string
+	// Cgroup is the process's cgroup path; Unit is the systemd unit named by
+	// it. The profile uses the edge from a unit to its live processes.
+	Cgroup string
+	Unit   string
+	// LoaderTargets are the libraries LD_PRELOAD/LD_AUDIT named, and
+	// LibraryPath is the raw LD_LIBRARY_PATH value.
+	LoaderTargets []LoaderTarget
+	LibraryPath   string
+	// CapEff is the effective capability mask, Seccomp the filter mode, and
+	// NoNewPrivs the prctl bit; together they state what the process can do
+	// beyond its uid.
+	CapEff      uint64
+	Seccomp     int
+	NoNewPrivs  bool
 	Outbound    int
 	ExeFacts    trust.Facts
 	ScriptFacts trust.Facts
 	Deleted     bool
+}
+
+// LoaderTarget is one library a dynamic-loader variable names. Variable is
+// LD_PRELOAD or LD_AUDIT; a soname remains a lead with no facts.
+type LoaderTarget struct {
+	Variable string
+	Path     string
+	Facts    trust.Facts
+}
+
+// Connection is one established TCP connection. It is kept apart from the
+// listening socket table: a listener is a service surface, a connection is a
+// live relationship between a process and a peer.
+type Connection struct {
+	Proto string `json:"proto"`
+	Local string `json:"local"`
+	Peer  string `json:"peer"`
+	PID   int    `json:"pid,omitempty"`
+	Comm  string `json:"comm,omitempty"`
+	// PIDs are every process holding the socket. A shell that spawns a child
+	// with the fd still open is the common reverse-shell shape.
+	PIDs []int `json:"pids,omitempty"`
 }
 
 // Service is one unit systemd reports: the raw inventory behind the activation
@@ -189,10 +230,33 @@ type Snapshot struct {
 	Ledger     LedgerSummary
 	conffiles  map[string]bool
 	tamper     []ledgerFile
-	ownerOf    map[string]string
+	ledgerRows []ledgerFile
+	catalog    *prov.Catalog
 	Unreadable []string
 	Coverage   []string
 	Source     string
+	// Unowned is the static inventory's dormant executables: files in the
+	// program directories no package's file list records.
+	Unowned []UnownedFile
+	// Kernel is the runtime kernel state: loaded modules, the registries that
+	// disagree about them, the taint mask, hidden pids, and the dynamic
+	// loader's search path.
+	Kernel KernelState
+	// Connections are the established TCP relationships, the peer side of
+	// the listener table.
+	Connections []Connection
+	// Packages is the package-file provenance sweep.
+	Packages PackageState
+	// Identity is the parsed account/sudo/sshd graph.
+	Identity IdentityState
+	// Web is the web-root script provenance sweep.
+	Web WebState
+	// Clock is the boundary-integrity reading.
+	Clock ClockState
+
+	// plan is the selection this snapshot was collected under. The module
+	// collectors read its scoping fields.
+	plan Plan
 }
 
 // Facts returns the collected facts for path, or zero facts.
@@ -206,10 +270,40 @@ func (s *Snapshot) Facts(path string) trust.Facts {
 	return trust.Facts{Path: path, Kind: trust.Missing, Owner: -1, Group: -1}
 }
 
+// ensureFacts reads paths the profile discovered after collection. Package
+// ownership is answered in one batch before the facts are read, so a tree of
+// discovered files costs one package-manager call rather than one per file.
+func (s *Snapshot) ensureFacts(paths []string) {
+	if s.Objects == nil {
+		s.Objects = map[string]trust.Facts{}
+	}
+	seen := make(map[string]bool, len(paths))
+	var missing []string
+	for _, path := range paths {
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		if _, ok := s.Objects[path]; !ok {
+			missing = append(missing, path)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	s.ownedAll(missing)
+	for _, path := range missing {
+		s.Objects[path] = s.classify(path)
+	}
+}
+
 // Finding is one judged relation. Path is the object the operator should look
 // at; Detail names what it activates or what activates it.
 type Finding struct {
-	Class    string
+	Class string
+	// Domain is the bounded domain the class belongs to; a graph command
+	// selects findings by it, so a class never needs a second vocabulary.
+	Domain   Domain
 	Severity Severity
 	Title    string
 	Path     string
@@ -217,22 +311,92 @@ type Finding struct {
 	Reach    Reach
 	Detail   string
 	Evidence []string
+	// Trace is the relation path that produced the finding: account deploy →
+	// group docker → sudo NOPASSWD. Each step can name the graph node it
+	// speaks for, so a finding and a graph cannot drift apart.
+	Trace []Step
 }
 
-// Report is the audit's answer.
+// Step is one hop in a finding's relation path. Node is the graph node id the
+// hop speaks for, empty when the step names an abstract edge.
+type Step struct {
+	Text string
+	Node string
+}
+
+// traceTexts reads a trace as the display line the report prints.
+func traceTexts(trace []Step) []string {
+	if len(trace) == 0 {
+		return nil
+	}
+	texts := make([]string, 0, len(trace))
+	for _, step := range trace {
+		texts = append(texts, step.Text)
+	}
+	return texts
+}
+
+// traceNodes reads a trace's node ids.
+func traceNodes(trace []Step) []string {
+	var nodes []string
+	for _, step := range trace {
+		if step.Node != "" {
+			nodes = append(nodes, step.Node)
+		}
+	}
+	return nodes
+}
+
+// Report is the audit's answer, and the document both the text renderer and
+// the JSON encoder are built from: findings, the raw inventories behind them,
+// and the coverage that says how far the evidence reached.
 type Report struct {
-	Boundary  Boundary
-	Host      Host
-	Source    string
-	Findings  []Finding
-	Coverage  []string
-	Activated int
-	Processes int
-	Authority int
-	Services  []Service
-	Sockets   []Socket
-	Mounts    []Mount
-	Ledger    LedgerSummary
+	Boundary    Boundary
+	Host        Host
+	Source      string
+	Findings    []Finding
+	Coverage    []string
+	Activated   int
+	Processes   int
+	Authority   int
+	Services    []Service
+	Sockets     []Socket
+	Connections []Connection
+	Mounts      []Mount
+	Ledger      LedgerSummary
+	// Kernel is set when the run collected the kernel domain.
+	Kernel *KernelState
+	// OffDomains names the bounded domains a scoped run did not judge; empty
+	// on a bare run, where every domain answered.
+	OffDomains []string
+	// The raw inventories the evidence panels print. They are the collected
+	// rows, not a second judgment: the panels re-read origins through the
+	// report's own verdicts.
+	Activations      []startup.Edge
+	ProcessRows      []Process
+	AuthorityObjects []string
+	Unowned          []UnownedFile
+
+	// snapshot is the collected facts behind the panels. It is render-side
+	// state, not part of the JSON answer.
+	snapshot *Snapshot
+}
+
+// ownedAll prefills the package answers for paths; the catalog answers from
+// its own index, a test-built resolver from its cache.
+func (s *Snapshot) ownedAll(paths []string) {
+	if s == nil || s.catalog == nil {
+		return
+	}
+	s.catalog.OwnedAll(paths)
+}
+
+// classify reads one path's facts through the run's package catalog.
+func (s *Snapshot) classify(path string) trust.Facts {
+	if s == nil {
+		return trust.Classify(path, nil)
+	}
+	return trust.Classify(path, s.catalog)
 }
 
 // Filter narrows an audit without changing its judgments.
@@ -241,10 +405,33 @@ type Filter struct {
 	Paths        []string
 	ExcludePaths []string
 	PIDs         map[int]bool
+	Units        map[string]bool // systemd units a service run is narrowed to
 	MinSeverity  Severity
+	// OffDomains names the bounded domains this run did not judge, so the
+	// report can say what its quiet covers.
+	OffDomains []string
 }
 
-// CollectLocal reads the target in process.
-func CollectLocal(ctx context.Context) (*Snapshot, error) {
-	return collectLocal(ctx)
+// Progress reports the collection stage a run entered. The stage words are
+// "catalog" (the package database), "startup" (the activation surfaces), the
+// registry's domain words in collection order, and "ledger" (the content
+// hashing). CollectLocal calls it from the collecting goroutine before each
+// stage; a run without a reporter passes nil.
+type Progress func(stage string)
+
+// CollectLocal reads the domains the plan selected in process.
+func CollectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot, error) {
+	return collectLocal(ctx, plan, progress)
+}
+
+// SetBoundary replaces the artifact edge after collection (--since) and
+// re-dates the ledger rows against it, so the tamper set follows the edge the
+// operator asked for.
+func (s *Snapshot) SetBoundary(boundary Boundary) {
+	if s == nil {
+		return
+	}
+	s.Boundary = boundary
+	s.tamper = ledgerTamper(s.Boundary, s.PackageTimes, s.ledgerRows)
+	s.Ledger.Tampered = tamperedPackages(s.tamper)
 }

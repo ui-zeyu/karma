@@ -52,7 +52,7 @@ func TestSocketEventsWithoutOwner(t *testing.T) {
 		t.Fatalf("events = %+v", events)
 	}
 	event := events[0]
-	if event.PID != 0 || event.Net == nil || event.Net.State != "TIME-WAIT" || event.Net.Inode != 9 {
+	if event.Sock == nil || event.Sock.PID != 0 || event.Sock.Net.State != "TIME-WAIT" || event.Sock.Net.Inode != 9 {
 		t.Errorf("event = %+v", event)
 	}
 }
@@ -67,7 +67,7 @@ func TestSocketEventsWithOwner(t *testing.T) {
 		State: "ESTAB",
 	}
 	events := socketEvents(fs, state, []netdiag.Owner{{PID: 123, FD: 3, Comm: "curl"}}, time.Now())
-	if len(events) != 1 || events[0].PID != 123 || events[0].Comm != "curl" {
+	if len(events) != 1 || events[0].Sock == nil || events[0].Sock.PID != 123 || events[0].Sock.Comm != "curl" {
 		t.Fatalf("events = %+v", events)
 	}
 }

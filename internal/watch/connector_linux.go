@@ -253,9 +253,11 @@ func (s *connectorSource) forkEvent(payload []byte, at time.Time) []Event {
 	}
 	s.states[childTgid] = state
 	return []Event{{
-		Time: at, Kind: KindFork, PID: childTgid, PPID: parentTgid, UID: state.UID,
-		Comm: state.Comm, Exe: state.Exe, Cmdline: state.Cmdline, Cwd: state.Cwd,
-		Source: "connector",
+		Time: at, Source: SourceConnector,
+		Proc: &Proc{
+			Kind: KindFork, PID: childTgid, PPID: parentTgid, UID: state.UID,
+			Comm: state.Comm, Exe: state.Exe, Cmdline: state.Cmdline, Cwd: state.Cwd,
+		},
 	}}
 }
 
@@ -270,9 +272,11 @@ func (s *connectorSource) execEvent(payload []byte, at time.Time) []Event {
 	}
 	s.states[pid] = state
 	return []Event{{
-		Time: at, Kind: KindExec, PID: pid, PPID: state.PPID, UID: state.UID,
-		Comm: state.Comm, Exe: state.Exe, Cmdline: state.Cmdline, Cwd: state.Cwd,
-		Source: "connector",
+		Time: at, Source: SourceConnector,
+		Proc: &Proc{
+			Kind: KindExec, PID: pid, PPID: state.PPID, UID: state.UID,
+			Comm: state.Comm, Exe: state.Exe, Cmdline: state.Cmdline, Cwd: state.Cwd,
+		},
 	}}
 }
 
@@ -296,9 +300,12 @@ func (s *connectorSource) exitEvent(payload []byte, at time.Time) []Event {
 	}
 	code := at32(payload, 24)
 	return []Event{{
-		Time: at, Kind: KindExit, PID: pid, PPID: state.PPID, UID: state.UID,
-		Comm: state.Comm, Exe: state.Exe, Cmdline: state.Cmdline, Cwd: state.Cwd,
-		ExitCode: &code, Source: "connector",
+		Time: at, Source: SourceConnector,
+		Proc: &Proc{
+			Kind: KindExit, PID: pid, PPID: state.PPID, UID: state.UID,
+			Comm: state.Comm, Exe: state.Exe, Cmdline: state.Cmdline, Cwd: state.Cwd,
+			ExitCode: &code,
+		},
 	}}
 }
 

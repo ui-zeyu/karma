@@ -1,6 +1,7 @@
 package startup
 
 import (
+	"context"
 	"io/fs"
 	"testing"
 
@@ -104,7 +105,7 @@ func TestCollectSystemd(t *testing.T) {
 			"/home/*/.zlogin":               nil,
 		},
 	}
-	corpus := Collect(tree, func(path string) trust.Facts {
+	corpus := Collect(context.Background(), tree, func(path string) trust.Facts {
 		return trust.Build(path, trust.Attrs{Kind: trust.File, Mode: 0o644, UID: 0, Real: path})
 	})
 	if len(corpus.files) != 3 {
@@ -134,7 +135,7 @@ func TestCollectSkelTemplate(t *testing.T) {
 		files: map[string]string{"/etc/skel/.profile": "export LOADER=/opt/vendor/.loader.sh\n"},
 		globs: map[string][]string{"/etc/skel/.profile": {"/etc/skel/.profile"}},
 	}
-	corpus := Collect(tree, func(path string) trust.Facts {
+	corpus := Collect(context.Background(), tree, func(path string) trust.Facts {
 		return trust.Build(path, trust.Attrs{Kind: trust.File, Mode: 0o644, UID: 0, Real: path})
 	})
 	if len(corpus.files) != 1 {
@@ -154,7 +155,7 @@ func TestCollectUnreadable(t *testing.T) {
 		globs: map[string][]string{"/etc/profile": {"/etc/profile"}},
 		fail:  map[string]error{"/etc/profile": fs.ErrPermission},
 	}
-	corpus := Collect(tree, func(path string) trust.Facts { return trust.Facts{Path: path} })
+	corpus := Collect(context.Background(), tree, func(path string) trust.Facts { return trust.Facts{Path: path} })
 	if len(corpus.files) != 0 {
 		t.Fatalf("an unreadable file should not enter the corpus: %+v", corpus.files)
 	}
@@ -186,14 +187,26 @@ func TestClassifyPathCoversEverySurface(t *testing.T) {
 		{"/etc/ld.so.preload", SurfaceLoader, LoaderDialect},
 		{"/etc/udev/rules.d/x.rules", SurfaceUdev, UdevDialect},
 		{"/etc/ssh/sshd_config", SurfaceSSH, SSHConfigDialect},
+		{"/etc/ssh/ssh_config", SurfaceSSH, SSHConfigDialect},
+		{"/etc/ssh/ssh_config.d/10-x.conf", SurfaceSSH, SSHConfigDialect},
+		{"/root/.ssh/config", SurfaceSSH, SSHConfigDialect},
 		{"/etc/ssh/authorized_keys", SurfaceSSH, AuthorizedKeysDialect},
 		{"/etc/ssh/sshrc", SurfaceSSH, ShellDialect},
 		{"/etc/pam.d/sshd", SurfacePAM, PAMDialect},
+		{"/etc/update-motd.d/10-banner", SurfacePAM, ShellDialect},
+		{"/etc/systemd/system-generators/x", SurfaceSystemd, GeneratorsDialect},
+		{"/usr/lib/systemd/user-generators/x", SurfaceSystemd, GeneratorsDialect},
 		{"/etc/supervisor/conf.d/x.conf", SurfaceSupervisor, UnitDialect},
+		{"/etc/xinetd.conf", SurfaceSupervisor, XinetdDialect},
+		{"/etc/xinetd.d/tftp", SurfaceSupervisor, XinetdDialect},
 		{"/etc/s6/services/x/run", SurfaceSupervisor, ShellDialect},
 		{"/etc/xdg/autostart/x.desktop", SurfaceXdg, UnitDialect},
 		{"/etc/apt/apt.conf.d/01x", SurfaceApt, AptDialect},
 		{"/etc/modprobe.d/x.conf", SurfaceModule, ModprobeDialect},
+		{"/etc/fstab", SurfaceSystem, SystemDialect},
+		{"/etc/crypttab", SurfaceSystem, SystemDialect},
+		{"/etc/nsswitch.conf", SurfaceSystem, SystemDialect},
+		{"/etc/hosts.allow", SurfaceSystem, SystemDialect},
 	}
 	for _, c := range cases {
 		surface, dialect := classifyPath(c.path)
@@ -210,7 +223,7 @@ func TestCollectCapsOneFile(t *testing.T) {
 		files: map[string]string{"/etc/profile": string(big)},
 		globs: map[string][]string{"/etc/profile": {"/etc/profile"}},
 	}
-	corpus := Collect(tree, func(path string) trust.Facts { return trust.Facts{Path: path} })
+	corpus := Collect(context.Background(), tree, func(path string) trust.Facts { return trust.Facts{Path: path} })
 	if len(corpus.files) != 1 {
 		t.Fatalf("files = %+v", corpus.files)
 	}
@@ -248,7 +261,7 @@ func TestCollectEnabledVendorUnit(t *testing.T) {
 			"/etc/systemd/system/multi-user.target.wants/vendor.service": vendor,
 		},
 	}
-	corpus := Collect(tree, func(path string) trust.Facts {
+	corpus := Collect(context.Background(), tree, func(path string) trust.Facts {
 		return trust.Build(path, trust.Attrs{Kind: trust.File, Mode: 0o755, UID: 0, Real: path})
 	})
 	found := false
@@ -263,11 +276,23 @@ func TestCollectEnabledVendorUnit(t *testing.T) {
 	edges := Analyze(corpus)
 	for _, edge := range edges {
 		if edge.Trigger == vendor && edge.Target == "/opt/vendor/agent" {
-			if edge.Reach != BootEnabled {
-				t.Errorf("reach = %s, want %s", edge.Reach, BootEnabled)
+			if edge.Phase != BootEnabled {
+				t.Errorf("phase = %s, want %s", edge.Phase, BootEnabled)
 			}
 			return
 		}
 	}
 	t.Fatalf("no edge from the vendor unit: %+v", edges)
+}
+
+// TestCollectScopedStopsOnCancel pins the interrupt checkpoint: a canceled
+// run does not read a single startup file.
+func TestCollectScopedStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tree := fakeFS{files: map[string]string{"/etc/ld.so.preload": "/tmp/zz.so\n"}}
+	corpus := CollectScoped(ctx, tree, func(path string) trust.Facts { return trust.Facts{Path: path} }, Scope{Loader: true})
+	if len(corpus.files) != 0 {
+		t.Fatalf("a canceled walk read %d files", len(corpus.files))
+	}
 }

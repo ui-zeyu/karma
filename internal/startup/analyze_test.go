@@ -26,8 +26,8 @@ func TestAnalyzeStatesTheEdgeAndBothEndsFacts(t *testing.T) {
 	if edge.Trigger != unit || edge.Target != "/opt/agent" || edge.Kind != Exec {
 		t.Errorf("edge = %+v", edge)
 	}
-	if edge.AS != "alice" || edge.Reach != BootStaged {
-		t.Errorf("account = %q reach = %s", edge.AS, edge.Reach)
+	if edge.Subject != Account("alice") || edge.Phase != BootStaged {
+		t.Errorf("account = %q phase = %s", edge.Subject, edge.Phase)
 	}
 	if edge.TriggerFacts.Kind != trust.File || edge.TargetFacts.Kind != trust.File {
 		t.Errorf("facts = trigger %+v target %+v", edge.TriggerFacts, edge.TargetFacts)

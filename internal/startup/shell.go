@@ -7,6 +7,32 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
+// Reference is one file a shell body names, independent of the surface that
+// supplied the body. The profile reads arbitrary scripts with it; the startup
+// analysis uses the same parser through shellEdges.
+type Reference struct {
+	Target    string
+	Kind      Kind
+	Mechanism Mechanism
+	Dynamic   bool
+}
+
+// References extracts the file references of a shell body. A target the shell
+// builds at runtime is returned with Dynamic set and no path to judge.
+func References(path, body string) []Reference {
+	base := rawEdge{trigger: path}
+	var refs []Reference
+	for _, edge := range shellEdges(body, base) {
+		refs = append(refs, Reference{
+			Target:    edge.target,
+			Kind:      edge.kind,
+			Mechanism: edge.mechanism,
+			Dynamic:   edge.dynamic,
+		})
+	}
+	return refs
+}
+
 // shellEdges reads a POSIX shell file's startup edges. The parser is the shell
 // language's own: an assignment, a source and an exec are recognized as the
 // syntax it is, whatever the line is indented like and whichever branch of an
@@ -66,9 +92,9 @@ func commandEdges(src string, base rawEdge, args []*syntax.Word) []rawEdge {
 		// no literal target to place and nothing a static read can name.
 		return nil
 	case "command", "builtin":
-		return literalCommandEdges(src, base, args[1:], first)
+		return literalCommandEdges(src, base, args[1:], Mechanism(first))
 	}
-	return literalCommandEdges(src, base, args, "exec")
+	return literalCommandEdges(src, base, args, Mechanism(Exec))
 }
 
 // sourceEdges reads `source path` and `. path`. A literal absolute path is the
@@ -94,7 +120,7 @@ func sourceEdges(src string, base rawEdge, args []*syntax.Word) []rawEdge {
 // literalCommandEdges reads the words after a command prefix (exec, command,
 // builtin). Every word up to the program is needed; a non-literal word before
 // the target makes the target dynamic rather than guessed.
-func literalCommandEdges(src string, base rawEdge, args []*syntax.Word, mechanism string) []rawEdge {
+func literalCommandEdges(src string, base rawEdge, args []*syntax.Word, mechanism Mechanism) []rawEdge {
 	if mechanism != "" && base.mechanism == "" {
 		// A surface that named the mechanism (a unit's ExecStart, an
 		// authorized key's command=) keeps its own word; a bare profile line
@@ -134,14 +160,15 @@ func literalCommandEdges(src string, base rawEdge, args []*syntax.Word, mechanis
 	return []rawEdge{edgeFor(base, args[0], target, kind, viaInterpreter, dynamic)}
 }
 
-// literalTarget is the shared reading of a command word list, for a shell line
-// and for an ExecStart. The shell spelling allows a bare command name to be a
-// PATH lookup; a unit's ExecStart does not.
+// literalTarget is the shared reading of a command word list, for a shell
+// line and for an ExecStart. A bare command name stays dynamic: the PATH it
+// resolves through is runtime state, and coverage is where that decision
+// belongs.
 func literalTarget(words []string) (string, Kind, bool, bool) {
 	if len(words) == 0 {
 		return "", "", false, false
 	}
-	target := commandTargetFor(words, true)
+	target := commandTargetFor(words)
 	if target.kind == "" {
 		target.kind = Exec
 	}
@@ -164,7 +191,7 @@ func assignmentEdges(base rawEdge, assigns []*syntax.Assign) []rawEdge {
 			continue
 		}
 		mechanism := base
-		mechanism.mechanism = "export " + name
+		mechanism.mechanism = Mechanism("export " + name)
 		if name == "LD_PRELOAD" || name == "LD_AUDIT" {
 			for _, path := range splitPaths(value) {
 				edges = append(edges, edgeFor(mechanism, assign.Value, path, Preload, false, !filepath.IsAbs(path)))
@@ -199,9 +226,9 @@ func environmentEdges(body string, base rawEdge) []rawEdge {
 		if name == "LD_PRELOAD" || name == "LD_AUDIT" {
 			for _, path := range splitPaths(value) {
 				edges = append(edges, rawEdge{
-					surface: base.surface, reach: base.reach, as: base.as,
+					surface: base.surface, phase: base.phase, subject: base.subject,
 					trigger: base.trigger, line: at,
-					mechanism: name, target: path, kind: Preload, dynamic: !filepath.IsAbs(path),
+					mechanism: Mechanism(name), target: path, kind: Preload, dynamic: !filepath.IsAbs(path),
 				})
 			}
 			continue
@@ -210,9 +237,9 @@ func environmentEdges(body string, base rawEdge) []rawEdge {
 			continue
 		}
 		edges = append(edges, rawEdge{
-			surface: base.surface, reach: base.reach, as: base.as,
+			surface: base.surface, phase: base.phase, subject: base.subject,
 			trigger: base.trigger, line: at,
-			mechanism: name, target: value, kind: Env,
+			mechanism: Mechanism(name), target: value, kind: Env,
 		})
 	}
 	return edges
@@ -229,12 +256,12 @@ func edgeFor(base rawEdge, node syntax.Node, target string, kind Kind, viaInterp
 	}
 	mechanism := base.mechanism
 	if mechanism == "" {
-		mechanism = string(kind)
+		mechanism = Mechanism(kind)
 	}
 	return rawEdge{
 		surface:        base.surface,
-		reach:          base.reach,
-		as:             base.as,
+		phase:          base.phase,
+		subject:        base.subject,
 		trigger:        base.trigger,
 		line:           line,
 		mechanism:      mechanism,

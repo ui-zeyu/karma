@@ -24,11 +24,11 @@ func udevEdges(file File) []rawEdge {
 			}
 			edges = append(edges, shellEdges(value, rawEdge{
 				surface:   SurfaceUdev,
-				reach:     Device,
-				as:        "root",
+				phase:     Device,
+				subject:   Subject{Class: AccountRoot},
 				trigger:   file.Path,
 				line:      index,
-				mechanism: key,
+				mechanism: Mechanism(key),
 			})...)
 		}
 	}

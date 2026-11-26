@@ -59,7 +59,7 @@ func TestJudgeRuntimeObjectInAnActivationSurface(t *testing.T) {
 		Boundary: boundary(),
 		Objects:  map[string]trust.Facts{trigger.Path: trigger, target.Path: target},
 		Activations: []startup.Edge{{
-			Surface: startup.SurfaceProfile, Reach: startup.Login, AS: "root",
+			Surface: startup.SurfaceProfile, Phase: startup.Login, Subject: startup.Subject{Class: startup.AccountRoot},
 			Trigger: trigger.Path, Target: target.Path, Kind: startup.Exec,
 			TriggerFacts: trigger, TargetFacts: target,
 		}},
@@ -69,7 +69,7 @@ func TestJudgeRuntimeObjectInAnActivationSurface(t *testing.T) {
 		t.Fatalf("findings = %+v, want one", report.Findings)
 	}
 	finding := report.Findings[0]
-	if finding.Class != "tcb-introduction" || finding.Path != trigger.Path {
+	if finding.Class != "activation-introduction" || finding.Path != trigger.Path {
 		t.Errorf("finding = %+v", finding)
 	}
 	if finding.Severity != Critical || finding.Reach != RootAsset {
@@ -87,7 +87,7 @@ func TestJudgeArtifactActivationIsQuiet(t *testing.T) {
 		Boundary: boundary(),
 		Objects:  map[string]trust.Facts{trigger.Path: trigger, target.Path: target},
 		Activations: []startup.Edge{{
-			Surface: startup.SurfaceSystemd, Reach: startup.BootEnabled, AS: "root",
+			Surface: startup.SurfaceSystemd, Phase: startup.BootEnabled, Subject: startup.Subject{Class: startup.AccountRoot},
 			Trigger: trigger.Path, Target: target.Path, Kind: startup.Exec,
 			TriggerFacts: trigger, TargetFacts: target,
 		}},
@@ -107,13 +107,13 @@ func TestJudgeWritableActivationSurface(t *testing.T) {
 		Boundary: boundary(),
 		Objects:  map[string]trust.Facts{trigger.Path: trigger, target.Path: target},
 		Activations: []startup.Edge{{
-			Surface: startup.SurfaceProfile, Reach: startup.Login, AS: "root",
+			Surface: startup.SurfaceProfile, Phase: startup.Login, Subject: startup.Subject{Class: startup.AccountRoot},
 			Trigger: trigger.Path, Target: target.Path, Kind: startup.Source,
 			TriggerFacts: trigger, TargetFacts: target,
 		}},
 	}
 	report := Judge(snapshot, Filter{})
-	if len(report.Findings) != 1 || report.Findings[0].Class != "tcb-writable" {
+	if len(report.Findings) != 1 || report.Findings[0].Class != "activation-writable" {
 		t.Fatalf("findings = %+v, want one writable finding", report.Findings)
 	}
 	if report.Findings[0].Severity != High {
@@ -152,7 +152,7 @@ func TestJudgeUnownedTargetWithoutAnOriginDelta(t *testing.T) {
 		Boundary: boundary(),
 		Objects:  map[string]trust.Facts{trigger.Path: trigger, target.Path: target},
 		Activations: []startup.Edge{{
-			Surface: startup.SurfaceSystemd, Reach: startup.BootEnabled, AS: "root",
+			Surface: startup.SurfaceSystemd, Phase: startup.BootEnabled, Subject: startup.Subject{Class: startup.AccountRoot},
 			Trigger: trigger.Path, Target: target.Path, Kind: startup.Exec,
 			TriggerFacts: trigger, TargetFacts: target,
 		}},
@@ -203,7 +203,7 @@ func TestPIDScopeJudgesOnlyThatProcess(t *testing.T) {
 			trigger.Path: trigger, target.Path: target, image.Path: image,
 		},
 		Activations: []startup.Edge{{
-			Surface: startup.SurfaceProfile, Reach: startup.Login, AS: "root",
+			Surface: startup.SurfaceProfile, Phase: startup.Login, Subject: startup.Subject{Class: startup.AccountRoot},
 			Trigger: trigger.Path, Target: target.Path,
 			TriggerFacts: trigger, TargetFacts: target,
 		}},
@@ -222,7 +222,7 @@ func TestScopeNarrowsSurfacesAndPaths(t *testing.T) {
 		Boundary: boundary(),
 		Objects:  map[string]trust.Facts{trigger.Path: trigger, target.Path: target},
 		Activations: []startup.Edge{{
-			Surface: startup.SurfaceProfile, Reach: startup.Login, AS: "root",
+			Surface: startup.SurfaceProfile, Phase: startup.Login, Subject: startup.Subject{Class: startup.AccountRoot},
 			Trigger: trigger.Path, Target: target.Path,
 			TriggerFacts: trigger, TargetFacts: target,
 		}},
@@ -247,7 +247,7 @@ func TestRenderKeepsThePanelLanguageAndTheRawInventory(t *testing.T) {
 		Source:   "native",
 		Objects:  map[string]trust.Facts{trigger.Path: trigger, target.Path: target},
 		Activations: []startup.Edge{{
-			Surface: startup.SurfaceSystemd, Reach: startup.BootEnabled, AS: "root",
+			Surface: startup.SurfaceSystemd, Phase: startup.BootEnabled, Subject: startup.Subject{Class: startup.AccountRoot},
 			Trigger: trigger.Path, Target: target.Path, Kind: startup.Exec, Mechanism: "ExecStart",
 			TriggerFacts: trigger, TargetFacts: target,
 		}},
@@ -256,7 +256,7 @@ func TestRenderKeepsThePanelLanguageAndTheRawInventory(t *testing.T) {
 	}
 	report := Judge(snapshot, Filter{})
 	var out strings.Builder
-	Render(&out, report, snapshot, RenderOptions{
+	Render(&out, report, RenderOptions{
 		Version: "9.9.9", Width: 100, Evidence: true,
 	})
 	text := out.String()

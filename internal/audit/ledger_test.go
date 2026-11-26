@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"karma/internal/prov"
 	"karma/internal/trust"
 )
 
@@ -20,34 +21,6 @@ func pkgFacts(path string, ctime int64, pkg string) trust.Facts {
 		Kind: trust.File, Mode: 0o755, UID: 0, Real: path, CTime: ctime,
 		Package: pkg, PackageKnown: true,
 	})
-}
-
-func TestParsePackageLogLineReadsBothSpellings(t *testing.T) {
-	cases := []struct {
-		line string
-		pkg  string
-		day  int
-	}{
-		{"2026-11-24 22:32:00 install coreutils:amd64 9.1-1", "coreutils", 24},
-		{"2026-11-24 22:33:00 status installed coreutils:amd64 9.1-1", "coreutils", 24},
-		{"2026-11-24 22:34:00 trigproc libc6:amd64 2.36", "libc6", 24},
-	}
-	for _, test := range cases {
-		pkg, stamp, ok := parsePackageLogLine(test.line)
-		if !ok || pkg != test.pkg || stamp.Local().Day() != test.day {
-			t.Errorf("%q: pkg=%q stamp=%v ok=%t", test.line, pkg, stamp, ok)
-		}
-	}
-	want, _ := time.ParseInLocation(stampLayout, "2026-11-24 22:32:00", time.Local)
-	_, stamp, _ := parsePackageLogLine(cases[0].line)
-	if !stamp.Equal(want) {
-		t.Errorf("stamp = %v, want local %v", stamp, want)
-	}
-	for _, line := range []string{"garbage", "2026-11-24 22:32:00 status", "2026-11-24 x install pkg"} {
-		if _, _, ok := parsePackageLogLine(line); ok {
-			t.Errorf("%q parsed as a transaction", line)
-		}
-	}
 }
 
 func TestJoinContentSurvivesTheUsrmerge(t *testing.T) {
@@ -71,13 +44,9 @@ func TestJoinContentSurvivesTheUsrmerge(t *testing.T) {
 	}
 }
 
-func TestReadDpkgLedgerAndHashFiles(t *testing.T) {
+func TestHashFilesAndJoinContent(t *testing.T) {
 	root := t.TempDir()
-	info := filepath.Join(root, "info")
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(info, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(root, "bin", "ls")
@@ -89,42 +58,12 @@ func TestReadDpkgLedgerAndHashFiles(t *testing.T) {
 		t.Fatalf("hashFile = %q %t", hash, ok)
 	}
 	stripped := strings.TrimPrefix(binary, "/")
-	write := func(name, body string) {
-		if err := os.WriteFile(filepath.Join(info, name), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	expected := map[string]ledgerEntry{
+		stripped: {pkg: "coreutils", hash: hash},
 	}
-	write("coreutils.md5sums", hash+"  "+stripped+"\n")
-	write("coreutils.list", "/bin\n"+binary+"\n")
-	write("bash.conffiles", "/etc/bash.bashrc\n")
-	write("bash.postinst", "#!/bin/sh\n")
-
-	expected, conffiles, rows, ok := readDpkgLedger(t.Context(), info, map[string]bool{"coreutils": true, "bash": true})
-	if !ok {
-		t.Fatal("readDpkgLedger answered not-ok for a dpkg info dir")
-	}
-	if got := expected[stripped]; got.pkg != "coreutils" || got.hash != hash {
-		t.Errorf("expected[%s] = %+v", stripped, got)
-	}
-	if len(expected) != 1 {
-		t.Errorf("expected = %v, want only coreutils' entry", expected)
-	}
-	if !conffiles["/etc/bash.bashrc"] {
-		t.Errorf("conffiles = %v", conffiles)
-	}
-	stamped := 0
-	for _, row := range rows {
-		if row.Pkg == "coreutils" {
-			stamped++
-		}
-	}
-	if stamped != 2 {
-		t.Errorf("ledger stamps for coreutils = %d, want list+md5sums", stamped)
-	}
-
 	actual := hashFiles(t.Context(), map[string]trust.Facts{
 		binary: pkgFacts(binary, 900, "coreutils"),
-	})
+	}, expected)
 	if actual[binary] != hash {
 		t.Errorf("hashFiles = %v", actual)
 	}
@@ -134,55 +73,42 @@ func TestReadDpkgLedgerAndHashFiles(t *testing.T) {
 	}
 }
 
-func TestLedgerTamperNeedsALaterWriteAndAnOutlier(t *testing.T) {
-	// The ledger's typical write is ~450; the package's last transaction is
-	// 500. A stamp at 600 moved past the transaction but sits with the
-	// baseline — an image build moving every file at once — and passes. Only
-	// the outlier at 22700 reads as tampered, and a package with no recorded
-	// transaction cannot be judged at all.
-	times := map[string]time.Time{"bash": time.Unix(500, 0)}
+func TestLedgerTamperReadsTheArtifactEdge(t *testing.T) {
+	// The container became the artifact at epoch 1000. bash came with the
+	// image (last transaction 500); coreutils was installed after the container
+	// started (1500). An image build's uniform stamp at 900 sits past bash's
+	// transaction but before the edge, so it is the artifact, not tampering.
+	// The 1001 write is the smallest rewrite the model must catch: one second
+	// past the edge, no statistical margin. The log row is dated by its own
+	// newest entry, so the write at 1500 passes and the rewrite at 1600 does not.
+	edge := Boundary{Time: time.Unix(1000, 0), Kind: "container", Source: "pid1", Confidence: HighConfidence}
+	times := map[string]time.Time{
+		"bash":      time.Unix(500, 0),
+		"coreutils": time.Unix(1500, 0),
+	}
 	rows := []ledgerFile{
-		{Pkg: "bash", Stamp: time.Unix(400, 0), Path: "/i/1"},
-		{Pkg: "bash", Stamp: time.Unix(450, 0), Path: "/i/2"},
-		{Pkg: "bash", Stamp: time.Unix(460, 0), Path: "/i/3"},
-		{Pkg: "bash", Stamp: time.Unix(600, 0), Path: "/i/4"},
-		{Pkg: "bash", Stamp: time.Unix(22700, 0), Path: "/i/5"},
-		{Pkg: "unknown", Stamp: time.Unix(9000, 0), Path: "/i/6"},
+		{Pkg: "bash", Stamp: time.Unix(400, 0), Path: "/i/transaction"},
+		{Pkg: "bash", Stamp: time.Unix(900, 0), Path: "/i/image-build"},
+		{Pkg: "bash", Stamp: time.Unix(1001, 0), Path: "/i/tamper"},
+		{Pkg: "coreutils", Stamp: time.Unix(1500, 0), Path: "/i/install"},
+		{Pkg: logLedgerPkg, Stamp: time.Unix(1500, 0), Path: prov.PackageLog},
+		{Pkg: logLedgerPkg, Stamp: time.Unix(1600, 0), Path: prov.PackageLog},
 	}
-	tampered := ledgerTamper(times, rows)
-	if len(tampered) != 1 || tampered[0].Path != "/i/5" {
-		t.Errorf("tampered = %+v, want only the outlier", tampered)
+	got := ledgerTamper(edge, times, rows)
+	if len(got) != 2 || got[0].Path != "/i/tamper" || got[1].Stamp.Unix() != 1600 {
+		t.Errorf("tampered = %+v, want the 1001 ledger write and the 1600 log rewrite", got)
 	}
-	baseline := medianStamp(rows)
-	if baseline.Unix() != 600 {
-		t.Errorf("baseline = %v, want 600", baseline)
-	}
-	if _, ok := packageLogTamper(times, time.Unix(700, 0), baseline); ok {
-		t.Errorf("a log write 200s after the newest entry read as tampered")
-	}
-	if _, ok := packageLogTamper(times, time.Unix(5000, 0), baseline); ok {
-		t.Errorf("a log write past the newest entry but with the baseline read as tampered")
-	}
-	if row, ok := packageLogTamper(times, time.Unix(40000, 0), baseline); !ok || row.Pkg != logLedgerPkg {
-		t.Errorf("a log rewrite days past the newest entry passed: %+v %t", row, ok)
-	}
-}
 
-func TestParseRpmVerifyLine(t *testing.T) {
-	path, flags, conffile, absent, ok := parseRpmVerifyLine("SM5....T.  /usr/bin/x")
-	if !ok || path != "/usr/bin/x" || flags != "SM5....T." || conffile || absent {
-		t.Errorf("content row = %q %q %t %t %t", path, flags, conffile, absent, ok)
+	// A package with no recorded transaction cannot be timed against one; a
+	// write past the edge is still outside package management.
+	got = ledgerTamper(edge, times, []ledgerFile{{Pkg: "unknown", Stamp: time.Unix(1200, 0), Path: "/i/7"}})
+	if len(got) != 1 {
+		t.Errorf("unrecorded package = %+v, want the post-edge write", got)
 	}
-	path, _, conffile, absent, ok = parseRpmVerifyLine("..5....T.  c /etc/hosts")
-	if !ok || path != "/etc/hosts" || !conffile || absent {
-		t.Errorf("config row = %q %t %t %t", path, conffile, absent, ok)
-	}
-	path, _, _, absent, ok = parseRpmVerifyLine("missing   /usr/bin/y")
-	if !ok || path != "/usr/bin/y" || !absent {
-		t.Errorf("missing row = %q %t %t", path, absent, ok)
-	}
-	if _, _, _, _, ok := parseRpmVerifyLine("unparseable junk here"); ok {
-		t.Errorf("junk parsed as a verify row")
+
+	// Without an artifact edge there is nothing to date the write against.
+	if got := ledgerTamper(Boundary{}, times, rows); got != nil {
+		t.Errorf("tamper without a boundary = %+v", got)
 	}
 }
 
@@ -290,7 +216,7 @@ func TestVerdictTamperedLedgerFallsBackToTime(t *testing.T) {
 
 func TestVerdictUnownedFileNamesItsTree(t *testing.T) {
 	snapshot := verifiedSnapshot()
-	snapshot.ownerOf = map[string]string{"/usr/lib": "libc6"}
+	snapshot.Objects = map[string]trust.Facts{"/usr/lib": pkgFacts("/usr/lib", 0, "libc6")}
 	facts := trust.Build("/usr/lib/evil", trust.Attrs{
 		Kind: trust.File, Mode: 0o755, UID: 0, Real: "/usr/lib/evil",
 		CTime: 900, PackageKnown: true,

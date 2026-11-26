@@ -39,6 +39,13 @@ type Attrs struct {
 	PathParentOpen     bool
 	Package            string
 	PackageKnown       bool
+	// Diverted is dpkg's own record that this path is a local diversion: the
+	// file is the administrator's declared replacement, and a known-empty
+	// ownership answer for it reads as declared, not as a dropped binary.
+	Diverted bool
+	// PackageShared is a directory row that several packages claim. The
+	// first name is a citation, not the tree's owner.
+	PackageShared bool
 	// CTime is the inode's change time in Unix seconds. Userland cannot set
 	// it, so it separates an object the artifact shipped from one introduced
 	// after the artifact.
@@ -97,12 +104,16 @@ type Facts struct {
 	Startup     bool
 	PathStartup bool
 	// Setuid is the resolved file's setuid bit: the image runs with the file
-	// owner's authority, not the caller's.
+	// owner's authority, not the caller's. Setgid is the same for the group.
 	Setuid bool
+	Setgid bool
 	// Package is the package that owns the resolved path; empty with
-	// PackageKnown true means no package owns it.
-	Package      string
-	PackageKnown bool
+	// PackageKnown true means no package owns it, and Diverted says the
+	// database knows the path as a local diversion.
+	Package       string
+	PackageKnown  bool
+	Diverted      bool
+	PackageShared bool
 	// CTime is the resolved inode's change time in Unix seconds, and Inode is
 	// its number. Both are zero when the kernel could not state them.
 	CTime int64
@@ -190,6 +201,8 @@ func Build(path string, attrs Attrs) Facts {
 		PathParentOpen:     attrs.PathParentOpen,
 		Package:            attrs.Package,
 		PackageKnown:       attrs.PackageKnown,
+		Diverted:           attrs.Diverted,
+		PackageShared:      attrs.PackageShared,
 		CTime:              attrs.CTime,
 		Inode:              attrs.Inode,
 		Caps:               attrs.Caps,
@@ -208,6 +221,7 @@ func Build(path string, attrs Attrs) Facts {
 	facts.Writable = facts.Mode.Perm()&0o022 != 0
 	bits := uint32(facts.Mode)
 	facts.Setuid = facts.Mode&os.ModeSetuid != 0 || bits&0o4000 != 0
+	facts.Setgid = facts.Mode&os.ModeSetgid != 0 || bits&0o2000 != 0
 	facts.Executable = facts.Kind == File && facts.Mode.Perm()&0o111 != 0
 	return facts
 }
@@ -245,16 +259,46 @@ func Classify(path string, resolver PackageResolver) Facts {
 	attrs.ParentWritable, attrs.ParentOpen = parentFlags(attrs.Real)
 	attrs.PathParentWritable, attrs.PathParentOpen = parentFlags(path)
 	if resolver != nil {
-		attrs.Package, attrs.PackageKnown = resolver.Owned(attrs.Real)
+		attrs.Package, attrs.PackageKnown, attrs.PackageShared = owned(resolver, attrs.Real)
 		if attrs.Real != path && !attrs.PackageKnown {
 			// A database that records the spelling the file was installed
 			// under, or one that could not answer for the resolved path, still
 			// gets the caller's spelling as a second question. A known-empty
 			// answer for the real file is the dropped-binary fact and stands.
-			attrs.Package, attrs.PackageKnown = resolver.Owned(path)
+			attrs.Package, attrs.PackageKnown, attrs.PackageShared = owned(resolver, path)
+		}
+		if div, ok := resolver.(diversionResolver); ok {
+			attrs.Diverted = div.Diversion(attrs.Real) || (attrs.Real != path && div.Diversion(path))
 		}
 	}
 	return Build(path, attrs)
+}
+
+// diversionResolver is a package database that also answers diversions.
+// *prov.Catalog is the live implementation.
+type diversionResolver interface {
+	Diversion(path string) bool
+}
+
+// sharedResolver is a resolver that can say a directory row lists several
+// packages. A single package resolver is still a valid answer.
+type sharedResolver interface {
+	OwnedShared(path string) (string, bool, bool)
+}
+
+func owned(resolver PackageResolver, path string) (string, bool, bool) {
+	if shared, ok := resolver.(sharedResolver); ok {
+		return shared.OwnedShared(path)
+	}
+	pkg, known := resolver.Owned(path)
+	return pkg, known, false
+}
+
+// Owner reads a file's uid from its FileInfo. It is -1 when the platform
+// cannot state one.
+func Owner(info fs.FileInfo) int {
+	owner, _ := statOwner(info)
+	return owner
 }
 
 func kindOf(mode fs.FileMode) Kind {

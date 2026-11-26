@@ -1,7 +1,6 @@
 package startup
 
 import (
-	"path/filepath"
 	"strings"
 	"unicode"
 )
@@ -12,7 +11,7 @@ import (
 // command is then the shell line it is.
 func authorizedKeysEdges(file File) []rawEdge {
 	var edges []rawEdge
-	as := accountFor(file.Path)
+	subject := accountFor(file.Path)
 	for index, raw := range strings.Split(file.Body, "\n") {
 		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -32,7 +31,7 @@ func authorizedKeysEdges(file File) []rawEdge {
 				continue
 			}
 			edges = append(edges, shellEdges(value, rawEdge{
-				surface: SurfaceSSH, reach: Login, as: as, trigger: file.Path,
+				surface: SurfaceSSH, phase: Login, subject: subject, trigger: file.Path,
 				line: index, mechanism: "command=",
 			})...)
 		}
@@ -60,9 +59,10 @@ func cutKeyOptions(line string) (options, rest string) {
 	return line, ""
 }
 
-// sshConfigEdges reads the sshd directives that name a program: the command
-// that fetches authorized keys, the principals command for certificates, and
-// the forced command applied to every session.
+// sshConfigEdges reads the ssh daemon and client directives that name a
+// program: the commands that fetch authorized keys or principals, the forced
+// command applied to every session, and the client's ProxyCommand and
+// LocalCommand.
 func sshConfigEdges(file File) []rawEdge {
 	var edges []rawEdge
 	for index, raw := range strings.Split(file.Body, "\n") {
@@ -82,41 +82,17 @@ func sshConfigEdges(file File) []rawEdge {
 				continue
 			}
 			edges = append(edges, shellEdges(value, rawEdge{
-				surface: SurfaceSSH, reach: Login, as: "root", trigger: file.Path,
-				line: index, mechanism: line[:at],
+				surface: SurfaceSSH, phase: Login, subject: Subject{Class: AccountRoot}, trigger: file.Path,
+				line: index, mechanism: Mechanism(line[:at]),
 			})...)
-		}
-	}
-	return edges
-}
-
-// pamExecEdges reads a PAM service file for pam_exec.so invocations. The first
-// absolute argument after the module is the program PAM runs during
-// authentication; the module's own options are skipped.
-func pamExecEdges(file File) []rawEdge {
-	var edges []rawEdge
-	for index, raw := range strings.Split(file.Body, "\n") {
-		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Fields(line)
-		for at, field := range fields {
-			module := strings.TrimPrefix(field, "-")
-			if filepath.Base(module) != "pam_exec.so" {
+		case "proxycommand", "localcommand":
+			if value == "" || value == "none" {
 				continue
 			}
-			for _, arg := range fields[at+1:] {
-				if !filepath.IsAbs(arg) {
-					continue
-				}
-				edges = append(edges, shellEdges(arg, rawEdge{
-					surface: SurfacePAM, reach: Login, as: "root", trigger: file.Path,
-					line: index, mechanism: "pam_exec",
-				})...)
-				break
-			}
-			break
+			edges = append(edges, shellEdges(value, rawEdge{
+				surface: SurfaceSSH, phase: Session, subject: accountFor(file.Path), trigger: file.Path,
+				line: index, mechanism: Mechanism(line[:at]),
+			})...)
 		}
 	}
 	return edges

@@ -13,7 +13,7 @@ func cronEdges(file File) []rawEdge {
 	var edges []rawEdge
 	system := isSystemCrontab(file.Path)
 	anacron := file.Path == "/etc/anacrontab"
-	defaultAS := cronFileAS(file.Path)
+	defaultSubject := cronFileSubject(file.Path)
 
 	for index, raw := range strings.Split(file.Body, "\n") {
 		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
@@ -22,14 +22,14 @@ func cronEdges(file File) []rawEdge {
 		}
 		if name, _, ok := strings.Cut(line, "="); ok && !strings.ContainsAny(name, " \t") {
 			edges = append(edges, environmentEdges(line, rawEdge{
-				surface: SurfaceCron, reach: Scheduled, as: defaultAS,
+				surface: SurfaceCron, phase: Scheduled, subject: defaultSubject,
 				trigger: file.Path, line: index,
 			})...)
 			continue
 		}
 
-		reach := Scheduled
-		as := defaultAS
+		phase := Scheduled
+		subject := defaultSubject
 		var command string
 		switch {
 		case anacron:
@@ -46,14 +46,14 @@ func cronEdges(file File) []rawEdge {
 				continue
 			}
 			if words[0] == "@reboot" {
-				reach = BootStaged
+				phase = BootStaged
 			}
 			if system {
 				user, tail := cutWords(rest, 1)
 				if len(user) == 0 || tail == "" {
 					continue
 				}
-				as = user[0]
+				subject = Account(user[0])
 				command = tail
 			} else {
 				command = rest
@@ -69,7 +69,7 @@ func cronEdges(file File) []rawEdge {
 				if len(user) == 0 || tail == "" {
 					continue
 				}
-				as = user[0]
+				subject = Account(user[0])
 				command = tail
 			} else {
 				command = rest
@@ -78,7 +78,7 @@ func cronEdges(file File) []rawEdge {
 		// The command is one shell line; the offset makes its edges report the
 		// crontab line they came from.
 		edges = append(edges, shellEdges(command, rawEdge{
-			surface: SurfaceCron, reach: reach, as: as,
+			surface: SurfaceCron, phase: phase, subject: subject,
 			trigger: file.Path, line: index,
 		})...)
 	}
@@ -118,25 +118,25 @@ func isSystemCrontab(path string) bool {
 		strings.HasPrefix(path, "/etc/cron.weekly/") || strings.HasPrefix(path, "/etc/cron.monthly/")
 }
 
-// cronFileAS names who a crontab-format file's lines run as when the line does
-// not state it. A user spool file's name is the account.
-func cronFileAS(path string) string {
+// cronFileSubject names who a crontab-format file's lines run as when the line
+// does not state it. A user spool file's name is the account.
+func cronFileSubject(path string) Subject {
 	if user, ok := strings.CutPrefix(path, "/var/spool/cron/crontabs/"); ok {
-		return filepath.Base(user)
+		return Account(filepath.Base(user))
 	}
 	if rest, ok := strings.CutPrefix(path, "/var/spool/cron/"); ok {
 		if !strings.Contains(rest, "/") {
-			return rest
+			return Account(rest)
 		}
 	}
-	return "root"
+	return Subject{Class: AccountRoot}
 }
 
-// cronShellAS names who a shell file in the cron surface runs as: a run-parts
-// script is root's, and an at spool file is the submitting user's.
-func cronShellAS(path string) string {
+// cronShellSubject names who a shell file in the cron surface runs as: a
+// run-parts script is root's, and an at spool file is the submitting user's.
+func cronShellSubject(path string) Subject {
 	if strings.HasPrefix(path, "/var/spool/cron/atjobs/") || strings.HasPrefix(path, "/var/spool/at/") {
-		return "at"
+		return Account("at")
 	}
-	return "root"
+	return Subject{Class: AccountRoot}
 }

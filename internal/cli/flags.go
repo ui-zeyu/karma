@@ -16,17 +16,17 @@ func addRunFlags(cmd *cobra.Command) { runFlags(cmd.Flags()) }
 
 func runFlags(flags *pflag.FlagSet) {
 	flags.Bool("json", false, "print the report as one JSON object")
-	flags.Bool("no-evidence", false, "hide the raw inventories printed after the findings")
+	flags.Bool("evidence", false, "print the raw inventories after the findings")
 	flags.String("min-severity", "all", "report findings at or above this severity: all|info|low|medium|high|critical")
 	flags.String("since", "provision",
 		"artifact boundary: provision|boot|auto, a duration such as 24h, or an RFC3339 time")
-	flags.Float64("timeout", 60, "budget of the whole collection in seconds")
+	flags.Duration("timeout", 120*time.Second, "budget of the whole collection in seconds")
 }
 
 func auditOptions(flags *pflag.FlagSet) (auditFlags, error) {
-	seconds := floatFlag(flags, "timeout")
-	if seconds < 1 {
-		return auditFlags{}, fmt.Errorf("--timeout must be >= 1s")
+	budget := durationFlag(flags, "timeout")
+	if budget < time.Second {
+		return auditFlags{}, fmt.Errorf("--timeout must be at least 1s")
 	}
 	floor := audit.Info
 	if word := stringFlag(flags, "min-severity"); word != "all" {
@@ -38,15 +38,15 @@ func auditOptions(flags *pflag.FlagSet) (auditFlags, error) {
 	}
 	return auditFlags{
 		json:        boolFlag(flags, "json"),
-		evidence:    !boolFlag(flags, "no-evidence"),
+		evidence:    boolFlag(flags, "evidence"),
 		minSeverity: floor,
 		since:       stringFlag(flags, "since"),
-		timeout:     time.Duration(seconds * float64(time.Second)),
+		timeout:     budget,
 	}, nil
 }
 
-func floatFlag(flags *pflag.FlagSet, name string) float64 {
-	value, _ := flags.GetFloat64(name)
+func durationFlag(flags *pflag.FlagSet, name string) time.Duration {
+	value, _ := flags.GetDuration(name)
 	return value
 }
 

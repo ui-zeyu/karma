@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,31 +9,122 @@ import (
 	"strings"
 	"time"
 
-	"karma/internal/startup"
+	"karma/internal/prov"
 	"karma/internal/trust"
 )
 
 // Judge turns one snapshot into findings. The artifact boundary decides what
 // arrived late; the content ledger, the activation relation and the reachable
 // account decide what that means.
+
+// classDomain is the one place a finding class is mapped to its bounded
+// domain. A graph command selects findings by the domain, so a class is
+// never routed by a second string table.
+var classDomain = map[string]Domain{
+	"ledger-tampered":             DomainBase,
+	"clock-skew":                  DomainBase,
+	"clock-boundary":              DomainBase,
+	"future-timestamp":            DomainBase,
+	"activation-introduction":     DomainPersistence,
+	"activation-modification":     DomainPersistence,
+	"activation-writable":         DomainPersistence,
+	"activation-context":          DomainPersistence,
+	"mount-exec-tree":             DomainPersistence,
+	"unowned-target":              DomainPersistence,
+	"authority-object":            DomainAuthority,
+	"authority-writable":          DomainAuthority,
+	"authority-unowned":           DomainAuthority,
+	"authority-outside":           DomainAuthority,
+	"authority-type":              DomainAuthority,
+	"unowned-file":                DomainFiles,
+	"runtime-process":             DomainProcesses,
+	"deleted-image":               DomainProcesses,
+	"unowned-process":             DomainProcesses,
+	"process-preload":             DomainProcesses,
+	"process-library-path":        DomainProcesses,
+	"process-capability":          DomainProcesses,
+	"interpreter-socket":          DomainNetwork,
+	"interpreter-listener":        DomainNetwork,
+	"identity-backdoor":           DomainIdentity,
+	"identity-key-command":        DomainIdentity,
+	"identity-factor":             DomainIdentity,
+	"identity-uid0":               DomainIdentity,
+	"identity-empty-password":     DomainIdentity,
+	"identity-password-in-passwd": DomainIdentity,
+	"identity-system-shell":       DomainIdentity,
+	"identity-privileged-group":   DomainIdentity,
+	"identity-sudo-nopasswd":      DomainIdentity,
+	"identity-group-password":     DomainIdentity,
+	"identity-sshd-keyfile":       DomainIdentity,
+	"package-file-modified":       DomainPackages,
+	"package-file-missing":        DomainPackages,
+	"web-script":                  DomainWeb,
+	"module-introduction":         DomainKernel,
+	"module-modification":         DomainKernel,
+	"module-unmapped":             DomainKernel,
+	"module-file-missing":         DomainKernel,
+	"module-unowned":              DomainKernel,
+	"module-writable":             DomainKernel,
+	"unit-target-missing":         DomainPersistence,
+	"module-missing":              DomainKernel,
+	"module-registry-gap":         DomainKernel,
+	"hidden-module":               DomainKernel,
+	"hidden-process":              DomainKernel,
+	"kernel-taint":                DomainKernel,
+	"loader-path-writable":        DomainKernel,
+	"loader-path-unowned":         DomainKernel,
+	"loader-config":               DomainKernel,
+	"loader-config-writable":      DomainKernel,
+	"module-declaration":          DomainKernel,
+	"module-declaration-writable": DomainKernel,
+	"module-dormant":              DomainKernel,
+}
+
 func Judge(snapshot *Snapshot, filter Filter) *Report {
 	report := &Report{
-		Boundary: snapshot.Boundary,
-		Host:     snapshot.Host,
-		Source:   snapshot.Source,
-		Services: snapshot.Services,
-		Sockets:  snapshot.Sockets,
-		Mounts:   snapshot.Mounts,
-		Ledger:   snapshot.Ledger,
+		Boundary:         snapshot.Boundary,
+		Host:             snapshot.Host,
+		Source:           snapshot.Source,
+		Services:         snapshot.Services,
+		Sockets:          snapshot.Sockets,
+		Connections:      snapshot.Connections,
+		Mounts:           snapshot.Mounts,
+		Ledger:           snapshot.Ledger,
+		Activations:      snapshot.Activations,
+		ProcessRows:      snapshot.Processes,
+		AuthorityObjects: snapshot.Authority,
+		Unowned:          snapshot.Unowned,
+		OffDomains:       filter.OffDomains,
+	}
+	report.snapshot = snapshot
+	if len(filter.Units) > 0 {
+		var services []Service
+		for _, service := range snapshot.Services {
+			if filter.Units[service.Unit] {
+				services = append(services, service)
+			}
+		}
+		report.Services = services
+	}
+	if len(filter.Units) > 0 || len(filter.PIDs) > 0 {
+		report.Sockets = scopedSockets(snapshot.Sockets, snapshot.Processes, filter)
+	}
+	if snapshot.Kernel.Collected {
+		kernel := snapshot.Kernel
+		report.Kernel = &kernel
 	}
 	if snapshot.Boundary.Time.IsZero() {
 		report.Coverage = append(report.Coverage, "no artifact boundary: origins are unknown and only structural findings remain")
+	} else if snapshot.Boundary.Confidence < HighConfidence {
+		report.Coverage = append(report.Coverage, fmt.Sprintf("artifact boundary from %s (%s confidence)",
+			snapshot.Boundary.Source, snapshot.Boundary.Confidence))
 	}
 	report.Coverage = append(report.Coverage, snapshot.Coverage...)
 
 	a := newAssessor(snapshot)
 	seen := map[string]bool{}
 	add := func(finding Finding) {
+		finding.Domain |= classDomain[finding.Class]
 		if finding.Severity < filter.MinSeverity {
 			return
 		}
@@ -57,146 +149,62 @@ func Judge(snapshot *Snapshot, filter Filter) *Report {
 	}
 	for _, pkg := range tamperOrder {
 		rows := tamperByPkg[pkg]
-		if len(filter.PIDs) > 0 || !pathInScope(rows[0].Path, filter) {
+		if len(filter.PIDs) > 0 || len(filter.Units) > 0 || !pathInScope(rows[0].Path, filter) {
 			continue
 		}
 		if pkg == logLedgerPkg {
+			evidence := []string{
+				fmt.Sprintf("log changed at %s", ctimeString(rows[0].Stamp.Unix())),
+				fmt.Sprintf("artifact edge %s (%s, %s)", a.boundary.Time.Format(stampLayout),
+					a.boundary.Kind, a.boundary.Source),
+			}
+			if latest := latestPackageTime(a.times); !latest.IsZero() {
+				evidence = append(evidence, fmt.Sprintf("newest recorded transaction %s", latest.Format(stampLayout)))
+			}
 			add(Finding{
 				Class: "ledger-tampered", Severity: Medium, Origin: Modified, Reach: RootAsset,
-				Title:  "package transaction log rewritten after its newest entry",
-				Path:   rows[0].Path,
-				Detail: "a writer can move the artifact boundary itself; every time judgment on this host rests on weaker evidence",
-				Evidence: []string{
-					fmt.Sprintf("log changed at %s", ctimeString(rows[0].Stamp.Unix())),
-				},
+				Title:    "package transaction log rewritten outside package management",
+				Path:     rows[0].Path,
+				Detail:   "a writer can move the artifact boundary itself; every time judgment on this host rests on weaker evidence",
+				Evidence: evidence,
 			})
 			continue
 		}
-		evidence := make([]string, 0, len(rows)+1)
+		evidence := make([]string, 0, len(rows)+2)
 		for _, row := range rows {
 			evidence = append(evidence, fmt.Sprintf("ledger file %s changed at %s",
 				row.Path, ctimeString(row.Stamp.Unix())))
 		}
-		evidence = append(evidence, fmt.Sprintf("last recorded transaction %s", a.times[pkg].Format(stampLayout)))
+		evidence = append(evidence, fmt.Sprintf("artifact edge %s (%s, %s)", a.boundary.Time.Format(stampLayout),
+			a.boundary.Kind, a.boundary.Source))
+		if stamp, known := a.times[pkg]; known {
+			evidence = append(evidence, fmt.Sprintf("package's last transaction %s", stamp.Format(stampLayout)))
+		}
 		add(Finding{
 			Class: "ledger-tampered", Severity: Medium, Origin: Modified, Reach: RootAsset,
-			Title:    "package content ledger changed after its last transaction",
+			Title:    "package content ledger changed outside package management",
 			Path:     rows[0].Path,
 			Detail:   fmt.Sprintf("package %s: a writer with root can hide content changes from verification", pkg),
 			Evidence: evidence,
 		})
 	}
 
-	processOnly := len(filter.PIDs) > 0
-	dynamic := 0
-	for _, edge := range snapshot.Activations {
-		if processOnly {
-			break
-		}
-		if !surfaceInScope(edge.Surface, filter) || !pathInScope(edge.Trigger, filter) && !pathInScope(edge.Target, filter) {
+	// Base checks first, then the registry's judges: the clock guards every
+	// time comparison the modules make, and the persistence module's
+	// activation loop is the spine the other domains' rows hang from.
+	judgeClock(snapshot, filter, add)
+	for _, module := range modules {
+		if module.Judge == nil {
 			continue
 		}
-		if edge.Dynamic {
-			dynamic++
-			continue
-		}
-		report.Activated++
-		triggerStory := a.read(edge.TriggerFacts, false)
-		targetStory := a.read(edge.TargetFacts, false)
-		reach := edgeReach(edge)
-		origin := weaker(triggerStory.origin, targetStory.origin)
-		softened := targetStory.softened
-		if triggerStory.origin.Rank() <= targetStory.origin.Rank() {
-			softened = triggerStory.softened
-		}
-		path := edge.Target
-		detail := edge.Mechanism + " in " + edge.Trigger
-		evidence := []string{
-			fmt.Sprintf("trigger %s: %s (%s)", edge.Trigger, triggerStory.origin, triggerStory.why),
-			fmt.Sprintf("target %s: %s (%s)", edge.Target, targetStory.origin, targetStory.why),
-			fmt.Sprintf("runs as %s, reach %s (%s)", edge.AS, reach, edge.Surface),
-		}
-		evidence = append(evidence, triggerStory.evidence...)
-		evidence = append(evidence, targetStory.evidence...)
-		switch {
-		case origin == Runtime || origin == Modified:
-			if triggerStory.origin.Rank() <= targetStory.origin.Rank() {
-				path = edge.Trigger
-				detail += " activates " + edge.Target
-			} else {
-				detail = "activated by " + edge.Trigger + " (" + edge.Mechanism + ")"
-			}
-			class := "tcb-introduction"
-			if origin == Modified {
-				class = "tcb-modification"
-			}
-			severity := severityFor(origin, reach)
-			if softened && severity > Low {
-				severity--
-			}
-			add(Finding{
-				Class: class, Severity: severity, Title: titleFor(class),
-				Path: path, Origin: origin, Reach: reach, Detail: detail, Evidence: evidence,
-			})
-		case writableEdge(edge):
-			add(Finding{
-				Class: "tcb-writable", Severity: writableSeverity(reach),
-				Title: "activation surface writable by someone other than its owner",
-				Path:  edge.Trigger, Origin: triggerStory.origin, Reach: reach, Detail: detail, Evidence: evidence,
-			})
-		case unownedTarget(edge):
-			add(Finding{
-				Class: "unowned-target", Severity: unownedSeverity(reach),
-				Title: "activation target no package owns",
-				Path:  edge.Target, Origin: targetStory.origin, Reach: reach, Detail: detail, Evidence: evidence,
-			})
-		}
-	}
-	if dynamic > 0 && !processOnly {
-		report.Coverage = append(report.Coverage, fmt.Sprintf("%d activation target(s) were dynamic and could not be judged", dynamic))
-	}
-	if !processOnly {
-		report.Coverage = append(report.Coverage, serviceCoverage(snapshot)...)
-	}
-
-	if !processOnly && (filter.Surfaces == nil || filter.Surfaces["authority"]) {
-		for _, path := range snapshot.Authority {
-			if !pathInScope(path, filter) {
-				continue
-			}
-			report.Authority++
-			facts := snapshot.Facts(path)
-			story := a.read(facts, true)
-			reach := authorityReach(facts)
-			evidence := []string{
-				fmt.Sprintf("authority object %s: %s (%s)", path, story.origin, story.why),
-				fmt.Sprintf("mode %s, owner %d, setuid=%t caps=%t", facts.Mode.Perm(), facts.Owner, facts.Setuid, facts.Caps),
-			}
-			evidence = append(evidence, story.evidence...)
-			switch {
-			case story.origin == Runtime || story.origin == Modified:
-				add(Finding{
-					Class: "authority-object", Severity: severityFor(story.origin, reach),
-					Title: "authority object introduced after the artifact",
-					Path:  path, Origin: story.origin, Reach: reach, Detail: "grants authority on execution", Evidence: evidence,
-				})
-			case facts.Writable || facts.ParentOpen:
-				add(Finding{
-					Class: "authority-writable", Severity: writableSeverity(reach),
-					Title: "authority object writable by someone other than its owner",
-					Path:  path, Origin: story.origin, Reach: reach, Detail: "a writer can change what this object grants", Evidence: evidence,
-				})
-			case (facts.Setuid || facts.Caps) && facts.PackageKnown && facts.Package == "":
-				add(Finding{
-					Class: "authority-unowned", Severity: High, Title: "setuid or capability object no package owns",
-					Path: path, Origin: story.origin, Reach: reach, Detail: "the authority has no distribution owner", Evidence: evidence,
-				})
-			}
-		}
+		report.Coverage = append(report.Coverage, module.Judge(snapshot, report, a, filter, add)...)
 	}
 
 	for _, process := range snapshot.Processes {
 		if process.PID == os.Getpid() || !processInScope(process, filter) {
+			continue
+		}
+		if len(filter.Units) > 0 && !filter.Units[process.Unit] {
 			continue
 		}
 		report.Processes++
@@ -286,6 +294,12 @@ func processContext(process Process) []string {
 	if process.Root != "" && process.Root != "/" {
 		lines = append(lines, "chrooted at "+process.Root)
 	}
+	if process.Seccomp > 0 {
+		lines = append(lines, fmt.Sprintf("seccomp mode %d", process.Seccomp))
+	}
+	if process.NoNewPrivs {
+		lines = append(lines, "no_new_privs set")
+	}
 	return lines
 }
 
@@ -342,75 +356,6 @@ func uniqueStrings(values []string) []string {
 	}
 	return out
 }
-
-// serviceCoverage names a running service whose unit the activation collector
-// did not read. It is the honest answer to "systemctl shows a service the audit
-// does not mention": either the unit file is outside the read layers or systemd
-// started it transiently.
-func serviceCoverage(snapshot *Snapshot) []string {
-	if len(snapshot.Services) == 0 {
-		return nil
-	}
-	activated := make(map[string]bool, len(snapshot.Activations))
-	for _, edge := range snapshot.Activations {
-		activated[activationUnit(edge.Trigger)] = true
-	}
-	var missing []string
-	for _, service := range snapshot.Services {
-		if service.Active != "active" || activated[service.Unit] || activated[templateUnit(service.Unit)] {
-			continue
-		}
-		missing = append(missing, service.Unit)
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	const shown = 10
-	var lines []string
-	for index, unit := range missing {
-		if index == shown {
-			lines = append(lines, fmt.Sprintf("... and %d more running service(s) with no activation edge", len(missing)-shown))
-			break
-		}
-		lines = append(lines, "running service "+unit+" has no activation edge")
-	}
-	return lines
-}
-
-// activationUnit is the unit a trigger file belongs to: the file's own name, or
-// the unit a drop-in directory belongs to.
-func activationUnit(trigger string) string {
-	dir := filepath.Dir(trigger)
-	if strings.HasSuffix(dir, ".d") {
-		return strings.TrimSuffix(filepath.Base(dir), ".d")
-	}
-	return filepath.Base(trigger)
-}
-
-// templateUnit maps an instance unit (getty@tty1.service) to its template
-// (getty@.service), which is the file the activation collector reads.
-func templateUnit(name string) string {
-	at := strings.IndexByte(name, '@')
-	if at < 0 {
-		return name
-	}
-	dot := strings.IndexByte(name[at:], '.')
-	if dot < 0 {
-		return name
-	}
-	return name[:at] + "@" + name[at+dot:]
-}
-
-func titleFor(class string) string {
-	switch class {
-	case "tcb-introduction":
-		return "runtime object in an activation surface"
-	case "tcb-modification":
-		return "activation surface changed after the artifact"
-	}
-	return class
-}
-
 func severityFor(origin Origin, reach Reach) Severity {
 	switch {
 	case reach >= RootAsset:
@@ -452,22 +397,6 @@ func writableSeverity(reach Reach) Severity {
 	return Low
 }
 
-func edgeReach(edge startup.Edge) Reach {
-	if edge.Kind == startup.Preload {
-		return KernelAsset
-	}
-	if edge.TargetFacts.Setuid || edge.TargetFacts.Caps {
-		return RootAsset
-	}
-	switch edge.AS {
-	case "root", "all", "login":
-		return RootAsset
-	case "dynamic":
-		return ServiceAsset
-	}
-	return UserAsset
-}
-
 func authorityReach(facts trust.Facts) Reach {
 	path := facts.Path
 	switch {
@@ -476,6 +405,10 @@ func authorityReach(facts trust.Facts) Reach {
 		return RootAsset
 	case facts.Setuid && facts.RootOwned, facts.Caps:
 		return RootAsset
+	case facts.Setgid && facts.Group == 0:
+		return RootAsset
+	case facts.Setgid:
+		return ServiceAsset
 	case facts.RootOwned && facts.AdminLayer:
 		return RootAsset
 	}
@@ -483,28 +416,19 @@ func authorityReach(facts trust.Facts) Reach {
 }
 
 func processReach(process Process) Reach {
+	uid := process.EUID
+	if uid < 0 {
+		uid = process.UID
+	}
 	switch {
-	case process.UID == 0:
+	case uid == 0:
 		return RootAsset
-	case process.UID > 0 && process.UID < 1000:
+	case uid > 0 && uid < 1000:
 		return ServiceAsset
-	case process.UID >= 1000:
+	case uid >= 1000:
 		return UserAsset
 	}
 	return NoAsset
-}
-
-// writableEdge is the base-space invariant: an object on an activation path
-// that someone other than its owner can replace.
-// unownedTarget is the base-space counterpart of the origin judgment: a
-// package database that answered "no package" for an executable on an
-// activation path, even when the object predates the boundary.
-func unownedTarget(edge startup.Edge) bool {
-	facts := edge.TargetFacts
-	if !facts.PackageKnown || facts.Package != "" || facts.Kind != trust.File {
-		return false
-	}
-	return facts.Executable || edge.Kind == startup.Preload
 }
 
 func unownedProcess(process Process) bool {
@@ -525,25 +449,6 @@ func unownedSeverity(reach Reach) Severity {
 	return Low
 }
 
-func writableEdge(edge startup.Edge) bool {
-	if edge.TriggerFacts.Writable || edge.TriggerFacts.ParentOpen ||
-		edge.TargetFacts.Writable || edge.TargetFacts.ParentOpen {
-		return true
-	}
-	switch edge.AS {
-	case "root", "all", "login":
-		return edge.TriggerFacts.ParentWritable || edge.TargetFacts.ParentWritable
-	}
-	return false
-}
-
-func surfaceInScope(surface startup.Surface, filter Filter) bool {
-	if filter.Surfaces == nil {
-		return true
-	}
-	return filter.Surfaces[string(surface)] || filter.Surfaces["persistence"]
-}
-
 func pathInScope(path string, filter Filter) bool {
 	if path == "" {
 		return len(filter.Paths) == 0
@@ -562,6 +467,32 @@ func pathInScope(path string, filter Filter) bool {
 		}
 	}
 	return false
+}
+
+// scopedSockets keeps the listener panel on the same object the findings are
+// about: the selected pids, or the pids of the selected units.
+func scopedSockets(sockets []Socket, processes []Process, filter Filter) []Socket {
+	pids := map[int]bool{}
+	for pid := range filter.PIDs {
+		pids[pid] = true
+	}
+	if len(filter.Units) > 0 {
+		for _, process := range processes {
+			if filter.Units[process.Unit] || filter.Units[templateUnit(process.Unit)] {
+				pids[process.PID] = true
+			}
+		}
+	}
+	if len(pids) == 0 {
+		return nil
+	}
+	var out []Socket
+	for _, socket := range sockets {
+		if pids[socket.PID] {
+			out = append(out, socket)
+		}
+	}
+	return out
 }
 
 func processInScope(process Process, filter Filter) bool {
@@ -599,7 +530,8 @@ type Observer struct {
 
 // NewObserver reads the local boundary once.
 func NewObserver() *Observer {
-	boundary, packageTimes := readBoundary()
+	catalog := prov.Open(context.Background())
+	boundary, packageTimes := readBoundary(catalog.Timeline())
 	return &Observer{boundary: boundary, packageTimes: packageTimes}
 }
 
@@ -620,4 +552,101 @@ func (o *Observer) Observe(image, script trust.Facts, uid int) (Origin, Reach, S
 		reach = UserAsset
 	}
 	return origin, reach, severityFor(origin, reach)
+}
+
+// judgeAuthority states the setuid/setgid/capability surface: what it is,
+// where it came from, and whether its bits sit outside the program trees.
+func judgeAuthority(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
+	if len(filter.PIDs) > 0 || len(filter.Units) > 0 {
+		return nil
+	}
+	if filter.Surfaces != nil && !filter.Surfaces["authority"] {
+		return nil
+	}
+	for _, path := range snapshot.Authority {
+		if !pathInScope(path, filter) {
+			continue
+		}
+		report.Authority++
+		facts := snapshot.Facts(path)
+		story := a.read(facts, true)
+		reach := authorityReach(facts)
+		evidence := []string{
+			fmt.Sprintf("authority object %s: %s (%s)", path, story.origin, story.why),
+			fmt.Sprintf("mode %s, owner %d, group %d, setuid=%t setgid=%t caps=%t",
+				facts.Mode.Perm(), facts.Owner, facts.Group, facts.Setuid, facts.Setgid, facts.Caps),
+		}
+		evidence = append(evidence, story.evidence...)
+		hasBits := facts.Setuid || facts.Setgid || facts.Caps
+		outside, reason := false, ""
+		if hasBits {
+			outside, reason = unusualAuthorityBinary(path, facts)
+			if outside {
+				evidence = append(evidence, reason)
+			}
+		}
+		switch {
+		case story.origin == Runtime || story.origin == Modified:
+			add(Finding{
+				Class: "authority-object", Severity: severityFor(story.origin, reach),
+				Title: "authority object introduced after the artifact",
+				Path:  path, Origin: story.origin, Reach: reach, Detail: "grants authority on execution", Evidence: evidence,
+				Trace: steps("artifact boundary", path, authorityBit(facts)),
+			})
+		case facts.Writable || facts.ParentOpen:
+			add(Finding{
+				Class: "authority-writable", Severity: writableSeverity(reach),
+				Title: "authority object writable by someone other than its owner",
+				Path:  path, Origin: story.origin, Reach: reach, Detail: "a writer can change what this object grants", Evidence: evidence,
+				Trace: steps(path, "writable", authorityBit(facts)),
+			})
+		case (facts.Setuid || facts.Setgid || facts.Caps) && facts.PackageKnown && facts.Package == "":
+			severity := High
+			if facts.Diverted {
+				// The database knows the path: dpkg-divert records a declared
+				// local replacement, and the object reads one tier below a
+				// file no package has ever heard of.
+				severity = Medium
+				evidence = append(evidence, "dpkg-divert records this path as a local replacement")
+			}
+			add(Finding{
+				Class: "authority-unowned", Severity: severity, Title: "setuid, setgid or capability object no package owns",
+				Path: path, Origin: story.origin, Reach: reach, Detail: "the authority has no distribution owner", Evidence: evidence,
+				Trace: steps(path, "no package", authorityBit(facts)),
+			})
+		}
+		if (facts.Setuid || facts.Setgid || facts.Caps) && !underAny(path, trustedAuthorityRoots) {
+			severity := High
+			if facts.Setgid && !facts.Setuid && !facts.Caps {
+				severity = Medium
+			}
+			if severity == High && facts.PackageKnown && facts.Package != "" {
+				// A package's own object in an administrator tree is a
+				// declared install — third-party setuid tools land here — and
+				// reads one tier below a file the database has never heard of.
+				severity = Medium
+			}
+			if facts.PackageKnown && facts.Package != "" {
+				evidence = append(evidence, "package "+facts.Package+" installs it outside the program trees")
+			}
+			add(Finding{
+				Class: "authority-outside", Severity: severity,
+				Title: "authority object outside the distribution's program trees",
+				Path:  path, Origin: story.origin, Reach: reach,
+				Detail:   "an authority bit in an administrator or data tree is a planted backdoor shape",
+				Evidence: evidence,
+				Trace:    steps(path, "outside trusted program trees", authorityBit(facts)),
+			})
+		}
+		if hasBits && outside {
+			add(Finding{
+				Class: "authority-type", Severity: High,
+				Title: "authority object is not a normal ELF execution",
+				Path:  path, Origin: story.origin, Reach: reach,
+				Detail: reason, Evidence: evidence,
+				Trace: steps(path, reason),
+			})
+		}
+	}
+	return nil
 }

@@ -1,6 +1,7 @@
 package startup
 
 import (
+	"context"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -23,6 +24,9 @@ const (
 	PAMDialect
 	AptDialect
 	ModprobeDialect
+	GeneratorsDialect
+	XinetdDialect
+	SystemDialect
 )
 
 // File is one startup surface file the collector read. Unit names the systemd
@@ -38,12 +42,14 @@ type File struct {
 }
 
 // FactSource reads one path's provenance. The native source classifies the
-// host in process; the sh source answers from the facts its collector sent.
+// host in process.
 type FactSource func(path string) trust.Facts
 
 // Corpus is what both sources hand the analysis: the files the surfaces hold,
 // the units that are enabled, and a fact source for the paths the files name.
 type Corpus struct {
+	ctx        context.Context
+	fs         FS
 	files      []File
 	enabled    map[string]string
 	facts      FactSource
@@ -51,6 +57,7 @@ type Corpus struct {
 	seen       map[string]bool
 	unreadable map[string]bool
 	masked     map[string]bool
+	gaps       map[string]bool
 }
 
 // NewCorpus builds a corpus from a source's collection. The enabled map is
@@ -62,7 +69,29 @@ func NewCorpus(files []File, enabled map[string]string, facts FactSource) *Corpu
 	return &Corpus{
 		files: files, enabled: enabled, facts: facts,
 		seen: map[string]bool{}, unreadable: map[string]bool{}, masked: map[string]bool{},
+		gaps: map[string]bool{},
 	}
+}
+
+// addGap states an object the analysis named but the disk cannot answer for.
+// The audit reports these as coverage.
+func (c *Corpus) addGap(line string) { c.gaps[line] = true }
+
+// stopped reports whether the run's context already asked collection to stop;
+// a corpus assembled without one never stops.
+func (c *Corpus) stopped() bool { return c.ctx != nil && c.ctx.Err() != nil }
+
+// Gaps lists the coverage lines the analysis produced, sorted.
+func (c *Corpus) Gaps() []string {
+	if c == nil || len(c.gaps) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(c.gaps))
+	for line := range c.gaps {
+		lines = append(lines, line)
+	}
+	sort.Strings(lines)
+	return lines
 }
 
 // Unreadable lists the startup files the collector found but could not read,
@@ -94,12 +123,19 @@ func Analyze(corpus *Corpus) []Edge {
 	}
 	raw := analyzeSystemd(corpus)
 	for _, file := range corpus.files {
+		if corpus.stopped() {
+			break
+		}
 		switch file.Surface {
+		case SurfaceSystemd:
+			if file.Dialect == GeneratorsDialect {
+				raw = append(raw, generatorEdges(file)...)
+			}
 		case SurfaceProfile:
 			base := rawEdge{
 				surface: SurfaceProfile,
-				reach:   Login,
-				as:      accountFor(file.Path),
+				phase:   Login,
+				subject: accountFor(file.Path),
 				trigger: file.Path,
 			}
 			switch file.Dialect {
@@ -114,12 +150,12 @@ func Analyze(corpus *Corpus) []Edge {
 				reach = BootEnabled
 			}
 			raw = append(raw, shellEdges(file.Body, rawEdge{
-				surface: SurfaceInit, reach: reach, as: "root", trigger: file.Path,
+				surface: SurfaceInit, phase: reach, subject: Subject{Class: AccountRoot}, trigger: file.Path,
 			})...)
 		case SurfaceCron:
 			if file.Dialect == ShellDialect {
 				raw = append(raw, shellEdges(file.Body, rawEdge{
-					surface: SurfaceCron, reach: Scheduled, as: cronShellAS(file.Path), trigger: file.Path,
+					surface: SurfaceCron, phase: Scheduled, subject: cronShellSubject(file.Path), trigger: file.Path,
 				})...)
 			} else {
 				raw = append(raw, cronEdges(file)...)
@@ -136,13 +172,25 @@ func Analyze(corpus *Corpus) []Edge {
 				raw = append(raw, sshConfigEdges(file)...)
 			default:
 				raw = append(raw, shellEdges(file.Body, rawEdge{
-					surface: SurfaceSSH, reach: Login, as: accountFor(file.Path), trigger: file.Path,
+					surface: SurfaceSSH, phase: Login, subject: accountFor(file.Path), trigger: file.Path,
 				})...)
 			}
 		case SurfacePAM:
-			raw = append(raw, pamExecEdges(file)...)
+			if file.Dialect == ShellDialect {
+				// The login banner's run-parts script: it runs itself, and it
+				// may source or run objects of its own.
+				raw = append(raw, motdEdges(file)...)
+			} else {
+				raw = append(raw, pamEdges(file, corpus)...)
+			}
 		case SurfaceSupervisor:
-			raw = append(raw, supervisorEdges(file)...)
+			if file.Dialect == XinetdDialect {
+				raw = append(raw, xinetdEdges(file)...)
+			} else {
+				raw = append(raw, supervisorEdges(file)...)
+			}
+		case SurfaceSystem:
+			raw = append(raw, systemEdges(file, corpus)...)
 		case SurfaceXdg:
 			raw = append(raw, desktopEdges(file)...)
 		case SurfaceApt:
@@ -152,8 +200,14 @@ func Analyze(corpus *Corpus) []Edge {
 		}
 	}
 
-	targets := make([]string, 0, len(raw))
+	targets := make([]string, 0, len(raw)*2)
 	for _, edge := range raw {
+		// Prefetch both ends: every unit file, drop-in and profile script is a
+		// trigger, and asking for its package ownership one path at a time is
+		// what makes a wide collection slow on a host with many packages.
+		if edge.trigger != "" {
+			targets = append(targets, edge.trigger)
+		}
 		if !edge.dynamic && edge.target != "" {
 			targets = append(targets, edge.target)
 		}
@@ -172,29 +226,44 @@ func Analyze(corpus *Corpus) []Edge {
 	}
 
 	edges := make([]Edge, 0, len(raw))
+	seenSelf := map[string]bool{}
 	for _, edge := range raw {
+		if corpus.stopped() {
+			break
+		}
 		judged := Edge{
 			Surface:   edge.surface,
-			Reach:     edge.reach,
-			AS:        edge.as,
+			Phase:     edge.phase,
+			Subject:   edge.subject,
 			Trigger:   edge.trigger,
 			Line:      edge.line,
 			Mechanism: edge.mechanism,
 			Target:    edge.target,
 			Kind:      edge.kind,
 			Dynamic:   edge.dynamic,
+			Context:   edge.context,
+			Note:      edge.note,
 		}
 		if !edge.dynamic {
 			target := facts(edge.target)
 			if edge.kind == Env && !envTarget(target) {
 				// A variable holding an install prefix (JAVA_HOME), a PATH
-				// fragment, or a runtime file (a pid or lock path in /run)
+				// fragment, or a runtime file (a pid or lock file in /run)
 				// names something a later session will not read as a script.
 				// The file-valued assignment is the edge.
 				continue
 			}
 			judged.TriggerFacts = facts(edge.trigger)
 			judged.TargetFacts = target
+			// A self-edge names one file twice. On a usrmerge host /lib and
+			// /usr/lib are the same tree, so the resolved path — one lookup
+			// per run — decides whether this is another object.
+			if edge.trigger == edge.target {
+				if seenSelf[target.Real] {
+					continue
+				}
+				seenSelf[target.Real] = true
+			}
 		}
 		edges = append(edges, judged)
 	}
@@ -212,6 +281,18 @@ func Analyze(corpus *Corpus) []Edge {
 		return left.Line < right.Line
 	})
 	return edges
+}
+
+// mountNote is a mount row's Type= and Options= for the What edge's note.
+func mountNote(state *unitState) string {
+	var parts []string
+	if kind := state.mount["Type"]; kind != "" {
+		parts = append(parts, "type="+kind)
+	}
+	if options := state.mount["Options"]; options != "" {
+		parts = append(parts, "options="+options)
+	}
+	return strings.Join(parts, " ")
 }
 
 // analyzeSystemd folds each unit's files and drop-ins, then states the edges
@@ -236,12 +317,12 @@ func analyzeSystemd(corpus *Corpus) []rawEdge {
 		if _, enabled := corpus.enabled[name]; enabled {
 			reach = BootEnabled
 		}
-		as := unitAccount(units[name])
+		subject := unitAccount(units[name])
 		if state.userSet {
-			as = state.as
+			subject = state.subject
 		}
 		if state.dynamic {
-			as = "dynamic"
+			subject = Subject{Class: AccountDynamic}
 		}
 		for _, key := range execOrder {
 			for _, ref := range state.exec[key] {
@@ -255,17 +336,43 @@ func analyzeSystemd(corpus *Corpus) []rawEdge {
 				}
 				edges = append(edges, rawEdge{
 					surface:        SurfaceSystemd,
-					reach:          reach,
-					as:             as,
+					phase:          reach,
+					subject:        subject,
 					trigger:        ref.file,
 					line:           ref.line,
-					mechanism:      key,
+					mechanism:      Mechanism(key),
 					target:         target.target,
 					kind:           kind,
 					viaInterpreter: target.viaInterpreter,
 					dynamic:        target.dynamic,
 				})
 			}
+		}
+		for _, ref := range state.what {
+			// A mount or swap unit's source: an absolute device path is an
+			// edge, a network location stays dynamic — the boot fills the
+			// mount point from whatever What names.
+			words := splitWords(ref.value)
+			if len(words) == 0 {
+				continue
+			}
+			source := words[0]
+			note := source
+			if extra := mountNote(state); extra != "" {
+				note += " " + extra
+			}
+			edges = append(edges, rawEdge{
+				surface:   SurfaceSystemd,
+				phase:     reach,
+				subject:   subject,
+				trigger:   ref.file,
+				line:      ref.line,
+				mechanism: "What",
+				target:    source,
+				kind:      Config,
+				dynamic:   !filepath.IsAbs(source),
+				note:      note,
+			})
 		}
 		for _, ref := range state.envFiles {
 			words := splitWords(ref.value)
@@ -275,8 +382,8 @@ func analyzeSystemd(corpus *Corpus) []rawEdge {
 			path := strings.TrimPrefix(words[0], "-")
 			edges = append(edges, rawEdge{
 				surface:   SurfaceSystemd,
-				reach:     reach,
-				as:        as,
+				phase:     reach,
+				subject:   subject,
 				trigger:   ref.file,
 				line:      ref.line,
 				mechanism: "EnvironmentFile",
@@ -285,16 +392,29 @@ func analyzeSystemd(corpus *Corpus) []rawEdge {
 				dynamic:   !filepath.IsAbs(path),
 			})
 		}
+		for _, ref := range state.context {
+			edges = append(edges, rawEdge{
+				surface:   SurfaceSystemd,
+				phase:     reach,
+				subject:   subject,
+				trigger:   ref.file,
+				line:      ref.line,
+				mechanism: Mechanism(ref.key),
+				target:    ref.path,
+				kind:      Config,
+				context:   true,
+			})
+		}
 		for _, ref := range state.env {
 			name, paths := environmentPreloads(ref.value)
 			for _, path := range paths {
 				edges = append(edges, rawEdge{
 					surface:   SurfaceSystemd,
-					reach:     reach,
-					as:        as,
+					phase:     reach,
+					subject:   subject,
 					trigger:   ref.file,
 					line:      ref.line,
-					mechanism: "Environment=" + name,
+					mechanism: Mechanism("Environment=" + name),
 					target:    path,
 					kind:      Preload,
 				})
@@ -317,14 +437,14 @@ func envTarget(facts trust.Facts) bool {
 // accountFor is who reads a per-user startup file: the root home runs as root,
 // another home as that user, and a system-wide file as whichever account logs
 // in.
-func accountFor(path string) string {
+func accountFor(path string) Subject {
 	if strings.HasPrefix(path, "/root/") {
-		return "root"
+		return Subject{Class: AccountRoot}
 	}
 	if user, ok := homeAccount(path); ok {
-		return user
+		return Account(user)
 	}
-	return "login"
+	return Subject{Class: AccountLogin}
 }
 
 // homeAccount reads the account out of /home/<user>/...
@@ -343,17 +463,17 @@ func homeAccount(path string) (string, bool) {
 // unitAccount is a unit's default account when the unit does not set User=:
 // the system manager runs as root, the user manager as the account whose
 // config tree holds the unit.
-func unitAccount(files []File) string {
+func unitAccount(files []File) Subject {
 	for _, file := range files {
 		if user, ok := homeAccount(file.Path); ok {
-			return user
+			return Account(user)
 		}
 		if strings.HasPrefix(file.Path, "/root/.config/systemd/user/") {
-			return "root"
+			return Subject{Class: AccountRoot}
 		}
 		if strings.HasPrefix(file.Path, "/etc/systemd/user/") {
-			return "login"
+			return Subject{Class: AccountLogin}
 		}
 	}
-	return "root"
+	return Subject{Class: AccountRoot}
 }

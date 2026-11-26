@@ -100,7 +100,7 @@ func socketSnapshot(ctx context.Context, all bool) (map[sockKey]sockState, error
 // pid 0 when the inode has no local owner (the TIME-WAIT case). The owner's
 // exe, cmdline, cwd and uid are read while the process still exists.
 func socketEvents(fs procfs.FS, state sockState, owners []netdiag.Owner, at time.Time) []Event {
-	net := &NetEvent{
+	net := NetEvent{
 		Proto: state.Key.Proto,
 		State: state.State,
 		Local: state.Key.Local,
@@ -109,27 +109,25 @@ func socketEvents(fs procfs.FS, state sockState, owners []netdiag.Owner, at time
 	}
 	if len(owners) == 0 {
 		return []Event{{
-			Time: at, Kind: KindSocket, UID: state.UID, Net: net, Source: "poll",
+			Time: at, Source: SourcePoll,
+			Sock: &Sock{Net: net, UID: state.UID},
 		}}
 	}
 	sort.Slice(owners, func(i, j int) bool { return owners[i].PID < owners[j].PID })
 	out := make([]Event, 0, len(owners))
 	for _, owner := range owners {
-		event := Event{
-			Time: at, Kind: KindSocket, PID: owner.PID, Comm: owner.Comm,
-			UID: state.UID, Net: net, Source: "poll",
-		}
+		sock := &Sock{Net: net, PID: owner.PID, Comm: owner.Comm, UID: state.UID}
 		if p, err := fs.Proc(owner.PID); err == nil {
-			event.Exe, _ = p.Executable()
+			sock.Exe, _ = p.Executable()
 			if cmd, err := p.CmdLine(); err == nil {
-				event.Cmdline = strings.Join(cmd, " ")
+				sock.Cmdline = strings.Join(cmd, " ")
 			}
-			event.Cwd, _ = p.Cwd()
+			sock.Cwd, _ = p.Cwd()
 			if status, err := p.NewStatus(); err == nil {
-				event.UID = int(status.UIDs[0])
+				sock.UID = int(status.UIDs[0])
 			}
 		}
-		out = append(out, event)
+		out = append(out, Event{Time: at, Source: SourcePoll, Sock: sock})
 	}
 	return out
 }

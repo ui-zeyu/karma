@@ -62,19 +62,34 @@ type valueRef struct {
 	value string
 }
 
+// unitContext is one directory or path a unit declares it works in. It is
+// evidence for the profile, not an activation edge of its own.
+type unitContext struct {
+	file string
+	line int
+	key  string
+	path string
+}
+
 // unitState is one unit after its files and drop-ins are applied in precedence
 // order. Only the keys that carry an edge are kept.
 type unitState struct {
-	as       string
+	subject  Subject
 	userSet  bool
 	dynamic  bool
 	exec     map[string][]valueRef
 	env      []valueRef
 	envFiles []valueRef
+	context  []unitContext
+	// what is a mount or swap unit's What= source: the device or network
+	// location the boot fills the mount point from, with Type= and Options=
+	// as the row's note.
+	what  []valueRef
+	mount map[string]string
 }
 
 func newUnitState() *unitState {
-	return &unitState{as: "root", exec: map[string][]valueRef{}}
+	return &unitState{subject: Subject{Class: AccountRoot}, exec: map[string][]valueRef{}, mount: map[string]string{}}
 }
 
 // execOrder is the order the service keys are stated in. ExecStart is the
@@ -82,6 +97,15 @@ func newUnitState() *unitState {
 var execOrder = []string{"ExecStartPre", "ExecStart", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost"}
 
 func (u *unitState) apply(file string, d directive) {
+	if d.section == "Mount" || d.section == "Swap" {
+		switch d.key {
+		case "What":
+			u.what = append(u.what, valueRef{file: file, line: d.line, value: d.value})
+		case "Type", "Options":
+			u.mount[d.key] = d.value
+		}
+		return
+	}
 	if d.section != "Service" {
 		return
 	}
@@ -109,15 +133,58 @@ func (u *unitState) apply(file string, d directive) {
 		if d.value == "" {
 			// The manager's default: root for the system manager, the unit's
 			// owner for a user manager.
-			u.as = "root"
+			u.subject = Subject{Class: AccountRoot}
 			u.userSet = false
 			return
 		}
-		u.as = unquote(d.value)
+		u.subject = Account(unquote(d.value))
 		u.userSet = true
 	case "DynamicUser":
 		u.dynamic = isYes(d.value)
+	case "WorkingDirectory", "RuntimeDirectory", "StateDirectory", "CacheDirectory",
+		"LogsDirectory", "ConfigurationDirectory", "ReadWritePaths", "ReadOnlyPaths":
+		if d.value == "" {
+			return
+		}
+		for _, path := range contextPaths(d.key, d.value) {
+			u.context = append(u.context, unitContext{
+				file: file, line: d.line, key: d.key, path: path,
+			})
+		}
 	}
+}
+
+// contextPaths turns one directory key into the absolute paths the unit
+// declares. systemd's short directory names are relative to a fixed base
+// (/run, /var/lib, ...); WorkingDirectory and the read-only/read-write lists
+// are already absolute. A value the static read cannot place is skipped.
+func contextPaths(key, value string) []string {
+	base := map[string]string{
+		"RuntimeDirectory":       "/run",
+		"StateDirectory":         "/var/lib",
+		"CacheDirectory":         "/var/cache",
+		"LogsDirectory":          "/var/log",
+		"ConfigurationDirectory": "/etc",
+	}[key]
+	var paths []string
+	words := splitWords(value)
+	if key == "WorkingDirectory" {
+		words = []string{value}
+	}
+	for _, word := range words {
+		word = strings.TrimPrefix(word, "-")
+		if word == "" || strings.HasPrefix(word, "~") {
+			continue
+		}
+		if base != "" && !filepath.IsAbs(word) {
+			word = filepath.Join(base, word)
+		}
+		if !filepath.IsAbs(word) {
+			continue
+		}
+		paths = append(paths, filepath.Clean(word))
+	}
+	return paths
 }
 
 // applyFiles folds one unit's files. A unit file in a higher-precedence
@@ -189,13 +256,15 @@ type commandTarget struct {
 // runtime view is where it belongs.
 func execTarget(value string) commandTarget {
 	words := splitWords(strings.TrimLeft(value, "-@+!:"))
-	return commandTargetFor(words, false)
+	return commandTargetFor(words)
 }
 
-// commandTargetFor reads a command word list. fromShell is true when the words
-// came from a shell line rather than a unit key, which is what lets a bare
-// command name be a PATH lookup (no edge) instead of a missing path.
-func commandTargetFor(words []string, fromShell bool) commandTarget {
+// commandTargetFor reads a command word list: a unit key's value or a shell
+// line. A bare command name is the shell's PATH lookup and a relative path is
+// one the static read cannot place; both stay dynamic so the decision shows
+// up in coverage instead of disappearing silently — a bare name is exactly
+// how a PATH-hijack backdoor names its payload.
+func commandTargetFor(words []string) commandTarget {
 	for len(words) > 0 {
 		switch filepath.Base(words[0]) {
 		case "env":
@@ -284,14 +353,37 @@ program:
 		return interpreterTarget(program, words[1:])
 	}
 	if !filepath.IsAbs(program) {
-		if fromShell && !looksLikePath(program) {
-			// A bare name is the shell's PATH lookup, not a file edge. A
-			// relative path is an edge the static read cannot place.
+		if !looksLikePath(program) && shellBuiltin(program) {
+			// The shell runs a builtin itself; a PATH entry never shadows it.
 			return commandTarget{}
 		}
 		return commandTarget{target: program, dynamic: true}
 	}
 	return commandTarget{target: program, kind: Exec}
+}
+
+// shellBuiltins are the builtins bash and dash both run from the shell
+// itself: the language's own vocabulary, so a bare use of one never resolves
+// through PATH and names no file. This is the shell grammar's word list, the
+// same kind of finite list as the wrappers above — a threat keyword list is a
+// different thing and stays out.
+var shellBuiltins = []string{
+	"!", ":", "[", "alias", "bg", "break", "cd", "continue", "declare",
+	"dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export",
+	"false", "fc", "fg", "getopts", "hash", "help", "history", "jobs",
+	"kill", "let", "local", "logout", "popd", "printf", "pushd", "pwd",
+	"read", "readonly", "return", "set", "shift", "shopt", "suspend",
+	"test", "times", "trap", "true", "type", "ulimit", "umask", "unalias",
+	"unset", "wait",
+}
+
+func shellBuiltin(word string) bool {
+	for _, name := range shellBuiltins {
+		if word == name {
+			return true
+		}
+	}
+	return false
 }
 
 // interpreterTarget reads the arguments of an interpreter. -c holds inline

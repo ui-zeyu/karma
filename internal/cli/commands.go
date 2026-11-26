@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"karma/internal/audit"
 )
 
 var buildVersion = "dev"
@@ -32,15 +34,20 @@ func newRootCmd(version string) *cobra.Command {
 		Args:          cobra.ArbitraryArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Long: "Read-only incident-response collection. With no command the audit runs over every surface; " +
-			"scope words are surface names (systemd, profile, cron, ...), path prefixes (/var/www), " +
-			"processes (/proc/36), or a leading ! exclusion. show prints one inventory without judging it; " +
-			"cat and ls read files and directories in process; mtime lists a tree by change time; " +
-			"watch reads live process and socket events.",
+		Long: "Read-only incident-response audit of the local Linux host: judge the artifact delta, " +
+			"the activation surfaces and the kernel state, and print the findings with their evidence. " +
+			"With no command every bounded domain is audited; scope words narrow it to a domain, a " +
+			"surface, a path, a pid or a unit. profile and graph read the same collected facts as " +
+			"relations; show prints one raw inventory unjudged.",
 	}
 	root.SetVersionTemplate("karma {{.Version}}\n")
 	root.SuggestionsMinimumDistance = 2
 	root.RunE = func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			if err := retiredWord(args[0]); err != nil {
+				return usagef(cmd, "%s", err)
+			}
+		}
 		flags, err := auditOptions(cmd.Flags())
 		if err != nil {
 			return usagef(cmd, "%s", err)
@@ -56,15 +63,17 @@ func newRootCmd(version string) *cobra.Command {
 	addRunFlags(root)
 	root.AddCommand(
 		newAuditCmd(),
+		newGraphCmd(),
 		newShowCmd(),
 		newCatCmd(),
 		newLsCmd(),
-		newMtimeCmd(),
+		newCtimeCmd(),
 		newWatchCmd(),
 		newListCmd(),
 		newVersionCmd(version),
 	)
 	root.SetHelpCommand(helpCommand(root))
+	rootHelp(root)
 	return root
 }
 
@@ -72,9 +81,9 @@ func newAuditCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "audit [scope...]",
 		Short: "Audit the local host",
-		Long: "Audit the local host in process. With no scope word the audit covers every surface; " +
-			"scope words are surface names (systemd, profile, cron, ...), path prefixes (/var/www), " +
-			"processes (/proc/36), or a leading ! exclusion.",
+		Long: "Audit the local host in process. With no scope word the audit covers every bounded " +
+			"domain; the SCOPE panel lists the words that narrow it.",
+		Example: "karma audit\nkarma audit persistence\nkarma audit /var/www",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			flags, err := auditOptions(cmd.Flags())
 			if err != nil {
@@ -92,8 +101,12 @@ func newShowCmd() *cobra.Command {
 		Use:   "show <section> [scope...]",
 		Short: "Print one collected inventory without judging it",
 		Long: "Print one collected inventory without judging it: activation, process, services, " +
-			"listeners, authority, mounts, or coverage. Scope words narrow it the way the audit's do.",
+			"listeners, connections, authority, mounts, kernel, or coverage. Scope words narrow it the way the audit's do.",
+		Example: "karma show activation\nkarma show listeners\nkarma show coverage",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
 			flags, err := auditOptions(cmd.Flags())
 			if err != nil {
 				return usagef(cmd, "%s", err)
@@ -105,21 +118,48 @@ func newShowCmd() *cobra.Command {
 	return cmd
 }
 
+// retiredWord catches a word a merged-away command used to own. At the root
+// every unknown word is a scope word, and "profile" is also a startup
+// surface, so without this guard `karma profile ssh.service` would silently
+// audit the login surface instead of naming the object's graph.
+func retiredWord(word string) error {
+	if word == "profile" {
+		return fmt.Errorf(`"profile" moved: karma graph <unit|pid|path|package> draws the object's relations (the login surface is karma audit profile)`)
+	}
+	return nil
+}
+
+// newListCmd prints the CLI's vocabulary as the same page every command
+// wears: the description band, then one quiet panel per word family.
 func newListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List the audit vocabulary",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, "modes     audit (default), show, cat, ls, mtime, watch")
-			fmt.Fprintln(out, "show      activation, process, services, listeners, authority, mounts, coverage")
-			fmt.Fprintln(out, "surfaces  "+strings.Join(surfaceWords, " "))
-			fmt.Fprintln(out, "groups    persistence boot login schedule service device activity")
-			fmt.Fprintln(out, "scope     a surface, a group, a path prefix, /proc/<pid>, or !word to exclude")
+			writePage(cmd.OutOrStdout(), cmd, listSections(), listFooter)
 			return nil
 		},
 	}
 }
+
+// listSections is the listing's whole table, in reading order. Each row comes
+// from the registry that defines the words, so the page cannot drift from the
+// grammar the commands parse.
+func listSections() []pageSection {
+	line := func(words ...string) []string { return []string{strings.Join(words, " ")} }
+	return []pageSection{
+		{"start", startRows},
+		{"modes", line("audit (default)", "graph", "show", "cat", "ls", "ctime", "watch")},
+		{"domains", line(audit.DomainWords()...)},
+		{"graph", line(audit.GraphWords()...)},
+		{"show", line(audit.ShowWords()...)},
+		{"surfaces", line(surfaceWords...)},
+		{"groups", line(groupWords()...)},
+	}
+}
+
+// listFooter is the one sentence the vocabulary answers to.
+const listFooter = "Use a word with any command: a domain, a surface, a group, a path prefix, /proc/<pid>, a unit name, or a leading ! exclusion."
 
 func newVersionCmd(version string) *cobra.Command {
 	return &cobra.Command{

@@ -2,18 +2,20 @@ package watch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
+
+	"karma/internal/audit"
 )
 
-// Kind is what one event describes.
+// Kind is what one process event describes.
 type Kind string
 
 const (
-	KindExec   Kind = "exec"
-	KindExit   Kind = "exit"
-	KindFork   Kind = "fork"
-	KindSocket Kind = "socket"
+	KindExec Kind = "exec"
+	KindExit Kind = "exit"
+	KindFork Kind = "fork"
 )
 
 // Family is the view a command asked for: process events or socket events.
@@ -30,6 +32,15 @@ type Caps struct {
 	Socket  bool
 }
 
+// SourceName is the backend that produced an event.
+type SourceName string
+
+const (
+	SourcePoll      SourceName = "poll"
+	SourceConnector SourceName = "connector"
+	SourceConntrack SourceName = "conntrack"
+)
+
 // NetEvent is one socket's identity: the protocol, the state word, the two
 // endpoints, and the inode that ties it to a process.
 type NetEvent struct {
@@ -40,31 +51,92 @@ type NetEvent struct {
 	Inode uint64 `json:"inode"`
 }
 
-// Event is one observation. PID 0 on a socket means no local process was found
-// for the inode (the TIME-WAIT case); the renderer prints it as pid=-.
-type Event struct {
-	Time    time.Time `json:"time"`
-	Kind    Kind      `json:"kind"`
-	PID     int       `json:"pid"`
-	PPID    int       `json:"ppid,omitempty"`
-	UID     int       `json:"uid"`
-	Comm    string    `json:"comm,omitempty"`
-	Exe     string    `json:"exe,omitempty"`
-	Cmdline string    `json:"cmdline,omitempty"`
-	Cwd     string    `json:"cwd,omitempty"`
-	Net     *NetEvent `json:"net,omitempty"`
+// Proc is one process observation.
+type Proc struct {
+	Kind    Kind   `json:"kind"`
+	PID     int    `json:"pid"`
+	PPID    int    `json:"ppid,omitempty"`
+	UID     int    `json:"uid,omitempty"`
+	Comm    string `json:"comm,omitempty"`
+	Exe     string `json:"exe,omitempty"`
+	Cmdline string `json:"cmdline,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`
 	// ExitCode is the connector's exit status; the poll source does not know
 	// it and leaves the pointer nil.
-	ExitCode *int     `json:"exit_code,omitempty"`
-	Flags    []string `json:"flags,omitempty"`
-	// Source is the backend that produced the event (poll, connector, conntrack).
-	Source string `json:"source,omitempty"`
-	// Origin, Reach and Severity are the audit's judgment of the image an exec
-	// runs, or of the owner an owned socket names. Exit and fork events run no
-	// image, and a socket with no known owner leaves them empty.
-	Origin   string `json:"origin,omitempty"`
-	Reach    string `json:"reach,omitempty"`
-	Severity string `json:"severity,omitempty"`
+	ExitCode *int `json:"exit_code,omitempty"`
+	// Script is the script path an interpreter's command line carries. The
+	// judgment reads the script beside the image.
+	Script string `json:"script,omitempty"`
+}
+
+// Sock is one socket observation with its local owner, when the owner table
+// answered. PID 0 is the TIME-WAIT case: the socket has no local process.
+type Sock struct {
+	Net     NetEvent `json:"net"`
+	PID     int      `json:"pid"`
+	UID     int      `json:"uid,omitempty"`
+	Comm    string   `json:"comm,omitempty"`
+	Exe     string   `json:"exe,omitempty"`
+	Cmdline string   `json:"cmdline,omitempty"`
+	Cwd     string   `json:"cwd,omitempty"`
+}
+
+// Verdict is the audit's judgment of the image an event runs, or of the image
+// a socket's owner runs. Exit and fork events run no image, and a socket with
+// no known owner leaves it unset.
+type Verdict struct {
+	Origin   audit.Origin   `json:"origin"`
+	Reach    audit.Reach    `json:"reach"`
+	Severity audit.Severity `json:"severity"`
+}
+
+// MarshalJSON prints the three words the lines print, so the JSON stream and
+// the text stream read the same vocabulary.
+func (v Verdict) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Origin   string `json:"origin"`
+		Reach    string `json:"reach"`
+		Severity string `json:"severity"`
+	}{v.Origin.String(), v.Reach.String(), v.Severity.String()})
+}
+
+// Flag is one structural fact the annotator distilled from an event's image,
+// its working directory and its command line.
+type Flag string
+
+const (
+	FlagDeleted       Flag = "deleted"
+	FlagNoImage       Flag = "no-image"
+	FlagUnowned       Flag = "unowned"
+	FlagUnownedExec   Flag = "unowned-exec"
+	FlagAdmin         Flag = "admin"
+	FlagHidden        Flag = "hidden"
+	FlagWritable      Flag = "writable"
+	FlagAdminCwd      Flag = "admin-cwd"
+	FlagUnownedScript Flag = "unowned-script"
+	FlagAdminScript   Flag = "admin-script"
+)
+
+// flagOrder is the order flags print in, so a line reads the same whatever
+// sequence the facts were gathered in.
+var flagOrder = []Flag{
+	FlagDeleted, FlagNoImage, FlagUnowned, FlagUnownedExec, FlagAdmin, FlagHidden,
+	FlagWritable, FlagAdminCwd, FlagUnownedScript, FlagAdminScript,
+}
+
+// Event is one observation: the source that produced it, exactly one body,
+// and the flags and verdict the pipeline attached.
+type Event struct {
+	Seq  uint64    `json:"seq"`
+	Time time.Time `json:"time"`
+	// Source is the backend that produced the event.
+	Source SourceName `json:"source"`
+	// Exactly one of Proc and Sock is set.
+	Proc *Proc `json:"proc,omitempty"`
+	Sock *Sock `json:"sock,omitempty"`
+	// Verdict is set once the pipeline judged the event's image.
+	Verdict *Verdict `json:"verdict,omitempty"`
+	Flags   []Flag   `json:"flags,omitempty"`
 }
 
 // Source produces events until the context ends. Run must not close out; the

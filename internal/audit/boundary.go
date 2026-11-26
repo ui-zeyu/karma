@@ -13,8 +13,7 @@ import (
 // host's boot time predates the container by however long the host has run);
 // a host's edge is its own boot, with package transactions after it marking
 // provisioned installs.
-func readBoundary() (Boundary, map[string]time.Time) {
-	packageTimes := readPackageTimes()
+func readBoundary(packageTimes map[string]time.Time) (Boundary, map[string]time.Time) {
 	boot := readBootTime()
 	if isContainer() {
 		if start := readPID1Start(boot); !start.IsZero() {
@@ -122,63 +121,6 @@ func isContainer() bool {
 		}
 	}
 	return false
-}
-
-// readPackageTimes reads dpkg's transaction log into each package's last
-// transaction. A file owned by a package installed after the boundary is
-// provisioned, not runtime code, and a ledger file written after its
-// package's last transaction is tampered evidence.
-func readPackageTimes() map[string]time.Time {
-	times := map[string]time.Time{}
-	file, err := os.Open(packageLog)
-	if err != nil {
-		return times
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for scanner.Scan() {
-		pkg, stamp, ok := parsePackageLogLine(scanner.Text())
-		if !ok {
-			continue
-		}
-		if stamp.After(times[pkg]) {
-			times[pkg] = stamp
-		}
-	}
-	return times
-}
-
-// packageLog is dpkg's transaction log.
-const packageLog = "/var/log/dpkg.log"
-
-// parsePackageLogLine reads one dpkg.log line into its package and stamp.
-// The log spells transactions two ways: `date time action pkg:arch version`
-// and `date time status state pkg:arch version`; the status line is a
-// transaction's last word, so it dates the whole transaction.
-func parsePackageLogLine(line string) (string, time.Time, bool) {
-	fields := strings.Fields(line)
-	if len(fields) < 4 {
-		return "", time.Time{}, false
-	}
-	// The log stamps in the target's own local time; parse it as local, an
-	// offset here would move the artifact boundary by the zone difference.
-	stamp, err := time.ParseInLocation(stampLayout, fields[0]+" "+fields[1], time.Local)
-	if err != nil {
-		return "", time.Time{}, false
-	}
-	index := 3
-	if fields[2] == "status" {
-		if len(fields) < 5 {
-			return "", time.Time{}, false
-		}
-		index = 4
-	}
-	pkg, _, _ := strings.Cut(fields[index], ":")
-	if pkg == "" {
-		return "", time.Time{}, false
-	}
-	return pkg, stamp, true
 }
 
 func latestPackageTime(times map[string]time.Time) time.Time {

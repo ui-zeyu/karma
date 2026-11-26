@@ -71,15 +71,52 @@ func TestResolverWithoutManager(t *testing.T) {
 	}
 }
 
-func TestDpkgRow(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"pkg: /x\n", "pkg"},
-		{"pkg:amd64: /x\n", "pkg"},
-		{"pkg\n", "pkg"},
+func TestDpkgAnswer(t *testing.T) {
+	cases := []struct {
+		in     string
+		pkg    string
+		shared bool
+	}{
+		{"pkg: /x\n", "pkg", false},
+		{"pkg:amd64: /x\n", "pkg", false},
+		{"pkg, other: /usr/bin\n", "pkg", true},
+		{"local diversion from: /x\n", "", false},
+		{"pkg\n", "pkg", false},
 	}
 	for _, c := range cases {
-		if got := dpkgRow(c.in); got != c.want {
-			t.Errorf("dpkgRow(%q) = %q, want %q", c.in, got, c.want)
+		got := dpkgAnswer(c.in)
+		if got.pkg != c.pkg || got.shared != c.shared {
+			t.Errorf("dpkgAnswer(%q) = %+v, want pkg=%q shared=%t", c.in, got, c.pkg, c.shared)
 		}
+	}
+}
+
+func TestDpkgBatchDirectoryAndDiversion(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+rc=1
+for p in "$@"; do
+  case "$p" in
+    -S) continue;;
+    /dir) echo "pkg, other: /dir"; rc=0;;
+    /diverted)
+      echo "local diversion from: /diverted"
+      echo "local diversion to: /diverted.REAL"
+      rc=0;;
+  esac
+done
+exit $rc
+`
+	binary := filepath.Join(dir, "dpkg")
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &Resolver{dpkg: binary, cache: map[string]answer{}}
+	answers := resolver.dpkgBatch([]string{"/dir", "/diverted"})
+	if got := answers["/dir"]; got.pkg != "pkg" || !got.known || !got.shared {
+		t.Errorf("directory row = %+v, want the first package and shared", got)
+	}
+	if got := answers["/diverted"]; got.pkg != "" || !got.known {
+		t.Errorf("diversion row = %+v, want a known local file", got)
 	}
 }

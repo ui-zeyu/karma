@@ -1,13 +1,12 @@
 // Package watch turns the kernel's process and socket tables into one event
-// stream, a poll at a time. The stream is the same shape whatever source
-// produced it: an exec or exit carries the process's provenance, a socket
-// carries the owner's, and both are annotated with structural facts (unowned,
-// administrator layer, interpreter plus script) rather than names. An exec
-// event also states the audit's origin, reach and severity for the image it
-// runs.
+// stream. The stream is one typed shape whatever source produced it: a process
+// event carries the process's provenance, a socket event carries its owner's,
+// and the pipeline attaches structural flags (unowned, administrator layer,
+// interpreter plus script) and the audit's verdict — origin, reach, severity —
+// for the image an event runs.
 //
-// The first source is the universal one: /proc for processes and sock_diag for
-// sockets, both read-only and available in a default container. The interface
-// is the seam the eBPF, perf-tracepoint and connector sources land behind
-// without changing the renderer or the annotation.
+// The sources are /proc and sock_diag polls, the kernel's proc connector, and
+// conntrack notifications joined by their four-tuple to the socket table. The
+// pipeline annotates through a bounded worker pool and hands the writer its
+// events back in the order the source produced them.
 package watch

@@ -1,175 +1,240 @@
 package watch
 
 import (
+	"context"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"karma/internal/audit"
+	"karma/internal/prov"
 	"karma/internal/startup"
 	"karma/internal/trust"
 )
 
+// maxFactsCache bounds one annotator's path cache. A burst past the bound
+// drops the cache whole: re-stating a path costs one stat, an unbounded cache
+// costs memory and answers gone stale.
+const maxFactsCache = 4096
+
 // Annotator adds the structural facts a line needs without asking a name what
 // it means: is the executable package-owned, is it in an administrator layer,
 // is the working directory one, is an interpreter carrying a script. The facts
-// are cached by path; the package resolver has its own cache behind them.
+// are cached by path; the package catalog answers from its own index, so an
+// event burst costs no package-manager call.
 type Annotator struct {
-	resolver trust.PackageResolver
+	catalog  *prov.Catalog
 	facts    map[string]trust.Facts
 	observer *audit.Observer
 }
 
-// NewAnnotator uses the host's package manager.
+// NewAnnotator uses the host's package database.
 func NewAnnotator() *Annotator {
-	return NewAnnotatorWith(trust.NewResolver())
+	return NewAnnotatorWith(prov.Open(context.Background()))
 }
 
-// NewAnnotatorWith builds an annotator over a given resolver; nil is a
-// resolver that answers unknown and is what the tests use.
-func NewAnnotatorWith(resolver trust.PackageResolver) *Annotator {
-	return &Annotator{resolver: resolver, facts: map[string]trust.Facts{}, observer: audit.NewObserver()}
+// NewAnnotatorWith builds an annotator over a given catalog; nil answers
+// unknown and is what the tests use.
+func NewAnnotatorWith(catalog *prov.Catalog) *Annotator {
+	return &Annotator{catalog: catalog, facts: map[string]trust.Facts{}, observer: audit.NewObserver()}
 }
 
-// Annotate writes the event's flags in place.
+// share returns an annotator over the same catalog and observer with its own
+// path cache. The pipeline's workers each annotate with their own share, so
+// the caches never share a map.
+func (a *Annotator) share() *Annotator {
+	return &Annotator{catalog: a.catalog, facts: map[string]trust.Facts{}, observer: a.observer}
+}
+
+// Annotate attaches the flags and, where the event carries a running image,
+// the verdict.
 func (a *Annotator) Annotate(ev *Event) {
+	switch {
+	case ev.Proc != nil:
+		a.annotateProc(ev, ev.Proc)
+	case ev.Sock != nil:
+		a.annotateSock(ev, ev.Sock)
+	}
+}
+
+func (a *Annotator) annotateProc(ev *Event, proc *Proc) {
 	flags := newFlagSet(ev.Flags)
-	deleted := false
-	exe := ev.Exe
+	exe := proc.Exe
 	if strings.HasSuffix(exe, " (deleted)") {
 		exe = strings.TrimSuffix(exe, " (deleted)")
-		deleted = true
+		proc.Exe = exe
+		flags.add(FlagDeleted)
 	}
-	if deleted {
-		flags.add("deleted")
+	script, _ := a.scriptFacts(ev.Proc)
+	if script != "" {
+		proc.Script = script
 	}
 	if exe != "" {
 		facts := a.classify(exe)
 		a.addFacts(flags, facts)
 		if facts.Executable && facts.PackageKnown && facts.Package == "" {
-			flags.add("unowned-exec")
+			flags.add(FlagUnownedExec)
 		}
 	}
-	if ev.Cwd != "" {
-		if facts := a.classify(ev.Cwd); facts.AdminLayer || facts.PathAdmin {
-			flags.add("admin-cwd")
+	if proc.Cwd != "" {
+		if facts := a.classify(proc.Cwd); facts.AdminLayer || facts.PathAdmin {
+			flags.add(FlagAdminCwd)
 		}
 	}
-	if script, ok := a.scriptFacts(ev, exe); ok {
-		if script.AdminLayer {
-			flags.add("admin-script")
+	if script != "" {
+		scriptFacts := a.classify(script)
+		if scriptFacts.AdminLayer || scriptFacts.PathAdmin {
+			flags.add(FlagAdminScript)
 		}
-		if script.PackageKnown && script.Package == "" {
-			flags.add("unowned-script")
+		if scriptFacts.PackageKnown && scriptFacts.Package == "" {
+			flags.add(FlagUnownedScript)
 		}
 	}
-	if exe != "" && (ev.Kind == KindExec || ev.Kind == KindSocket) {
-		origin, reach, severity := a.judge(ev, exe)
-		ev.Origin = origin.String()
-		ev.Reach = reach.String()
-		ev.Severity = severity.String()
+	// An exec whose image the source could not read (the process was gone
+	// before /proc answered) carries no judgment: an empty image would read
+	// as unknown, which is a finding-shaped answer to a read that never
+	// happened. The no-image flag keeps the event itself greppable, and the
+	// writer counts them so a burst — a dropper's signature — is named.
+	if proc.Kind == KindExec && proc.Exe == "" {
+		flags.add(FlagNoImage)
+	}
+	ev.Flags = flags.sorted()
+	if proc.Kind == KindExec && proc.Exe != "" {
+		image, scriptFacts := a.classify(exe), a.classify(script)
+		ev.Verdict = verdict(a.observer.Observe(image, scriptFacts, proc.UID))
+	}
+}
+
+func (a *Annotator) annotateSock(ev *Event, sock *Sock) {
+	flags := newFlagSet(ev.Flags)
+	if sock.Exe != "" {
+		facts := a.classify(sock.Exe)
+		a.addFacts(flags, facts)
+		if facts.Executable && facts.PackageKnown && facts.Package == "" {
+			flags.add(FlagUnownedExec)
+		}
+		if sock.Cwd != "" {
+			if facts := a.classify(sock.Cwd); facts.AdminLayer || facts.PathAdmin {
+				flags.add(FlagAdminCwd)
+			}
+		}
+		script, ok := a.sockScript(sock)
+		if ok {
+			scriptFacts := a.classify(script)
+			if scriptFacts.AdminLayer || scriptFacts.PathAdmin {
+				flags.add(FlagAdminScript)
+			}
+			if scriptFacts.PackageKnown && scriptFacts.Package == "" {
+				flags.add(FlagUnownedScript)
+			}
+		}
+		ev.Verdict = verdict(a.observer.Observe(a.classify(sock.Exe), factsOf(a, script), sock.UID))
 	}
 	ev.Flags = flags.sorted()
 }
 
-// judge reads the image an event runs through the audit's origin model: the
-// image and the script an interpreter carries both answer against the artifact
-// boundary, and the weaker origin wins.
-func (a *Annotator) judge(ev *Event, exe string) (audit.Origin, audit.Reach, audit.Severity) {
-	script, ok := a.scriptFacts(ev, exe)
-	if !ok {
-		script = trust.Facts{}
+// verdict builds the judgment an Observe call answered.
+func verdict(origin audit.Origin, reach audit.Reach, severity audit.Severity) *Verdict {
+	return &Verdict{Origin: origin, Reach: reach, Severity: severity}
+}
+
+// factsOf answers the facts of a script path, or zero facts for none.
+func factsOf(a *Annotator, script string) trust.Facts {
+	if script == "" {
+		return trust.Facts{}
 	}
-	return a.observer.Observe(a.classify(exe), script, ev.UID)
+	return a.classify(script)
+}
+
+func (a *Annotator) addFacts(flags *flagSet, facts trust.Facts) {
+	if facts.PackageKnown && facts.Package == "" {
+		flags.add(FlagUnowned)
+	}
+	if facts.AdminLayer || facts.PathAdmin {
+		flags.add(FlagAdmin)
+	}
+	if facts.Hidden || facts.PathHidden {
+		flags.add(FlagHidden)
+	}
+	if facts.Writable {
+		flags.add(FlagWritable)
+	}
 }
 
 // scriptFacts reads the script an interpreter carries. A relative argument is
 // joined to the event's cwd; a relative name that does not resolve to a file is
 // an option value or a module, not a script.
-func (a *Annotator) scriptFacts(ev *Event, exe string) (trust.Facts, bool) {
-	if !startup.IsInterpreter(exe) {
-		return trust.Facts{}, false
+func (a *Annotator) scriptFacts(proc *Proc) (string, bool) {
+	if !startup.IsInterpreter(proc.Exe) {
+		return "", false
 	}
-	script := startup.ScriptArg(ev.Cmdline)
+	script := startup.ScriptArg(proc.Cmdline)
 	if script == "" {
-		return trust.Facts{}, false
+		return "", false
 	}
 	path := script
 	if !filepath.IsAbs(path) {
-		if ev.Cwd == "" {
-			return trust.Facts{}, false
+		if proc.Cwd == "" {
+			return "", false
 		}
-		path = filepath.Join(ev.Cwd, path)
+		path = filepath.Join(proc.Cwd, path)
 	}
 	facts := a.classify(path)
 	if !filepath.IsAbs(script) && facts.Kind != trust.File {
-		return trust.Facts{}, false
+		return "", false
 	}
-	return facts, true
+	return path, true
+}
+
+// sockScript reads the script a socket owner's interpreter carries, joined to
+// the owner's working directory.
+func (a *Annotator) sockScript(sock *Sock) (string, bool) {
+	if !startup.IsInterpreter(sock.Exe) || sock.Cmdline == "" {
+		return "", false
+	}
+	fake := &Proc{Exe: sock.Exe, Cmdline: sock.Cmdline, Cwd: sock.Cwd}
+	return a.scriptFacts(fake)
 }
 
 func (a *Annotator) classify(path string) trust.Facts {
+	if path == "" {
+		return trust.Facts{}
+	}
 	if facts, ok := a.facts[path]; ok {
 		return facts
 	}
-	facts := trust.Classify(path, a.resolver)
+	if len(a.facts) >= maxFactsCache {
+		a.facts = map[string]trust.Facts{}
+	}
+	facts := trust.Classify(path, a.catalog)
 	a.facts[path] = facts
 	return facts
 }
 
-func (a *Annotator) addFacts(flags *flagSet, facts trust.Facts) {
-	if facts.PackageKnown && facts.Package == "" {
-		flags.add("unowned")
-	}
-	if facts.AdminLayer || facts.PathAdmin {
-		flags.add("admin")
-	}
-	if facts.Hidden || facts.PathHidden {
-		flags.add("hidden")
-	}
-	if facts.Writable {
-		flags.add("writable")
-	}
-}
-
-// flagOrder is the order flags print in, so a line reads the same whatever
-// sequence the events arrived in.
-var flagOrder = []string{
-	"deleted", "unowned", "unowned-exec", "admin", "hidden", "writable",
-	"admin-cwd", "unowned-script", "admin-script",
-}
-
+// flagSet collects an event's flags and prints them in the table's order.
 type flagSet struct {
-	seen map[string]bool
+	seen map[Flag]bool
 }
 
-func newFlagSet(existing []string) *flagSet {
-	set := &flagSet{seen: map[string]bool{}}
+func newFlagSet(existing []Flag) *flagSet {
+	set := &flagSet{seen: map[Flag]bool{}}
 	for _, flag := range existing {
 		set.seen[flag] = true
 	}
 	return set
 }
 
-func (f *flagSet) add(flag string) { f.seen[flag] = true }
+func (f *flagSet) add(flag Flag) { f.seen[flag] = true }
 
-func (f *flagSet) sorted() []string {
+func (f *flagSet) sorted() []Flag {
 	if len(f.seen) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(f.seen))
+	out := make([]Flag, 0, len(f.seen))
 	for _, flag := range flagOrder {
 		if f.seen[flag] {
 			out = append(out, flag)
 			delete(f.seen, flag)
 		}
 	}
-	// A flag outside the table (a source's own word) follows the known ones in
-	// byte order; the table is the vocabulary, so this is rare.
-	rest := make([]string, 0, len(f.seen))
-	for flag := range f.seen {
-		rest = append(rest, flag)
-	}
-	sort.Strings(rest)
-	return append(out, rest...)
+	return out
 }

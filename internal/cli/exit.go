@@ -7,16 +7,16 @@ package cli
 type ExitCode int
 
 const (
-	// ExitOK is a run that ended. A usage mistake the message explained is not a
-	// failed run, so it leaves the status here too.
+	// ExitOK is a run that ended with its answer.
 	ExitOK ExitCode = 0
 	// ExitRead is a built-in reader that could not read an operand: the file it
 	// was given is gone or unreadable, and the operands that did read have
 	// already printed. It is the status a failed read carries, so a script that
 	// checks $? sees it.
 	ExitRead ExitCode = 1
-	// ExitEnvironment is the environment failing the run: a kernel interface the
-	// watcher needs could not be opened.
+	// ExitEnvironment is the environment failing the run, including a usage
+	// mistake: a kernel interface the watcher needs could not be opened, or the
+	// command line named a scope the audit does not have.
 	ExitEnvironment ExitCode = 2
 	// ExitInternal is karma's own damage: an internal error ended the run, so the
 	// report is incomplete. It is sysexits' EX_SOFTWARE, kept distinct from the
