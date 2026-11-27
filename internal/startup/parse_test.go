@@ -5,6 +5,7 @@ package startup
 // so a parser change that loses an activation has to break a named case first.
 
 import (
+	"context"
 	"testing"
 
 	"karma/internal/trust"
@@ -26,6 +27,17 @@ func firstTarget(edges []rawEdge) string {
 	return ""
 }
 
+// mustShellEdges parses a test body and states its edges, failing the test
+// when the shell grammar refuses the body.
+func mustShellEdges(t *testing.T, body string, base rawEdge) []rawEdge {
+	t.Helper()
+	tree, err := parseShellBody(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return shellEdges(base, tree, body)
+}
+
 func TestShellEdgesKnowTheStatements(t *testing.T) {
 	cases := []struct {
 		name string
@@ -44,7 +56,7 @@ func TestShellEdgesKnowTheStatements(t *testing.T) {
 		{"quoted command", "\"/opt/space dir/agent\"\n", "/opt/space dir/agent", Exec},
 	}
 	for _, test := range cases {
-		edges := shellEdges(test.body, rawEdge{
+		edges := mustShellEdges(t, test.body, rawEdge{
 			surface: SurfaceProfile, phase: Login, subject: Subject{Class: AccountLogin},
 			trigger: "/etc/profile.d/x.sh",
 		})
@@ -72,7 +84,7 @@ func TestShellEdgesKeepDynamicTargetsHonest(t *testing.T) {
 		{"a command substitution builds the path", "exec $(find /opt -name agent)\n"},
 	}
 	for _, test := range cases {
-		edges := shellEdges(test.body, rawEdge{
+		edges := mustShellEdges(t, test.body, rawEdge{
 			surface: SurfaceProfile, phase: Login, subject: Subject{Class: AccountLogin},
 			trigger: "/etc/profile.d/x.sh",
 		})
@@ -89,7 +101,7 @@ func TestShellEdgesReadInsideConditions(t *testing.T) {
 	// to skip at runtime is still an edge: the static read cannot know the
 	// condition's value.
 	body := "if [ -f /opt/vendor/env.sh ]; then\n  source /opt/vendor/env.sh\nfi\n"
-	edges := shellEdges(body, rawEdge{trigger: "/etc/profile.d/x.sh"})
+	edges := mustShellEdges(t, body, rawEdge{trigger: "/etc/profile.d/x.sh"})
 	if firstTarget(edges) != "/opt/vendor/env.sh" {
 		t.Errorf("edges inside a condition = %+v", edges)
 	}
@@ -107,7 +119,7 @@ func TestInterpreterCommandLines(t *testing.T) {
 		{"sudo reaches the program", "/usr/bin/sudo -u agent /opt/agent\n", "/opt/agent"},
 	}
 	for _, test := range cases {
-		edges := shellEdges(test.body, rawEdge{trigger: "/etc/cron.daily/x"})
+		edges := mustShellEdges(t, test.body, rawEdge{trigger: "/etc/cron.daily/x"})
 		if got := firstTarget(edges); got != test.want {
 			t.Errorf("%s: target = %q, want %q (%+v)", test.name, got, test.want, edges)
 		}
@@ -119,7 +131,7 @@ func TestUnitExecForms(t *testing.T) {
 		"ExecStart=-/opt/agent --serve\n" +
 		"ExecStartPre=+/usr/sbin/prep --now\n" +
 		"ExecReload=/bin/kill -HUP $MAINPID\n"
-	corpus := NewCorpus([]File{{
+	corpus := NewCorpus(context.Background(), OSFS{}, []File{{
 		Path: "/etc/systemd/system/agent.service", Unit: "agent.service",
 		Surface: SurfaceSystemd, Dialect: UnitDialect, Body: body,
 	}}, nil, fileFacts)
@@ -260,9 +272,7 @@ func TestPAMStackHasOneModulePerLine(t *testing.T) {
 // corpusWithGlobs builds a corpus whose filesystem answers the glob table the
 // module resolution reads.
 func corpusWithGlobs(globs map[string][]string) *Corpus {
-	corpus := NewCorpus(nil, nil, allFiles)
-	corpus.fs = fakeFS{globs: globs}
-	return corpus
+	return NewCorpus(context.Background(), fakeFS{globs: globs}, nil, nil, allFiles)
 }
 
 func TestProxyCommandBareCommandStaysVisible(t *testing.T) {

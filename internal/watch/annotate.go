@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"karma/internal/audit"
@@ -12,10 +13,18 @@ import (
 	"karma/internal/trust"
 )
 
-// maxFactsCache bounds one annotator's path cache. A burst past the bound
-// drops the cache whole: re-stating a path costs one stat, an unbounded cache
-// costs memory and answers gone stale.
+// maxFactsCache bounds the annotators' shared path cache: the workers evict
+// the earliest inserted quarter per shard instead of dropping the table whole,
+// so a burst past the bound costs a few re-stats, not a cold cache.
 const maxFactsCache = 4096
+
+// factsShards is the width of the shared cache. Each shard locks its own map,
+// so the pipeline's four workers answer without contending on one lock.
+const factsShards = 16
+
+// factsShardCap is one shard's bound, so the whole cache stays inside
+// maxFactsCache entries.
+const factsShardCap = maxFactsCache / factsShards
 
 // factsTTL bounds how long one path's cached facts describe the disk. A live
 // watcher runs for hours; a replaced binary or a permission change has to be
@@ -32,28 +41,104 @@ type cachedFacts struct {
 	at    time.Time
 }
 
+// factsShard is one lock, one map and the keys in insertion order for the
+// eviction. The TTL lives on each entry: get answers stale facts only as a
+// miss, and the next classify restates them.
+type factsShard struct {
+	mu     sync.Mutex
+	byPath map[string]cachedFacts
+	order  []string
+}
+
+// factsCache is the annotators' shared path cache. Every annotator a run
+// builds — including each worker's share — points at one cache, so a path
+// stated once is answered from memory by every worker.
+type factsCache struct {
+	shards [factsShards]factsShard
+}
+
+func newFactsCache() *factsCache {
+	cache := &factsCache{}
+	for index := range cache.shards {
+		cache.shards[index].byPath = map[string]cachedFacts{}
+	}
+	return cache
+}
+
+// shardOf picks the shard by the path's FNV-1a, so a path always lands in the
+// same shard.
+func (c *factsCache) shardOf(path string) *factsShard {
+	hash := uint32(2166136261)
+	for index := 0; index < len(path); index++ {
+		hash ^= uint32(path[index])
+		hash *= 16777619
+	}
+	return &c.shards[hash%factsShards]
+}
+
+// get answers the path's cached facts while they are fresh.
+func (s *factsShard) get(path string) (trust.Facts, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cached, ok := s.byPath[path]
+	if !ok || time.Since(cached.at) >= factsTTL {
+		return trust.Facts{}, false
+	}
+	return cached.facts, true
+}
+
+// put states one path's facts, evicting the earliest inserted quarter when the
+// shard is full.
+func (s *factsShard) put(path string, facts trust.Facts) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byPath[path]; !ok && len(s.order) >= factsShardCap {
+		s.evictLocked(factsShardCap / 4)
+	}
+	if _, ok := s.byPath[path]; !ok {
+		s.order = append(s.order, path)
+	}
+	s.byPath[path] = cachedFacts{facts: facts, at: time.Now()}
+}
+
+// evictLocked drops the n earliest inserted keys and compacts the order in
+// place, so the backing array stays bounded.
+func (s *factsShard) evictLocked(n int) {
+	if n > len(s.order) {
+		n = len(s.order)
+	}
+	for _, path := range s.order[:n] {
+		delete(s.byPath, path)
+	}
+	s.order = append(s.order[:0], s.order[n:]...)
+}
+
 type Annotator struct {
 	catalog  *prov.Catalog
-	facts    map[string]cachedFacts
+	facts    *factsCache
 	observer *audit.Observer
 }
 
-// NewAnnotator uses the host's package database.
-func NewAnnotator() *Annotator {
-	return NewAnnotatorWith(prov.Open(context.Background()))
+// NewAnnotator uses the host's package database. A nil context falls back to
+// background, since the annotator is also built outside a request's scope.
+func NewAnnotator(ctx context.Context) *Annotator {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return NewAnnotatorWith(prov.Open(ctx))
 }
 
 // NewAnnotatorWith builds an annotator over a given catalog; nil answers
 // unknown and is what the tests use.
 func NewAnnotatorWith(catalog *prov.Catalog) *Annotator {
-	return &Annotator{catalog: catalog, facts: map[string]cachedFacts{}, observer: audit.NewObserverWith(catalog)}
+	return &Annotator{catalog: catalog, facts: newFactsCache(), observer: audit.NewObserverWith(catalog)}
 }
 
-// share returns an annotator over the same catalog and observer with its own
-// path cache. The pipeline's workers each annotate with their own share, so
-// the caches never share a map.
+// share returns an annotator over the same catalog, observer and path cache.
+// The pipeline's workers each annotate through their own share; the cache is
+// sharded and locked, so the workers share it safely.
 func (a *Annotator) share() *Annotator {
-	return &Annotator{catalog: a.catalog, facts: map[string]cachedFacts{}, observer: a.observer}
+	return &Annotator{catalog: a.catalog, facts: a.facts, observer: a.observer}
 }
 
 // Annotate attaches the flags and, where the event carries a running image,
@@ -137,6 +222,9 @@ func (a *Annotator) annotateSock(ev *Event, sock *Sock) {
 			if scriptFacts.PackageKnown && scriptFacts.Package == "" {
 				flags.add(FlagUnownedScript)
 			}
+			// The flag is the conclusion; the path is the evidence the line
+			// and the JSON carry.
+			sock.Script = script
 		}
 		ev.Verdict = verdict(a.observer.Observe(a.classify(sock.Exe), factsOf(a, script), sock.UID))
 	}
@@ -213,41 +301,48 @@ func (a *Annotator) classify(path string) trust.Facts {
 	if path == "" {
 		return trust.Facts{}
 	}
-	if cached, ok := a.facts[path]; ok && time.Since(cached.at) < factsTTL {
-		return cached.facts
-	}
-	if len(a.facts) >= maxFactsCache {
-		a.facts = map[string]cachedFacts{}
+	shard := a.facts.shardOf(path)
+	if facts, ok := shard.get(path); ok {
+		return facts
 	}
 	facts := trust.Classify(path, a.catalog)
-	a.facts[path] = cachedFacts{facts: facts, at: time.Now()}
+	shard.put(path, facts)
 	return facts
 }
 
-// flagSet collects an event's flags and prints them in the table's order.
+// flagSet collects an event's flags and prints them in the table's order. The
+// set is a handful of flags per event, so a small slice beats a map.
 type flagSet struct {
-	seen map[Flag]bool
+	flags []Flag
 }
 
 func newFlagSet(existing []Flag) *flagSet {
-	set := &flagSet{seen: map[Flag]bool{}}
-	for _, flag := range existing {
-		set.seen[flag] = true
-	}
-	return set
+	return &flagSet{flags: append([]Flag(nil), existing...)}
 }
 
-func (f *flagSet) add(flag Flag) { f.seen[flag] = true }
+func (f *flagSet) has(flag Flag) bool {
+	for _, set := range f.flags {
+		if set == flag {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *flagSet) add(flag Flag) {
+	if !f.has(flag) {
+		f.flags = append(f.flags, flag)
+	}
+}
 
 func (f *flagSet) sorted() []Flag {
-	if len(f.seen) == 0 {
+	if len(f.flags) == 0 {
 		return nil
 	}
-	out := make([]Flag, 0, len(f.seen))
+	out := make([]Flag, 0, len(f.flags))
 	for _, flag := range flagOrder {
-		if f.seen[flag] {
+		if f.has(flag) {
 			out = append(out, flag)
-			delete(f.seen, flag)
 		}
 	}
 	return out

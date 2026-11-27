@@ -51,11 +51,31 @@ const (
 const AllDomains = DomainBase | DomainServices | DomainProcesses | DomainNetwork |
 	DomainPersistence | DomainAuthority | DomainFiles | DomainKernel | DomainPackages | DomainWeb | DomainIdentity | DomainTrail
 
+// seedKind is the one object kind an object graph can grow from.
+// ParseGraphSeed is the only producer; the constants are its grammar.
+type seedKind string
+
+const (
+	seedUnit    seedKind = "unit"
+	seedPid     seedKind = "pid"
+	seedPath    seedKind = "path"
+	seedPackage seedKind = "package"
+)
+
 // GraphSeed is one object-graph selector, parsed once for the plan, the
 // collection and the walk.
 type GraphSeed struct {
-	Kind  string // unit, pid, path, package
+	Kind  seedKind
 	Value string
+}
+
+// pid answers the process the seed names, if any.
+func (s GraphSeed) pid() (int, bool) {
+	if s.Kind != seedPid {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(s.Value)
+	return pid, err == nil
 }
 
 // Plan is what one run reads: the Filter's scope, plus the inventory roots an
@@ -70,28 +90,18 @@ type Plan struct {
 	Seed GraphSeed
 }
 
-// collects reports whether the plan reads a domain, either because the domain
-// is judged or because a selected module needs its rows as context.
+// collects reports whether the plan reads a domain: the judged domains,
+// closed over the registry's Needs and scope-context declarations. A domain
+// collected as context still contributes its rows but never its findings.
 func (p Plan) collects(domain Domain) bool {
-	if p.Domains == 0 || p.Has(domain) {
-		return true
-	}
-	if domain == DomainProcesses && p.Has(DomainTrail) &&
-		(len(p.PIDs) > 0 || len(p.Units) > 0 || len(p.ExcludePIDs) > 0 || len(p.ExcludeUnits) > 0) {
-		// A trail row's owner is a process; a pid or unit scope needs the
-		// process table even when no process finding is judged.
-		return true
-	}
 	return p.collectedDomains()&domain != 0
 }
 
-// collectedDomains closes the selected domains over Module.Needs. A domain
-// collected as context still contributes its rows but never its findings.
+// collectedDomains closes the selected domains over Module.Needs — the
+// context every selected module reads — and over ScopeNeeds, the context a
+// pid or unit scope adds so a scoped module still sees its owning rows.
 func (p Plan) collectedDomains() Domain {
-	if p.Domains == 0 {
-		return AllDomains
-	}
-	domains := p.Domains
+	domains := p.Filter.domains()
 	for changed := true; changed; {
 		changed = false
 		for _, module := range modules {
@@ -104,45 +114,66 @@ func (p Plan) collectedDomains() Domain {
 			}
 		}
 	}
-	return domains
-}
-
-// touchesPath reports whether a walk rooted at path can answer the scope: a
-// positive path is equal, below or above the root, and an excluded root is
-// skipped. It is the pushdown every tree walk uses, so a path audit does not
-// pay for unrelated trees.
-func (f Filter) touchesPath(path string) bool {
-	if path == "" || f.pathExcluded(path) {
-		return false
-	}
-	if len(f.Paths) == 0 {
-		return true
-	}
-	if path == "/" {
-		return true
-	}
-	for _, root := range f.Paths {
-		if path == root || strings.HasPrefix(path, root+"/") || strings.HasPrefix(root, path+"/") {
-			return true
+	if p.Filter.hasPIDScope() || p.Filter.hasUnitScope() {
+		for _, module := range modules {
+			if domains&module.Bit != 0 {
+				domains |= module.ScopeNeeds
+			}
 		}
 	}
-	return false
-}
-
-// globalScope reports whether the run asks about the host as a whole rather
-// than one object. Global checks (clock, hidden pids, hidden modules) run only
-// here.
-func (f Filter) globalScope() bool {
-	return len(f.Paths) == 0 && len(f.PIDs) == 0 && len(f.Units) == 0
+	return domains
 }
 
 // seedUnit is the unit an object graph selected, or "" when the seed names
 // another kind of object.
 func (p Plan) seedUnit() string {
-	if p.Seed.Kind == "unit" {
+	if p.Seed.Kind == seedUnit {
 		return p.Seed.Value
 	}
 	return ""
+}
+
+// pathDomainRules names the trees whose paths explain one more domain: an
+// identity file, a web root, kernel or loader state, a systemd tree, or an
+// authentication trail.
+var pathDomainRules = []struct {
+	roots  []string
+	domain Domain
+}{
+	{
+		roots: []string{
+			"/etc/passwd", "/etc/shadow", "/etc/group", "/etc/sudoers", "/etc/sudoers.d",
+			"/etc/ssh", "/home", "/root",
+		},
+		domain: DomainIdentity,
+	},
+	{roots: webRoots, domain: DomainWeb},
+	{
+		roots: []string{
+			"/lib/modules", "/usr/lib/modules", "/etc/modules", "/etc/modules-load.d",
+			"/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/ld.so.preload", "/sys/module",
+		},
+		domain: DomainKernel,
+	},
+	{
+		roots:  []string{"/etc/systemd", "/run/systemd", "/usr/lib/systemd", "/lib/systemd"},
+		domain: DomainServices,
+	},
+	{
+		roots:  []string{"/var/log/auth.log", "/var/log/secure", "/root", "/home"},
+		domain: DomainTrail,
+	},
+}
+
+// pathMeetsAny answers the bidirectional tree question a path scope asks: the
+// path is in one of the trees, or one of the trees is in the path.
+func pathMeetsAny(path string, roots []string) bool {
+	for _, root := range roots {
+		if trust.Under(path, root) || trust.Under(root, path) {
+			return true
+		}
+	}
+	return false
 }
 
 // PathDomains answers the domains a path scope can explain. A file path is
@@ -156,38 +187,13 @@ func PathDomains(paths []string) Domain {
 		if path == "/" {
 			return AllDomains
 		}
-		if underAnyPathPrefix(path, []string{
-			"/etc/passwd", "/etc/shadow", "/etc/group", "/etc/sudoers", "/etc/sudoers.d",
-			"/etc/ssh", "/home", "/root",
-		}) {
-			domains |= DomainIdentity
-		}
-		if underAnyPathPrefix(path, webRoots) {
-			domains |= DomainWeb
-		}
-		if underAnyPathPrefix(path, []string{
-			"/lib/modules", "/usr/lib/modules", "/etc/modules", "/etc/modules-load.d",
-			"/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/ld.so.preload", "/sys/module",
-		}) {
-			domains |= DomainKernel
-		}
-		if underAnyPathPrefix(path, []string{"/etc/systemd", "/run/systemd", "/usr/lib/systemd", "/lib/systemd"}) {
-			domains |= DomainServices
-		}
-		if underAnyPathPrefix(path, []string{"/var/log/auth.log", "/var/log/secure", "/root", "/home"}) {
-			domains |= DomainTrail
+		for _, rule := range pathDomainRules {
+			if pathMeetsAny(path, rule.roots) {
+				domains |= rule.domain
+			}
 		}
 	}
 	return domains
-}
-
-func underAnyPathPrefix(path string, roots []string) bool {
-	for _, root := range roots {
-		if trust.Under(path, root) || trust.Under(root, path) {
-			return true
-		}
-	}
-	return false
 }
 
 // FullPlan reads every bounded domain. The static inventory walks the program
@@ -207,13 +213,12 @@ func ObjectGraphPlan(seed GraphSeed) Plan {
 		Seed:   seed,
 	}
 	switch seed.Kind {
-	case "unit":
-		plan.Domains = DomainBase | DomainServices | DomainProcesses | DomainNetwork | DomainPersistence
+	case seedUnit:
 		plan.Surfaces = surfacePtr(startup.SurfaceScope(startup.SurfaceSystemd))
-	case "pid":
+	case seedPid:
 		plan.Domains = DomainBase | DomainProcesses | DomainNetwork
 		plan.Surfaces = surfacePtr(0)
-	case "path":
+	case seedPath:
 		// The graph already reads the activation surfaces and the process
 		// table; add the domain a path in that tree can explain without
 		// paying for the authority or package walks.
@@ -223,8 +228,9 @@ func ObjectGraphPlan(seed GraphSeed) Plan {
 	return plan
 }
 
-// Has reports whether the plan selected a domain.
-func (p Plan) Has(domain Domain) bool { return p.Domains&domain != 0 }
+// Has reports whether the plan selected a domain. The zero-domain sentinel
+// resolves like every other reader, through Filter.domains.
+func (p Plan) Has(domain Domain) bool { return p.Filter.domains()&domain != 0 }
 
 // surfacePtr names an explicit surface set; zero selects none.
 func surfacePtr(scope startup.Scope) *startup.Scope { return &scope }
@@ -282,15 +288,15 @@ func seedPids(seed GraphSeed, processes []Process) map[int]bool {
 		}
 	}
 	switch seed.Kind {
-	case "pid":
-		if pid, err := strconv.Atoi(seed.Value); err == nil {
+	case seedPid:
+		if pid, ok := seed.pid(); ok {
 			pids[pid] = true
 		}
-	case "unit":
+	case seedUnit:
 		addUnit(seed.Value)
-	case "path":
+	case seedPath:
 		addPath(seed.Value)
-	case "package":
+	case seedPackage:
 		addPackage(seed.Value)
 	}
 	return pids

@@ -49,10 +49,10 @@ func TestBuildKeepsLexicalAndResolvedTrees(t *testing.T) {
 	facts := Build("/etc/systemd/system/x.service", Attrs{
 		Kind: File, Mode: 0o644, UID: 0, Real: "/opt/.x.service", Link: true,
 	})
-	if !facts.PathStartup || !facts.PathAdmin {
+	if !facts.PathAdmin {
 		t.Errorf("lexical facts = %+v", facts)
 	}
-	if facts.Startup || !facts.AdminLayer {
+	if !facts.AdminLayer {
 		t.Errorf("resolved tree facts = %+v", facts)
 	}
 	if facts.PathHidden || !facts.Hidden {
@@ -113,11 +113,11 @@ func TestSkelTemplate(t *testing.T) {
 
 func TestClassifyAdminLayer(t *testing.T) {
 	facts := Classify("/opt/vendor/tools/vendor-sync-probe", nil)
-	if !facts.AdminLayer || facts.TrustedRoot || facts.Kind != Missing {
+	if !facts.AdminLayer || facts.Kind != Missing {
 		t.Errorf("admin-layer path facts = %+v", facts)
 	}
 	facts = Classify("/usr/bin/curl", nil)
-	if !facts.TrustedRoot || facts.AdminLayer {
+	if facts.AdminLayer {
 		t.Errorf("trusted-root path facts = %+v", facts)
 	}
 }

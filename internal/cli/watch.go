@@ -51,10 +51,10 @@ func newWatchSocketCmd() *cobra.Command {
 			"socket table, so the owner's process still answers where the table knows it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWatch(cmd, watch.FamilySocket)
+			return runWatch(cmd)
 		},
 	}
-	watchFlags(cmd, 100*time.Millisecond)
+	watchFlags(cmd, watch.DefaultInterval(watch.FamilySocket))
 	cmd.Flags().Bool("all", false, "poll: print the baseline and include listeners; conntrack has no baseline")
 	return cmd
 }
@@ -72,10 +72,10 @@ func newWatchProcCmd() *cobra.Command {
 			"--fork is accepted for the connector source.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWatch(cmd, watch.FamilyProcess)
+			return runWatch(cmd)
 		},
 	}
-	watchFlags(cmd, 50*time.Millisecond)
+	watchFlags(cmd, watch.DefaultInterval(watch.FamilyProcess))
 	cmd.Flags().Bool("all", false, "print the poll baseline, or include fork and thread events (connector)")
 	cmd.Flags().Bool("fork", false, "include fork events (connector source)")
 	return cmd
@@ -90,53 +90,71 @@ func watchFlags(cmd *cobra.Command, interval time.Duration) {
 	flags.Bool("json", false, "print one JSON object per event")
 }
 
-func runWatch(cmd *cobra.Command, family watch.Family) error {
-	interval, _ := cmd.Flags().GetDuration("interval")
-	duration, _ := cmd.Flags().GetDuration("duration")
-	all, _ := cmd.Flags().GetBool("all")
-	fork, _ := cmd.Flags().GetBool("fork")
-	backend, _ := cmd.Flags().GetString("source")
-	asJSON, _ := cmd.Flags().GetBool("json")
+// watchOptions is the one read of the watch flags: the cadence, the stop
+// time, the family the command watches, and the options the source and the
+// runner take. The family follows the command that opened the view.
+func watchOptions(cmd *cobra.Command) (duration time.Duration, family watch.Family, opt watch.Options, run watch.RunOptions, err error) {
+	family = watch.FamilyProcess
+	if cmd.Name() == "socket" {
+		family = watch.FamilySocket
+	}
+	flags := cmd.Flags()
+	opt.Interval, _ = flags.GetDuration("interval")
+	duration, _ = flags.GetDuration("duration")
+	opt.All = boolFlag(flags, "all")
+	opt.Fork = boolFlag(flags, "fork")
+	opt.Backend = stringFlag(flags, "source")
+	run = watch.RunOptions{JSON: boolFlag(flags, "json")}
 	switch {
-	case interval < 10*time.Millisecond:
-		return usagef(cmd, "--interval must be >= 10ms")
+	case opt.Interval < 10*time.Millisecond:
+		return 0, family, opt, run, usagef(cmd, "--interval must be >= 10ms")
 	case duration < 0:
-		return usagef(cmd, "--duration must be >= 0")
+		return 0, family, opt, run, usagef(cmd, "--duration must be >= 0")
 	}
-	options := watch.Options{
-		Interval: interval,
-		All:      all,
-		Fork:     fork,
-		Backend:  backend,
-		JSON:     asJSON,
-	}
-	source, err := watch.Open(family, options)
+	return duration, family, opt, run, nil
+}
+
+func runWatch(cmd *cobra.Command) error {
+	duration, family, options, run, err := watchOptions(cmd)
 	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+	// Opening a source is one bounded setup: a netlink dial, a subscription
+	// and a baseline scan. A kernel that stalls any of them must not park the
+	// command before the stream starts.
+	openCtx, cancelOpen := context.WithTimeout(ctx, 10*time.Second)
+	source, err := watch.Open(openCtx, family, options)
+	cancelOpen()
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return failf(ExitEnvironment, "watch %s: opening the source exceeded 10s", family)
+		}
 		return failf(ExitEnvironment, "%s", err)
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "watch %s: source=%s interval=%s\n", familyName(family), source.Name(), interval)
-
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
+	if source.Caps().Push {
+		// The kernel-push backends do not poll; the cadence is not theirs to print.
+		fmt.Fprintf(cmd.ErrOrStderr(), "watch %s: source=%s interval n/a\n", family, source.Name())
+	} else {
+		fmt.Fprintf(cmd.ErrOrStderr(), "watch %s: source=%s interval=%s\n", family, source.Name(), options.Interval)
 	}
+
 	if duration > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, duration)
 		defer cancel()
 	}
-	if err := watch.Run(ctx, cmd.OutOrStdout(), source, options); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if err := watch.Run(ctx, cmd.OutOrStdout(), source, run); err != nil {
+		// A duration expiry and a Ctrl-C are different answers for a script:
+		// the expiry is the run the caller asked for (0), an interrupt is
+		// 130, the same code audit and ctime report.
+		if errors.Is(err, context.Canceled) {
+			return failf(ExitInterrupted, "watch %s: interrupted", family)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
 			return nil
 		}
-		return failf(ExitEnvironment, "watch %s: %s", familyName(family), err)
+		return failf(ExitEnvironment, "watch %s: %s", family, err)
 	}
 	return nil
-}
-
-func familyName(family watch.Family) string {
-	if family == watch.FamilySocket {
-		return "socket"
-	}
-	return "proc"
 }

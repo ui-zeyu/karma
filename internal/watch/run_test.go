@@ -19,7 +19,7 @@ func (f failSource) Name() string { return "fail" }
 func (f failSource) Caps() Caps   { return Caps{Process: true} }
 func (f failSource) Run(ctx context.Context, out chan<- Event) error {
 	for _, event := range f.events {
-		if !send(ctx, out, event) {
+		if !deliver(ctx, out, event) {
 			return nil
 		}
 	}
@@ -42,12 +42,12 @@ func TestTextStreamCountsNoImageExecs(t *testing.T) {
 		return events
 	}
 	var out bytes.Buffer
-	writeEvents(&out, Options{}, stream())
+	writeEvents(&out, RunOptions{}, stream())
 	if !strings.Contains(out.String(), "carried no image") {
 		t.Errorf("the text notice is missing: %q", out.String())
 	}
 	out.Reset()
-	writeEvents(&out, Options{JSON: true}, stream())
+	writeEvents(&out, RunOptions{JSON: true}, stream())
 	if strings.Contains(out.String(), "carried no image") {
 		t.Errorf("the JSON stream grew a notice line: %q", out.String())
 	}
@@ -66,9 +66,9 @@ func TestRunWithReturnsTheSourceError(t *testing.T) {
 		events: []Event{{Source: SourcePoll, Proc: &Proc{Kind: KindExec, PID: 4242, Exe: "/bin/true"}}},
 		err:    boom,
 	}
-	for name, annotator := range map[string]*Annotator{"passthrough": nil, "pipeline": NewAnnotatorWith(nil)} {
+	for name, annotator := range map[string]*Annotator{"zero-facts": NewAnnotatorWith(nil)} {
 		var out bytes.Buffer
-		err := RunWith(context.Background(), &out, src, Options{}, annotator)
+		err := RunWith(context.Background(), &out, src, RunOptions{}, annotator)
 		if !errors.Is(err, boom) {
 			t.Errorf("%s: RunWith error = %v, want the source's failure", name, err)
 		}

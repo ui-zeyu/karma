@@ -1,6 +1,7 @@
 package watch
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,23 +13,22 @@ import (
 )
 
 // annotateWorkers is the pipeline's annotation width. Four annotators keep a
-// burst of exec events moving while each keeps its own path cache; the
-// reordering below puts their output back into the source's order.
+// burst of exec events moving while all of them share the sharded path cache;
+// the reordering below puts their output back into the source's order.
 const annotateWorkers = 4
 
 // Run reads one source and writes each event as a line. A JSON run writes one
 // object per line instead; the source line the caller prints to stderr stays
 // out of the stream.
-func Run(ctx context.Context, out io.Writer, src Source, opt Options) error {
-	return RunWith(ctx, out, src, opt, NewAnnotator())
+func Run(ctx context.Context, out io.Writer, src Source, opt RunOptions) error {
+	return RunWith(ctx, out, src, opt, NewAnnotator(ctx))
 }
 
-// RunWith is Run with the annotator chosen by the caller; nil leaves events
-// exactly as the source stated them, which is what the tests read. The
-// source's own failure is part of the answer: a subscription the kernel
-// refused must not end as a silent exit 0, so the error is read back once
-// the stream has ended and the source has stopped.
-func RunWith(ctx context.Context, out io.Writer, src Source, opt Options, annotator *Annotator) error {
+// RunWith is Run with the annotator chosen by the caller. The source's own
+// failure is part of the answer: a subscription the kernel refused must not
+// end as a silent exit 0, so the error is read back once the stream has
+// ended and the source has stopped.
+func RunWith(ctx context.Context, out io.Writer, src Source, opt RunOptions, annotator *Annotator) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -42,14 +42,12 @@ func RunWith(ctx context.Context, out io.Writer, src Source, opt Options, annota
 		errs <- err
 	}()
 
-	if annotator == nil {
-		err := writeEvents(out, opt, events)
-		cancel()
-		return errors.Join(err, <-errs)
-	}
-	err := runPipeline(ctx, out, opt, events, annotator)
+	// The stream is one event per line, so the writes are buffered and
+	// flushed once the source has stopped; a flush failure joins the answer.
+	buffered := bufio.NewWriter(out)
+	err := runPipeline(ctx, buffered, opt, events, annotator)
 	cancel()
-	return errors.Join(err, <-errs)
+	return errors.Join(err, buffered.Flush(), <-errs)
 }
 
 // noImageNotice is how many no-image exec events pass before the text stream
@@ -61,7 +59,7 @@ const noImageNotice = 10
 // writeEvents is the passthrough the tests read: every event, in order, as
 // the source stated them. In text mode it also keeps the no-image count, so
 // the recall the empty-image guard spends is visible as a rate.
-func writeEvents(out io.Writer, opt Options, events <-chan Event) error {
+func writeEvents(out io.Writer, opt RunOptions, events <-chan Event) error {
 	encoder := json.NewEncoder(out)
 	noImage := 0
 	for event := range events {
@@ -88,7 +86,7 @@ type filled struct {
 // runPipeline annotates events through a bounded worker pool and hands the
 // writer its events back in the order the source produced them: the pipeline
 // never trades throughput for a scrambled stream.
-func runPipeline(ctx context.Context, out io.Writer, opt Options, events <-chan Event, annotator *Annotator) error {
+func runPipeline(ctx context.Context, out io.Writer, opt RunOptions, events <-chan Event, annotator *Annotator) error {
 	jobs := make(chan Event, 256)
 	go func() {
 		defer close(jobs)
@@ -151,8 +149,8 @@ func reorder(ctx context.Context, done <-chan filled) <-chan Event {
 }
 
 // deliver sends one item, stopping when the context ends so a stopped reader
-// never leaves the pipeline blocked on a full channel.
-func deliver[T any](ctx context.Context, out chan T, value T) bool {
+// never leaves the pipeline or a source blocked on a full channel.
+func deliver[T any](ctx context.Context, out chan<- T, value T) bool {
 	select {
 	case out <- value:
 		return true
@@ -161,18 +159,7 @@ func deliver[T any](ctx context.Context, out chan T, value T) bool {
 	}
 }
 
-// send is deliver for the sources: it stops when the reader is gone. Both
-// poll sources share it, and so do the tests' fakes.
-func send(ctx context.Context, out chan<- Event, ev Event) bool {
-	select {
-	case out <- ev:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
-func emit(out io.Writer, opt Options, encoder *json.Encoder, event Event) error {
+func emit(out io.Writer, opt RunOptions, encoder *json.Encoder, event Event) error {
 	if opt.JSON {
 		return encoder.Encode(event)
 	}

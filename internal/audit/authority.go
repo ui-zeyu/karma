@@ -8,7 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"karma/internal/trust"
@@ -47,9 +47,15 @@ var authoritySkip = []string{
 	"/root/.cache",
 }
 
-// trustedAuthorityRoots are the trees an authority bit is expected in. An
-// object outside them is a finding even when it predates the boundary.
-var trustedAuthorityRoots = []string{
+// programTrees are the trees the distribution executes from, and the trees
+// an authority bit is expected in. A package file outside them is a
+// third-party install; an authority object outside them is a planted
+// backdoor shape. One list serves both questions.
+// interpreterTrees are the library trees an interpreter's modules load from;
+// a shared object outside them is not a loader decision.
+var interpreterTrees = []string{"/lib", "/lib64", "/usr/lib", "/usr/lib64"}
+
+var programTrees = []string{
 	"/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/libexec",
 	"/lib", "/lib64", "/usr/lib64",
 }
@@ -117,7 +123,7 @@ func unusualAuthorityBinary(path string, facts trust.Facts) (bool, string) {
 }
 
 func trustedProgramInterpreter(path string) bool {
-	if !underAny(path, []string{"/lib", "/lib64", "/usr/lib", "/usr/lib64"}) {
+	if !trust.UnderAny(path, interpreterTrees) {
 		return false
 	}
 	base := filepath.Base(path)
@@ -125,7 +131,7 @@ func trustedProgramInterpreter(path string) bool {
 		strings.HasPrefix(base, "ld-musl") || strings.HasPrefix(base, "ld64")
 }
 
-func collectAuthority(ctx context.Context, filter Filter) ([]string, []string) {
+func collectAuthority(ctx context.Context, filter Filter) ([]string, []Coverage) {
 	seen := map[string]bool{}
 	var paths []string
 	add := func(path string) {
@@ -146,7 +152,7 @@ func collectAuthority(ctx context.Context, filter Filter) ([]string, []string) {
 			}
 		}
 	}
-	var gaps []string
+	var gaps []Coverage
 	visited := 0
 	for _, root := range authorityRoots {
 		if err := ctx.Err(); err != nil {
@@ -204,16 +210,16 @@ func collectAuthority(ctx context.Context, filter Filter) ([]string, []string) {
 			return nil
 		})
 		if stopped {
-			gaps = append(gaps, "authority walk of "+root+" stopped at its file budget")
+			gaps = append(gaps, coverageGap("authority", "authority walk of "+root+" stopped at its file budget"))
 		}
 		if err != nil && ctx.Err() == nil {
-			gaps = append(gaps, "authority walk of "+root+": "+err.Error())
+			gaps = append(gaps, coverageGap("authority", "authority walk of "+root+": "+err.Error()))
 		}
 		if visited >= authorityLimit {
-			gaps = append(gaps, "authority walk stopped at its file limit")
+			gaps = append(gaps, coverageGap("authority", "authority walk stopped at its file limit"))
 			break
 		}
 	}
-	sort.Strings(paths)
+	slices.Sort(paths)
 	return paths, gaps
 }

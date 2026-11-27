@@ -91,12 +91,15 @@ type Catalog struct {
 	conffileOnce sync.Once
 	conffileMu   sync.RWMutex
 	conffiles    map[string]bool
+	conffileGap  string
 
 	timeOnce sync.Once
 	times    map[string]time.Time
+	timeGap  string
 
 	ledgerOnce  sync.Once
 	ledgerFiles []LedgerFile
+	ledgerGap   string
 
 	diversionOnce sync.Once
 	diversions    map[string]bool
@@ -107,6 +110,7 @@ type Catalog struct {
 	rpmMissing    int
 	rpmNote       string
 	rpmRan        bool
+	rpmGap        string
 }
 
 // Open detects the host's package manager. A host with neither database
@@ -132,15 +136,25 @@ func (c *Catalog) Kind() string { return c.kind }
 // a catalog assembled without one never stops.
 func (c *Catalog) stopped() bool { return c.ctx != nil && c.ctx.Err() != nil }
 
-// cut marks a table that stopped loading at an interrupt. An unknown path then
-// answers unknown ownership rather than unowned: the database was not read to
-// its end, so silence there proves nothing.
-func (c *Catalog) cut() {
+// cut marks the catalog as read short of its end. A database that stopped
+// cannot prove a path unowned: every unknown path then answers unknown, and
+// the reason states itself as coverage.
+func (c *Catalog) cut(why string) {
 	if c.truncated {
 		return
 	}
 	c.truncated = true
-	c.gaps = append(c.gaps, "package database read stopped at the interrupt")
+	c.gaps = append(c.gaps, "package database read stopped "+why)
+}
+
+// fail states a table that could not be read to its end: the table's own gap
+// names the error, and the catalog is cut so silence in that table answers
+// unknown rather than unowned. A table fails once; the first error stands.
+func (c *Catalog) fail(gap *string, what string, err error) {
+	if *gap == "" {
+		*gap = what + " unreadable: " + err.Error()
+	}
+	c.cut("at a read error")
 }
 
 // budget bounds one manager call by the caller's per-call budget, nested
@@ -153,23 +167,30 @@ func (c *Catalog) budget(limit time.Duration) (context.Context, context.CancelFu
 }
 
 // Gaps are the reads that failed. They are collected lazily, so callers read
-// them after the tables they asked for.
+// them after the tables they asked for. The whole-database absence statement
+// answers through Note, so a caller can state the two with different
+// coverage grades.
 func (c *Catalog) Gaps() []string {
 	if c == nil {
 		return nil
 	}
 	var gaps []string
 	gaps = append(gaps, c.gaps...)
-	if c.ownerGap != "" {
-		gaps = append(gaps, c.ownerGap)
-	}
-	if c.hashGap != "" {
-		gaps = append(gaps, c.hashGap)
-	}
-	if c.note != "" {
-		gaps = append(gaps, c.note)
+	for _, gap := range []string{c.ownerGap, c.hashGap, c.conffileGap, c.timeGap, c.ledgerGap, c.rpmGap} {
+		if gap != "" {
+			gaps = append(gaps, gap)
+		}
 	}
 	return gaps
+}
+
+// Note is the database's own state statement, empty when a database was
+// opened: today only "no package database".
+func (c *Catalog) Note() string {
+	if c == nil {
+		return ""
+	}
+	return c.note
 }
 
 // Owned answers the package that owns path, with Known false when the
@@ -309,6 +330,8 @@ func (c *Catalog) Diversion(path string) bool {
 }
 
 // RPMFlags returns the rpm -Va flags for the paths whose content deviates.
+// The map is the catalog's own live state; a caller reads it and must not
+// write it.
 func (c *Catalog) RPMFlags() map[string]string {
 	if c == nil || c.kind != "rpm" {
 		return nil
@@ -316,11 +339,7 @@ func (c *Catalog) RPMFlags() map[string]string {
 	c.ensureRPMVerify()
 	c.rpmMu.RLock()
 	defer c.rpmMu.RUnlock()
-	flags := make(map[string]string, len(c.rpmFlags))
-	for path, flag := range c.rpmFlags {
-		flags[path] = flag
-	}
-	return flags
+	return c.rpmFlags
 }
 
 // RPMVerified reports whether rpm -Va ran to completion, so a judged file with
@@ -383,24 +402,21 @@ func (c *Catalog) loadDpkgOwners(infoDir string) {
 	c.owners = map[string]Ownership{}
 	entries, err := os.ReadDir(infoDir)
 	if err != nil {
-		c.ownerGap = "package file lists unreadable: " + err.Error()
+		c.fail(&c.ownerGap, "package file lists", err)
 		return
 	}
 	for _, entry := range entries {
 		if c.stopped() {
-			c.cut()
+			c.cut("at the interrupt")
 			return
 		}
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".list") {
+		pkg, kind := splitInfoName(name)
+		if kind != "list" {
 			continue
 		}
 		c.packages++
-		pkg := strings.TrimSuffix(name, ".list")
-		if at := strings.IndexByte(pkg, ':'); at >= 0 {
-			pkg = pkg[:at]
-		}
-		readRows(filepath.Join(infoDir, name), func(line string) {
+		if err := readRows(filepath.Join(infoDir, name), func(line string) {
 			line = strings.TrimSpace(line)
 			if !strings.HasPrefix(line, "/") {
 				return
@@ -413,7 +429,10 @@ func (c *Catalog) loadDpkgOwners(infoDir string) {
 				return
 			}
 			c.owners[line] = Ownership{Name: pkg, Known: true}
-		})
+		}); err != nil {
+			c.fail(&c.ownerGap, "package file lists", err)
+			return
+		}
 	}
 }
 
@@ -424,9 +443,10 @@ func (c *Catalog) loadRPMOwners() {
 	binary := rpmBinary()
 	if binary == "" {
 		c.ownerGap = "no package file list: the package sweep cannot run"
+		c.cut("with the package file lists absent")
 		return
 	}
-	ctx, cancel := c.budget(rpmVerifyBudget)
+	ctx, cancel := c.budget(rpmQueryBudget)
 	defer cancel()
 	// A scalar inside an array iterator is a one-element array to rpm 4.16,
 	// so `[%{NAME} ...]` fails as "different sized arrays" for every package
@@ -435,7 +455,7 @@ func (c *Catalog) loadRPMOwners() {
 	// tell a missing directory from a missing file.
 	out, err := run(ctx, binary, "-qa", "--qf", "%{NAME}\n[%{FILEFLAGS}\t%{FILEMODES:octal}\t%{FILENAMES}\n]")
 	if err != nil {
-		c.ownerGap = "rpm file lists unavailable: " + err.Error()
+		c.fail(&c.ownerGap, "rpm file lists", err)
 		return
 	}
 	pkg := ""
@@ -475,7 +495,7 @@ func (c *Catalog) loadRPMOwners() {
 		c.owners[path] = Ownership{Name: pkg, Known: true, Dir: dir}
 	}
 	if len(c.owners) == 0 {
-		c.ownerGap = "rpm file list is empty"
+		c.fail(&c.ownerGap, "rpm file lists", errors.New("the query answered no rows"))
 	}
 }
 
@@ -494,28 +514,28 @@ func (c *Catalog) loadDpkgHashes(infoDir string) {
 	c.hashes = map[string]HashEntry{}
 	entries, err := os.ReadDir(infoDir)
 	if err != nil {
-		c.hashGap = "package content hashes unreadable: " + err.Error()
+		c.fail(&c.hashGap, "package content hashes", err)
 		return
 	}
 	for _, entry := range entries {
 		if c.stopped() {
-			c.cut()
+			c.cut("at the interrupt")
 			return
 		}
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".md5sums") {
+		pkg, kind := splitInfoName(name)
+		if kind != "md5sums" {
 			continue
 		}
-		pkg := strings.TrimSuffix(name, ".md5sums")
-		if at := strings.IndexByte(pkg, ':'); at >= 0 {
-			pkg = pkg[:at]
-		}
-		readRows(filepath.Join(infoDir, name), func(line string) {
+		if err := readRows(filepath.Join(infoDir, name), func(line string) {
 			hash, path, ok := parseMd5sumsRow(line)
 			if ok {
 				c.hashes[path] = HashEntry{Pkg: pkg, Hash: hash}
 			}
-		})
+		}); err != nil {
+			c.fail(&c.hashGap, "package content hashes", err)
+			return
+		}
 	}
 }
 
@@ -541,22 +561,26 @@ func (c *Catalog) loadDpkgConffiles(infoDir string) {
 	}
 	entries, err := os.ReadDir(infoDir)
 	if err != nil {
+		c.fail(&c.conffileGap, "package conffile records", err)
 		return
 	}
 	for _, entry := range entries {
 		if c.stopped() {
-			c.cut()
+			c.cut("at the interrupt")
 			return
 		}
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".conffiles") {
 			continue
 		}
-		readRows(filepath.Join(infoDir, name), func(line string) {
+		if err := readRows(filepath.Join(infoDir, name), func(line string) {
 			if path, ok := parseConffilesRow(line); ok {
 				c.conffiles[path] = true
 			}
-		})
+		}); err != nil {
+			c.fail(&c.conffileGap, "package conffile records", err)
+			return
+		}
 	}
 }
 
@@ -567,13 +591,16 @@ func (c *Catalog) ensureTimeline() {
 		case "dpkg":
 			for _, path := range packageLogFiles() {
 				if c.stopped() {
-					c.cut()
+					c.cut("at the interrupt")
 					return
 				}
-				readPackageLog(path, c.times, c.stopped)
+				if err := readPackageLog(path, c.times, c.stopped); err != nil {
+					c.fail(&c.timeGap, "package transaction log", err)
+					return
+				}
 			}
 			if c.stopped() {
-				c.cut()
+				c.cut("at the interrupt")
 			}
 		case "rpm":
 			c.loadRPMTimeline()
@@ -590,7 +617,7 @@ func (c *Catalog) loadRPMTimeline() {
 	defer cancel()
 	out, err := run(ctx, binary, "-qa", "--qf", "%{NAME}\t%{INSTALLTID}\n")
 	if err != nil {
-		c.gaps = append(c.gaps, "rpm install timeline unavailable: "+err.Error())
+		c.fail(&c.timeGap, "rpm install timeline", err)
 		return
 	}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -618,11 +645,12 @@ func (c *Catalog) ensureLedgerFiles() {
 func (c *Catalog) loadDpkgLedgerFiles(infoDir string) {
 	entries, err := os.ReadDir(infoDir)
 	if err != nil {
+		c.fail(&c.ledgerGap, "package ledger files", err)
 		return
 	}
 	for _, entry := range entries {
 		if c.stopped() {
-			c.cut()
+			c.cut("at the interrupt")
 			return
 		}
 		name := entry.Name()
@@ -698,6 +726,7 @@ func (c *Catalog) ensureRPMVerify() {
 			} else {
 				c.rpmNote = "rpm -Va failed: " + err.Error()
 			}
+			c.fail(&c.rpmGap, "rpm content verify", err)
 			return
 		}
 		c.rpmRan = true
@@ -732,16 +761,14 @@ func rpmVerifyAnswered(err error, out []byte) bool {
 	return errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(out) > 0
 }
 
-// usrAliases is the usrmerge spelling pair: the package database records
+// usrAliases is usrmerge's other spelling for a path: the database records
 // /usr/bin while the disk may name /bin, and the reverse.
 func usrAliases(path string) []string {
-	if path == "" || path == "/" || path == "/usr" {
+	variants := trust.UsrVariants(path)
+	if len(variants) < 2 {
 		return nil
 	}
-	if rest, ok := strings.CutPrefix(path, "/usr/"); ok {
-		return []string{"/" + rest}
-	}
-	return []string{"/usr" + path}
+	return variants[1:]
 }
 
 // packageLogFiles names the transaction log and the rotations logrotate keeps.
@@ -778,17 +805,17 @@ func packageLogRotation(name string) bool {
 	return err == nil && number > 0 && number <= 31
 }
 
-func readPackageLog(path string, times map[string]time.Time, stop func() bool) {
+func readPackageLog(path string, times map[string]time.Time, stop func() bool) error {
 	file, err := localfs.Open(path)
 	if err != nil {
-		return
+		return err
 	}
 	defer file.Close()
 	var reader io.Reader = file
 	if strings.HasSuffix(path, ".gz") {
 		gz, err := gzip.NewReader(file)
 		if err != nil {
-			return
+			return err
 		}
 		defer gz.Close()
 		reader = gz
@@ -799,7 +826,7 @@ func readPackageLog(path string, times map[string]time.Time, stop func() bool) {
 	for scanner.Scan() {
 		scanned++
 		if scanned%4096 == 0 && stop() {
-			return
+			return nil
 		}
 		pkg, stamp, ok := parsePackageLogLine(scanner.Text())
 		if !ok {
@@ -809,6 +836,7 @@ func readPackageLog(path string, times map[string]time.Time, stop func() bool) {
 			times[pkg] = stamp
 		}
 	}
+	return scanner.Err()
 }
 
 func parsePackageLogLine(line string) (string, time.Time, bool) {
@@ -846,10 +874,10 @@ func splitInfoName(name string) (pkg, kind string) {
 	return base, kind
 }
 
-func readRows(path string, read func(string)) {
+func readRows(path string, read func(string)) error {
 	file, err := localfs.Open(path)
 	if err != nil {
-		return
+		return err
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
@@ -857,6 +885,7 @@ func readRows(path string, read func(string)) {
 	for scanner.Scan() {
 		read(scanner.Text())
 	}
+	return scanner.Err()
 }
 
 func parseMd5sumsRow(line string) (hash, path string, ok bool) {
@@ -872,7 +901,7 @@ func parseMd5sumsRow(line string) (hash, path string, ok bool) {
 
 func parseConffilesRow(line string) (string, bool) {
 	line = strings.TrimSpace(line)
-	if line == "" || strings.HasPrefix(line, " ") {
+	if line == "" {
 		return "", false
 	}
 	path := strings.Fields(line)[0]
@@ -944,7 +973,11 @@ func trustedBinary(name string) string {
 }
 
 const (
-	rpmQueryBudget  = 10 * time.Second
+	// rpmQueryBudget bounds one rpm query (-qa): the file list and the
+	// install timeline are catalog queries, not content verification.
+	rpmQueryBudget = 10 * time.Second
+	// rpmVerifyBudget bounds the -Va verify, which re-reads every file's
+	// digest and is the slow call.
 	rpmVerifyBudget = 60 * time.Second
 )
 

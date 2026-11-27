@@ -1,7 +1,8 @@
-// Package script owns the ls -l row shape (LSBodyPrintf) and its reading side:
-// taking a row apart into its nine columns and lining a listing up the way
-// ls -l lays it out, so the columns are one definition.
-package script
+// Package localfs owns the host's file reads: the one non-blocking regular
+// file opener, the ls -l row shape and its reading side, and the built-in
+// listing.
+
+package localfs
 
 import (
 	"strconv"
@@ -27,7 +28,7 @@ const LsBodyPath = lsBodyColumns - 1
 // separated by one or more spaces and the path is the rest of the row, which
 // may hold spaces itself; a row that does not carry nine columns, or whose
 // first column is not a permission string, is rejected. Rows already lined up
-// by AlignLsBodies split again unchanged, so the split is safe wherever a row
+// by alignLsBodies split again unchanged, so the split is safe wherever a row
 // comes from.
 func SplitLsBody(row string) ([]string, bool) {
 	fields := make([]string, 0, lsBodyColumns)
@@ -81,7 +82,7 @@ func cutField(row string) (field, rest string, ok bool) {
 	return row[:gap], row[end:], true
 }
 
-// AlignLsBodies lines one listing's columns up the way ls -l lays them out:
+// alignLsBodies lines one listing's columns up the way ls -l lays them out:
 // each of the eight leading fields starts in the same column for every row,
 // links and size right-aligned, owner and group left-aligned. The path is taken
 // as it is — it may hold spaces itself. A row that does not carry the nine
@@ -97,10 +98,9 @@ func cutField(row string) (field, rest string, ok bool) {
 // left-aligned, so the measured widths go into one fmt format and fmt does the
 // padding.
 //
-// Widening a row moves the text after it, so a caller that states spans over
-// these rows (the listing normalizer's outlier verdicts) measures them on the
-// aligned text.
-func AlignLsBodies(rows []string) []string {
+// Widening a row moves the text after it, so a caller that cites spans over
+// these rows measures them on the aligned text.
+func alignLsBodies(rows []string) []string {
 	repaired := make([]string, len(rows))
 	for index, row := range rows {
 		repaired[index] = linkRow(row)

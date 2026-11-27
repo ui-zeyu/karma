@@ -34,6 +34,15 @@ type conntrackSource struct {
 // of flows shares one read; past the bound the table is read again.
 const flowJoinTTL = 200 * time.Millisecond
 
+// tupleKey is a socket row's endpoints without the inode: the join's key. It
+// is derived from the row's own sockKey, so the join never restates an
+// endpoint the snapshot already spelled.
+type tupleKey struct {
+	Proto string
+	Local string
+	Peer  string
+}
+
 // flowJoiner joins a flow's four-tuple to the socket table's owner. The
 // snapshot serves a burst of flows; the join answers the process that holds
 // the socket while the process still exists.
@@ -41,14 +50,26 @@ type flowJoiner struct {
 	fs    procfs.FS
 	ready bool
 	when  time.Time
-	rows  map[sockKey]sockState
+	// forward and reverse index one snapshot by (proto, local, peer) in both
+	// orientations, so a flow's join is one map lookup.
+	forward map[tupleKey]sockState
+	reverse map[tupleKey]sockState
+	// pid holds the owner each snapshot inode resolves to, and procs the
+	// image facts per owner pid; both live exactly as long as the snapshot,
+	// so one TTL carries one socket read, one owner walk and one /proc read
+	// per distinct pid.
+	pid   map[uint64]int
+	procs map[int]procState
 	// read is the socket-table read refresh uses; nil means the real
 	// snapshot, and the tests inject a fixed table.
 	read func(context.Context, bool) (map[sockKey]sockState, error)
+	// ownersRead is the owner walk refresh uses; nil means the real
+	// netdiag.Owners, and the tests inject a fixed answer.
+	ownersRead func(context.Context, map[uint64]bool) map[uint64][]netdiag.Owner
 }
 
 func (j *flowJoiner) refresh(ctx context.Context, at time.Time) {
-	if j.rows != nil && at.Sub(j.when) <= flowJoinTTL {
+	if j.forward != nil && at.Sub(j.when) <= flowJoinTTL {
 		return
 	}
 	read := j.read
@@ -59,9 +80,64 @@ func (j *flowJoiner) refresh(ctx context.Context, at time.Time) {
 	if err != nil {
 		return
 	}
-	j.rows = rows
+	j.index(rows)
+	j.resolveOwners(ctx)
 	j.when = at
 	j.ready = true
+}
+
+// resolveOwners answers the snapshot's holders in one /proc walk: refresh
+// resolves every inode the table carried once, and holder reads the answer
+// from the map for as long as the snapshot is fresh.
+func (j *flowJoiner) resolveOwners(ctx context.Context) {
+	read := j.ownersRead
+	if read == nil {
+		read = netdiag.Owners
+	}
+	inodes := make(map[uint64]bool, len(j.forward))
+	for _, state := range j.forward {
+		if state.Key.Inode != 0 {
+			inodes[state.Key.Inode] = true
+		}
+	}
+	owners := read(ctx, inodes)
+	j.pid = make(map[uint64]int, len(owners))
+	for inode, held := range owners {
+		if len(held) == 0 {
+			continue
+		}
+		pid := held[0].PID
+		for _, owner := range held[1:] {
+			if owner.PID < pid {
+				pid = owner.PID
+			}
+		}
+		j.pid[inode] = pid
+	}
+	j.procs = map[int]procState{}
+}
+
+// index builds the two orientation maps from one snapshot's rows. A tuple
+// with several rows — a stale TIME-WAIT beside a live connection — answers
+// the established row.
+func (j *flowJoiner) index(rows map[sockKey]sockState) {
+	forward := make(map[tupleKey]sockState, len(rows))
+	reverse := make(map[tupleKey]sockState, len(rows))
+	for _, state := range rows {
+		if held, ok := forward[tupleKey{state.Key.Proto, state.Key.Local, state.Key.Peer}]; !ok || preferEstab(held, state) {
+			forward[tupleKey{state.Key.Proto, state.Key.Local, state.Key.Peer}] = state
+		}
+		if held, ok := reverse[tupleKey{state.Key.Proto, state.Key.Peer, state.Key.Local}]; !ok || preferEstab(held, state) {
+			reverse[tupleKey{state.Key.Proto, state.Key.Peer, state.Key.Local}] = state
+		}
+	}
+	j.forward, j.reverse = forward, reverse
+}
+
+// preferEstab reports whether next should replace held as the tuple's answer:
+// an established row wins, whichever orientation it arrived in.
+func preferEstab(held, next sockState) bool {
+	return next.State == "ESTAB" && held.State != "ESTAB"
 }
 
 // owner matches a flow to a socket row and answers the row's owning process:
@@ -73,48 +149,51 @@ func (j *flowJoiner) owner(ctx context.Context, proto, local, peer string, at ti
 	if !j.ready {
 		return 0, sockState{}, false
 	}
-	var fallback sockState
-	found := false
-	for key, state := range j.rows {
-		if key.Proto != proto {
-			continue
-		}
-		forward := key.Local == local && key.Peer == peer
-		reverse := key.Local == peer && key.Peer == local
-		if !forward && !reverse {
-			continue
-		}
-		if state.State == "ESTAB" {
-			return j.holder(ctx, state), state, true
-		}
-		if !found {
-			fallback, found = state, true
-		}
-	}
-	if !found {
+	key := tupleKey{Proto: proto, Local: local, Peer: peer}
+	forward, okF := j.forward[key]
+	reverse, okR := j.reverse[key]
+	var state sockState
+	switch {
+	case okF && forward.State == "ESTAB":
+		state = forward
+	case okR && reverse.State == "ESTAB":
+		state = reverse
+	case okF:
+		state = forward
+	case okR:
+		state = reverse
+	default:
 		return 0, sockState{}, false
 	}
-	return j.holder(ctx, fallback), fallback, true
+	return j.holder(state), state, true
 }
 
-// holder answers the pid that holds the row's inode, if any.
-func (j *flowJoiner) holder(ctx context.Context, state sockState) int {
-	if state.Key.Inode == 0 {
-		return 0
-	}
-	owners := netdiag.Owners(ctx, map[uint64]bool{state.Key.Inode: true})[state.Key.Inode]
-	if len(owners) == 0 {
-		return 0
-	}
-	pid := owners[0].PID
-	for _, owner := range owners {
-		if owner.PID < pid {
-			pid = owner.PID
-		}
-	}
-	return pid
+// holder answers the pid that holds the row's inode, from the batch the last
+// refresh resolved.
+func (j *flowJoiner) holder(state sockState) int {
+	return j.pid[state.Key.Inode]
 }
 
+// proc reads the image facts a joined flow prints for its owner, once per
+// pid and snapshot.
+func (j *flowJoiner) proc(pid int) (procState, bool) {
+	if state, ok := j.procs[pid]; ok {
+		return state, true
+	}
+	state, err := readProcStateByPID(j.fs, pid)
+	if err != nil {
+		return procState{}, false
+	}
+	j.procs[pid] = state
+	return state, true
+}
+
+// newConntrack opens two netfilter sockets and joins their flow groups.
+// Nothing in the open exchanges a message with the kernel: the dial only
+// opens and binds the socket, and Listen only joins the groups and starts
+// background receivers, so an Open call cannot park on a silent kernel. The
+// ti-mo wrapper exposes no deadline surface, and the flow reads run on the
+// workers' own schedule after the open returned.
 func newConntrack(opt Options) (Source, error) {
 	config := &netlink.Config{}
 	newConn, err := conntrack.Dial(config)
@@ -152,13 +231,7 @@ func newConntrack(opt Options) (Source, error) {
 
 func (s *conntrackSource) Name() string { return "conntrack" }
 
-func (s *conntrackSource) Caps() Caps { return Caps{Socket: true} }
-
-// conntrackUnavailable formats the refusal so an explicit --source conntrack
-// says what the kernel said.
-func conntrackUnavailable(err error) error {
-	return fmt.Errorf("conntrack unavailable: %w", err)
-}
+func (s *conntrackSource) Caps() Caps { return Caps{Socket: true, Push: true} }
 
 func (s *conntrackSource) Run(ctx context.Context, out chan<- Event) error {
 	defer s.newConn.Close()
@@ -220,20 +293,18 @@ func (s *conntrackSource) emitFlow(ctx context.Context, out chan<- Event, event 
 		flow.Sock.Net.Inode = row.Key.Inode
 		flow.Sock.UID = row.UID
 		flow.Sock.PID = pid
-		if pid != 0 {
-			if proc, err := readProcStateByPID(s.joiner.fs, pid); err == nil {
-				flow.Sock.Comm = proc.Comm
-				flow.Sock.Exe = proc.Exe
-				flow.Sock.Cmdline = proc.Cmdline
-				flow.Sock.Args = proc.Args
-				flow.Sock.Cwd = proc.Cwd
-				if proc.UID != 0 {
-					flow.Sock.UID = proc.UID
-				}
+		if proc, ok := s.joiner.proc(pid); ok {
+			flow.Sock.Comm = proc.Comm
+			flow.Sock.Exe = proc.Exe
+			flow.Sock.Cmdline = proc.Cmdline
+			flow.Sock.Args = proc.Args
+			flow.Sock.Cwd = proc.Cwd
+			if proc.UID != 0 {
+				flow.Sock.UID = proc.UID
 			}
 		}
 	}
-	return send(ctx, out, flow)
+	return deliver(ctx, out, flow)
 }
 
 // flowEvent states one conntrack flow: the original tuple as the endpoints and
@@ -254,8 +325,8 @@ func flowEvent(flow *conntrack.Flow, state string, at time.Time) (Event, bool) {
 	default:
 		proto = fmt.Sprintf("ip-%d", tuple.Proto.Protocol)
 	}
-	local := netdiag.Endpoint(net.IP(tuple.IP.SourceAddress.AsSlice()), tuple.Proto.SourcePort, "")
-	peer := netdiag.Endpoint(net.IP(tuple.IP.DestinationAddress.AsSlice()), tuple.Proto.DestinationPort, "")
+	local := netdiag.Endpoint(net.IP(tuple.IP.SourceAddress.AsSlice()), tuple.Proto.SourcePort)
+	peer := netdiag.Endpoint(net.IP(tuple.IP.DestinationAddress.AsSlice()), tuple.Proto.DestinationPort)
 	return Event{
 		Time: at, Source: SourceConntrack,
 		Sock: &Sock{Net: NetEvent{Proto: proto, State: state, Local: local, Peer: peer}},

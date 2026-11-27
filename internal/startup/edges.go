@@ -173,8 +173,11 @@ type Edge struct {
 	Context bool `json:"context,omitempty"`
 	// Note is the row's own remaining fields where a parser reads a table
 	// line by line (a fstab row's filesystem type and options, a crypttab
-	// row's device and key file). The judge reads it for the shapes a row
-	// can state on its own.
+	// row's device and key file). Two spellings exist and each has one
+	// machine reader: a fstab row's note is the raw fields joined by spaces
+	// (fstabType takes fields[0]); a mount unit's What note is
+	// "type=<fstype> options=<opts>". The judge reads the fstab spelling on
+	// the Mechanism=="fstab" path only.
 	Note string `json:"note,omitempty"`
 }
 
@@ -187,12 +190,11 @@ type rawEdge struct {
 	// line is the 1-based line in trigger the edge was read from. A parser
 	// reading a command out of a larger line passes that line as the base;
 	// shellEdges adds the command's own 1-based offset.
-	line           int
-	mechanism      Mechanism
-	target         string
-	kind           Kind
-	viaInterpreter bool
-	dynamic        bool
-	context        bool
-	note           string
+	line      int
+	mechanism Mechanism
+	target    string
+	kind      Kind
+	dynamic   bool
+	context   bool
+	note      string
 }

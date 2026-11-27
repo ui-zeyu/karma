@@ -26,66 +26,25 @@ func emptyPassword(account Account) bool {
 	return account.ShadowKnown && !account.Locked && account.Shadow == ""
 }
 
-// accountGroups answers the groups an account belongs to: the supplementary
-// members a group lists and the account's own primary GID, so the sudoers
-// membership question and the privileged-group question agree.
-func accountGroups(account Account, groups []Group) []Group {
-	var out []Group
-	seen := map[string]bool{}
-	add := func(group Group) {
-		if seen[group.Name] {
-			return
-		}
-		seen[group.Name] = true
-		out = append(out, group)
-	}
-	for _, group := range groups {
-		for _, member := range group.Members {
-			if member == account.Name {
-				add(group)
-				break
-			}
-		}
-		if group.GID == account.GID {
-			add(group)
-		}
-	}
-	return out
-}
-
-func groupByName(name string, groups []Group) (Group, bool) {
-	for _, group := range groups {
-		if group.Name == name {
-			return group, true
-		}
-	}
-	return Group{}, false
-}
-
 // grantApplies answers whether a sudoers user/group expression reaches an
-// account.
-func grantApplies(grant SudoGrant, account Account, groups []Group) bool {
+// account. The membership comes from the identity state's own index, so a
+// caller cannot hand it the whole host's group table.
+func grantApplies(grant SudoGrant, state *IdentityState, account Account) bool {
 	if grant.User == "ALL" || grant.User == account.Name {
 		return true
 	}
 	if name, ok := strings.CutPrefix(grant.User, "%"); ok {
-		if _, found := groupByName(name, groups); !found {
-			return false
-		}
-		for _, member := range accountGroups(account, groups) {
-			if member.Name == name {
+		for _, group := range state.groupsFor(account) {
+			if group.Name == name {
 				return true
 			}
-		}
-		if group, found := groupByName(name, groups); found && group.GID == account.GID {
-			return true
 		}
 	}
 	return false
 }
 
 type identityFactor struct {
-	class    string
+	class    Class
 	text     string
 	severity Severity
 	path     string
@@ -93,52 +52,26 @@ type identityFactor struct {
 }
 
 // accountQuotes cites the passwd row an account was read from.
-func accountQuotes(account Account) []Quote {
-	if account.Raw == "" {
+// cite quotes one source line for a finding; an empty line quotes nothing.
+// Every citation in the identity and persistence judges goes through here,
+// so a quote's shape has one constructor.
+func cite(path string, line int, text string) []Quote {
+	if text == "" {
 		return nil
 	}
-	return []Quote{{Path: account.Source, Line: account.Line, Text: account.Raw}}
+	return []Quote{{Path: path, Line: line, Text: text}}
 }
 
-// shadowQuotes cites the shadow row that answered for an account's password.
-func shadowQuotes(account Account) []Quote {
-	if account.ShadowRaw == "" {
-		return nil
-	}
-	return []Quote{{Path: account.ShadowFile, Line: account.ShadowLine, Text: account.ShadowRaw}}
-}
-
-// groupQuotes cites the group row a membership was read from.
-func groupQuotes(group Group) []Quote {
-	if group.Raw == "" {
-		return nil
-	}
-	return []Quote{{Path: group.Source, Line: group.Line, Text: group.Raw}}
-}
-
-// grantQuotes cites the sudoers row a grant was read from.
-func grantQuotes(grant SudoGrant) []Quote {
-	if grant.Raw == "" {
-		return nil
-	}
-	return []Quote{{Path: grant.File, Line: grant.Line, Text: grant.Raw}}
-}
-
-// sshdQuotes cites the directive that redirected the authorized key search.
-func sshdQuotes(config SSHDConfig) []Quote {
-	if config.KeyRaw == "" {
-		return nil
-	}
-	return []Quote{{Path: config.KeyFile, Line: config.KeyLine, Text: config.KeyRaw}}
-}
-
-// identityFactors collects the independent root paths on one account.
-func identityFactors(account Account, groups []Group, grants []SudoGrant, keys []AuthorizedKeyCommand) []identityFactor {
+// identityFactors collects the independent root paths on one account. The
+// state's group index answers membership; grants are read against the
+// account's own groups, computed once here.
+func identityFactors(state *IdentityState, account Account) []identityFactor {
+	groups := state.groupsFor(account)
 	var factors []identityFactor
 	if account.UID == 0 && account.Name != "root" {
 		factors = append(factors, identityFactor{
 			class: "identity-uid0", text: "non-root account with uid 0", severity: Critical, path: account.Source,
-			quotes: accountQuotes(account),
+			quotes: cite(account.Source, account.Line, account.Raw),
 		})
 	}
 	if emptyPassword(account) {
@@ -148,7 +81,7 @@ func identityFactors(account Account, groups []Group, grants []SudoGrant, keys [
 		}
 		factors = append(factors, identityFactor{
 			class: "identity-empty-password", text: "empty password", severity: severity, path: "/etc/shadow",
-			quotes: shadowQuotes(account),
+			quotes: cite(account.ShadowFile, account.ShadowLine, account.ShadowRaw),
 		})
 	}
 	if passwordInPasswd(account.Password) {
@@ -160,10 +93,10 @@ func identityFactors(account Account, groups []Group, grants []SudoGrant, keys [
 	if account.System && account.Name != "root" && isLoginShell(account.Shell) {
 		factors = append(factors, identityFactor{
 			class: "identity-system-shell", text: "system account has a login shell", severity: Medium, path: account.Source,
-			quotes: accountQuotes(account),
+			quotes: cite(account.Source, account.Line, account.Raw),
 		})
 	}
-	for _, group := range accountGroups(account, groups) {
+	for _, group := range groups {
 		severity, ok := privilegedGroups[group.Name]
 		if !ok {
 			continue
@@ -175,19 +108,19 @@ func identityFactors(account Account, groups []Group, grants []SudoGrant, keys [
 		}
 		factors = append(factors, identityFactor{
 			class: "identity-privileged-group", text: "member of privileged group " + group.Name,
-			severity: severity, path: "/etc/group", quotes: groupQuotes(group),
+			severity: severity, path: "/etc/group", quotes: cite(group.Source, group.Line, group.Raw),
 		})
 	}
-	for _, grant := range grants {
-		if grant.NoPasswd && grantApplies(grant, account, groups) {
+	for _, grant := range state.Sudo {
+		if grant.NoPasswd && grantApplies(grant, state, account) {
 			factors = append(factors, identityFactor{
 				class: "identity-sudo-nopasswd", text: "passwordless sudo " + grant.Command,
-				severity: High, path: grant.File, quotes: grantQuotes(grant),
+				severity: High, path: grant.File, quotes: cite(grant.File, grant.Line, grant.Raw),
 			})
 			break
 		}
 	}
-	for _, key := range keys {
+	for _, key := range state.KeyCommands {
 		if key.Account != account.Name {
 			continue
 		}
@@ -195,12 +128,13 @@ func identityFactors(account Account, groups []Group, grants []SudoGrant, keys [
 		if shellCommand(key.Command) {
 			severity = High
 		}
-		class := "identity-key-command"
+		class := Class("identity-key-command")
 		if shellCommand(key.Command) {
-			class = "identity-factor"
+			class = Class("identity-factor")
 		}
 		factors = append(factors, identityFactor{
 			class: class, text: "authorized key forced command " + key.Command, severity: severity, path: key.File,
+			quotes: cite(key.File, key.Line, key.Text),
 		})
 		break
 	}
@@ -233,7 +167,7 @@ func identitySeverity(snapshot *Snapshot, a *assessor, factor identityFactor) Se
 	if a == nil || factor.path == "" {
 		return factor.severity
 	}
-	story := a.read(snapshot.Facts(factor.path), true)
+	story := a.readAuthority(snapshot.Facts(factor.path))
 	switch story.origin {
 	case Runtime:
 		if factor.severity < Critical {
@@ -251,7 +185,8 @@ func identitySeverity(snapshot *Snapshot, a *assessor, factor identityFactor) Se
 // individual factors for accounts that carry only one. The artifact boundary
 // applies here too: an identity file that arrived after the artifact raises
 // the same factor a tier, so a planted sudoers row outranks a shipped one.
-func judgeIdentity(snapshot *Snapshot, a *assessor, filter Filter, add func(Finding)) []string {
+func judgeIdentity(j *judgePass) []Coverage {
+	snapshot, a, filter, add := j.snapshot, j.a, j.filter, j.add
 	state := &snapshot.Identity
 	if len(state.Accounts) == 0 && len(state.Sudo) == 0 && len(state.SSHD.Files) == 0 {
 		return nil
@@ -259,10 +194,11 @@ func judgeIdentity(snapshot *Snapshot, a *assessor, filter Filter, add func(Find
 	if len(filter.PIDs) > 0 || len(filter.Units) > 0 {
 		return nil
 	}
-	var coverage []string
 	correlated := map[string]bool{}
+	perAccount := map[string][]identityFactor{}
 	for _, account := range state.Accounts {
-		factors := identityFactors(account, state.Groups, state.Sudo, state.KeyCommands)
+		factors := identityFactors(state, account)
+		perAccount[account.Name] = factors
 		if len(factors) < 2 {
 			continue
 		}
@@ -288,14 +224,14 @@ func judgeIdentity(snapshot *Snapshot, a *assessor, filter Filter, add func(Find
 			Title: "account holds multiple independent authority paths",
 			Path:  "/etc/passwd", Origin: Unknown, Reach: RootAsset,
 			Detail:   fmt.Sprintf("account %s: %d independent root paths", account.Name, len(factors)),
-			Evidence: evidence, Quotes: accountQuotes(account), Trace: trace,
+			Evidence: evidence, Quotes: cite(account.Source, account.Line, account.Raw), Trace: trace,
 		})
 	}
 	for _, account := range state.Accounts {
 		if correlated[account.Name] {
 			continue
 		}
-		for _, factor := range identityFactors(account, state.Groups, state.Sudo, state.KeyCommands) {
+		for _, factor := range perAccount[account.Name] {
 			if !pathInScope(factor.path, filter) {
 				continue
 			}
@@ -307,7 +243,6 @@ func judgeIdentity(snapshot *Snapshot, a *assessor, filter Filter, add func(Find
 			})
 		}
 	}
-	seenGrants := map[string]bool{}
 	for _, grant := range state.Sudo {
 		if !grant.NoPasswd {
 			continue
@@ -318,11 +253,6 @@ func judgeIdentity(snapshot *Snapshot, a *assessor, filter Filter, add func(Find
 		if !pathInScope(grant.File, filter) {
 			continue
 		}
-		key := fmt.Sprintf("%s:%d:%s:%s", grant.File, grant.Line, grant.User, grant.Command)
-		if seenGrants[key] {
-			continue
-		}
-		seenGrants[key] = true
 		add(Finding{
 			Class: "identity-sudo-nopasswd", Severity: identitySeverity(snapshot, a, identityFactor{
 				class: "identity-sudo-nopasswd", severity: High, path: grant.File,
@@ -330,13 +260,13 @@ func judgeIdentity(snapshot *Snapshot, a *assessor, filter Filter, add func(Find
 			Title: "passwordless sudo grant", Path: grant.File, Origin: Unknown, Reach: RootAsset,
 			Detail:   fmt.Sprintf("%s may run %s without a password", grant.User, grant.Command),
 			Evidence: []string{fmt.Sprintf("%s:%d host %s runas %s", grant.File, grant.Line, grant.Host, grant.RunAs)},
-			Quotes:   grantQuotes(grant),
+			Quotes:   cite(grant.File, grant.Line, grant.Raw),
 			Trace:    steps("sudoers "+grant.File, "grant "+grant.User, "command "+grant.Command),
 		})
 	}
-	coverage = append(coverage, judgeSSHD(state, filter, add)...)
+	judgeSSHD(j)
 	if !pathInScope("/etc/group", filter) {
-		return coverage
+		return nil
 	}
 	for _, group := range state.Groups {
 		if group.Password != "" && !passwordKinds[group.Password] {
@@ -345,22 +275,22 @@ func judgeIdentity(snapshot *Snapshot, a *assessor, filter Filter, add func(Find
 				Title: "group password set", Path: group.Source, Origin: Unknown, Reach: RootAsset,
 				Detail:   fmt.Sprintf("group %s can be entered with newgrp", group.Name),
 				Evidence: []string{"the group password field is not x, * or !"},
-				Quotes:   groupQuotes(group),
+				Quotes:   cite(group.Source, group.Line, group.Raw),
 				Trace:    steps("group "+group.Name, "password set"),
 			})
 		}
 	}
-	return coverage
+	return nil
 }
 
-func judgeSSHD(state *IdentityState, filter Filter, add func(Finding)) []string {
-	var coverage []string
+func judgeSSHD(j *judgePass) {
+	state, filter, add := &j.snapshot.Identity, j.filter, j.add
 	if len(state.SSHD.Files) == 0 {
-		return coverage
+		return
 	}
 	sshPath := state.SSHD.Files[0]
 	if !pathInScope(sshPath, filter) {
-		return coverage
+		return
 	}
 	defaultKeys := map[string]bool{
 		".ssh/authorized_keys": true, ".ssh/authorized_keys2": true,
@@ -370,21 +300,24 @@ func judgeSSHD(state *IdentityState, filter Filter, add func(Finding)) []string 
 		if defaultKeys[value] {
 			continue
 		}
+		severity := identitySeverity(j.snapshot, j.a, identityFactor{
+			class: "identity-sshd-keyfile", severity: High, path: sshPath,
+		})
 		add(Finding{
-			Class: "identity-sshd-keyfile", Severity: High,
+			Class: "identity-sshd-keyfile", Severity: severity,
 			Title: "sshd reads authorized keys from a non-default path",
 			Path:  sshPath, Origin: Unknown, Reach: RootAsset,
 			Detail:   "a redirected key file is a key-based backdoor surface",
 			Evidence: []string{"AuthorizedKeysFile " + strings.Join(state.SSHD.AuthorizedKeysFile, " ")},
-			Quotes:   sshdQuotes(state.SSHD),
+			Quotes:   cite(state.SSHD.KeyFile, state.SSHD.KeyLine, state.SSHD.KeyRaw),
 			Trace:    steps("sshd_config", "AuthorizedKeysFile", value),
 		})
 		break
 	}
-	return coverage
 }
 
 func identityGraph(snapshot *Snapshot) *GraphView {
+	state := &snapshot.Identity
 	root := domainRoot("domain", "identity",
 		"accounts, groups, sudo grants, shadow state and SSH keys", UserAsset)
 	for _, group := range snapshot.Identity.Groups {
@@ -399,17 +332,17 @@ func identityGraph(snapshot *Snapshot) *GraphView {
 		node := root.Node("account", account.Name, account.Name, account.Source, Unknown, reach,
 			fmt.Sprintf("uid %d gid %d home %s shell %s", account.UID, account.GID, account.Home, account.Shell))
 		root.link(root.root, node.ID, "contains", "identity", "high", "")
-		for _, group := range accountGroups(account, snapshot.Identity.Groups) {
+		for _, group := range snapshot.Identity.groupsFor(account) {
 			id := nodeKey("group", group.Name)
 			root.link(node.ID, id, "member-of", "group", "high", "")
 		}
-		state := "shadow hash set"
+		shadowState := "shadow hash set"
 		if account.Locked {
-			state = "shadow locked"
+			shadowState = "shadow locked"
 		} else if emptyPassword(account) {
-			state = "shadow empty"
+			shadowState = "shadow empty"
 		}
-		s := root.Node("secret", "shadow:"+account.Name, "shadow", "/etc/shadow", Unknown, reach, state)
+		s := root.Node("secret", "shadow:"+account.Name, "shadow", "/etc/shadow", Unknown, reach, shadowState)
 		root.link(node.ID, s.ID, "password", "shadow", "high", "")
 		for _, key := range snapshot.Identity.KeyCommands {
 			if key.Account != account.Name {
@@ -419,7 +352,7 @@ func identityGraph(snapshot *Snapshot) *GraphView {
 			root.link(node.ID, k.ID, "authorized-by", "authorized_keys", "high", "")
 		}
 		for _, grant := range snapshot.Identity.Sudo {
-			if !grantApplies(grant, account, snapshot.Identity.Groups) {
+			if !grantApplies(grant, state, account) {
 				continue
 			}
 			label := fmt.Sprintf("%s:%d %s → %s", grant.File, grant.Line, grant.User, grant.Command)

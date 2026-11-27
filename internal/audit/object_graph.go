@@ -7,20 +7,13 @@ package audit
 // observation and a lexical lead do not read alike.
 
 import (
-	"archive/zip"
-	"bufio"
-	"bytes"
 	"context"
-	"debug/elf"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"karma/internal/localfs"
 	"karma/internal/startup"
 	"karma/internal/trust"
 )
@@ -39,41 +32,42 @@ const (
 // bare word names a unit when the services list carries it, a package
 // otherwise; the syntax check runs before the collection, so a mistyped
 // selector fails in milliseconds rather than after the budget.
+
 func ParseGraphSeed(word string) (GraphSeed, error) {
 	word = strings.TrimSpace(word)
-	kind, value := "", word
+	kind, value := seedKind(""), word
 	switch {
 	case strings.HasPrefix(word, "unit:"):
-		kind, value = "unit", strings.TrimPrefix(word, "unit:")
+		kind, value = seedUnit, strings.TrimPrefix(word, "unit:")
 	case strings.HasPrefix(word, "pid:"):
-		kind, value = "pid", strings.TrimPrefix(word, "pid:")
+		kind, value = seedPid, strings.TrimPrefix(word, "pid:")
 	case strings.HasPrefix(word, "path:"):
-		kind, value = "path", strings.TrimPrefix(word, "path:")
+		kind, value = seedPath, strings.TrimPrefix(word, "path:")
 	case strings.HasPrefix(word, "pkg:"):
-		kind, value = "package", strings.TrimPrefix(word, "pkg:")
+		kind, value = seedPackage, strings.TrimPrefix(word, "pkg:")
 	case strings.HasPrefix(word, "/"):
-		kind = "path"
+		kind = seedPath
 	case isDigits(word):
-		kind = "pid"
+		kind = seedPid
 	case startup.IsUnitName(word):
-		kind = "unit"
+		kind = seedUnit
 	default:
-		kind = "package"
+		kind = seedPackage
 	}
 	switch kind {
-	case "unit":
+	case seedUnit:
 		if value == "" {
 			return GraphSeed{}, fmt.Errorf("graph: empty unit name")
 		}
-	case "pid":
+	case seedPid:
 		if _, err := strconv.Atoi(value); err != nil {
 			return GraphSeed{}, fmt.Errorf("graph: %q is not a pid", value)
 		}
-	case "path":
+	case seedPath:
 		if !filepath.IsAbs(value) {
 			return GraphSeed{}, fmt.Errorf("graph: %q is not an absolute path", value)
 		}
-	case "package":
+	case seedPackage:
 		if value == "" {
 			return GraphSeed{}, fmt.Errorf("graph: empty package name")
 		}
@@ -82,19 +76,24 @@ func ParseGraphSeed(word string) (GraphSeed, error) {
 }
 
 // GraphView is one object's evidence graph.
+
+// GraphView is the graph one object grew into. Its JSON contract is stated
+// once, in WriteGraphJSON — the only encoder of this view — so the two can
+// never disagree about a field name.
 type GraphView struct {
-	Root     string      `json:"root"`
-	RootKind string      `json:"root_kind"`
-	Boundary Boundary    `json:"-"`
-	Nodes    []GraphNode `json:"nodes"`
-	Edges    []GraphEdge `json:"edges"`
-	Findings []Finding   `json:"findings"`
-	Coverage []string    `json:"coverage,omitempty"`
+	Root     string
+	RootKind string
+	Boundary Boundary
+	Nodes    []GraphNode
+	Edges    []GraphEdge
+	Findings []Finding
+	Coverage []Coverage
 }
 
 // GraphNode is one object in the graph. Origin and Reach are the same
 // evidence the report uses; Missing marks a path an edge named that the disk
 // does not carry.
+
 type GraphNode struct {
 	ID         string   `json:"id"`
 	Kind       string   `json:"kind"`
@@ -115,6 +114,7 @@ type GraphNode struct {
 
 // GraphEdge is one relation. Source is kernel, unit, package, tree, shell,
 // elf, jar, cmdline or lexical; Confidence is high, medium or low.
+
 type GraphEdge struct {
 	From       string `json:"from"`
 	To         string `json:"to"`
@@ -135,7 +135,7 @@ type graphBuilder struct {
 	trees      map[string]bool
 	reverse    bool // a path seed reads the objects that name it
 	findings   []Finding
-	coverage   []string
+	coverage   []Coverage
 	skippedFD  int
 	skippedMap int
 	skippedLib int
@@ -144,14 +144,25 @@ type graphBuilder struct {
 }
 
 // BuildObjectGraph walks one object's relation closure over the snapshot.
-// The seed arrives parsed, so a mistyped selector fails before the run
-// collects anything; the builder only answers whether the object is visible.
+// BuildObjectGraph grows one object's relation graph and attaches its
+// findings. The judgment runs once here, at the package boundary — the
+// builder itself never judges; it only collects the closure.
+
 func BuildObjectGraph(ctx context.Context, snapshot *Snapshot, seed GraphSeed) (*GraphView, error) {
+	view, err := buildObjectGraph(ctx, snapshot, seed)
+	if err != nil {
+		return nil, err
+	}
+	view.AttachObjectFindings(snapshot, Judge(snapshot, snapshot.plan.Filter))
+	return view, nil
+}
+
+func buildObjectGraph(ctx context.Context, snapshot *Snapshot, seed GraphSeed) (*GraphView, error) {
 	if snapshot == nil {
 		return nil, fmt.Errorf("graph: no snapshot")
 	}
 	b := &graphBuilder{
-		ctx: ctx, snapshot: snapshot, assessor: newAssessor(snapshot),
+		ctx: ctx, snapshot: snapshot, assessor: snapshot.Assessor(),
 		graph:    &GraphBuilder{nodes: map[string]*GraphNode{}, edgeSeen: map[string]bool{}},
 		expanded: map[string]bool{}, processes: map[int]Process{},
 		trees: map[string]bool{}, budget: objectMaxNodes,
@@ -167,11 +178,11 @@ func BuildObjectGraph(ctx context.Context, snapshot *Snapshot, seed GraphSeed) (
 	b.queue = append(b.queue, root)
 	for len(b.queue) > 0 {
 		if err := ctx.Err(); err != nil {
-			b.coverage = append(b.coverage, "graph stopped: "+err.Error())
+			b.coverage = append(b.coverage, coverageAbsent("graph", "graph stopped: "+err.Error()))
 			break
 		}
 		if b.budget == 0 {
-			b.coverage = append(b.coverage, "graph stopped at its node budget")
+			b.coverage = append(b.coverage, coverageGap("graph", "graph stopped at its node budget"))
 			break
 		}
 		id := b.queue[0]
@@ -241,6 +252,7 @@ func isDigits(word string) bool {
 
 // rootNodeKind reads the root node's kind; a graph without its root falls
 // back to the selector's own word.
+
 func rootNodeKind(graph *GraphBuilder, root string) string {
 	if node := graph.node(root); node != nil {
 		return node.Kind
@@ -250,39 +262,58 @@ func rootNodeKind(graph *GraphBuilder, root string) string {
 
 func (b *graphBuilder) finish(root string) *GraphView {
 	view := b.graph.GraphView(rootNodeKind(b.graph, root), b.snapshot)
-	view.Findings = b.localFindings()
+	// The seed findings the walk collected attach here; the report's findings
+	// join through AttachObjectFindings once the caller has run one judgment.
+	view.Findings = b.findings
 	if b.skippedFD > 0 {
-		b.coverage = append(b.coverage, fmt.Sprintf("%d open file(s) skipped as package-owned base context", b.skippedFD))
+		b.coverage = append(b.coverage, Coverage{
+			Area: "graph", Status: CoverageDegraded, Count: b.skippedFD,
+			Detail: fmt.Sprintf("%d open file(s) skipped as package-owned base context", b.skippedFD),
+		})
 	}
 	if b.skippedMap > 0 {
-		b.coverage = append(b.coverage, fmt.Sprintf("%d mapped file(s) skipped as package-owned base context", b.skippedMap))
+		b.coverage = append(b.coverage, Coverage{
+			Area: "graph", Status: CoverageDegraded, Count: b.skippedMap,
+			Detail: fmt.Sprintf("%d mapped file(s) skipped as package-owned base context", b.skippedMap),
+		})
 	}
 	if b.skippedLib > 0 {
-		b.coverage = append(b.coverage, fmt.Sprintf("%d linked library(ies) are package-owned base files", b.skippedLib))
+		b.coverage = append(b.coverage, Coverage{
+			Area: "graph", Status: CoverageDegraded, Count: b.skippedLib,
+			Detail: fmt.Sprintf("%d linked library(ies) are package-owned base files", b.skippedLib),
+		})
 	}
 	if b.dynamic > 0 {
-		b.coverage = append(b.coverage, fmt.Sprintf("%d reference(s) were dynamic and could not be resolved statically", b.dynamic))
+		b.coverage = append(b.coverage, Coverage{
+			Area: "graph", Status: CoverageDegraded, Count: b.dynamic,
+			Detail: fmt.Sprintf("%d reference(s) were dynamic and could not be resolved statically", b.dynamic),
+		})
 	}
-	coverage := append([]string(nil), b.snapshot.Coverage...)
+	coverage := append([]Coverage(nil), b.snapshot.Coverage...)
 	coverage = append(coverage, b.coverage...)
-	view.Coverage = uniqueStrings(coverage)
+	view.Coverage = uniqueCoverage(coverage)
 	return view
 }
 
-func (b *graphBuilder) localFindings() []Finding {
-	report := Judge(b.snapshot, b.snapshot.plan.Filter)
+// AttachObjectFindings trims one full report to the objects the graph grew,
+// and adds the scoped counterpart of the static inventory's unowned-file: a
+// runtime executable the walk selected or discovered that neither an
+// activation edge nor a running process explains.
+
+func (p *GraphView) AttachObjectFindings(snapshot *Snapshot, report *Report) {
 	paths := map[string]bool{}
-	b.graph.each(func(node *GraphNode) {
-		if node.Path != "" {
-			paths[node.Path] = true
+	for index := range p.Nodes {
+		if p.Nodes[index].Path != "" {
+			paths[p.Nodes[index].Path] = true
 		}
-	})
+	}
 	activationTargets := map[string]bool{}
-	for _, edge := range b.snapshot.Activations {
+	for _, edge := range snapshot.Activations {
 		if !edge.Dynamic {
 			activationTargets[edge.Target] = true
 		}
 	}
+	a := snapshot.Assessor()
 	var out []Finding
 	covered := map[string]bool{}
 	for _, finding := range report.Findings {
@@ -292,32 +323,27 @@ func (b *graphBuilder) localFindings() []Finding {
 		}
 	}
 	// A selected or discovered runtime executable with no package is dormant
-	// code the activation and process checks never see. It is the scoped
-	// counterpart of the static inventory's unowned-file.
-	for _, id := range b.graph.order {
-		node := b.graph.nodes[id]
+	// code the activation and process checks never see.
+	for index := range p.Nodes {
+		node := &p.Nodes[index]
 		if node.Kind != "file" || node.Path == "" || node.Missing || covered[node.Path] || activationTargets[node.Path] {
 			continue
 		}
-		facts := b.snapshot.Facts(node.Path)
+		facts := snapshot.Facts(node.Path)
 		if !facts.PackageKnown || facts.Package != "" || !facts.Executable {
 			continue
 		}
-		if node.typedOrigin() != Runtime && node.typedOrigin() != Modified {
+		story := a.read(facts)
+		if !story.origin.arrived() {
 			continue
 		}
-		severity := Medium
-		reach := UserAsset
-		if facts.RootOwned {
-			severity = High
-			reach = RootAsset
-		}
+		severity, reach := unownedFileSeverity(story, facts.RootOwned)
 		evidence := append([]string{
 			"no package's file list records this path",
 			"the file was selected or discovered by the graph",
 		}, node.Evidence...)
 		out = append(out, Finding{
-			Class: "unowned-file", Severity: severity, Origin: node.typedOrigin(), Reach: reach,
+			Class: "unowned-file", Severity: severity, Origin: story.origin, Reach: reach,
 			Title:    "runtime executable no package owns",
 			Path:     node.Path,
 			Detail:   "it is neither an activation target nor a running process; the graph found it",
@@ -325,18 +351,20 @@ func (b *graphBuilder) localFindings() []Finding {
 		})
 		covered[node.Path] = true
 	}
-	out = append(out, b.findings...)
+	out = append(out, p.Findings...)
 	sortFindings(out)
-	return out
+	p.Findings = out
 }
 
 // addNode registers one node and keeps insertion order for the tree.
+
 func (n *GraphNode) setOrigin(origin Origin) {
 	n.Origin = origin.String()
 }
 
 // typedOrigin reads the one origin field the graph carries. Display and
 // judgment share it, so there is no second state to drift.
+
 func (n *GraphNode) typedOrigin() Origin {
 	if n.Origin == "" {
 		return Unknown
@@ -396,7 +424,7 @@ func (b *graphBuilder) addFile(path string, depth int) *GraphNode {
 	}
 	b.snapshot.ensureFacts([]string{path})
 	facts := b.snapshot.Facts(path)
-	story := b.assessor.read(facts, false)
+	story := b.assessor.read(facts)
 	kind := "file"
 	if facts.Kind == trust.Dir {
 		kind = "dir"
@@ -410,9 +438,7 @@ func (b *graphBuilder) addFile(path string, depth int) *GraphNode {
 	}
 	if facts.Kind == trust.Missing {
 		node.Missing = true
-		if node.Detail == "" || node.Detail == "not a file or directory" {
-			node.Detail = "missing"
-		}
+		node.Detail = "missing"
 	}
 	if content, ok := b.snapshot.Verify[facts.Real]; ok {
 		copied := content
@@ -421,21 +447,9 @@ func (b *graphBuilder) addFile(path string, depth int) *GraphNode {
 	if facts.PackageKnown && facts.Package != "" {
 		pkg := b.addPackage(facts.Package, depth+1)
 		b.addEdge(id, pkg.ID, "owned-by", "package", "high", "")
-	} else if facts.PackageKnown && facts.Package == "" {
-		if node.Detail == "" {
-			node.Detail = "no package owns it"
-		}
-		if !strings.Contains(strings.Join(node.Evidence, "\n"), "nearest owned ancestor") {
-			if pkg, dir, shared, ok := b.nearestOwner(path); ok {
-				if shared {
-					node.Evidence = append(node.Evidence, fmt.Sprintf(
-						"no package owns it; the nearest owned ancestor %s is shared by several packages", dir))
-				} else {
-					node.Evidence = append(node.Evidence, fmt.Sprintf(
-						"no package owns it; the nearest owned ancestor %s belongs to %s", dir, pkg))
-				}
-			}
-		}
+	} else if facts.PackageKnown && facts.Package == "" && node.Detail == "" {
+		// The story already carries the nearest-owned-ancestor sentence.
+		node.Detail = "no package owns it"
 	}
 	if facts.Setuid || facts.Caps {
 		node.Reach = RootAsset.String()
@@ -443,26 +457,9 @@ func (b *graphBuilder) addFile(path string, depth int) *GraphNode {
 	return b.addNode(node)
 }
 
-// nearestOwner names the closest ancestor a package owns. The graph reads
-// ancestors the collection did not judge, so the orphan still carries the tree
-// it sits in as evidence.
-func (b *graphBuilder) nearestOwner(path string) (pkg, dir string, shared, ok bool) {
-	var dirs []string
-	for dir = filepath.Dir(path); dir != "/" && dir != "."; dir = filepath.Dir(dir) {
-		dirs = append(dirs, dir)
-	}
-	if len(dirs) == 0 {
-		return "", "", false, false
-	}
-	b.snapshot.ensureFacts(dirs)
-	for _, dir = range dirs {
-		facts := b.snapshot.Facts(dir)
-		if facts.PackageKnown && facts.Package != "" {
-			return facts.Package, dir, facts.PackageShared, true
-		}
-	}
-	return "", "", false, false
-}
+// NearestOwner on the snapshot answers the closest owned ancestor; the walk
+// reads ancestors the collection did not judge and the assessor quotes the
+// same tree, so there is one nearest-owned-ancestor implementation.
 
 func (b *graphBuilder) addProcess(pid, depth int) *GraphNode {
 	id := "process:" + strconv.Itoa(pid)
@@ -476,11 +473,11 @@ func (b *graphBuilder) addProcess(pid, depth int) *GraphNode {
 			Detail: "process not visible", Missing: true, Discovered: depth > 0,
 		})
 	}
-	imageStory := b.assessor.read(process.ExeFacts, false)
+	imageStory := b.assessor.read(process.ExeFacts)
 	origin := imageStory.origin
 	evidence := append([]string(nil), imageStory.evidence...)
 	if process.Script != "" {
-		scriptStory := b.assessor.read(process.ScriptFacts, false)
+		scriptStory := b.assessor.read(process.ScriptFacts)
 		origin = weaker(origin, scriptStory.origin)
 		evidence = append(evidence, scriptStory.evidence...)
 	}
@@ -566,773 +563,4 @@ func (b *graphBuilder) service(name string) (Service, bool) {
 	return Service{}, false
 }
 
-func (b *graphBuilder) expandFile(node *GraphNode) {
-	path := node.Path
-	if path == "" || node.Missing {
-		return
-	}
-	facts := b.snapshot.Facts(path)
-	if facts.Kind != trust.File {
-		// A directory, FIFO, device or socket has no readable content body.
-		// Refusing it here keeps every content parser below on a regular file
-		// even when the path was planted after the facts were read.
-		return
-	}
-	if unit := unitForFile(path); unit != "" {
-		// A unit file's relations are the unit's, not the file's: expanding
-		// them here would draw every ExecStart edge twice.
-		unitNode := b.addUnit(unit, node.depth+1)
-		b.addEdge(node.ID, unitNode.ID, "configured-by", "unit", "high", "")
-		b.enqueue(unitNode.ID)
-		return
-	}
-	// Activation edges that name this file pull in the other end.
-	for _, edge := range b.snapshot.Activations {
-		if edge.Dynamic {
-			continue
-		}
-		triggerHit := edge.Trigger == path ||
-			(facts.Real != "" && edge.TriggerFacts.Real != "" && edge.TriggerFacts.Real == facts.Real)
-		targetHit := edge.Target == path ||
-			(facts.Real != "" && edge.TargetFacts.Real != "" && edge.TargetFacts.Real == facts.Real)
-		if !triggerHit && !targetHit {
-			continue
-		}
-		if triggerHit && edge.Target != "" {
-			target := b.addFile(edge.Target, node.depth+1)
-			b.addEdge(node.ID, target.ID, "activates", "unit", "high", string(edge.Mechanism))
-			b.enqueue(target.ID)
-		}
-		if targetHit && edge.Trigger != "" {
-			if !b.reverse {
-				continue
-			}
-			if unit := unitForFile(edge.Trigger); unit != "" && b.graph.node("unit:"+unit) != nil {
-				// The unit's own expansion already draws this relation.
-				continue
-			}
-			trigger := b.addFile(edge.Trigger, node.depth+1)
-			b.addEdge(trigger.ID, node.ID, "activates", "unit", "high", string(edge.Mechanism))
-			b.enqueue(trigger.ID)
-		}
-	}
-	if interpreter, ok := shebang(path); ok {
-		interp := b.addFile(interpreter, node.depth+1)
-		b.addEdge(node.ID, interp.ID, "interpreter", "shebang", "high", "")
-	}
-	if isShellScript(path, facts) {
-		b.shellRefs(node)
-	}
-	if data, ok := readFileCapped(path, objectTextBytes); ok && isText(data) {
-		b.lexicalRefs(node, data, "lexical")
-	} else if facts.Executable {
-		if data, ok := readFileCapped(path, objectBinBytes); ok {
-			b.lexicalRefs(node, data, "strings")
-		}
-	}
-	if facts.Executable && isELF(path) {
-		b.elfRefs(node)
-	}
-	if strings.HasSuffix(strings.ToLower(path), ".jar") {
-		b.jarRefs(node)
-	}
-	if facts.PackageKnown && facts.Package == "" && (node.Selected || facts.Executable) {
-		b.containment(node)
-	}
-}
-
-func (b *graphBuilder) shellRefs(node *GraphNode) {
-	data, ok := readFileCapped(node.Path, 256<<10)
-	if !ok {
-		return
-	}
-	for _, ref := range startup.References(node.Path, string(data)) {
-		if ref.Dynamic || ref.Target == "" {
-			b.dynamic++
-			continue
-		}
-		if !filepath.IsAbs(ref.Target) {
-			continue
-		}
-		if ref.Kind == startup.Env || ref.Kind == startup.Preload {
-			// A variable may hold a route (VENDOR_RUNTIME_ATTACH_ROUTE) or an
-			// install prefix; only an existing file is a reference.
-			if info, err := os.Stat(ref.Target); err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-		}
-		target := b.addFile(filepath.Clean(ref.Target), node.depth+1)
-		b.addEdge(node.ID, target.ID, "references", "shell", "high", string(ref.Mechanism))
-		b.enqueue(target.ID)
-	}
-}
-
-func (b *graphBuilder) lexicalRefs(node *GraphNode, data []byte, source string) {
-	if strings.HasSuffix(node.Path, ".log") || strings.Contains(node.Path, "/logs/") {
-		return
-	}
-	paths := extractPaths(data)
-	shown := 0
-	for _, path := range paths {
-		if shown >= objectMaxLexical {
-			b.coverage = append(b.coverage, "lexical scan of "+node.Path+" stopped at its path budget")
-			break
-		}
-		if path == node.Path {
-			continue
-		}
-		info, err := os.Stat(path)
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		target := b.addFile(path, node.depth+1)
-		b.addEdge(node.ID, target.ID, "mentions", source, "low", "path string in content")
-		shown++
-	}
-}
-
 var pathTokenRE = regexp.MustCompile(`(?:^|[\s"'=:(,;])/(?:[A-Za-z0-9._+\-@%]+/)*[A-Za-z0-9._+\-@%]+`)
-
-func extractPaths(data []byte) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, match := range pathTokenRE.FindAll(data, -1) {
-		text := string(match)
-		index := strings.IndexByte(text, '/')
-		if index < 0 {
-			continue
-		}
-		path := strings.TrimRight(text[index:], ".,:;)]}")
-		if len(path) < 2 || len(path) > 200 || strings.Contains(path, "..") {
-			continue
-		}
-		if strings.HasPrefix(path, "/proc/") || strings.HasPrefix(path, "/sys/") ||
-			strings.HasPrefix(path, "/dev/") || strings.HasPrefix(path, "/run/") {
-			continue
-		}
-		path = filepath.Clean(path)
-		if seen[path] {
-			continue
-		}
-		seen[path] = true
-		out = append(out, path)
-	}
-	return out
-}
-
-func (b *graphBuilder) elfRefs(node *GraphNode) {
-	raw, err := localfs.Open(node.Path)
-	if err != nil {
-		return
-	}
-	defer raw.Close()
-	file, err := elf.NewFile(raw)
-	if err != nil {
-		return
-	}
-	defer file.Close()
-	libs, err := file.ImportedLibraries()
-	if err != nil {
-		return
-	}
-	var dirs []string
-	for _, key := range []elf.DynTag{elf.DT_RUNPATH, elf.DT_RPATH} {
-		values, _ := file.DynString(key)
-		for _, value := range values {
-			for _, dir := range strings.Split(value, ":") {
-				dir = strings.ReplaceAll(dir, "$ORIGIN", filepath.Dir(node.Path))
-				if filepath.IsAbs(dir) {
-					dirs = append(dirs, dir)
-				}
-			}
-		}
-	}
-	dirs = append(dirs, "/lib", "/usr/lib", "/lib64", "/usr/lib64")
-	for _, lib := range libs {
-		found := ""
-		for _, dir := range dirs {
-			candidate := filepath.Join(dir, lib)
-			if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
-				found = candidate
-				break
-			}
-		}
-		if found == "" {
-			continue
-		}
-		b.snapshot.ensureFacts([]string{found})
-		facts := b.snapshot.Facts(found)
-		if facts.PackageKnown && facts.Package != "" && !isAppPath(found) {
-			b.skippedLib++
-			continue
-		}
-		libNode := b.addFile(found, node.depth+1)
-		b.addEdge(node.ID, libNode.ID, "linked", "elf", "high", lib)
-	}
-}
-
-func (b *graphBuilder) jarRefs(node *GraphNode) {
-	raw, err := localfs.Open(node.Path)
-	if err != nil {
-		return
-	}
-	defer raw.Close()
-	info, err := raw.Stat()
-	if err != nil {
-		return
-	}
-	reader, err := zip.NewReader(raw, info.Size())
-	if err != nil {
-		return
-	}
-	for _, entry := range reader.File {
-		if entry.Name != "META-INF/MANIFEST.MF" {
-			continue
-		}
-		file, err := entry.Open()
-		if err != nil {
-			return
-		}
-		data, _ := io.ReadAll(io.LimitReader(file, 1<<20))
-		file.Close()
-		classpath := manifestClassPath(string(data))
-		for _, item := range classpath {
-			if strings.Contains(item, "://") {
-				continue
-			}
-			path := item
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(filepath.Dir(node.Path), path)
-			}
-			path = filepath.Clean(path)
-			if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			target := b.addFile(path, node.depth+1)
-			b.addEdge(node.ID, target.ID, "classpath", "jar", "high", "MANIFEST.MF")
-		}
-		return
-	}
-}
-
-// manifestClassPath reads the Class-Path header, including its continuation
-// lines (a leading space).
-func manifestClassPath(body string) []string {
-	var joined string
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if strings.HasPrefix(line, " ") {
-			joined += " " + strings.TrimSpace(line)
-			continue
-		}
-		if strings.HasPrefix(strings.ToLower(line), "class-path:") {
-			joined += " " + strings.TrimSpace(line[len("class-path:"):])
-		}
-	}
-	return strings.Fields(joined)
-}
-
-func (b *graphBuilder) containment(node *GraphNode) {
-	root := appRoot(node.Path)
-	if root == "" || root == node.Path || b.trees[root] {
-		return
-	}
-	b.trees[root] = true
-	dir := b.addDir(root, node.depth+1)
-	dir.Context = true
-	if dir.Detail == "" {
-		dir.Detail = "application tree"
-	} else {
-		dir.Detail = "application tree · " + dir.Detail
-	}
-	dir.Discovered = true
-	b.addEdge(node.ID, dir.ID, "in-tree", "tree", "medium", "")
-	count := 0
-	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || path == root || path == node.Path {
-			return nil
-		}
-		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", "node_modules", "__pycache__", "logs", "data":
-				return filepath.SkipDir
-			}
-			if strings.Count(strings.TrimPrefix(path, root), string(filepath.Separator)) > 3 {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !entry.Type().IsRegular() || strings.HasSuffix(path, ".log") {
-			return nil
-		}
-		if !isConfigPath(path) && !strings.HasSuffix(strings.ToLower(path), ".jar") {
-			info, err := entry.Info()
-			if err != nil || info.Mode().Perm()&0o111 == 0 {
-				return nil
-			}
-		}
-		if count >= objectMaxFiles {
-			b.coverage = append(b.coverage, "application tree "+root+" stopped at its file budget")
-			return filepath.SkipAll
-		}
-		count++
-		child := b.addFile(path, dir.depth+1)
-		b.addEdge(dir.ID, child.ID, "contains", "tree", "medium", "")
-		return nil
-	})
-}
-
-func (b *graphBuilder) expandProcess(node *GraphNode) {
-	pid, _ := strconv.Atoi(strings.TrimPrefix(node.ID, "process:"))
-	process, ok := b.processes[pid]
-	if !ok {
-		return
-	}
-	if process.Exe != "" {
-		image := b.addFile(process.Exe, node.depth+1)
-		b.addEdge(node.ID, image.ID, "executes", "kernel", "high", "image")
-		b.enqueue(image.ID)
-	}
-	if process.Script != "" {
-		script := b.addFile(process.Script, node.depth+1)
-		b.addEdge(node.ID, script.ID, "executes", "kernel", "high", "script")
-		b.enqueue(script.ID)
-	}
-	if process.Unit != "" {
-		unit := b.addUnit(process.Unit, node.depth+1)
-		b.addEdge(node.ID, unit.ID, "member-of", "cgroup", "high", process.Cgroup)
-		b.enqueue(unit.ID)
-	}
-	paths := cmdlinePathArgs(process.Args)
-	if len(paths) == 0 {
-		paths = cmdlinePaths(process.Cmdline)
-	}
-	for _, path := range paths {
-		target := b.addFile(path, node.depth+1)
-		b.addEdge(node.ID, target.ID, "references", "cmdline", "high", "")
-		b.enqueue(target.ID)
-	}
-	for _, path := range openFiles(pid) {
-		if !interestingContext(path, process) {
-			b.skippedFD++
-			continue
-		}
-		target := b.addFile(path, node.depth+1)
-		b.addEdge(node.ID, target.ID, "open", "kernel", "high", "")
-		b.enqueue(target.ID)
-	}
-	for _, path := range mappedFiles(pid) {
-		if !interestingContext(path, process) {
-			b.skippedMap++
-			continue
-		}
-		target := b.addFile(path, node.depth+1)
-		b.addEdge(node.ID, target.ID, "maps", "kernel", "high", "")
-	}
-	for _, socket := range b.snapshot.Sockets {
-		if socket.PID != pid {
-			continue
-		}
-		socketNode := b.addSocket(socket, node.depth+1)
-		b.addEdge(node.ID, socketNode.ID, "listens", "kernel", "high", "")
-	}
-	for _, connection := range b.snapshot.Connections {
-		if connection.PID != pid && !containsPID(connection.PIDs, pid) {
-			continue
-		}
-		socketNode := b.addSocket(Socket{
-			Proto: connection.Proto, State: "ESTABLISHED", Local: connection.Local,
-			Peer: connection.Peer, PID: connection.PID, Comm: connection.Comm,
-		}, node.depth+1)
-		b.addEdge(node.ID, socketNode.ID, "connects", "kernel", "high", connection.Peer)
-		peer := b.addPeer(connection.Peer, node.depth+2)
-		b.addEdge(socketNode.ID, peer.ID, "peer", "kernel", "high", "")
-	}
-	for _, target := range process.LoaderTargets {
-		if target.Path == "" || !filepath.IsAbs(target.Path) {
-			continue
-		}
-		library := b.addFile(target.Path, node.depth+1)
-		b.addEdge(node.ID, library.ID, "preloads", "environ", "high", target.Variable)
-		b.enqueue(library.ID)
-	}
-	if process.LibraryPath != "" {
-		for _, dir := range strings.Split(process.LibraryPath, ":") {
-			if dir == "" || dir == "." || !filepath.IsAbs(dir) {
-				continue
-			}
-			libraryDir := b.addDir(dir, node.depth+1)
-			b.addEdge(node.ID, libraryDir.ID, "searches", "environ", "medium", "LD_LIBRARY_PATH")
-		}
-	}
-	if parent, ok := b.processes[process.PPID]; ok && parent.PID != process.PID {
-		parentNode := b.addProcess(parent.PID, objectMaxDepth+1)
-		b.addEdge(node.ID, parentNode.ID, "parent", "kernel", "high", "")
-	}
-}
-
-func (b *graphBuilder) expandUnit(node *GraphNode) {
-	name := node.Name
-	found := 0
-	for _, edge := range b.snapshot.Activations {
-		if edge.Surface != startup.SurfaceSystemd {
-			continue
-		}
-		unit := activationUnit(edge.Trigger)
-		if unit != name && templateUnit(unit) != name {
-			continue
-		}
-		found++
-		trigger := b.addFile(edge.Trigger, node.depth+1)
-		b.addEdge(node.ID, trigger.ID, "configured-by", "unit", "high", "")
-		if node.typedOrigin() == Unknown {
-			node.setOrigin(trigger.typedOrigin())
-			if node.Detail == "" {
-				node.Detail = trigger.Detail
-			} else if trigger.Detail != "" {
-				node.Detail += " · " + trigger.Detail
-			}
-		}
-		if edge.Target == "" || edge.Dynamic {
-			if edge.Dynamic {
-				b.dynamic++
-			}
-			continue
-		}
-		target := b.addFile(edge.Target, node.depth+1)
-		if edge.Context {
-			target.Context = true
-		}
-		kind := "activates"
-		if edge.Mechanism != "" {
-			kind = strings.ToLower(string(edge.Mechanism))
-		}
-		source := "unit"
-		if edge.Context {
-			source = "unit-decl"
-		}
-		b.addEdge(node.ID, target.ID, kind, source, "high", string(edge.Mechanism))
-		if target.Missing && !edge.Context {
-			b.findings = append(b.findings, Finding{
-				Class: "unit-target-missing", Severity: Medium, Origin: Unknown, Reach: RootAsset,
-				Title:  "unit names a file the disk does not carry",
-				Path:   target.Path,
-				Detail: fmt.Sprintf("unit %s: %s", name, edge.Mechanism),
-				Evidence: []string{
-					"declared by " + edge.Trigger,
-					"path " + target.Path + " is missing",
-				},
-			})
-		}
-		if !edge.Context {
-			b.enqueue(target.ID)
-		}
-	}
-	for _, process := range b.snapshot.Processes {
-		if process.Unit != name && templateUnit(process.Unit) != name {
-			continue
-		}
-		found++
-		processNode := b.addProcess(process.PID, node.depth+1)
-		b.addEdge(node.ID, processNode.ID, "runs", "cgroup", "high", process.Cgroup)
-		b.enqueue(processNode.ID)
-	}
-	if found == 0 {
-		if path := startup.LookupUnitFile(name); path != "" {
-			file := b.addFile(path, node.depth+1)
-			b.addEdge(node.ID, file.ID, "configured-by", "unit", "high", "")
-			if node.typedOrigin() == Unknown {
-				node.setOrigin(file.typedOrigin())
-				node.Detail = file.Detail
-			}
-			b.enqueue(file.ID)
-		} else {
-			b.coverage = append(b.coverage, "unit "+name+" has no readable unit file or activation edge")
-		}
-	}
-	// Drop-ins exist even when the unit has no ExecStart edge of its own.
-	for _, dir := range startup.UnitDirs() {
-		dropDir := filepath.Join(dir, name+".d")
-		entries, err := os.ReadDir(dropDir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if !strings.HasSuffix(entry.Name(), ".conf") {
-				continue
-			}
-			path := filepath.Join(dropDir, entry.Name())
-			file := b.addFile(path, node.depth+1)
-			b.addEdge(node.ID, file.ID, "drop-in", "unit", "high", "")
-		}
-	}
-}
-
-func (b *graphBuilder) expandPackage(node *GraphNode) {
-	shown := 0
-	for path, facts := range b.snapshot.Objects {
-		if !facts.PackageKnown || facts.Package != node.Name {
-			continue
-		}
-		if shown >= 100 {
-			b.coverage = append(b.coverage, "package "+node.Name+" stopped at its file budget")
-			break
-		}
-		shown++
-		file := b.addFile(path, node.depth+1)
-		b.addEdge(node.ID, file.ID, "owns", "package", "high", "")
-	}
-}
-
-// unitForFile names the unit a unit file or drop-in belongs to.
-func unitForFile(path string) string {
-	base := filepath.Base(path)
-	if startup.IsUnitName(base) {
-		return base
-	}
-	dir := filepath.Base(filepath.Dir(path))
-	if strings.HasSuffix(dir, ".d") {
-		name := strings.TrimSuffix(dir, ".d")
-		if startup.IsUnitName(name) {
-			return name
-		}
-	}
-	return ""
-}
-
-func shebang(path string) (string, bool) {
-	buf, err := localfs.ReadFile(path, 256)
-	if err != nil {
-		return "", false
-	}
-	n := len(buf)
-	if n < 3 || buf[0] != '#' || buf[1] != '!' {
-		return "", false
-	}
-	fields := strings.Fields(string(bytes.TrimSpace(buf[2:n])))
-	if len(fields) == 0 {
-		return "", false
-	}
-	interpreter := fields[0]
-	if filepath.Base(interpreter) == "env" && len(fields) > 1 {
-		name := fields[1]
-		for _, dir := range []string{"/usr/bin", "/bin", "/usr/local/bin"} {
-			candidate := filepath.Join(dir, name)
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate, true
-			}
-		}
-		return "", false
-	}
-	if !filepath.IsAbs(interpreter) {
-		return "", false
-	}
-	return interpreter, true
-}
-
-func isShellScript(path string, facts trust.Facts) bool {
-	if !facts.Executable {
-		return false
-	}
-	if strings.HasSuffix(filepath.Base(path), ".sh") {
-		return true
-	}
-	interpreter, ok := shebang(path)
-	if !ok {
-		return false
-	}
-	switch filepath.Base(interpreter) {
-	case "bash", "sh", "dash", "zsh", "ksh", "fish":
-		return true
-	}
-	return false
-}
-
-func isELF(path string) bool {
-	data, err := localfs.ReadFile(path, 4)
-	if err != nil || len(data) < 4 {
-		return false
-	}
-	return bytes.Equal(data[:4], []byte{0x7f, 'E', 'L', 'F'})
-}
-
-func readFileCapped(path string, limit int64) ([]byte, bool) {
-	data, err := localfs.ReadFile(path, limit)
-	if err != nil {
-		return nil, false
-	}
-	return data, true
-}
-
-func isText(data []byte) bool {
-	probe := data
-	if len(probe) > 8192 {
-		probe = probe[:8192]
-	}
-	return bytes.IndexByte(probe, 0) < 0
-}
-
-// isAppPath reports a trees where an unowned application usually lives. Their
-// containment is the application tree rather than a package.
-func isAppPath(path string) bool {
-	for _, root := range []string{"/opt/", "/srv/", "/usr/local/", "/home/", "/root/", "/var/www/", "/var/lib/"} {
-		if strings.HasPrefix(path, root) {
-			return true
-		}
-	}
-	return false
-}
-
-func appRoot(path string) string {
-	for _, prefix := range []string{"/opt/", "/srv/", "/usr/local/", "/home/", "/var/www/", "/var/lib/"} {
-		rest, ok := strings.CutPrefix(path, prefix)
-		if !ok {
-			continue
-		}
-		parts := strings.Split(rest, "/")
-		if len(parts) < 2 {
-			return ""
-		}
-		return filepath.Join(prefix, parts[0])
-	}
-	return ""
-}
-
-func isConfigPath(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".conf", ".cfg", ".ini", ".toml", ".yaml", ".yml", ".json",
-		".properties", ".env", ".xml", ".jar", ".sh", ".py", ".pl", ".rb":
-		return true
-	}
-	return strings.HasPrefix(path, "/etc/")
-}
-
-func cmdlinePaths(cmdline string) []string {
-	return cmdlinePathArgs(strings.Fields(cmdline))
-}
-
-func cmdlinePathArgs(fields []string) []string {
-	var out []string
-	seen := map[string]bool{}
-	add := func(value string) {
-		value = strings.Trim(value, `"'`)
-		if value == "" || !filepath.IsAbs(value) {
-			return
-		}
-		value = filepath.Clean(value)
-		if seen[value] {
-			return
-		}
-		seen[value] = true
-		out = append(out, value)
-	}
-	flags := map[string]bool{
-		"--config": true, "-c": true, "--conf": true, "--settings": true,
-		"--properties": true, "--file": true, "-f": true, "--env-file": true,
-		"--spring.config.additional-location": true, "--spring.config.location": true,
-	}
-	for index := 0; index < len(fields); index++ {
-		field := strings.Trim(fields[index], `"'`)
-		name, value, has := strings.Cut(field, "=")
-		if has {
-			if flags[name] || isConfigPath(value) {
-				add(value)
-			}
-			continue
-		}
-		if flags[name] && index+1 < len(fields) {
-			add(fields[index+1])
-			index++
-			continue
-		}
-		if filepath.IsAbs(field) && (isConfigPath(field) || strings.HasSuffix(field, ".jar") || strings.HasSuffix(field, ".sh")) {
-			add(field)
-		}
-	}
-	return out
-}
-
-func openFiles(pid int) []string {
-	dir := filepath.Join("/proc", strconv.Itoa(pid), "fd")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	seen := map[string]bool{}
-	var out []string
-	for _, entry := range entries {
-		target, err := os.Readlink(filepath.Join(dir, entry.Name()))
-		if err != nil || !strings.HasPrefix(target, "/") {
-			continue
-		}
-		target = strings.TrimSuffix(target, " (deleted)")
-		if seen[target] {
-			continue
-		}
-		info, err := os.Stat(target)
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		seen[target] = true
-		out = append(out, target)
-	}
-	return out
-}
-
-func mappedFiles(pid int) []string {
-	file, err := os.Open(filepath.Join("/proc", strconv.Itoa(pid), "maps"))
-	if err != nil {
-		return nil
-	}
-	defer file.Close()
-	seen := map[string]bool{}
-	var out []string
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
-		space := strings.LastIndexByte(line, ' ')
-		if space < 0 {
-			continue
-		}
-		path := strings.TrimSpace(line[space+1:])
-		path = strings.TrimSuffix(path, " (deleted)")
-		if !strings.HasPrefix(path, "/") || seen[path] {
-			continue
-		}
-		info, err := os.Stat(path)
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		seen[path] = true
-		out = append(out, path)
-	}
-	return out
-}
-
-// interestingContext keeps the open/mapped scan to files that change a
-// program's behavior: configuration, scripts, archives and unowned app files.
-// Package-owned shared libraries are package evidence, not process evidence.
-func interestingContext(path string, process Process) bool {
-	if path == process.Exe || path == process.Script {
-		return false
-	}
-	if strings.HasSuffix(path, ".so") || strings.Contains(path, ".so.") {
-		return false
-	}
-	if isConfigPath(path) || strings.HasSuffix(strings.ToLower(path), ".jar") {
-		return true
-	}
-	if isAppPath(path) {
-		if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o111 != 0 {
-			return true
-		}
-		return false
-	}
-	for _, prefix := range []string{"/proc/", "/sys/", "/dev/", "/usr/lib/", "/lib/", "/usr/share/"} {
-		if strings.HasPrefix(path, prefix) {
-			return false
-		}
-	}
-	return false
-}

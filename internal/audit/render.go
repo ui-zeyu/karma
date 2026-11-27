@@ -1,10 +1,8 @@
 package audit
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -51,55 +49,61 @@ const (
 	hueInformation = 6
 )
 
-var (
-	band         = chrome.Band
-	rail         = chrome.Rail
-	paintText    = chrome.Paint
-	fg           = chrome.Fg
-	bg           = chrome.Bg
-	displayWidth = chrome.DisplayWidth
-	truncate     = chrome.Truncate
-)
-
 // Render writes the audit as the operator's worksheet: masthead, findings,
 // the raw inventories behind them, and coverage.
 func Render(w io.Writer, report *Report, options RenderOptions) {
 	width := reportWidth(options.Width)
 	renderMasthead(w, report, options, width)
 	if len(report.Findings) == 0 {
-		body := "no findings: the artifact delta is empty and no activation path is writable"
-		if report.Kernel != nil {
-			body = "no findings: the artifact delta, activation surfaces and kernel state are clean"
-		}
-		if report.Boundary.Time.IsZero() {
-			body = "no findings: the boundary is unknown, so only structural checks ran"
-		}
-		fmt.Fprintln(w, rail(band(" QUIET", "", width-2, subBandBG, subBandFG, false, options.Color),
-			[]string{body}, width, mutedColor, options.Color))
+		fmt.Fprintln(w, quietPanel(quietBody(report), options, width))
 		fmt.Fprintln(w)
 	}
 	next := options.Filter.narrowed()
 	for _, group := range panelGroups(report.Findings, options.Filter) {
-		fmt.Fprintln(w, findingPanelDir(group.findings, group.dir, group.files, next, options, width))
+		fmt.Fprintln(w, findingPanel(group, next, options, width))
 		fmt.Fprintln(w)
 	}
 	if options.Evidence && report.view != nil {
 		renderEvidence(w, report.view, options, width)
 	}
 	if len(report.Coverage) > 0 {
-		coverage := make([]string, len(report.Coverage))
-		for index, line := range report.Coverage {
-			coverage[index] = chrome.SafeText(line)
-		}
-		fmt.Fprintln(w, evidencePanel("COVERAGE", coverage, len(coverage), options, width))
+		fmt.Fprintln(w, coveragePanel(report.Coverage, options, width))
 	}
+}
+
+// quietBody answers the one sentence a clean page states, in the report's
+// own words for what this run read.
+func quietBody(report *Report) string {
+	body := "no findings: the artifact delta is empty and no activation path is writable"
+	if report.Kernel != nil {
+		body = "no findings: the artifact delta, activation surfaces and kernel state are clean"
+	}
+	if report.Boundary.Time.IsZero() {
+		body = "no findings: the boundary is unknown, so only structural checks ran"
+	}
+	return body
+}
+
+// quietPanel is the page's clean answer: prose under the QUIET band.
+func quietPanel(body string, options RenderOptions, width int) string {
+	head := chrome.Band(" QUIET", "", width-2, subBandBG, subBandFG, false, options.Color)
+	return chrome.RailText(head, []string{body}, width, mutedColor, options.Color)
+}
+
+// coveragePanel prints the run's coverage records as the report's last word.
+func coveragePanel(records []Coverage, options RenderOptions, width int) string {
+	coverage := make([]string, len(records))
+	for index, record := range records {
+		coverage[index] = chrome.SafeText(record.Detail)
+	}
+	return evidencePanel("COVERAGE", coverage, len(coverage), options, width)
 }
 
 // renderEvidence prints the raw inventories behind the findings: one panel
 // per evidence type, each capped so a whole-surface run still reads as a
 // worksheet. The full inventory is `karma show <section>`.
 func renderEvidence(w io.Writer, view *View, options RenderOptions, width int) {
-	fmt.Fprintln(w, band(" EVIDENCE", "", width, bannerBG, bannerFG, true, options.Color))
+	fmt.Fprintln(w, chrome.Band(" EVIDENCE", "", width, bannerBG, bannerFG, true, options.Color))
 	for _, section := range sections {
 		if section.SkipEvidence {
 			continue
@@ -107,7 +111,7 @@ func renderEvidence(w io.Writer, view *View, options RenderOptions, width int) {
 		rows := sectionRows(section, view, options)
 		if len(rows) > 0 {
 			fmt.Fprintln(w, evidencePanel(section.Panel, cappedRows(rows, options),
-				section.Count(view, options), options, width))
+				section.count(view, options), options, width))
 		}
 	}
 }
@@ -122,13 +126,13 @@ func cappedRows(rows []string, options RenderOptions) []string {
 		return rows
 	}
 	shown := append([]string(nil), rows[:evidenceLimit]...)
-	return append(shown, paintText(options.Color, fg(mutedColor),
+	return append(shown, chrome.Paint(options.Color, chrome.Fg(mutedColor),
 		fmt.Sprintf("... %d more; narrow the scope or use show", len(rows)-evidenceLimit)))
 }
 
 func evidencePanel(title string, rows []string, count int, options RenderOptions, width int) string {
-	head := band(" "+title, strconv.Itoa(count)+" ", width-2, subBandBG, subBandFG, false, options.Color)
-	return rail(head, rows, width, mutedColor, options.Color)
+	head := chrome.Band(" "+title, strconv.Itoa(count)+" ", width-2, subBandBG, subBandFG, false, options.Color)
+	return chrome.Rail(head, rows, width, mutedColor, options.Color)
 }
 
 func sectionRows(section *Section, view *View, options RenderOptions) []string {
@@ -154,11 +158,9 @@ func RenderShow(w io.Writer, view *View, section *Section, word string, options 
 		{label: "boundary", value: boundaryText(view.Snapshot.Boundary), full: true},
 	}, nil)
 	rows := sectionRows(section, view, options)
-	collected := 0
-	if section.Plain {
-		collected = len(rows)
-	} else {
-		collected = section.Count(view, options)
+	collected := len(rows)
+	if !section.Plain {
+		collected = section.count(view, options)
 	}
 	if len(rows) == 0 {
 		rows = []string{"nothing in this section answers the selected scope"}
@@ -173,19 +175,17 @@ func RenderShow(w io.Writer, view *View, section *Section, word string, options 
 func WriteShowJSON(w io.Writer, view *View, section *Section, word string, options RenderOptions) error {
 	payload := map[string]any{
 		"section":       word,
-		section.JSONKey: section.Data(view, options),
+		section.JSONKey: nonNil(section.Data(view, options)),
 	}
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(payload)
+	return encode(w, payload)
 }
 
 func writeMasthead(w io.Writer, options RenderOptions, width int, facts []fact, extra []string) {
-	fmt.Fprintln(w, band(" KARMA", byline(), width, bannerBG, bannerFG, true, options.Color))
-	head := band(" "+versionText(options), clock(), width-2, subBandBG, subBandFG, false, options.Color)
+	fmt.Fprintln(w, chrome.Band(" KARMA", chrome.Byline(), width, bannerBG, bannerFG, true, options.Color))
+	head := chrome.Band(" "+versionText(options), clock(), width-2, subBandBG, subBandFG, false, options.Color)
 	body := factGrid(facts, width-4)
 	body = append(body, extra...)
-	fmt.Fprintln(w, rail(head, body, width, mutedColor, options.Color))
+	fmt.Fprintln(w, chrome.Rail(head, body, width, mutedColor, options.Color))
 	fmt.Fprintln(w)
 }
 
@@ -220,13 +220,6 @@ func renderMasthead(w io.Writer, report *Report, options RenderOptions, width in
 	}
 	writeMasthead(w, options, width, facts,
 		findingsFact(report.Findings, labelWidth, width-4, options.Color))
-}
-
-func byline() string {
-	if user := os.Getenv("USER"); user != "" {
-		return chrome.SafeText(user) + " "
-	}
-	return "karma "
 }
 
 func versionText(options RenderOptions) string {
@@ -302,7 +295,9 @@ func factGrid(facts []fact, width int) []string {
 	}
 	cell := func(f fact, valueWidth int) string {
 		value := chrome.SafeText(f.value)
-		return fmt.Sprintf("%-*s  %s", labelWidth, f.label, truncate(value, valueWidth))
+		// padRight measures display width, so a label with wide characters
+		// keeps the column the fmt verb's rune count would lose.
+		return padRight(f.label, labelWidth) + "  " + chrome.Truncate(value, valueWidth)
 	}
 	cellWidth := labelWidth + 2 + column
 	var lines []string
@@ -311,7 +306,7 @@ func factGrid(facts []fact, width int) []string {
 			lines = append(lines, cell(facts[index], width-labelWidth-2))
 			continue
 		}
-		left := fmt.Sprintf("%-*s", cellWidth, cell(facts[index], column))
+		left := padRight(cell(facts[index], column), cellWidth)
 		right := cell(facts[index+1], column)
 		lines = append(lines, left+"  "+right)
 		index++
@@ -322,7 +317,7 @@ func factGrid(facts []fact, width int) []string {
 func factLabelWidth(facts []fact) int {
 	labelWidth := 0
 	for _, f := range facts {
-		if n := displayWidth(f.label); n > labelWidth {
+		if n := chrome.DisplayWidth(f.label); n > labelWidth {
 			labelWidth = n
 		}
 	}
@@ -342,7 +337,7 @@ func accountCell(host Host) string {
 // findingsFact is the masthead's count line: every severity the run found,
 // in the order the report ranks them, each in the badge its panel head wears.
 func findingsFact(findings []Finding, labelWidth, width int, color bool) []string {
-	prefix := fmt.Sprintf("%-*s  ", labelWidth, "findings")
+	prefix := padRight("findings", labelWidth) + "  "
 	if len(findings) == 0 {
 		return []string{prefix + "none"}
 	}
@@ -366,7 +361,7 @@ func findingsFact(findings []Finding, labelWidth, width int, color bool) []strin
 			line += token
 			continue
 		}
-		if displayWidth(line+" · "+token) > width {
+		if chrome.DisplayWidth(line+" · "+token) > width {
 			lines = append(lines, line)
 			line = indent + token
 			continue
@@ -419,7 +414,7 @@ type panelGroup struct {
 
 type rollupKey struct {
 	dir      string
-	class    string
+	class    Class
 	title    string
 	severity Severity
 }
@@ -505,19 +500,18 @@ func panelGroups(findings []Finding, filter Filter) []panelGroup {
 }
 
 // findingPanel draws one group: the head names the object and its severity,
-// the body states the verdict, the relation and the facts behind it.
-func findingPanel(group findingGroup, next bool, options RenderOptions, width int) string {
-	return findingPanelDir(group, "", 0, next, options, width)
-}
-
-func findingPanelDir(group findingGroup, dir string, files int, next bool, options RenderOptions, width int) string {
-	if dir != "" {
-		return findingRollup(group, dir, files, options, width)
+// the body states the verdict, the relation and the facts behind it. A group
+// that panelGroups rolled up to a directory prints as the directory's one
+// panel instead.
+func findingPanel(group panelGroup, next bool, options RenderOptions, width int) string {
+	if group.dir != "" {
+		return findingRollup(group.findings, group.dir, group.files, options, width)
 	}
-	finding := group[0]
+	findings := group.findings
+	finding := findings[0]
 	head := findingHead(finding, width-2, options.Color)
 	var body []string
-	seen := make(map[string]bool, len(group))
+	seen := make(map[string]bool, len(findings))
 	add := func(line string) {
 		if line == "" || seen[line] {
 			return
@@ -525,41 +519,41 @@ func findingPanelDir(group findingGroup, dir string, files int, next bool, optio
 		seen[line] = true
 		body = append(body, line)
 	}
-	add(paintText(options.Color, "\x1b[1m", chrome.SafeText(finding.Title)))
-	if len(group) == 1 {
+	add(chrome.Paint(options.Color, "\x1b[1m", chrome.SafeText(finding.Title)))
+	if len(findings) == 1 {
 		add(highlightTokens(finding.Detail, 0, options.Color))
 	} else {
 		// A group states its relations once: identical details print once,
 		// and a member whose chain already carries the relation drops its
 		// per-relation sentence.
-		shared := group[0].Detail
-		for _, member := range group[1:] {
+		shared := findings[0].Detail
+		for _, member := range findings[1:] {
 			if member.Detail != shared {
 				shared = ""
 				break
 			}
 		}
 		add(highlightTokens(shared, 0, options.Color))
-		for _, member := range group {
+		for _, member := range findings {
 			if len(member.Trace) == 0 {
 				add(highlightTokens(member.Detail, 0, options.Color))
 			}
 		}
 	}
-	for _, member := range group {
-		add(paintText(options.Color, fg(mutedColor), "origin ") +
-			paintText(options.Color, fg(originHue(member.Origin)), member.Origin.String()) +
-			paintText(options.Color, fg(mutedColor), " · reach "+member.Reach.String()))
+	for _, member := range findings {
+		add(chrome.Paint(options.Color, chrome.Fg(mutedColor), "origin ") +
+			chrome.Paint(options.Color, chrome.Fg(originHue(member.Origin)), member.Origin.String()) +
+			chrome.Paint(options.Color, chrome.Fg(mutedColor), " · reach "+member.Reach.String()))
 	}
-	for _, line := range chainRows(group, options.Color) {
+	for _, line := range chainRows(findings, options.Color) {
 		add(line)
 	}
-	for _, member := range group {
+	for _, member := range findings {
 		for _, line := range member.Evidence {
-			add(paintText(options.Color, fg(mutedColor), "· ") + highlightTokens(line, mutedColor, options.Color))
+			add(chrome.Paint(options.Color, chrome.Fg(mutedColor), "· ") + highlightTokens(line, mutedColor, options.Color))
 		}
 	}
-	for _, line := range quoteRows(group, options.Color) {
+	for _, line := range quoteRows(findings, options.Color) {
 		// A citation block's header names the file; two accounts' histories
 		// can quote the same text, and both blocks stay readable.
 		if line != "" {
@@ -567,7 +561,7 @@ func findingPanelDir(group findingGroup, dir string, files int, next bool, optio
 		}
 	}
 	if next && finding.Path != "" && finding.Path != options.Root {
-		add(paintText(options.Color, fg(mutedColor), "· next  ") + "karma graph path:" + finding.Path)
+		add(chrome.Paint(options.Color, chrome.Fg(mutedColor), "· next  ") + "karma graph path:" + finding.Path)
 	}
 	return chrome.RailText(head, body, width, severityColor(finding.Severity), options.Color)
 }
@@ -589,8 +583,8 @@ func findingRollup(group findingGroup, dir string, files int, options RenderOpti
 		seen[line] = true
 		body = append(body, line)
 	}
-	add(paintText(options.Color, "\x1b[1m", chrome.SafeText(finding.Title)))
-	add(paintText(options.Color, fg(mutedColor),
+	add(chrome.Paint(options.Color, "\x1b[1m", chrome.SafeText(finding.Title)))
+	add(chrome.Paint(options.Color, chrome.Fg(mutedColor),
 		fmt.Sprintf("%d files in this directory carry the same judgment", files)))
 	shared := group[0].Detail
 	for _, member := range group[1:] {
@@ -602,9 +596,9 @@ func findingRollup(group findingGroup, dir string, files int, options RenderOpti
 	add(highlightTokens(shared, 0, options.Color))
 	origins := make(map[string]bool, len(group))
 	for _, member := range group {
-		line := paintText(options.Color, fg(mutedColor), "origin ") +
-			paintText(options.Color, fg(originHue(member.Origin)), member.Origin.String()) +
-			paintText(options.Color, fg(mutedColor), " · reach "+member.Reach.String())
+		line := chrome.Paint(options.Color, chrome.Fg(mutedColor), "origin ") +
+			chrome.Paint(options.Color, chrome.Fg(originHue(member.Origin)), member.Origin.String()) +
+			chrome.Paint(options.Color, chrome.Fg(mutedColor), " · reach "+member.Reach.String())
 		if !origins[line] {
 			origins[line] = true
 			add(line)
@@ -621,17 +615,17 @@ func findingRollup(group findingGroup, dir string, files int, options RenderOpti
 		}
 		seenPath[member.Path] = true
 		shown++
-		row := paintText(options.Color, fg(mutedColor), "· ") + chrome.SafeText(filepath.Base(member.Path))
+		row := chrome.Paint(options.Color, chrome.Fg(mutedColor), "· ") + chrome.SafeText(filepath.Base(member.Path))
 		if shared == "" && member.Detail != "" {
 			row += "  " + highlightTokens(member.Detail, mutedColor, options.Color)
 		}
 		add(row)
 	}
 	if files > shown {
-		add(paintText(options.Color, fg(mutedColor),
+		add(chrome.Paint(options.Color, chrome.Fg(mutedColor),
 			fmt.Sprintf("... %d more files; karma audit %s", files-shown, dir)))
 	}
-	add(paintText(options.Color, fg(mutedColor), "· next  ") + "karma audit " + dir)
+	add(chrome.Paint(options.Color, chrome.Fg(mutedColor), "· next  ") + "karma audit " + dir)
 	return chrome.RailText(head, body, width, severityColor(finding.Severity), options.Color)
 }
 
@@ -673,7 +667,7 @@ func quoteRows(group findingGroup, color bool) []string {
 	}
 	var rows []string
 	for _, block := range blocks {
-		head := paintText(color, fg(mutedColor), "· cite  ") + highlightTokens(block.path, 0, color)
+		head := chrome.Paint(color, chrome.Fg(mutedColor), "· cite  ") + highlightTokens(block.path, 0, color)
 		for _, quote := range block.plain {
 			rows = append(rows, head+"  "+highlightTokens(quote.Text, 0, color))
 		}
@@ -685,11 +679,11 @@ func quoteRows(group findingGroup, color bool) []string {
 		for _, quote := range block.numbered {
 			width = max(width, len(strconv.Itoa(quote.Line)))
 		}
-		indent := strings.Repeat(" ", displayWidth("· cite  "))
+		indent := strings.Repeat(" ", chrome.DisplayWidth("· cite  "))
 		for _, quote := range block.numbered {
-			number := paintText(color, fg(mutedColor), fmt.Sprintf("%*d", width, quote.Line))
+			number := chrome.Paint(color, chrome.Fg(mutedColor), fmt.Sprintf("%*d", width, quote.Line))
 			rows = append(rows, indent+number+
-				paintText(color, fg(mutedColor), " │ ")+highlightTokens(quote.Text, 0, color))
+				chrome.Paint(color, chrome.Fg(mutedColor), " │ ")+highlightTokens(quote.Text, 0, color))
 		}
 	}
 	return rows
@@ -699,7 +693,7 @@ func quoteRows(group findingGroup, color bool) []string {
 // same root, the root prints once and the hops hang under it as a tree;
 // otherwise each chain stays a flat arrow line.
 func chainRows(group findingGroup, color bool) []string {
-	label := paintText(color, fg(mutedColor), "· chain  ")
+	label := chrome.Paint(color, chrome.Fg(mutedColor), "· chain  ")
 	var chains [][]string
 	seen := make(map[string]bool, len(group))
 	for _, member := range group {
@@ -719,7 +713,7 @@ func chainRows(group findingGroup, color bool) []string {
 	}
 	if len(chains) > 1 && sharedRoot(chains) {
 		rows := []string{label + highlightTokens(chains[0][0], 0, color)}
-		indent := strings.Repeat(" ", displayWidth("· chain  "))
+		indent := strings.Repeat(" ", chrome.DisplayWidth("· chain  "))
 		var branches []string
 		for _, chain := range chains {
 			if rest := strings.Join(chain[1:], " → "); rest != "" {
@@ -731,7 +725,7 @@ func chainRows(group findingGroup, color bool) []string {
 			if index == len(branches)-1 {
 				mark = "└─ "
 			}
-			rows = append(rows, indent+paintText(color, fg(mutedColor), mark)+branch)
+			rows = append(rows, indent+chrome.Paint(color, chrome.Fg(mutedColor), mark)+branch)
 		}
 		return rows
 	}
@@ -741,7 +735,7 @@ func chainRows(group findingGroup, color bool) []string {
 		for index, step := range chain {
 			steps[index] = highlightTokens(step, 0, color)
 		}
-		rows = append(rows, label+strings.Join(steps, paintText(color, fg(mutedColor), " → ")))
+		rows = append(rows, label+strings.Join(steps, chrome.Paint(color, chrome.Fg(mutedColor), " → ")))
 	}
 	return rows
 }
@@ -762,11 +756,11 @@ func sharedRoot(chains [][]string) bool {
 func findingHead(finding Finding, width int, color bool) string {
 	label := " " + strings.ToUpper(finding.Severity.String()) + " "
 	path := " " + chrome.SafeText(finding.Path)
-	if displayWidth(label+path) > width {
-		path = " " + truncate(chrome.SafeText(finding.Path), width-displayWidth(label)-1)
+	if chrome.DisplayWidth(label+path) > width {
+		path = " " + chrome.Truncate(chrome.SafeText(finding.Path), width-chrome.DisplayWidth(label)-1)
 	}
 	plain := label + path
-	fill := width - displayWidth(plain)
+	fill := width - chrome.DisplayWidth(plain)
 	if fill < 0 {
 		fill = 0
 	}
@@ -774,24 +768,22 @@ func findingHead(finding Finding, width int, color bool) string {
 		return strings.TrimRight(plain+strings.Repeat(" ", fill), " ")
 	}
 	return severityBadge(finding.Severity, label, true) +
-		bg(subBandBG) + fg(subBandFG) + path + strings.Repeat(" ", fill) + ansiReset
+		chrome.Bg(subBandBG) + chrome.Fg(subBandFG) + path + strings.Repeat(" ", fill) + ansiReset
 }
 
 // severityBadge is the one severity ground/ink/weight: the masthead chips and
 // every panel head read the same, so a palette change cannot split them.
 func severityBadge(severity Severity, text string, color bool) string {
-	return paintText(color, bg(severityColor(severity))+fg(badgeText(severity))+"\x1b[1m", text)
+	return chrome.Paint(color, chrome.Bg(severityColor(severity))+chrome.Fg(badgeText(severity))+"\x1b[1m", text)
 }
 
 // badgeText is the ink the severity badge reads in: white on the deep ground
 // of critical and low, black on the bright high and medium grounds.
-func badgeText(severity Severity) int {
-	switch severity {
-	case Critical, Low:
-		return 15
-	}
-	return 0
-}
+// badgeInks is the badge's own ink table: the loud ends read white on their
+// hue, the middle tiers read dark.
+var badgeInks = [...]int{Critical: 15, Info: 0, Low: 15, Medium: 0, High: 0}
+
+func badgeText(severity Severity) int { return badgeInks[severity] }
 
 // processCount is the number of process rows the panel prints: the kernel's
 // pid 0 and karma's own process carry no finding.
@@ -807,20 +799,15 @@ func processCount(view *View, _ RenderOptions) int {
 }
 
 // kernelCount is the number of module-state rows, excluding the column head.
+// The view already projected the module list; the global registries only
+// join a whole-host run.
 func kernelCount(view *View, _ RenderOptions) int {
 	state := view.Kernel
 	if state == nil || !state.Collected {
 		return 0
 	}
-	count := 0
-	scoped := !view.Filter.globalScope()
-	for _, module := range state.Modules {
-		if scoped && (module.File == "" || !pathOrRealInScope(module.File, module.Facts.Real, view.Filter)) {
-			continue
-		}
-		count++
-	}
-	if !scoped {
+	count := len(state.Modules)
+	if view.Filter.globalScope() {
 		count += len(state.Dormant) + len(state.Hidden) + len(state.HiddenPIDs)
 		if state.Tainted != 0 {
 			count++

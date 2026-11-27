@@ -1,22 +1,76 @@
 package startup
 
 import (
+	"path/filepath"
 	"strings"
 
 	"karma/internal/trust"
 )
 
-// classifyPath maps a collected path to its surface and dialect. The native
-// collector fills File with it after reading; the path vocabularies live here
-// so the surfaces cannot drift from the parsers.
-func classifyPath(path string) (Surface, Dialect) {
+// classifyPath maps a collected path to its surface and dialect. The matchers
+// derive from the same pattern lists the collectors glob (surfaceRun.compiled,
+// built once in init), so a collected file classifies as what collected it by
+// construction; the custom matches are the surfaces whose vocabulary is
+// semantics rather than globs (profile homes, PAM's motd, systemd units). ok
+// answers whether any surface claimed the path — a collected file no surface
+// claims is the drift this function exists to surface.
+func classifyPath(path string) (Surface, Dialect, bool) {
 	for _, surface := range surfaceRuns {
-		if surface.match == nil || !surface.match(path) {
+		if !surface.matches(path) {
 			continue
 		}
-		return Surface(surface.name), surface.dialect(path)
+		return Surface(surface.name), surface.dialect(path), true
 	}
-	return SurfaceSystemd, systemdDialect(path)
+	return SurfaceSystemd, systemdDialect(path), false
+}
+
+// compilePattern turns one collector glob into a matcher. The grammar is the
+// small one the lists use: a literal path, a trailing or mid-path `*`
+// segment, and a suffix glob such as `*.sh` inside one segment.
+func compilePattern(pattern string) func(string) bool {
+	segs := strings.Split(strings.Trim(pattern, "/"), "/")
+	return func(path string) bool {
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) != len(segs) {
+			return false
+		}
+		for i, seg := range segs {
+			if !matchSegment(seg, parts[i]) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// matchSegment matches one path segment against one glob segment.
+func matchSegment(seg, part string) bool {
+	star := strings.IndexByte(seg, '*')
+	if star < 0 {
+		return seg == part
+	}
+	prefix, suffix := seg[:star], seg[star+1:]
+	return len(part) >= len(prefix)+len(suffix) &&
+		strings.HasPrefix(part, prefix) && strings.HasSuffix(part, suffix)
+}
+
+// generatorSearchDirs are every generator directory the systemd surface reads.
+var generatorSearchDirs = append(append([]string(nil), generatorDirs...), userGeneratorDirs...)
+
+// isSystemdUnitPath names the files the systemd surface collects: unit files,
+// their drop-ins, and the generators.
+func isSystemdUnitPath(path string) bool {
+	base := filepath.Base(path)
+	if IsUnitName(base) {
+		return true
+	}
+	if strings.HasSuffix(base, ".conf") {
+		dir := filepath.Base(filepath.Dir(path))
+		if strings.HasSuffix(dir, ".d") && IsUnitName(strings.TrimSuffix(dir, ".d")) {
+			return true
+		}
+	}
+	return isGeneratorPath(path)
 }
 
 func systemdDialect(path string) Dialect {
@@ -78,42 +132,6 @@ func isProfilePath(path string) bool {
 	return false
 }
 
-// isCronPath names the scheduled surfaces.
-func isCronPath(path string) bool {
-	switch path {
-	case "/etc/crontab", "/etc/anacrontab":
-		return true
-	}
-	for _, prefix := range []string{
-		"/etc/cron.d/", "/var/spool/cron/",
-		"/etc/cron.daily/", "/etc/cron.hourly/", "/etc/cron.weekly/", "/etc/cron.monthly/",
-		"/var/spool/at/",
-	} {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// isInitPath names the SysV boot scripts and the two classic boot hooks.
-func isInitPath(path string) bool {
-	switch path {
-	case "/etc/rc.local", "/etc/rc.d/rc.local", "/etc/init.sh":
-		return true
-	}
-	return strings.HasPrefix(path, "/etc/init.d/")
-}
-
-func isLoaderPath(path string) bool {
-	return path == "/etc/ld.so.preload" || path == "/etc/ld.so.cache"
-}
-
-func isUdevPath(path string) bool {
-	return strings.HasPrefix(path, "/etc/udev/rules.d/") ||
-		strings.HasPrefix(path, "/run/udev/rules.d/")
-}
-
 func isPAMPath(path string) bool {
 	return strings.HasPrefix(path, "/etc/pam.d/") || isMotdPath(path)
 }
@@ -123,34 +141,9 @@ func isMotdPath(path string) bool {
 	return strings.HasPrefix(path, "/etc/update-motd.d/")
 }
 
-func isSystemPath(path string) bool {
-	switch path {
-	case "/etc/fstab", "/etc/crypttab", "/etc/nsswitch.conf",
-		"/etc/hosts.allow", "/etc/hosts.deny":
-		return true
-	}
-	return false
-}
-
 func isGeneratorPath(path string) bool {
-	for _, dir := range append(append([]string(nil), generatorDirs...), userGeneratorDirs...) {
+	for _, dir := range generatorSearchDirs {
 		if strings.HasPrefix(path, dir+"/") {
-			return true
-		}
-	}
-	return false
-}
-
-func isSupervisorPath(path string) bool {
-	if isXinetdPath(path) {
-		return true
-	}
-	for _, prefix := range []string{
-		"/etc/supervisor/", "/etc/supervisord.conf", "/etc/supervisord.d/",
-		"/etc/s6/", "/etc/services.d/", "/etc/s6-overlay/",
-		"/docker-entrypoint.d/", "/docker-entrypoint-initdb.d/", "/entrypoint.d/",
-	} {
-		if strings.HasPrefix(path, prefix) {
 			return true
 		}
 	}
@@ -160,22 +153,4 @@ func isSupervisorPath(path string) bool {
 // isXinetdPath names the internet superserver's configuration layers.
 func isXinetdPath(path string) bool {
 	return path == "/etc/xinetd.conf" || strings.HasPrefix(path, "/etc/xinetd.d/")
-}
-
-func isXdgPath(path string) bool {
-	if strings.HasPrefix(path, "/etc/xdg/autostart/") ||
-		strings.HasPrefix(path, "/root/.config/autostart/") {
-		return true
-	}
-	return strings.HasPrefix(path, "/home/") && strings.Contains(path, "/.config/autostart/")
-}
-
-func isAptPath(path string) bool {
-	return path == "/etc/apt/apt.conf" || strings.HasPrefix(path, "/etc/apt/apt.conf.d/")
-}
-
-func isModulePath(path string) bool {
-	return strings.HasPrefix(path, "/etc/modprobe.d/") ||
-		strings.HasPrefix(path, "/run/modprobe.d/") ||
-		strings.HasPrefix(path, "/usr/local/lib/modprobe.d/")
 }

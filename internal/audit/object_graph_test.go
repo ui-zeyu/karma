@@ -29,7 +29,7 @@ func TestUnitFromCgroup(t *testing.T) {
 func TestExtractPaths(t *testing.T) {
 	body := []byte("exec /opt/app/agent --config=/etc/app/agent.yml\n" +
 		"see https://example.test/api/push and /usr/lib/libfoo.so\n")
-	got := extractPaths(body)
+	got := extractPaths(body, 500)
 	want := map[string]bool{"/opt/app/agent": true, "/etc/app/agent.yml": true, "/usr/lib/libfoo.so": true}
 	for _, path := range got {
 		delete(want, path)

@@ -18,7 +18,7 @@ import (
 //
 // This is the layer's one guarantee: a host path can be named by a page or a
 // caller without karma's own process ever parking on it. Every read of a host
-// file goes through here (ReadRegular, Cat, Tail, grepFile), so the guarantee
+// file goes through here (Open, Cat, ReadFile), so the guarantee
 // cannot be lost by a new call site forgetting it. Kernel pseudo-files (/proc,
 // /sys) are the deliberate exception: they have no FIFO semantics.
 func openRegular(path string) (*os.File, error) {

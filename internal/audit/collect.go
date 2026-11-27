@@ -11,18 +11,16 @@ import (
 	"karma/internal/trust"
 )
 
-// collectLocal reads the domains the plan selected: the startup surfaces
+// CollectLocal reads the domains the plan selected: the startup surfaces
 // through their parser, the running principals through /proc, the authority
 // objects through the same filesystem facts, the program directories through
 // the package inventory, and the content ledger from dpkg or rpm.
-func collectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot, error) {
-	if plan.Domains == 0 {
-		plan = FullPlan()
-	}
+func CollectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot, error) {
 	stage("catalog", progress)
 	catalog := prov.Open(ctx)
 	classifier := trust.NewClassifier(catalog)
-	boundary, packageTimes := readBoundary(catalog.Timeline())
+	packageTimes := catalog.Timeline()
+	boundary := readBoundary(packageTimes)
 	facts := classifier.Classify
 
 	stage("startup", progress)
@@ -45,9 +43,9 @@ func collectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot,
 		catalog:      catalog,
 		classifier:   classifier,
 	}
-	snapshot.Coverage = append(snapshot.Coverage, corpus.Gaps()...)
+	snapshot.Coverage = append(snapshot.Coverage, coverageLines("startup", CoverageDegraded, corpus.Gaps())...)
 	if analyzeErr != nil {
-		snapshot.Coverage = append(snapshot.Coverage, analyzeErr.Error())
+		snapshot.Coverage = append(snapshot.Coverage, coverageAbsent("startup", analyzeErr.Error()))
 	}
 	for _, edge := range snapshot.Activations {
 		remember(snapshot, edge.Trigger, edge.TriggerFacts)
@@ -56,13 +54,13 @@ func collectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot,
 	// The registry drives collection: one walk over the modules the plan
 	// selected, in the order their rows depend on each other.
 	snapshot.plan = plan
-	var gaps []string
+	var gaps []Coverage
 	for _, module := range modules {
 		if !plan.collects(module.Bit) || module.Collect == nil {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
-			gaps = append(gaps, "collection stopped: "+err.Error())
+			gaps = append(gaps, collectionStopped(err))
 			break
 		}
 		stage(module.Name, progress)
@@ -71,7 +69,7 @@ func collectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot,
 			return nil
 		})
 		if collectErr != nil {
-			gaps = append(gaps, collectErr.Error())
+			gaps = append(gaps, coverageAbsent(module.Name, collectErr.Error()))
 		}
 	}
 	snapshot.Coverage = append(snapshot.Coverage, gaps...)
@@ -80,7 +78,7 @@ func collectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot,
 	// content ledger cost a second of table building and hashing, and none of
 	// it should delay the operator who just pressed Ctrl-C.
 	if err := ctx.Err(); err != nil {
-		snapshot.Coverage = append(snapshot.Coverage, "collection stopped: "+err.Error())
+		snapshot.Coverage = append(snapshot.Coverage, collectionStopped(err))
 		return snapshot, err
 	}
 
@@ -93,9 +91,12 @@ func collectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot,
 		remember(snapshot, parent, facts(parent))
 	}
 	attachSnapshotEvidence(ctx, snapshot)
-	snapshot.Coverage = append(snapshot.Coverage, catalog.Gaps()...)
+	snapshot.Coverage = append(snapshot.Coverage, coverageLines("catalog", CoverageDegraded, catalog.Gaps())...)
+	if note := catalog.Note(); note != "" {
+		snapshot.Coverage = append(snapshot.Coverage, coverageAbsent("catalog", note))
+	}
 	if err := ctx.Err(); err != nil {
-		snapshot.Coverage = append(snapshot.Coverage, "collection stopped: "+err.Error())
+		snapshot.Coverage = append(snapshot.Coverage, collectionStopped(err))
 		return snapshot, err
 	}
 	return snapshot, nil
@@ -132,19 +133,14 @@ func collectParents(snapshot *Snapshot) []string {
 
 // attachSnapshotEvidence gathers the content ledger through the package
 // catalog: dpkg's own hashes for the judged set, a whole-system rpm -Va
-// otherwise.
+// otherwise. The catalog's index answers the ledger lookup directly — the
+// judged set probes it, and only what it answers is hashed and counted.
 func attachSnapshotEvidence(ctx context.Context, snapshot *Snapshot) {
 	catalog := snapshot.catalog
 	evidence := evidenceSet{kind: catalog.Kind(), mounts: readMounts()}
 	switch catalog.Kind() {
 	case "dpkg":
-		// Keep only the entries for paths this run judges. An empty judged
-		// set means an empty ledger, never the whole database: a mount-only or
-		// package-only run must not claim every package was checked.
-		expected := dpkgExpected(catalog.Hashes(), snapshot.Objects)
-		evidence.expected = expected
-		evidence.entries = len(expected)
-		evidence.packages = ledgerPackages(expected)
+		evidence.lookup = catalog.Hash
 		evidence.conffiles = catalogConf(catalog, snapshot.Objects)
 		evidence.rows = catalogLedgerFiles(catalog)
 	case "rpm":
@@ -159,7 +155,7 @@ func attachSnapshotEvidence(ctx context.Context, snapshot *Snapshot) {
 		}
 	}
 	evidence.objects = snapshot.Objects
-	evidence.actual = hashFiles(ctx, snapshot.Objects, evidence.expected)
+	evidence.actual, evidence.failed = hashFiles(ctx, snapshot.Objects, evidence.lookup)
 	snapshot.attachEvidence(evidence)
 }
 

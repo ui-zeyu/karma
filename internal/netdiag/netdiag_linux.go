@@ -4,6 +4,8 @@ package netdiag
 
 import (
 	"context"
+	"os"
+	"strconv"
 
 	"github.com/prometheus/procfs"
 	"github.com/vishvananda/netlink"
@@ -43,11 +45,8 @@ func Snapshot(ctx context.Context) ([]Socket, error) {
 					LocalPort: s.ID.SourcePort,
 					Peer:      s.ID.Destination,
 					PeerPort:  s.ID.DestinationPort,
-					IfIndex:   int(s.ID.Interface),
 					Inode:     uint64(s.INode),
 					UID:       s.UID,
-					RQueue:    s.RQueue,
-					WQueue:    s.WQueue,
 				})
 			}
 		}
@@ -95,22 +94,39 @@ func owners(ctx context.Context, inodes map[uint64]bool, keep func(pid int) bool
 		if keep != nil && !keep(p.PID) {
 			continue
 		}
-		fds, err := p.FileDescriptors()
-		if err != nil {
-			continue
-		}
-		targets, err := p.FileDescriptorTargets()
-		if err != nil {
+		targets := fdTable(p.PID)
+		if len(targets) == 0 {
 			continue
 		}
 		comm, _ := p.Comm()
-		for i, target := range targets {
+		for _, target := range targets {
 			inode, ok := SocketInode(target)
-			if !ok || !inodes[inode] || i >= len(fds) {
+			if !ok || !inodes[inode] {
 				continue
 			}
-			out[inode] = append(out[inode], Owner{PID: p.PID, FD: int(fds[i]), Comm: comm})
+			out[inode] = append(out[inode], Owner{PID: p.PID, Comm: comm})
 		}
+	}
+	return out
+}
+
+// fdTable reads one process's descriptor table in a single pass: one ReadDir
+// of /proc/[pid]/fd, then one Readlink per descriptor number. A process that
+// is gone, or a table this user may not read, answers nil. Only the link
+// targets matter to the owner walk; the descriptor numbers do not.
+func fdTable(pid int) []string {
+	dir := "/proc/" + strconv.Itoa(pid) + "/fd"
+	names, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		target, err := os.Readlink(dir + "/" + name.Name())
+		if err != nil {
+			continue
+		}
+		out = append(out, target)
 	}
 	return out
 }

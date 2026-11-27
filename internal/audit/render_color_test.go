@@ -5,6 +5,7 @@ package audit
 
 import (
 	"bytes"
+	chrome "karma/internal/panel"
 	"strings"
 	"testing"
 
@@ -26,14 +27,14 @@ func TestConnectionRowsHueTheInterpreterAndThePeer(t *testing.T) {
 	view := NewView(snapshot, Filter{})
 	rows := connectionRows(view, RenderOptions{Color: true})
 	shell := rowContaining(t, rows, "bash")
-	if !strings.Contains(shell, fg(hueAlert)) {
+	if !strings.Contains(shell, chrome.Fg(hueAlert)) {
 		t.Errorf("the interpreter's connection is not in the alert hue: %q", shell)
 	}
-	if !strings.Contains(shell, fg(hueInformation)) {
+	if !strings.Contains(shell, chrome.Fg(hueInformation)) {
 		t.Errorf("the established peer is not in the information hue: %q", shell)
 	}
 	service := rowContaining(t, rows, "sshd")
-	if strings.Contains(service, fg(hueAlert)) {
+	if strings.Contains(service, chrome.Fg(hueAlert)) {
 		t.Errorf("a service's connection wears the interpreter hue: %q", service)
 	}
 	for _, row := range connectionRows(view, RenderOptions{}) {
@@ -63,17 +64,17 @@ func TestKernelRowsHueStateTaintOriginAndHiddenItems(t *testing.T) {
 	rows := kernelRows(view, RenderOptions{Color: true})
 	module := rowContaining(t, rows, "xt_nat")
 	for _, want := range []int{hueLive, hueCaution, hueAlert} {
-		if !strings.Contains(module, fg(want)) {
+		if !strings.Contains(module, chrome.Fg(want)) {
 			t.Errorf("the module row misses hue %d: %q", want, module)
 		}
 	}
-	if row := rowContaining(t, rows, "hidden module"); !strings.Contains(row, fg(hueAlert)) {
+	if row := rowContaining(t, rows, "hidden module"); !strings.Contains(row, chrome.Fg(hueAlert)) {
 		t.Errorf("a hidden module is not in the alert hue: %q", row)
 	}
-	if row := rowContaining(t, rows, "hidden pid"); !strings.Contains(row, fg(hueAlert)) {
+	if row := rowContaining(t, rows, "hidden pid"); !strings.Contains(row, chrome.Fg(hueAlert)) {
 		t.Errorf("a hidden pid is not in the alert hue: %q", row)
 	}
-	if row := rowContaining(t, rows, "taint 1"); !strings.Contains(row, fg(hueCaution)) {
+	if row := rowContaining(t, rows, "taint 1"); !strings.Contains(row, chrome.Fg(hueCaution)) {
 		t.Errorf("the taint mask is not in the caution hue: %q", row)
 	}
 	for _, row := range kernelRows(view, RenderOptions{}) {

@@ -30,7 +30,7 @@ func authorizedKeysEdges(file File) []rawEdge {
 			if value == "" {
 				continue
 			}
-			edges = append(edges, shellEdges(value, rawEdge{
+			edges = append(edges, shellSnippetEdges(value, rawEdge{
 				surface: SurfaceSSH, phase: Login, subject: subject, trigger: file.Path,
 				line: index + 1, mechanism: "command=",
 			})...)
@@ -81,7 +81,7 @@ func sshConfigEdges(file File) []rawEdge {
 			if value == "" || value == "none" {
 				continue
 			}
-			edges = append(edges, shellEdges(value, rawEdge{
+			edges = append(edges, shellSnippetEdges(value, rawEdge{
 				surface: SurfaceSSH, phase: Login, subject: Subject{Class: AccountRoot}, trigger: file.Path,
 				line: index + 1, mechanism: Mechanism(line[:at]),
 			})...)
@@ -89,7 +89,7 @@ func sshConfigEdges(file File) []rawEdge {
 			if value == "" || value == "none" {
 				continue
 			}
-			edges = append(edges, shellEdges(value, rawEdge{
+			edges = append(edges, shellSnippetEdges(value, rawEdge{
 				surface: SurfaceSSH, phase: Session, subject: accountFor(file.Path), trigger: file.Path,
 				line: index + 1, mechanism: Mechanism(line[:at]),
 			})...)

@@ -17,19 +17,26 @@ type Reference struct {
 	Dynamic   bool
 }
 
-// ShellParses reports whether the shell grammar accepts a body. The parser is
-// the same one the edges use; a refusal is coverage, not a silent empty file.
-func ShellParses(body string) bool {
-	_, err := syntax.NewParser().Parse(strings.NewReader(body), "")
-	return err == nil
+// shellParser is the package's one shell parser. mvdan's parser is reusable,
+// so every body and every embedded snippet in a run parses through it.
+var shellParser = syntax.NewParser()
+
+// parseShellBody parses one shell body: a collected file, an embedded
+// snippet, or the code of an eval.
+func parseShellBody(body string) (*syntax.File, error) {
+	return shellParser.Parse(strings.NewReader(body), "")
 }
 
 // References extracts the file references of a shell body. A target the shell
 // builds at runtime is returned with Dynamic set and no path to judge.
 func References(path, body string) []Reference {
+	tree, err := parseShellBody(body)
+	if err != nil {
+		return nil
+	}
 	base := rawEdge{trigger: path}
 	var refs []Reference
-	for _, edge := range shellEdges(body, base) {
+	for _, edge := range shellEdges(base, tree, body) {
 		refs = append(refs, Reference{
 			Target:    edge.target,
 			Kind:      edge.kind,
@@ -40,16 +47,36 @@ func References(path, body string) []Reference {
 	return refs
 }
 
-// shellEdges reads a POSIX shell file's startup edges. The parser is the shell
-// language's own: an assignment, a source and an exec are recognized as the
-// syntax it is, whatever the line is indented like and whichever branch of an
-// if it sits in. A file that is not a shell script parses to nothing, which is
-// the quiet answer for a completion helper or a locale fix.
-func shellEdges(src string, base rawEdge) []rawEdge {
-	file, err := syntax.NewParser().Parse(strings.NewReader(src), base.trigger)
+// shellFileEdges parses one collected file as shell and states its edges. A
+// body the shell grammar refuses is a coverage gap, never a silent empty
+// file: the audit states what it could not read.
+func shellFileEdges(corpus *Corpus, file File, base rawEdge) []rawEdge {
+	tree, err := parseShellBody(file.Body)
+	if err != nil {
+		corpus.addGap("did not parse as shell: " + file.Path)
+		return nil
+	}
+	return shellEdges(base, tree, file.Body)
+}
+
+// shellSnippetEdges parses one shell snippet embedded in another format (a
+// crontab command, a udev value, a unit key) and states its edges. A snippet
+// the grammar refuses states nothing: it is a fragment the surface's own
+// format owns, not a file the audit can cite.
+func shellSnippetEdges(src string, base rawEdge) []rawEdge {
+	tree, err := parseShellBody(src)
 	if err != nil {
 		return nil
 	}
+	return shellEdges(base, tree, src)
+}
+
+// shellEdges reads a parsed shell file's startup edges. The parser is the shell
+// language's own: an assignment, a source and an exec are recognized as the
+// syntax it is, whatever the line is indented like and whichever branch of an
+// if it sits in. src is the text the tree was parsed from, for the dynamic
+// rows that quote the trigger's own spelling.
+func shellEdges(base rawEdge, file *syntax.File, src string) []rawEdge {
 	var edges []rawEdge
 	syntax.Walk(file, func(node syntax.Node) bool {
 		switch node := node.(type) {
@@ -79,7 +106,7 @@ func commandEdges(src string, base rawEdge, args []*syntax.Word) []rawEdge {
 	if !literal {
 		word := wordText(src, args[0])
 		if looksLikePath(word) {
-			return []rawEdge{edgeFor(base, args[0], word, Exec, false, true)}
+			return []rawEdge{edgeFor(base, args[0], word, Exec, true)}
 		}
 		return nil
 	}
@@ -95,7 +122,7 @@ func commandEdges(src string, base rawEdge, args []*syntax.Word) []rawEdge {
 		if code, ok := wordLit(args[1]); ok {
 			nested := base
 			nested.line = baseLine(base.line) + int(args[0].Pos().Line()) - 1
-			return shellEdges(code, nested)
+			return shellSnippetEdges(code, nested)
 		}
 		// eval of a command's output is code the file does not hold; there is
 		// no literal target to place and nothing a static read can name.
@@ -116,12 +143,12 @@ func sourceEdges(src string, base rawEdge, args []*syntax.Word) []rawEdge {
 		}
 		target, ok := wordLit(arg)
 		if !ok {
-			return []rawEdge{edgeFor(base, arg, wordText(src, arg), Source, false, true)}
+			return []rawEdge{edgeFor(base, arg, wordText(src, arg), Source, true)}
 		}
 		if !filepath.IsAbs(target) {
-			return []rawEdge{edgeFor(base, arg, target, Source, false, true)}
+			return []rawEdge{edgeFor(base, arg, target, Source, true)}
 		}
-		return []rawEdge{edgeFor(base, arg, target, Source, false, false)}
+		return []rawEdge{edgeFor(base, arg, target, Source, false)}
 	}
 	return nil
 }
@@ -145,43 +172,43 @@ func literalCommandEdges(src string, base rawEdge, args []*syntax.Word, mechanis
 				if !looksLikePath(word) {
 					return nil
 				}
-				return []rawEdge{edgeFor(base, arg, word, Exec, false, true)}
+				return []rawEdge{edgeFor(base, arg, word, Exec, true)}
 			}
-			target, kind, viaInterpreter, dynamic := literalTarget(words)
+			target, kind, dynamic := literalTarget(words)
 			switch {
 			case dynamic:
-				return []rawEdge{edgeFor(base, arg, wordText(src, arg), Exec, false, true)}
+				return []rawEdge{edgeFor(base, arg, wordText(src, arg), Exec, true)}
 			case target != "":
-				return []rawEdge{edgeFor(base, arg, target, kind, viaInterpreter, false)}
+				return []rawEdge{edgeFor(base, arg, target, kind, false)}
 			case isWrapper(words[0]) || IsInterpreter(words[0]):
 				// The wrapper or interpreter was still looking for its script
 				// when the word stopped being literal.
-				return []rawEdge{edgeFor(base, arg, wordText(src, arg), Exec, false, true)}
+				return []rawEdge{edgeFor(base, arg, wordText(src, arg), Exec, true)}
 			}
 			return nil
 		}
 		words = append(words, word)
 	}
-	target, kind, viaInterpreter, dynamic := literalTarget(words)
+	target, kind, dynamic := literalTarget(words)
 	if target == "" && !dynamic {
 		return nil
 	}
-	return []rawEdge{edgeFor(base, args[0], target, kind, viaInterpreter, dynamic)}
+	return []rawEdge{edgeFor(base, args[0], target, kind, dynamic)}
 }
 
 // literalTarget is the shared reading of a command word list, for a shell
 // line and for an ExecStart. A bare command name stays dynamic: the PATH it
 // resolves through is runtime state, and coverage is where that decision
 // belongs.
-func literalTarget(words []string) (string, Kind, bool, bool) {
+func literalTarget(words []string) (string, Kind, bool) {
 	if len(words) == 0 {
-		return "", "", false, false
+		return "", "", false
 	}
 	target := commandTargetFor(words)
 	if target.kind == "" {
 		target.kind = Exec
 	}
-	return target.target, target.kind, target.viaInterpreter, target.dynamic
+	return target.target, target.kind, target.dynamic
 }
 
 // assignmentEdges reads the assignments whose value is a path. The loader
@@ -203,14 +230,14 @@ func assignmentEdges(base rawEdge, assigns []*syntax.Assign) []rawEdge {
 		mechanism.mechanism = Mechanism("export " + name)
 		if name == "LD_PRELOAD" || name == "LD_AUDIT" {
 			for _, path := range splitPaths(value) {
-				edges = append(edges, edgeFor(mechanism, assign.Value, path, Preload, false, !filepath.IsAbs(path)))
+				edges = append(edges, edgeFor(mechanism, assign.Value, path, Preload, !filepath.IsAbs(path)))
 			}
 			continue
 		}
 		if !filepath.IsAbs(value) || strings.ContainsAny(value, " \t:") {
 			continue
 		}
-		edges = append(edges, edgeFor(mechanism, assign.Value, value, Env, false, false))
+		edges = append(edges, edgeFor(mechanism, assign.Value, value, Env, false))
 	}
 	return edges
 }
@@ -266,7 +293,7 @@ func baseLine(line int) int {
 }
 
 // edgeFor builds one edge at the node that named the target.
-func edgeFor(base rawEdge, node syntax.Node, target string, kind Kind, viaInterpreter, dynamic bool) rawEdge {
+func edgeFor(base rawEdge, node syntax.Node, target string, kind Kind, dynamic bool) rawEdge {
 	// base.line is the 1-based line of the snippet a nested command was read
 	// from (a crontab command, a udev value); the node's own position is
 	// 1-based inside that snippet, so the first snippet line keeps base.line.
@@ -282,16 +309,15 @@ func edgeFor(base rawEdge, node syntax.Node, target string, kind Kind, viaInterp
 		mechanism = Mechanism(kind)
 	}
 	return rawEdge{
-		surface:        base.surface,
-		phase:          base.phase,
-		subject:        base.subject,
-		trigger:        base.trigger,
-		line:           line,
-		mechanism:      mechanism,
-		target:         target,
-		kind:           kind,
-		viaInterpreter: viaInterpreter,
-		dynamic:        dynamic,
+		surface:   base.surface,
+		phase:     base.phase,
+		subject:   base.subject,
+		trigger:   base.trigger,
+		line:      line,
+		mechanism: mechanism,
+		target:    target,
+		kind:      kind,
+		dynamic:   dynamic,
 	}
 }
 

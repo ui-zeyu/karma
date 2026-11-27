@@ -8,7 +8,6 @@ package cli
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -17,24 +16,58 @@ import (
 	chrome "karma/internal/panel"
 )
 
-// pageSection is one panel of a command page: the title and its rows.
+// pageSection is one panel of a command page: the kind writeUsage filters
+// by, the title the panel is drawn under, and its rows.
 type pageSection struct {
+	kind  string
 	title string
 	rows  []string
 }
 
-// startRows is the entry guide shared by the root help and the vocabulary
-// page: the command on the left, the question it answers on the right.
-var startRows = []string{
-	startRow("karma", "audit the whole host"),
-	startRow("karma <domain|path>", "audit one slice of it"),
-	startRow("karma graph <word>", "one domain or object as relations"),
-	startRow("karma show <section>", "one raw inventory, unjudged"),
-	startRow("karma watch proc|socket", "live events"),
+// startAnswers is the entry guide's right column: the question each command
+// answers. A command missing from the table has no start row.
+var startAnswers = map[string]string{
+	"graph": "one domain or object as relations",
+	"show":  "one raw inventory, unjudged",
+	"watch": "live events",
 }
 
-// startRow lines one start-table entry up in the command column.
-func startRow(command, answer string) string { return column(26, command, answer) }
+// reservedNames are cobra's own commands: neither the entry guide nor the
+// vocabulary page is about them.
+var reservedNames = map[string]bool{"completion": true, "help": true}
+
+// startRows is the entry guide shared by the root help and the vocabulary
+// page. The command spellings come from the tree itself; only the question
+// each command answers is kept in the table above.
+func startRows(cmd *cobra.Command) []string {
+	root := cmd.Root()
+	entries := []struct{ left, right string }{
+		{root.Name(), "audit the whole host"},
+		{root.Name() + " <domain|path>", "audit one slice of it"},
+	}
+	for _, sub := range root.Commands() {
+		if !sub.IsAvailableCommand() || reservedNames[sub.Name()] {
+			continue
+		}
+		answer, ok := startAnswers[sub.Name()]
+		if !ok {
+			continue
+		}
+		entries = append(entries, struct{ left, right string }{root.Name() + " " + sub.Use, answer})
+	}
+	width := 0
+	for _, entry := range entries {
+		if width < len(entry.left) {
+			width = len(entry.left)
+		}
+	}
+	width += 2
+	rows := make([]string, len(entries))
+	for index, entry := range entries {
+		rows[index] = column(width, entry.left, entry.right)
+	}
+	return rows
+}
 
 // column lines one entry up in a fixed left column.
 func column(width int, left, right string) string {
@@ -100,8 +133,8 @@ func writeUsage(w io.Writer, cmd *cobra.Command) {
 	color := isTerminal(w)
 	printed := false
 	for _, section := range helpSections(cmd, width, color) {
-		switch section.title {
-		case "usage", "commands", "flags", "global flags":
+		switch section.kind {
+		case "usage", "commands", "flags", "global":
 		default:
 			continue
 		}
@@ -129,13 +162,6 @@ func writePage(w io.Writer, cmd *cobra.Command, sections []pageSection, footer s
 	}
 }
 
-func pageByline() string {
-	if user := os.Getenv("USER"); user != "" {
-		return chrome.SafeText(user) + " "
-	}
-	return "karma "
-}
-
 // pageMasthead is the report's first panel: the command path as the level-one
 // band, the version as the level-two head, the description inside the rail.
 func pageMasthead(cmd *cobra.Command, width int, color bool) string {
@@ -143,7 +169,7 @@ func pageMasthead(cmd *cobra.Command, width int, color bool) string {
 	if version == "" {
 		version = "dev"
 	}
-	band := chrome.Band(" "+strings.ToUpper(cmd.CommandPath()), pageByline(), width,
+	band := chrome.Band(" "+strings.ToUpper(cmd.CommandPath()), chrome.Byline(), width,
 		chrome.BannerBG, chrome.BannerFG, true, color)
 	head := chrome.Band(" "+version, "", width-2, chrome.SubBandBG, chrome.SubBandFG, false, color)
 	return band + "\n" + chrome.Rail(head, descriptionRows(cmd), width, chrome.MutedColor, color)
@@ -179,12 +205,12 @@ func helpSections(cmd *cobra.Command, width int, color bool) []pageSection {
 	if cmd.Parent() == nil {
 		// The root page leads with the entry guide: which command answers
 		// which question.
-		sections = append(sections, pageSection{"start", startRows})
+		sections = append(sections, pageSection{kind: "start", title: "start", rows: startRows(cmd)})
 	}
 	if cmd.Parent() == nil || cmd.Name() == "audit" || cmd.Name() == "show" {
 		// The commands that take narrowing words state them here; the full
 		// vocabulary page is `karma list`.
-		sections = append(sections, pageSection{"scope", scopeRows(width - 4)})
+		sections = append(sections, pageSection{kind: "scope", title: "scope", rows: scopeRows(width - 4)})
 	}
 	if cmd.Runnable() || cmd.HasAvailableSubCommands() {
 		var rows []string
@@ -194,10 +220,10 @@ func helpSections(cmd *cobra.Command, width int, color bool) []pageSection {
 		if cmd.HasAvailableSubCommands() {
 			rows = append(rows, useLineStyled(path, path+" [command]", bold, muted))
 		}
-		sections = append(sections, pageSection{"usage", rows})
+		sections = append(sections, pageSection{kind: "usage", title: "usage", rows: rows})
 	}
 	if rows := exampleRows(cmd.Example); len(rows) > 0 {
-		sections = append(sections, pageSection{"examples", rows})
+		sections = append(sections, pageSection{kind: "examples", title: "examples", rows: rows})
 	}
 	if cmd.HasAvailableSubCommands() {
 		var rows []string
@@ -208,13 +234,13 @@ func helpSections(cmd *cobra.Command, width int, color bool) []pageSection {
 			}
 			rows = append(rows, bold(rpad(sub.Name(), cmd.NamePadding()))+muted("  "+sub.Short))
 		}
-		sections = append(sections, pageSection{"commands", rows})
+		sections = append(sections, pageSection{kind: "commands", title: "commands", rows: rows})
 	}
 	if local := cmd.LocalFlags().FlagUsages(); local != "" {
-		sections = append(sections, pageSection{"flags", flagRows(local, width-4, bold, muted)})
+		sections = append(sections, pageSection{kind: "flags", title: "flags", rows: flagRows(local, width-4, bold, muted)})
 	}
 	if inherited := cmd.InheritedFlags().FlagUsages(); inherited != "" {
-		sections = append(sections, pageSection{"global flags", flagRows(inherited, width-4, bold, muted)})
+		sections = append(sections, pageSection{kind: "global", title: "global flags", rows: flagRows(inherited, width-4, bold, muted)})
 	}
 	return sections
 }

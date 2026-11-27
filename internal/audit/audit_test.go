@@ -134,7 +134,7 @@ func TestJudgeRuntimeProcessAndAuthorityObject(t *testing.T) {
 		}},
 	}
 	report := Judge(snapshot, Filter{})
-	classes := map[string]bool{}
+	classes := map[Class]bool{}
 	for _, finding := range report.Findings {
 		classes[finding.Class] = true
 	}

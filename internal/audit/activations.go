@@ -16,18 +16,11 @@ import (
 	"karma/internal/trust"
 )
 
-// edgeQuotes cites the trigger line the activation edge was read from.
-func edgeQuotes(edge startup.Edge) []Quote {
-	if edge.Source == "" {
-		return nil
-	}
-	return []Quote{{Path: edge.Trigger, Line: edge.Line, Text: edge.Source}}
-}
-
 // judgeActivations states every activation edge the filter selects: an
 // introduced or modified end, a writable end, or an executable target no
 // package owns.
-func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
+func judgeActivations(j *judgePass) []Coverage {
+	snapshot, a, filter, add := j.snapshot, j.a, j.filter, j.add
 	if len(filter.PIDs) > 0 {
 		return nil
 	}
@@ -56,31 +49,28 @@ func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Fi
 			// directory without the sticky bit, is handing its subject a
 			// file-planting ground. Everything else stays profile-only.
 			if severity, ok := contextRisk(edge); ok {
-				report.Activated++
+				j.activated++
 				reach := edgeReach(edge)
 				add(Finding{
 					Class: "activation-context", Severity: severity,
 					Title: "a unit's declared write access plants files",
-					Path:  edge.Trigger, Origin: a.read(edge.TriggerFacts, false).origin, Reach: reach,
+					Path:  edge.Trigger, Origin: a.read(edge.TriggerFacts).origin, Reach: reach,
 					Detail: fmt.Sprintf("%s in %s writes %s", edge.Mechanism, edge.Trigger, edge.Target),
 					Evidence: []string{
 						fmt.Sprintf("declared by %s (%s)", edge.Trigger, edge.Phase),
 						fmt.Sprintf("runs as %s, reach %s", edge.Subject, reach),
 					},
-					Quotes: edgeQuotes(edge), Trace: edgeTrace(edge),
+					Quotes: cite(edge.Trigger, edge.Line, edge.Source), Trace: edgeTrace(edge),
 				})
 			}
 			continue
 		}
-		report.Activated++
-		triggerStory := a.read(edge.TriggerFacts, false)
-		targetStory := a.read(edge.TargetFacts, false)
+		j.activated++
+		triggerStory := a.read(edge.TriggerFacts)
+		targetStory := a.read(edge.TargetFacts)
 		reach := edgeReach(edge)
-		origin := weaker(triggerStory.origin, targetStory.origin)
-		softened := targetStory.softened
-		if triggerStory.origin.Rank() <= targetStory.origin.Rank() {
-			softened = triggerStory.softened
-		}
+		merged := triggerStory.against(targetStory)
+		origin := merged.origin
 		path := edge.Target
 		self := edge.Trigger == edge.Target
 		detail := string(edge.Mechanism) + " in " + edge.Trigger
@@ -106,34 +96,31 @@ func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Fi
 				Evidence: append(evidence,
 					"row: "+edge.Note,
 					"the tree's code arrives from another host at every boot"),
-				Quotes: edgeQuotes(edge), Trace: edgeTrace(edge),
+				Quotes: cite(edge.Trigger, edge.Line, edge.Source), Trace: edgeTrace(edge),
 			})
-		case origin == Runtime || origin == Modified:
+		case origin.arrived():
 			if !self && triggerStory.origin.Rank() <= targetStory.origin.Rank() {
 				path = edge.Trigger
 				detail += " activates " + edge.Target
 			} else if !self {
 				detail = "activated by " + edge.Trigger + " (" + string(edge.Mechanism) + ")"
 			}
-			class := "activation-introduction"
+			class := Class("activation-introduction")
 			if origin == Modified {
-				class = "activation-modification"
+				class = Class("activation-modification")
 			}
-			severity := severityFor(origin, reach)
-			if softened && severity > Low {
-				severity--
-			}
+			severity := merged.soften(severityFor(origin, reach))
 			add(Finding{
 				Class: class, Severity: severity, Title: titleFor(class),
 				Path: path, Origin: origin, Reach: reach, Detail: detail, Evidence: evidence,
-				Quotes: edgeQuotes(edge), Trace: edgeTrace(edge),
+				Quotes: cite(edge.Trigger, edge.Line, edge.Source), Trace: edgeTrace(edge),
 			})
 		case writableEdge(edge):
 			add(Finding{
 				Class: "activation-writable", Severity: writableSeverity(reach),
 				Title: "activation surface writable by someone other than its owner",
 				Path:  edge.Trigger, Origin: triggerStory.origin, Reach: reach, Detail: detail, Evidence: evidence,
-				Quotes: edgeQuotes(edge), Trace: edgeTrace(edge),
+				Quotes: cite(edge.Trigger, edge.Line, edge.Source), Trace: edgeTrace(edge),
 			})
 		case unownedTarget(edge):
 			severity := unownedSeverity(reach)
@@ -148,13 +135,16 @@ func judgeActivations(snapshot *Snapshot, report *Report, a *assessor, filter Fi
 				Class: "unowned-target", Severity: severity,
 				Title: "activation target no package owns",
 				Path:  edge.Target, Origin: targetStory.origin, Reach: reach, Detail: detail, Evidence: evidence,
-				Quotes: edgeQuotes(edge), Trace: edgeTrace(edge),
+				Quotes: cite(edge.Trigger, edge.Line, edge.Source), Trace: edgeTrace(edge),
 			})
 		}
 	}
-	var coverage []string
+	var coverage []Coverage
 	if dynamic > 0 {
-		coverage = append(coverage, fmt.Sprintf("%d activation target(s) were dynamic and could not be judged", dynamic))
+		coverage = append(coverage, Coverage{
+			Area: "persistence", Status: CoverageDegraded, Count: dynamic,
+			Detail: fmt.Sprintf("%d activation target(s) were dynamic and could not be judged", dynamic),
+		})
 	}
 	return append(coverage, serviceCoverage(snapshot)...)
 }
@@ -237,14 +227,14 @@ func contextRisk(edge startup.Edge) (Severity, bool) {
 	return Low, false
 }
 
-func titleFor(class string) string {
+func titleFor(class Class) string {
 	switch class {
 	case "activation-introduction":
 		return "runtime object in an activation surface"
 	case "activation-modification":
 		return "activation surface changed after the artifact"
 	}
-	return class
+	return string(class)
 }
 
 func edgeReach(edge startup.Edge) Reach {
@@ -287,30 +277,6 @@ func writableEdge(edge startup.Edge) bool {
 	return false
 }
 
-func surfaceInScope(surface startup.Surface, filter Filter) bool {
-	if filter.Surfaces == nil {
-		return true
-	}
-	return filter.Surfaces.Has(surface)
-}
-
-func unitInScope(trigger string, filter Filter) bool {
-	return unitAllowed(activationUnit(trigger), filter)
-}
-
-// unitAllowed reads the positive unit scope and its exclusions. An exclusion
-// alone narrows one unit; it never turns the whole unit inventory off.
-func unitAllowed(unit string, filter Filter) bool {
-	template := templateUnit(unit)
-	if filter.ExcludeUnits[unit] || filter.ExcludeUnits[template] {
-		return false
-	}
-	if len(filter.Units) == 0 {
-		return true
-	}
-	return filter.Units[unit] || filter.Units[template]
-}
-
 // activationUnit is the unit a trigger file belongs to: the file's own name, or
 // the unit a drop-in directory belongs to.
 func activationUnit(trigger string) string {
@@ -339,7 +305,7 @@ func templateUnit(name string) string {
 // did not read. It is the honest answer to "systemctl shows a service the audit
 // does not mention": either the unit file is outside the read layers or systemd
 // started it transiently.
-func serviceCoverage(snapshot *Snapshot) []string {
+func serviceCoverage(snapshot *Snapshot) []Coverage {
 	if len(snapshot.Services) == 0 {
 		return nil
 	}
@@ -358,13 +324,16 @@ func serviceCoverage(snapshot *Snapshot) []string {
 		return nil
 	}
 	const shown = 10
-	var lines []string
+	var records []Coverage
 	for index, unit := range missing {
 		if index == shown {
-			lines = append(lines, fmt.Sprintf("... and %d more running service(s) with no activation edge", len(missing)-shown))
+			records = append(records, Coverage{
+				Area: "persistence", Status: CoverageDegraded, Count: len(missing) - shown,
+				Detail: fmt.Sprintf("... and %d more running service(s) with no activation edge", len(missing)-shown),
+			})
 			break
 		}
-		lines = append(lines, "running service "+unit+" has no activation edge")
+		records = append(records, coverageGap("persistence", "running service "+unit+" has no activation edge"))
 	}
-	return lines
+	return records
 }

@@ -44,12 +44,12 @@ func (p *procPoll) Run(ctx context.Context, out chan<- Event) error {
 		}
 		now := time.Now()
 		for _, state := range ended {
-			if !send(ctx, out, state.event(KindExit, now)) {
+			if !deliver(ctx, out, state.event(KindExit, now)) {
 				return nil
 			}
 		}
 		for _, state := range started {
-			if !send(ctx, out, state.event(KindExec, now)) {
+			if !deliver(ctx, out, state.event(KindExec, now)) {
 				return nil
 			}
 		}

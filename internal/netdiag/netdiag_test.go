@@ -28,25 +28,19 @@ func TestStateWord(t *testing.T) {
 
 func TestEndpoint(t *testing.T) {
 	cases := []struct {
-		ip     string
-		port   uint16
-		ifname string
-		want   string
+		ip   string
+		port uint16
+		want string
 	}{
-		{"0.0.0.0", 22, "", "0.0.0.0:22"},
-		{"0.0.0.0", 0, "", "0.0.0.0:*"},
-		{"127.0.0.53", 53, "", "127.0.0.53:53"},
-		{"::", 22, "", "[::]:22"},
-		{"::1", 631, "", "[::1]:631"},
-		// ss appends the bound interface between the address and the port
-		{"127.0.0.53", 53, "lo", "127.0.0.53%lo:53"},
-		{"172.17.234.94", 68, "eth0", "172.17.234.94%eth0:68"},
-		{"fe80::216:3eff:fe3a:2862", 546, "eth0", "[fe80::216:3eff:fe3a:2862]%eth0:546"},
-		{"10.0.0.1", 0, "eth0", "10.0.0.1%eth0:*"},
+		{"0.0.0.0", 22, "0.0.0.0:22"},
+		{"0.0.0.0", 0, "0.0.0.0:*"},
+		{"127.0.0.53", 53, "127.0.0.53:53"},
+		{"::", 22, "[::]:22"},
+		{"::1", 631, "[::1]:631"},
 	}
 	for _, c := range cases {
-		if got := Endpoint(net.ParseIP(c.ip), c.port, c.ifname); got != c.want {
-			t.Errorf("Endpoint(%s, %d, %q) = %q, want %q", c.ip, c.port, c.ifname, got, c.want)
+		if got := Endpoint(net.ParseIP(c.ip), c.port); got != c.want {
+			t.Errorf("Endpoint(%s, %d) = %q, want %q", c.ip, c.port, got, c.want)
 		}
 	}
 }

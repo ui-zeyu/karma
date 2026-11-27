@@ -43,7 +43,7 @@ func TestFlowEvent(t *testing.T) {
 }
 
 func TestOpenConntrackRefusesProcess(t *testing.T) {
-	if _, err := Open(FamilyProcess, Options{Backend: "conntrack"}); err == nil {
+	if _, err := Open(context.Background(), FamilyProcess, Options{Backend: "conntrack"}); err == nil {
 		t.Fatal("conntrack must refuse a process watch")
 	}
 }
@@ -55,13 +55,11 @@ func TestOpenConntrackRefusesProcess(t *testing.T) {
 func TestFlowJoinMatchesBothOrientations(t *testing.T) {
 	outbound := sockKey{Proto: "tcp", Local: "10.0.0.2:49812", Peer: "198.51.100.25:443", Inode: 99}
 	stale := sockKey{Proto: "tcp", Local: "198.51.100.25:443", Peer: "10.0.0.2:49812", Inode: 100}
-	joiner := flowJoiner{
-		ready: true, when: time.Now(),
-		rows: map[sockKey]sockState{
-			outbound: {Key: outbound, State: "ESTAB"},
-			stale:    {Key: stale, State: "TIME-WAIT"},
-		},
-	}
+	joiner := flowJoiner{ready: true, when: time.Now()}
+	joiner.index(map[sockKey]sockState{
+		outbound: {Key: outbound, State: "ESTAB"},
+		stale:    {Key: stale, State: "TIME-WAIT"},
+	})
 	pid, row, joined := joiner.owner(context.Background(), "tcp", "10.0.0.2:49812", "198.51.100.25:443", time.Now())
 	if !joined || row.Key.Inode != 99 {
 		t.Errorf("outbound join = pid %d row %+v joined %t, want the established row", pid, row.Key, joined)

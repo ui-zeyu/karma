@@ -117,10 +117,3 @@ func steps(texts ...string) []Step {
 	}
 	return out
 }
-
-// each walks the nodes in insertion order.
-func (g *GraphBuilder) each(visit func(*GraphNode)) {
-	for _, id := range g.order {
-		visit(g.nodes[id])
-	}
-}

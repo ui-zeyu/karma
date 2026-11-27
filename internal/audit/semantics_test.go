@@ -230,8 +230,11 @@ func TestCapabilityFindingUsesTheEffectiveUID(t *testing.T) {
 		PID: 424242, UID: 1000, EUID: 0, CapEff: 1 << 7,
 	}}}
 	var findings []Finding
-	judgeLoaders(snapshot, newAssessor(snapshot), Filter{}, func(f Finding) {
-		findings = append(findings, f)
+	judgeLoaders(&judgePass{
+		snapshot: snapshot,
+		a:        newAssessor(snapshot),
+		filter:   Filter{},
+		add:      func(f Finding) { findings = append(findings, f) },
 	})
 	for _, finding := range findings {
 		if finding.Class == "process-capability" {
@@ -296,7 +299,7 @@ func TestServiceCoverage(t *testing.T) {
 		Activations: []startup.Edge{{Trigger: "/etc/systemd/system/sshd.service"}},
 	}
 	lines := serviceCoverage(snapshot)
-	if len(lines) != 1 || !strings.Contains(lines[0], "getty@tty1.service") {
+	if len(lines) != 1 || !strings.Contains(lines[0].Detail, "getty@tty1.service") {
 		t.Errorf("coverage = %v, want the instance unit whose template was not read", lines)
 	}
 	snapshot.Activations = append(snapshot.Activations, startup.Edge{Trigger: "/etc/systemd/system/getty@.service"})

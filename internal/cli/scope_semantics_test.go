@@ -4,6 +4,7 @@ package cli
 // and a domain word never turns another domain's rows off.
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -202,7 +203,7 @@ func TestExcludedActivityRemovesBothDomains(t *testing.T) {
 	if plan.Has(audit.DomainProcesses) || plan.Has(audit.DomainNetwork) {
 		t.Errorf("!activity kept activity domains: %b", plan.Domains)
 	}
-	if off := audit.OffDomains(plan.Domains); !contains(off, "processes") || !contains(off, "network") {
+	if off := plan.OffDomains(); !slices.Contains(off, "processes") || !slices.Contains(off, "network") {
 		t.Errorf("off domains = %v", off)
 	}
 }
@@ -215,15 +216,15 @@ func TestOffDomainsListTheUnjudgedDomains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	off := audit.OffDomains(parsed.plan().Domains)
-	if contains(off, "persistence") {
+	off := parsed.plan().OffDomains()
+	if slices.Contains(off, "persistence") {
 		t.Errorf("the judged domain is listed off: %v", off)
 	}
 	for _, word := range audit.DomainWords() {
 		if word == "persistence" {
 			continue
 		}
-		if !contains(off, word) {
+		if !slices.Contains(off, word) {
 			t.Errorf("off domains = %v, want %s listed", off, word)
 		}
 	}
@@ -231,7 +232,7 @@ func TestOffDomainsListTheUnjudgedDomains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if off := audit.OffDomains(bare.plan().Domains); len(off) != 0 {
+	if off := bare.plan().OffDomains(); len(off) != 0 {
 		t.Errorf("a bare run lists off domains: %v", off)
 	}
 }

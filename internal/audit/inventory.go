@@ -42,7 +42,8 @@ type UnownedFile struct {
 // activation target or a process image is already judged by its own check.
 // collectFiles is the files domain's collection: the program directories,
 // plus the entrypoint layer at the filesystem root.
-func collectFiles(ctx context.Context, snapshot *Snapshot, plan Plan) []string {
+func collectFiles(ctx context.Context, snapshot *Snapshot) []Coverage {
+	plan := snapshot.plan
 	gaps := collectInventory(ctx, snapshot, plan)
 	// The root layer is cheap to read and stays outside every InventoryRoot;
 	// the path filter keeps it out of a scoped report when it is not named.
@@ -75,7 +76,7 @@ func dedupeUnowned(files []UnownedFile) []UnownedFile {
 // collectRootScripts names executables at / itself. A container entrypoint or
 // a dropped payload at the root is outside every program directory, and the
 // static inventory would otherwise never see it.
-func collectRootScripts(ctx context.Context, snapshot *Snapshot) []string {
+func collectRootScripts(ctx context.Context, snapshot *Snapshot) []Coverage {
 	if snapshot.catalog == nil || snapshot.catalog.Kind() == "none" {
 		return nil
 	}
@@ -83,7 +84,7 @@ func collectRootScripts(ctx context.Context, snapshot *Snapshot) []string {
 		return snapshot.catalog.OwnedPath(path) || snapshot.catalog.Diversion(path)
 	}, activePaths(snapshot))
 	if err != nil {
-		return []string{"root entrypoint scan: " + err.Error()}
+		return []Coverage{coverageGap("files", "root entrypoint scan: "+err.Error())}
 	}
 	if len(files) == 0 {
 		return nil
@@ -138,24 +139,29 @@ func scanRootScripts(ctx context.Context, root string, owned func(string) bool, 
 	return files, total, ownedCount, nil
 }
 
-func collectInventory(ctx context.Context, snapshot *Snapshot, plan Plan) []string {
+func collectInventory(ctx context.Context, snapshot *Snapshot, plan Plan) []Coverage {
 	roots := plan.InventoryRoots
 	if len(roots) == 0 {
 		roots = inventoryRoots
 	}
 	catalog := snapshot.catalog
 	if catalog == nil || catalog.Kind() == "none" {
-		return []string{"no package database: the static inventory cannot run"}
+		return []Coverage{coverageAbsent("files", "no package database: the static inventory cannot run")}
 	}
 	if len(catalog.OwnerRows()) == 0 {
-		return []string{"package file list is empty: the static inventory cannot run"}
+		return []Coverage{coverageAbsent("files", "package file list is empty: the static inventory cannot run")}
 	}
 	active := activePaths(snapshot)
-	var gaps []string
+	var gaps []Coverage
 	visited := 0
 	for _, root := range roots {
 		if err := ctx.Err(); err != nil {
 			break
+		}
+		// The pushdown every tree walk uses: a path audit does not pay for
+		// the program trees the scope never names.
+		if !snapshot.plan.Filter.touchesPath(root) {
+			continue
 		}
 		info, err := os.Stat(root)
 		if err != nil {
@@ -172,7 +178,7 @@ func collectInventory(ctx context.Context, snapshot *Snapshot, plan Plan) []stri
 				return nil
 			}
 			if visited > inventoryBudget {
-				gaps = append(gaps, "static inventory stopped at its file limit")
+				gaps = append(gaps, coverageGap("files", "static inventory stopped at its file limit"))
 				return filepath.SkipAll
 			}
 			visited++
@@ -205,7 +211,7 @@ func collectInventory(ctx context.Context, snapshot *Snapshot, plan Plan) []stri
 			return nil
 		})
 		if err != nil {
-			gaps = append(gaps, "static inventory of "+root+": "+err.Error())
+			gaps = append(gaps, coverageGap("files", "static inventory of "+root+": "+err.Error()))
 		}
 		for index := range unowned {
 			unowned[index].Total = total[unowned[index].Dir]
@@ -221,7 +227,8 @@ func collectInventory(ctx context.Context, snapshot *Snapshot, plan Plan) []stri
 		snapshot.ensureFacts(paths)
 		sort.Slice(snapshot.Unowned, func(i, j int) bool { return snapshot.Unowned[i].Path < snapshot.Unowned[j].Path })
 	}
-	gaps = append(gaps, "static inventory compared "+catalog.Kind()+" package file lists across "+strings.Join(roots, ", "))
+	gaps = append(gaps, coverageComplete("files",
+		"static inventory compared "+catalog.Kind()+" package file lists across "+strings.Join(roots, ", ")))
 	return gaps
 }
 
@@ -229,14 +236,8 @@ func collectInventory(ctx context.Context, snapshot *Snapshot, plan Plan) []stri
 func activePaths(snapshot *Snapshot) map[string]bool {
 	active := map[string]bool{}
 	mark := func(path string) {
-		if path == "" {
-			return
-		}
-		active[path] = true
-		if rest, ok := strings.CutPrefix(path, "/usr/"); ok {
-			active["/"+rest] = true
-		} else {
-			active["/usr"+path] = true
+		for _, variant := range trust.UsrVariants(path) {
+			active[variant] = true
 		}
 	}
 	for _, edge := range snapshot.Activations {
@@ -253,39 +254,25 @@ func activePaths(snapshot *Snapshot) map[string]bool {
 	return active
 }
 
-func unownedFindings(snapshot *Snapshot, a *assessor, filter Filter) []Finding {
-	if len(filter.PIDs) > 0 || len(filter.Units) > 0 {
-		return nil
+// judgeFiles is the files domain's judgment: the executables the static
+// inventory found and no package owns. The view already applied the scope.
+func judgeFiles(j *judgePass) []Coverage {
+	for _, finding := range unownedFindings(j.snapshot, j.view.Unowned, j.a) {
+		j.add(finding)
 	}
-	if !filter.judges(DomainFiles) {
-		return nil
-	}
+	return nil
+}
+
+func unownedFindings(snapshot *Snapshot, files []UnownedFile, a *assessor) []Finding {
 	var findings []Finding
-	for _, file := range snapshot.Unowned {
-		if !pathInScope(file.Path, filter) {
-			continue
-		}
+	for _, file := range files {
 		facts := snapshot.Facts(file.Path)
-		story := a.read(facts, true)
-		reach := UserAsset
-		severity := Low
-		if file.RootOwned {
-			reach = RootAsset
-			severity = Medium
-		}
-		if story.origin == Runtime || story.origin == Modified {
-			// A file that arrived after the artifact is a live introduction;
-			// an unowned file the image already carried is a lead.
-			if file.RootOwned {
-				severity = High
-			} else {
-				severity = Medium
-			}
-		}
+		story := a.readAuthority(facts)
+		severity, reach := unownedFileSeverity(story, file.RootOwned)
 		evidence := []string{
 			"no package's file list records this path",
 			formatSibling(file),
-			"mode " + file.Mode.Perm().String() + ", owner root=" + boolWord(file.RootOwned),
+			"mode " + file.Mode.Perm().String() + ", owner root=" + strconv.FormatBool(file.RootOwned),
 		}
 		evidence = append(evidence, story.evidence...)
 		title := "executable in a program directory no package owns"
@@ -302,6 +289,26 @@ func unownedFindings(snapshot *Snapshot, a *assessor, filter Filter) []Finding {
 	return findings
 }
 
+// unownedFileSeverity is the one ladder for an executable no package owns: a
+// runtime or modified origin outranks a shipped file, and root reach
+// outranks user. The static inventory and the graph walks share it.
+func unownedFileSeverity(story verdict, rootOwned bool) (Severity, Reach) {
+	reach := UserAsset
+	if rootOwned {
+		reach = RootAsset
+	}
+	if !story.origin.arrived() {
+		if rootOwned {
+			return Medium, reach
+		}
+		return Low, reach
+	}
+	if rootOwned {
+		return High, reach
+	}
+	return Medium, reach
+}
+
 func formatSibling(file UnownedFile) string {
 	if file.Root {
 		return "the filesystem root is the entrypoint layer; this executable is not package-owned"
@@ -315,11 +322,4 @@ func formatSibling(file UnownedFile) string {
 	}
 	return dir + ": " + strconv.Itoa(file.Owned) + " of " + strconv.Itoa(file.Total) +
 		" entries are package-owned, this one is not"
-}
-
-func boolWord(value bool) string {
-	if value {
-		return "true"
-	}
-	return "false"
 }

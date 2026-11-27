@@ -26,10 +26,20 @@ const (
 	FamilySocket
 )
 
-// Caps states the event families a source can produce.
+// String is the family's name in the watcher's stderr banner.
+func (f Family) String() string {
+	if f == FamilySocket {
+		return "socket"
+	}
+	return "proc"
+}
+
+// Caps states what a source can produce: the event families it fills, and
+// whether it runs off kernel notifications instead of a poll loop.
 type Caps struct {
 	Process bool
 	Socket  bool
+	Push    bool
 }
 
 // SourceName is the backend that produced an event.
@@ -80,7 +90,10 @@ type Sock struct {
 	Exe     string   `json:"exe,omitempty"`
 	Cmdline string   `json:"cmdline,omitempty"`
 	Args    []string `json:"-"`
-	Cwd     string   `json:"cwd,omitempty"`
+	// Script is the script path the owner's interpreter carries, read beside
+	// the image the way a process event's script is.
+	Script string `json:"script,omitempty"`
+	Cwd    string `json:"cwd,omitempty"`
 }
 
 // Verdict is the audit's judgment of the image an event runs, or of the image
@@ -150,14 +163,18 @@ type Source interface {
 	Run(ctx context.Context, out chan<- Event) error
 }
 
-// Options are the poll's own settings. Backend chooses a source; the empty
-// string and "auto" both take the first available one.
+// Options are the settings a source is built with. Backend chooses a source;
+// the empty string and "auto" both take the first available one.
 type Options struct {
 	Interval time.Duration
 	All      bool
 	Fork     bool
 	Backend  string
-	JSON     bool
+}
+
+// RunOptions are the output options of Run and RunWith.
+type RunOptions struct {
+	JSON bool
 }
 
 // ErrUnsupported reports that this platform has no watch source at all.

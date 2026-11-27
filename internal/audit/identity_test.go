@@ -120,7 +120,7 @@ func TestJudgedIdentityBackdoorCorrelation(t *testing.T) {
 		t.Errorf("backdoor = %+v", backdoor)
 	}
 	for _, finding := range report.Findings {
-		if strings.HasPrefix(finding.Class, "identity-") && finding.Class != "identity-backdoor" &&
+		if strings.HasPrefix(string(finding.Class), "identity-") && finding.Class != "identity-backdoor" &&
 			finding.Class != "identity-sshd-keyfile" {
 			t.Errorf("correlated account also emitted %s", finding.Class)
 		}
@@ -234,7 +234,7 @@ func TestIdentityFindingsCiteTheirRows(t *testing.T) {
 			snapshot := &Snapshot{Boundary: boundary(), Objects: map[string]trust.Facts{}, Identity: test.state}
 			report := Judge(snapshot, Filter{})
 			for _, finding := range report.Findings {
-				if finding.Class != test.class {
+				if string(finding.Class) != test.class {
 					continue
 				}
 				if len(finding.Quotes) != 1 || finding.Quotes[0] != test.quote {
@@ -244,5 +244,26 @@ func TestIdentityFindingsCiteTheirRows(t *testing.T) {
 			}
 			t.Errorf("findings = %+v, want %s", report.Findings, test.class)
 		})
+	}
+}
+
+func TestSudoersResolvesGrantsFromNestedIncludes(t *testing.T) {
+	dir := t.TempDir()
+	top := filepath.Join(dir, "sudoers")
+	nested := filepath.Join(dir, "included")
+	body := "User_Alias ADMINS = deploy\n@include " + nested + "\n"
+	if err := os.WriteFile(top, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nested, []byte("ADMINS ALL=(ALL) NOPASSWD: /bin/sh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	grants := parseSudoersFiles([]string{top}, 0)
+	if len(grants) != 1 {
+		t.Fatalf("grants = %+v, want the nested file's grant", grants)
+	}
+	grant := grants[0]
+	if grant.User != "deploy" || grant.Command != "/bin/sh" || !grant.NoPasswd {
+		t.Errorf("grant = %+v, want deploy's passwordless /bin/sh resolved through the nested include", grant)
 	}
 }

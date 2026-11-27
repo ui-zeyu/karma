@@ -101,6 +101,10 @@ func lineSock(b *strings.Builder, ev Event, sock *Sock) {
 		b.WriteString(" exe=")
 		b.WriteString(chrome.SafeText(sock.Exe))
 	}
+	if sock.Script != "" {
+		b.WriteString(" script=")
+		b.WriteString(chrome.SafeText(sock.Script))
+	}
 	if sock.Cwd != "" {
 		b.WriteString(" cwd=")
 		b.WriteString(chrome.SafeText(sock.Cwd))

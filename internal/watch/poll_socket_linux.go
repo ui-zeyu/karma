@@ -53,11 +53,9 @@ func (p *socketPoll) Run(ctx context.Context, out chan<- Event) error {
 				}
 			}
 			owners := netdiag.Owners(ctx, inodes)
-			for _, state := range added {
-				for _, event := range socketEvents(fs, state, owners[state.Key.Inode], now) {
-					if !send(ctx, out, event) {
-						return nil
-					}
+			for _, event := range socketEvents(fs, added, owners, now) {
+				if !deliver(ctx, out, event) {
+					return nil
 				}
 			}
 		}
@@ -87,8 +85,8 @@ func socketSnapshot(ctx context.Context, all bool) (map[sockKey]sockState, error
 		}
 		key := sockKey{
 			Proto: s.Netid,
-			Local: netdiag.Endpoint(s.Local, s.LocalPort, ""),
-			Peer:  netdiag.Endpoint(s.Peer, s.PeerPort, ""),
+			Local: netdiag.Endpoint(s.Local, s.LocalPort),
+			Peer:  netdiag.Endpoint(s.Peer, s.PeerPort),
 			Inode: s.Inode,
 		}
 		out[key] = sockState{Key: key, State: state, UID: int(s.UID)}
@@ -96,39 +94,75 @@ func socketSnapshot(ctx context.Context, all bool) (map[sockKey]sockState, error
 	return out, nil
 }
 
-// socketEvents states one new socket: one event per owning process, or one with
-// pid 0 when the inode has no local owner (the TIME-WAIT case). The owner's
-// exe, cmdline, cwd and uid are read while the process still exists.
-func socketEvents(fs procfs.FS, state sockState, owners []netdiag.Owner, at time.Time) []Event {
-	net := NetEvent{
-		Proto: state.Key.Proto,
-		State: state.State,
-		Local: state.Key.Local,
-		Peer:  state.Key.Peer,
-		Inode: state.Key.Inode,
+// ownerFacts is one owner's image facts, read once per pid and shared by every
+// event the pid holds in the tick.
+type ownerFacts struct {
+	exe     string
+	args    []string
+	cmdline string
+	cwd     string
+	uid     int
+}
+
+// readOwnerFacts reads the facts socketEvents prints for one owner. uid stays
+// negative when /proc did not answer, so the socket row's uid survives.
+func readOwnerFacts(fs procfs.FS, pid int) ownerFacts {
+	facts := ownerFacts{uid: -1}
+	p, err := fs.Proc(pid)
+	if err != nil {
+		return facts
 	}
-	if len(owners) == 0 {
-		return []Event{{
-			Time: at, Source: SourcePoll,
-			Sock: &Sock{Net: net, UID: state.UID},
-		}}
+	facts.exe, _ = p.Executable()
+	if cmd, err := p.CmdLine(); err == nil {
+		facts.args = cmd
+		facts.cmdline = strings.Join(cmd, " ")
 	}
-	sort.Slice(owners, func(i, j int) bool { return owners[i].PID < owners[j].PID })
-	out := make([]Event, 0, len(owners))
-	for _, owner := range owners {
-		sock := &Sock{Net: net, PID: owner.PID, Comm: owner.Comm, UID: state.UID}
-		if p, err := fs.Proc(owner.PID); err == nil {
-			sock.Exe, _ = p.Executable()
-			if cmd, err := p.CmdLine(); err == nil {
-				sock.Args = cmd
-				sock.Cmdline = strings.Join(cmd, " ")
-			}
-			sock.Cwd, _ = p.Cwd()
-			if status, err := p.NewStatus(); err == nil {
-				sock.UID = int(status.UIDs[0])
-			}
+	facts.cwd, _ = p.Cwd()
+	if status, err := p.NewStatus(); err == nil {
+		facts.uid = int(status.UIDs[0])
+	}
+	return facts
+}
+
+// socketEvents states one tick's new sockets: one event per owning process, or
+// one with pid 0 when an inode has no local owner (the TIME-WAIT case). The
+// owner set is deduplicated by pid first, so a process holding several new
+// sockets is read once and its facts fill every event it owns.
+func socketEvents(fs procfs.FS, added []sockState, owners map[uint64][]netdiag.Owner, at time.Time) []Event {
+	pids := map[int]bool{}
+	for _, state := range added {
+		for _, owner := range owners[state.Key.Inode] {
+			pids[owner.PID] = true
 		}
-		out = append(out, Event{Time: at, Source: SourcePoll, Sock: sock})
+	}
+	facts := make(map[int]ownerFacts, len(pids))
+	for pid := range pids {
+		facts[pid] = readOwnerFacts(fs, pid)
+	}
+	out := make([]Event, 0)
+	for _, state := range added {
+		net := NetEvent{
+			Proto: state.Key.Proto,
+			State: state.State,
+			Local: state.Key.Local,
+			Peer:  state.Key.Peer,
+			Inode: state.Key.Inode,
+		}
+		batch := owners[state.Key.Inode]
+		if len(batch) == 0 {
+			out = append(out, Event{Time: at, Source: SourcePoll, Sock: &Sock{Net: net, UID: state.UID}})
+			continue
+		}
+		sort.Slice(batch, func(i, j int) bool { return batch[i].PID < batch[j].PID })
+		for _, owner := range batch {
+			read := facts[owner.PID]
+			sock := &Sock{Net: net, PID: owner.PID, Comm: owner.Comm, UID: state.UID}
+			sock.Exe, sock.Args, sock.Cmdline, sock.Cwd = read.exe, read.args, read.cmdline, read.cwd
+			if read.uid >= 0 {
+				sock.UID = read.uid
+			}
+			out = append(out, Event{Time: at, Source: SourcePoll, Sock: sock})
+		}
 	}
 	return out
 }

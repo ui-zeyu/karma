@@ -161,7 +161,7 @@ func TestMastheadChipsWrapWithoutSplittingABadge(t *testing.T) {
 		"critical": "2 critical", "high": "1 high", "medium": "2 medium", "low": "2 low", "info": "2 info",
 	}
 	for _, line := range strings.Split(text, "\n") {
-		if width := displayWidth(line); width > 70 {
+		if width := chrome.DisplayWidth(line); width > 70 {
 			t.Errorf("line is %d columns wide: %q", width, line)
 		}
 		for word, badge := range counts {
@@ -179,7 +179,7 @@ func TestFactGridFitsLongValues(t *testing.T) {
 		{label: "source", value: strings.Repeat("s", 80)},
 	}
 	for _, line := range factGrid(facts, 60) {
-		if width := displayWidth(line); width > 60 {
+		if width := chrome.DisplayWidth(line); width > 60 {
 			t.Errorf("fact row is %d columns wide: %q", width, line)
 		}
 	}
@@ -190,27 +190,27 @@ func TestNodeLineFitsTheRequestedWidth(t *testing.T) {
 		Kind: "file", Name: "x", Path: "/etc/x", Origin: "runtime",
 		Detail: strings.Repeat("d", 100),
 	}
-	if line := nodeLine(node, false, 40); displayWidth(line) > 40 {
-		t.Errorf("node line is %d columns wide: %q", displayWidth(line), line)
+	if line := nodeLine(node, false, 40); chrome.DisplayWidth(line) > 40 {
+		t.Errorf("node line is %d columns wide: %q", chrome.DisplayWidth(line), line)
 	}
 	node.Origin = ""
-	if line := nodeLine(node, false, 40); displayWidth(line) > 40 {
-		t.Errorf("originless node line is %d columns wide: %q", displayWidth(line), line)
+	if line := nodeLine(node, false, 40); chrome.DisplayWidth(line) > 40 {
+		t.Errorf("originless node line is %d columns wide: %q", chrome.DisplayWidth(line), line)
 	}
 }
 
 func TestHighlightTokensPaintsPathsInsideAssignments(t *testing.T) {
 	line := "export LD_PRELOAD=/lib/__selinux.so"
 	painted := highlightTokens(line, 0, true)
-	if !strings.Contains(painted, fg(hueInformation)+"/lib/__selinux.so") {
+	if !strings.Contains(painted, chrome.Fg(hueInformation)+"/lib/__selinux.so") {
 		t.Errorf("assignment path is not painted: %q", painted)
 	}
 	quoted := highlightTokens(`config "/etc/app.conf"`, 0, true)
-	if !strings.Contains(quoted, fg(hueInformation)+"/etc/app.conf") {
+	if !strings.Contains(quoted, chrome.Fg(hueInformation)+"/etc/app.conf") {
 		t.Errorf("quoted path is not painted: %q", quoted)
 	}
 	url := highlightTokens("see https://example.test/api", 0, true)
-	if strings.Contains(url, fg(hueInformation)) {
+	if strings.Contains(url, chrome.Fg(hueInformation)) {
 		t.Errorf("a URL path took the file hue: %q", url)
 	}
 }
@@ -272,7 +272,7 @@ func TestSelfEdgeReadsAsOneObject(t *testing.T) {
 	if !strings.Contains(finding.Detail, "reads this file by position") {
 		t.Errorf("self-edge detail = %q", finding.Detail)
 	}
-	panel := chrome.StripANSI(findingPanel(findingGroup{*finding}, false, RenderOptions{}, 100))
+	panel := chrome.StripANSI(findingPanel(panelGroup{findings: findingGroup{*finding}}, false, RenderOptions{}, 100))
 	if strings.Contains(panel, "→ fstab") {
 		t.Errorf("self-edge still draws a self branch:\n%s", panel)
 	}
@@ -337,7 +337,7 @@ func TestCitationBlocksKeepIdenticalTextFromDifferentFiles(t *testing.T) {
 			{Path: "/root/.viminfo", Line: 10, Text: text},
 		},
 	}
-	panel := chrome.StripANSI(findingPanel(findingGroup{finding}, false, RenderOptions{}, 100))
+	panel := chrome.StripANSI(findingPanel(panelGroup{findings: findingGroup{finding}}, false, RenderOptions{}, 100))
 	for _, path := range []string{"/home/syssupport/.viminfo", "/root/.viminfo"} {
 		if !strings.Contains(panel, "· cite  "+path) {
 			t.Errorf("missing citation header %s:\n%s", path, panel)

@@ -8,9 +8,10 @@ package audit
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
+
+	"karma/internal/startup"
 )
 
 var shellInterpreters = map[string]bool{
@@ -52,7 +53,8 @@ func interpreterClass(process Process) (string, bool) {
 
 // judgeConnections groups the established and listening sockets by process and
 // states the interpreter shapes once per process, with the peers in the chain.
-func judgeConnections(snapshot *Snapshot, filter Filter, add func(Finding)) {
+func judgeConnections(j *judgePass) []Coverage {
+	snapshot, filter, add := j.snapshot, j.filter, j.add
 	processes := make(map[int]Process, len(snapshot.Processes))
 	for _, process := range snapshot.Processes {
 		processes[process.PID] = process
@@ -146,23 +148,14 @@ func judgeConnections(snapshot *Snapshot, filter Filter, add func(Finding)) {
 			})
 		}
 	}
+	return nil
 }
 
 // programName normalizes the version suffix interpreters carry, so python3.12
-// and python3 are the same program for the socket shape. startup.IsInterpreter
-// uses the same rule for static edges.
+// and python3 are the same program for the socket shape. The rule lives in
+// startup.ProgramName, beside the interpreter lists the static edges use.
 func programName(path string) string {
-	base := strings.ToLower(filepath.Base(path))
-	return strings.TrimRight(base, "0123456789.")
-}
-
-func containsPID(pids []int, pid int) bool {
-	for _, value := range pids {
-		if value == pid {
-			return true
-		}
-	}
-	return false
+	return strings.ToLower(startup.ProgramName(path))
 }
 
 func limitStrings(values []string, limit int) []string {

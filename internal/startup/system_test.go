@@ -133,11 +133,10 @@ func TestFindLibraryPrefersTheNativeArch(t *testing.T) {
 		t.Skip("no multiarch directories on this architecture")
 	}
 	want := native[0] + "pam_x.so"
-	corpus := NewCorpus(nil, nil, allFiles)
-	corpus.fs = fakeFS{globs: map[string][]string{
+	corpus := NewCorpus(context.Background(), fakeFS{globs: map[string][]string{
 		want:                           {want},
 		"/usr/lib/*/security/pam_x.so": {"/usr/lib/i386-linux-gnu/security/pam_x.so", want},
-	}}
+	}}, nil, nil, allFiles)
 	if got := findLibrary("pam_x.so", corpus); got != want {
 		t.Errorf("findLibrary = %q, want the native arch copy %q", got, want)
 	}

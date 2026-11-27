@@ -10,9 +10,10 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	chrome "karma/internal/panel"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -77,7 +78,7 @@ func trailPaths() []string {
 			paths = append(paths, filepath.Join(home, name))
 		}
 	}
-	sort.Strings(paths)
+	slices.Sort(paths)
 	return paths
 }
 
@@ -111,15 +112,15 @@ func trailPathsFor(snapshot *Snapshot) []string {
 			}
 		}
 	}
-	sort.Strings(paths)
+	slices.Sort(paths)
 	return paths
 }
 
 // collectTrail reads the bounded trail set. It never follows a symlink and
 // never blocks on a special file.
-func collectTrail(ctx context.Context, snapshot *Snapshot) []string {
+func collectTrail(ctx context.Context, snapshot *Snapshot) []Coverage {
 	var files []TrailFile
-	var gaps []string
+	var gaps []Coverage
 	for _, path := range trailPathsFor(snapshot) {
 		if ctx.Err() != nil {
 			break
@@ -130,7 +131,7 @@ func collectTrail(ctx context.Context, snapshot *Snapshot) []string {
 		info, err := os.Lstat(path)
 		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
-				gaps = append(gaps, "trail unreadable: "+path+" ("+err.Error()+")")
+				gaps = append(gaps, coverageGap("trail", "trail unreadable: "+path+" ("+err.Error()+")"))
 			}
 			continue
 		}
@@ -139,7 +140,7 @@ func collectTrail(ctx context.Context, snapshot *Snapshot) []string {
 		}
 		lines, truncated, err := readTrail(path)
 		if err != nil {
-			gaps = append(gaps, "trail unreadable: "+path+" ("+err.Error()+")")
+			gaps = append(gaps, coverageGap("trail", "trail unreadable: "+path+" ("+err.Error()+")"))
 			continue
 		}
 		files = append(files, TrailFile{Path: path, Lines: lines, Truncated: truncated})
@@ -183,7 +184,7 @@ func readTrail(path string) ([]Quote, bool, error) {
 			continue
 		}
 		bytesRead += len(scanner.Bytes())
-		lines = append(lines, Quote{Path: path, Line: number, Text: truncate(text, trailTextLimit)})
+		lines = append(lines, Quote{Path: path, Line: number, Text: chrome.Truncate(text, trailTextLimit)})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, false, err
@@ -217,9 +218,9 @@ func trailRows(view *View, options RenderOptions) []string {
 		return nil
 	}
 	width := reportWidth(options.Width) - 4
-	rows := []string{columnHeader([]string{"PATH", "OWNER", "ORIGIN", "LINES", "LAST"}, []int{44, 7, 10, 7})}
+	rows := []string{trailSpec.header()}
 	for _, file := range view.Trail {
-		origin := view.assessor.read(file.Facts, false).origin
+		origin := view.Assessor().read(file.Facts).origin
 		owner := "-"
 		if file.Owner >= 0 {
 			owner = strconv.Itoa(file.Owner)
@@ -234,13 +235,12 @@ func trailRows(view *View, options RenderOptions) []string {
 		}
 		room := width - 76
 		if room > 0 {
-			last = truncate(last, room)
+			last = chrome.Truncate(last, room)
 		} else {
 			last = ""
 		}
-		rows = append(rows, columnRowHued(options.Color, []string{
-			file.Path, owner, origin.String(), count,
-		}, []int{44, 7, 10, 7}, []int{0, 0, originHue(origin), 0})+highlightTokens(last, mutedColor, options.Color))
+		rows = append(rows, trailSpec.row(options.Color, []int{0, 0, originHue(origin), 0},
+			[]string{file.Path, owner, origin.String(), count})+highlightTokens(last, mutedColor, options.Color))
 	}
 	return rows
 }
@@ -256,37 +256,59 @@ func attachTrailEvidence(trail []TrailFile, report *Report) {
 	if len(trail) == 0 {
 		return
 	}
-	paths := map[string][]int{}
-	for index, finding := range report.Findings {
-		if len(finding.Path) >= 6 {
-			paths[finding.Path] = append(paths[finding.Path], index)
+	// The findings' paths index once, under both usrmerge spellings, so a
+	// history line written /usr/bin/foo cites a finding judged at /bin/foo.
+	index := map[string][]int{}
+	for i, finding := range report.Findings {
+		for _, spelling := range trust.UsrVariants(finding.Path) {
+			index[spelling] = append(index[spelling], i)
 		}
 	}
-	if len(paths) == 0 {
+	if len(index) == 0 {
 		return
 	}
 	added := make(map[int]int, len(report.Findings))
 	for _, file := range trail {
 		for _, line := range file.Lines {
-			for path, indices := range paths {
-				if !containsPath(line.Text, path) {
-					continue
-				}
-				for _, index := range indices {
-					if added[index] >= trailQuoteLimit {
+			// One tokenizing scan per line answers every finding path.
+			for _, token := range pathTokens(line.Text) {
+				for _, i := range index[token] {
+					if added[i] >= trailQuoteLimit {
 						continue
 					}
-					finding := &report.Findings[index]
+					finding := &report.Findings[i]
 					quote := Quote{Path: line.Path, Line: line.Line, Text: line.Text}
 					if hasQuote(*finding, quote) {
 						continue
 					}
 					finding.Quotes = append(finding.Quotes, quote)
-					added[index]++
+					added[i]++
 				}
 			}
 		}
 	}
+}
+
+// pathTokens splits a line into its maximal path-shaped runs — the tokens a
+// shell history line or an auth log writes absolute paths as. A token equal
+// to a finding's path is a match, so /etc/pass never matches /etc/passwd and
+// a URL never matches a directory.
+func pathTokens(text string) []string {
+	var tokens []string
+	start := -1
+	for i := 0; i <= len(text); i++ {
+		if i < len(text) && pathByte(text[i]) {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			tokens = append(tokens, text[start:i])
+			start = -1
+		}
+	}
+	return tokens
 }
 
 func hasQuote(finding Finding, quote Quote) bool {
@@ -296,26 +318,6 @@ func hasQuote(finding Finding, quote Quote) bool {
 		}
 	}
 	return false
-}
-
-// containsPath matches an absolute path at a token boundary, so /etc/pass does
-// not match /etc/passwd and a URL does not match a directory.
-func containsPath(text, path string) bool {
-	at := 0
-	for {
-		index := strings.Index(text[at:], path)
-		if index < 0 {
-			return false
-		}
-		index += at
-		before := index == 0 || !pathByte(text[index-1])
-		end := index + len(path)
-		after := end == len(text) || !pathByte(text[end])
-		if before && after {
-			return true
-		}
-		at = index + 1
-	}
 }
 
 func pathByte(c byte) bool {

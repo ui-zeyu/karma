@@ -16,11 +16,11 @@ import (
 // host's boot time predates the container by however long the host has run);
 // a host's edge is its own boot, with package transactions after it marking
 // provisioned installs.
-func readBoundary(packageTimes map[string]time.Time) (Boundary, map[string]time.Time) {
+func readBoundary(packageTimes map[string]time.Time) Boundary {
 	boot := readBootTime()
 	if isContainer() {
 		if start := readPID1Start(boot); !start.IsZero() {
-			return Boundary{Time: start, Kind: "container", Source: "pid1", Confidence: HighConfidence}, packageTimes
+			return Boundary{Time: start, Kind: "container", Source: "pid1", Confidence: HighConfidence}
 		}
 	}
 	// On a long-lived host the boot is not the artifact edge: package updates
@@ -30,15 +30,15 @@ func readBoundary(packageTimes map[string]time.Time) (Boundary, map[string]time.
 	// provisioning window for its generated host keys and machine id.
 	last := latestPackageTime(packageTimes)
 	if !last.IsZero() && (boot.IsZero() || last.After(boot)) {
-		return Boundary{Time: last, Kind: "host", Source: "package", Confidence: HighConfidence}, packageTimes
+		return Boundary{Time: last, Kind: "host", Source: "package", Confidence: HighConfidence}
 	}
 	if !boot.IsZero() {
-		return Boundary{Time: boot.Add(5 * time.Minute), Kind: "host", Source: "boot", Confidence: MediumConfidence}, packageTimes
+		return Boundary{Time: boot.Add(5 * time.Minute), Kind: "host", Source: "boot", Confidence: MediumConfidence}
 	}
 	if !last.IsZero() {
-		return Boundary{Time: last, Kind: "host", Source: "package", Confidence: MediumConfidence}, packageTimes
+		return Boundary{Time: last, Kind: "host", Source: "package", Confidence: MediumConfidence}
 	}
-	return Boundary{Kind: "unknown", Source: "none", Confidence: LowConfidence}, packageTimes
+	return Boundary{Kind: "unknown", Source: "none", Confidence: LowConfidence}
 }
 
 func readBootTime() time.Time {

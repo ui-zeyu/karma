@@ -3,8 +3,9 @@ package startup
 import (
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
+	"sync"
 
 	"karma/internal/trust"
 )
@@ -99,13 +100,13 @@ func generatorEdges(file File) []rawEdge {
 
 // motdEdges states the run-parts script itself, then whatever the script
 // sources or executes.
-func motdEdges(file File) []rawEdge {
+func motdEdges(file File, corpus *Corpus) []rawEdge {
 	base := rawEdge{
 		surface: SurfacePAM, phase: Login, subject: Subject{Class: AccountRoot},
 		trigger: file.Path,
 	}
 	return append([]rawEdge{selfEdge(file, "update-motd", Login, base.subject, Exec)},
-		shellEdges(file.Body, base)...)
+		shellFileEdges(corpus, file, base)...)
 }
 
 // pamEdges reads a PAM service stack: every module on the stack is mapped
@@ -142,7 +143,6 @@ func pamEdges(file File, corpus *Corpus) []rawEdge {
 					surface: SurfacePAM, phase: Login, subject: Subject{Class: AccountRoot},
 					trigger: file.Path, line: index + 1, mechanism: "pam_exec",
 					target: target.target, kind: target.kind,
-					viaInterpreter: target.viaInterpreter,
 				})
 			}
 			continue
@@ -307,7 +307,7 @@ func wrapperCommands(file File) []rawEdge {
 			if rest == "" {
 				continue
 			}
-			edges = append(edges, shellEdges(rest, rawEdge{
+			edges = append(edges, shellSnippetEdges(rest, rawEdge{
 				surface: base.surface, phase: base.phase, subject: base.subject,
 				trigger: base.trigger, line: index + 1, mechanism: Mechanism(keyword),
 			})...)
@@ -378,7 +378,7 @@ func libraryPatterns(name string) []string {
 // before the wildcard globs. On a system that carries a foreign architecture
 // too, the wildcard's alphabetical first match would point the edge at the
 // wrong arch's copy of the module.
-func nativeLibDirs() []string {
+var nativeLibDirs = sync.OnceValue(func() []string {
 	triplet := map[string]string{
 		"amd64":    "x86_64-linux-gnu",
 		"arm64":    "aarch64-linux-gnu",
@@ -398,7 +398,7 @@ func nativeLibDirs() []string {
 		"/usr/lib/" + triplet + "/",
 		"/lib/" + triplet + "/",
 	}
-}
+})
 
 // findLibrary resolves a PAM or NSS module name through the loader's own
 // directories, through the collector's filesystem. A module the stack names
@@ -424,7 +424,7 @@ func findLibrary(name string, corpus *Corpus) string {
 		if err != nil {
 			continue
 		}
-		sort.Strings(matches)
+		slices.Sort(matches)
 		for _, match := range matches {
 			if corpus.facts(match).Kind == trust.File {
 				return match
@@ -442,15 +442,19 @@ func findLibrary(name string, corpus *Corpus) string {
 // that is not systemd is a stated skip — a silent no is how the old gate
 // quietly disabled vendor enablement on a healthy host.
 func systemdIsInit(fsys FS, corpus *Corpus) bool {
+	if corpus.initSystemd != nil {
+		return *corpus.initSystemd
+	}
 	comm, err := fsys.ReadFile("/proc/1/comm")
 	if err != nil {
 		corpus.addGap("systemd init check failed (" + err.Error() + "); generators and vendor enablement skipped")
 		return false
 	}
 	init := strings.TrimSpace(string(comm))
-	if init == "systemd" {
-		return true
+	answer := init == "systemd"
+	if !answer {
+		corpus.addGap("pid 1 is " + init + "; systemd generators and vendor enablement skipped")
 	}
-	corpus.addGap("pid 1 is " + init + "; systemd generators and vendor enablement skipped")
-	return false
+	corpus.initSystemd = &answer
+	return answer
 }

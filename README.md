@@ -4,7 +4,7 @@ Read-only incident-response audit for Linux. Karma runs on the target host and
 answers one question: **what appeared after the artifact was built, and what
 authority can it reach?**
 
-The version is `0.46.0`.
+The version is `0.47.0`.
 
 ## Model
 
@@ -150,7 +150,7 @@ state when the path and that tree overlap.
 
 ```text
  KARMA                                                          yuyy
-▌ 0.46.0                                    2026-11-25 19:25:48 +0800
+▌ 0.47.0                                    2026-11-25 19:25:48 +0800
 ▌  host      web-1                    distro    Ubuntu 24.04
 ▌  account   root (uid 0)             kernel    5.15.0
 ▌  source    local
@@ -228,7 +228,10 @@ not verdicts. An executable directly under `/` (a container entrypoint such as
 `/start.sh`) is part of the files inventory and raises an `unowned-file`
 finding when no package owns it. `--json` prints the findings, services,
 listeners, mounts, ledger summary, scope (`off_domains`), and coverage as one
-object; `--evidence` is a text view, so the pair is rejected —
+object; coverage is structured there — one record per statement with its
+`area` (the stage or domain it speaks for), `status` (`complete`, `degraded`
+or `absent`), an object `count` where one applies, and the rendered `detail`
+line; `--evidence` is a text view, so the pair is rejected —
 a section of `karma show <section> --json` is the machine-readable inventory.
 
 The text views carry their heuristics on a terminal: evidence and `show` rows
@@ -267,7 +270,8 @@ prints nodes, edges, findings, and coverage.
 ## Options
 
 `--since` chooses the boundary: `provision` (the default), `boot`, a duration
-such as `24h`, or an RFC3339 time. `--timeout` bounds the whole collection in seconds (default 120; the package
+such as `24h`, or an RFC3339 time. `--timeout` bounds the whole collection as a
+duration such as `45s` (default 120s; the package
 sweep and authority walk are the expensive domains). The hidden-pid sweep asks
 `kill(0)` about the pid range the kernel reports: `ns_last_pid` when it is
 readable, otherwise `kernel.pid_max`. It runs only for a whole-host scope.

@@ -20,55 +20,103 @@ type verdict struct {
 	why      string
 	evidence []string
 	softened bool
+	// orphan is the nearest owned ancestor of a file no package owns; nil
+	// when the file is owned, unknown, or not a file.
+	orphan *orphanAncestor
+}
+
+// orphanAncestor is the structured answer behind an orphan's evidence
+// sentence: which package owns the nearest owned directory.
+type orphanAncestor struct {
+	pkg    string
+	dir    string
+	shared bool
+}
+
+// arrived reports whether the object reached the host after the artifact
+// boundary. It is the audit's core predicate: a runtime or modified origin is
+// the delta the tool exists to name.
+func (o Origin) arrived() bool { return o == Runtime || o == Modified }
+
+// soften lowers a severity one tier when the story says a legitimate edit
+// explains the hit. A verdict that was never softened answers unchanged.
+func (v verdict) soften(severity Severity) Severity {
+	if v.softened && severity > Low {
+		return severity - 1
+	}
+	return severity
+}
+
+// against merges two ends of one relation: the weaker origin decides, and the
+// softening follows the end whose origin decided. Why and evidence stay at the
+// call sites, which name the ends in their own words.
+func (v verdict) against(other verdict) verdict {
+	merged := verdict{origin: weaker(v.origin, other.origin)}
+	merged.softened = other.softened
+	if v.origin.Rank() <= other.origin.Rank() {
+		merged.softened = v.softened
+	}
+	return merged
 }
 
 type assessor struct {
+	snapshot      *Snapshot
 	boundary      Boundary
 	times         map[string]time.Time
 	verify        map[string]Content
 	conffiles     map[string]bool
 	tampered      map[string]bool
-	owners        map[string]string
-	shared        map[string]bool
 	mounts        mountTable
 	remodifiedSet map[string]bool
 	noLedger      map[string]bool
 	noConffile    map[string]bool
+	// unreadable names judged files whose content comparison could not run:
+	// the ledger records a hash for them, the read failed. The evidence and
+	// the coverage state that, so a large or unreadable file is never
+	// misread as "the package records no hash".
+	unreadable map[string]string
 }
 
 func newAssessor(snapshot *Snapshot) *assessor {
 	a := &assessor{
+		snapshot:      snapshot,
 		boundary:      snapshot.Boundary,
 		times:         snapshot.PackageTimes,
 		verify:        snapshot.Verify,
 		conffiles:     snapshot.conffiles,
 		mounts:        buildMountTable(snapshot.Mounts),
 		tampered:      map[string]bool{},
-		owners:        map[string]string{},
-		shared:        map[string]bool{},
 		remodifiedSet: map[string]bool{},
 		noLedger:      map[string]bool{},
 		noConffile:    map[string]bool{},
+		// The unreadable set is the snapshot's own map, so files the graph
+		// discovers after the collection join the same answer.
+		unreadable: snapshot.unhashable,
 	}
 	for _, row := range snapshot.tamper {
 		if row.Pkg != logLedgerPkg {
 			a.tampered[row.Pkg] = true
 		}
 	}
-	for path, facts := range snapshot.Objects {
-		if facts.PackageKnown && facts.Package != "" {
-			a.owners[path] = facts.Package
-			a.shared[path] = facts.PackageShared
-		}
-	}
 	return a
 }
 
-// verdict reads one object's evidence lines and answers its story. The
+// read reads one object's story. Authority objects — the files whose bits
+// grant execution — pass readAuthority: a conffile deviation on them is an
+// edited grant, and the softening stays off.
+func (a *assessor) read(facts trust.Facts) verdict {
+	return a.story(facts, false)
+}
+
+func (a *assessor) readAuthority(facts trust.Facts) verdict {
+	return a.story(facts, true)
+}
+
+// story reads one object's evidence lines and answers its story. The
 // content ledger outranks time: a match acquits a file whose timestamps a
 // package upgrade moved, a mismatch convicts one whose timestamps were
 // cleaned, and a tampered ledger falls back to time with a warning.
-func (a *assessor) read(facts trust.Facts, authority bool) verdict {
+func (a *assessor) story(facts trust.Facts, authority bool) verdict {
 	origin, why := originOf(facts, a.boundary, a.times)
 	out := verdict{origin: origin, why: why}
 	if a.mounts != nil {
@@ -81,8 +129,11 @@ func (a *assessor) read(facts trust.Facts, authority bool) verdict {
 	}
 	if facts.PackageKnown && facts.Package == "" {
 		// An orphan: the nearest owned ancestor names the tree it sits in,
-		// which separates a planted payload from a home-directory tool.
-		if pkg, dir, shared, ok := a.ancestorOwner(facts.Real); ok {
+		// which separates a planted payload from a home-directory tool. The
+		// fact travels as data, so the report and the graph quote it without
+		// re-deriving — or matching — the sentence.
+		if pkg, dir, shared, ok := a.snapshot.NearestOwner(facts.Real); ok {
+			out.orphan = &orphanAncestor{pkg: pkg, dir: dir, shared: shared}
 			if shared {
 				out.evidence = append(out.evidence, fmt.Sprintf(
 					"no package owns it; the nearest owned ancestor %s is shared by several packages", dir))
@@ -147,25 +198,35 @@ func (a *assessor) read(facts trust.Facts, authority bool) verdict {
 		}
 	default:
 		// The ledger does not hash conffiles — administrators are expected
-		// to edit them — so those are a named gap, not a missing ledger.
+		// to edit them — so those are a named gap, not a missing ledger. A
+		// file the comparison could not read states its own failure, so the
+		// evidence never sends the operator to a hash row that exists.
 		if a.conffiles[facts.Real] {
 			a.noConffile[pkg] = true
+		} else if a.unreadable[facts.Real] != "" {
+			out.evidence = append(out.evidence,
+				"content comparison could not read this file ("+a.unreadable[facts.Real]+"); judged by time")
 		} else {
 			a.noLedger[pkg] = true
+			out.evidence = append(out.evidence, fmt.Sprintf(
+				"package %s records no content hash for this path; judged by time", pkg))
 		}
-		out.evidence = append(out.evidence, fmt.Sprintf(
-			"package %s records no content hash for this path; judged by time", pkg))
 	}
 	return out
 }
 
-// ancestorOwner walks a path's directories to the nearest one a package owns.
-// shared reports a directory row that several packages claim, where the first
-// name is a citation rather than the tree's owner.
-func (a *assessor) ancestorOwner(path string) (pkg, dir string, shared, ok bool) {
-	for dir = filepath.Dir(path); dir != "/" && dir != "."; dir = filepath.Dir(dir) {
-		if value, found := a.owners[dir]; found {
-			return value, dir, a.shared[dir], true
+// NearestOwner walks a path's directories to the nearest one a package owns,
+// reading the facts of ancestors the run has not collected yet. It is the one
+// nearest-owned-ancestor answer: the assessor's orphan evidence and the graph
+// walks quote the same tree.
+func (s *Snapshot) NearestOwner(path string) (pkg, dir string, shared, ok bool) {
+	for dir := filepath.Dir(path); dir != "/" && dir != "."; dir = filepath.Dir(dir) {
+		if _, collected := s.Objects[dir]; !collected {
+			s.ensureFacts([]string{dir})
+		}
+		facts := s.Facts(dir)
+		if facts.PackageKnown && facts.Package != "" {
+			return facts.Package, dir, facts.PackageShared, true
 		}
 	}
 	return "", "", false, false

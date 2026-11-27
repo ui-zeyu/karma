@@ -150,7 +150,7 @@ func TestJudgeHiddenKernelState(t *testing.T) {
 		},
 	}
 	report := Judge(snapshot, Filter{})
-	classes := map[string]Finding{}
+	classes := map[Class]Finding{}
 	for _, finding := range report.Findings {
 		classes[finding.Class] = finding
 	}
@@ -301,11 +301,11 @@ func TestKernelConfigFindingsCiteTheirSources(t *testing.T) {
 		},
 	}
 	report := Judge(snapshot, Filter{})
-	findings := map[string]Finding{}
+	findings := map[Class]Finding{}
 	for _, finding := range report.Findings {
 		findings[finding.Class] = finding
 	}
-	for class, want := range map[string]Quote{
+	for class, want := range map[Class]Quote{
 		"loader-config":      snapshot.Kernel.Sources[loader],
 		"module-declaration": snapshot.Kernel.Sources[declaration],
 	} {

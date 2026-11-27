@@ -10,34 +10,39 @@ import (
 	"github.com/spf13/pflag"
 )
 
+// collectionTimeout is the one default budget of a collecting run.
+const collectionTimeout = 120 * time.Second
+
 // addRunFlags registers the audit's option set on the bare run and on
 // `karma audit`.
 func addRunFlags(cmd *cobra.Command) { runFlags(cmd.Flags()) }
 
-// runFlags is the full option set. The graph and show commands register the
-// subset they answer to, so a command's page promises only what it does.
+// collectionFlags registers the options every collecting command shares: the
+// artifact boundary and the time budget. The graph and show commands register
+// the subset they answer to, so a command's page promises only what it does.
+func collectionFlags(flags *pflag.FlagSet) {
+	flags.String("since", "provision",
+		"artifact boundary: provision|boot, a duration such as 24h, or an RFC3339 time")
+	flags.Duration("timeout", collectionTimeout, "budget of the whole collection, a duration such as 45s or 2m")
+}
+
+// runFlags is the full option set.
 func runFlags(flags *pflag.FlagSet) {
+	collectionFlags(flags)
 	flags.Bool("json", false, "print the report as one JSON object")
 	flags.Bool("evidence", false, "print the raw inventories after the findings")
-	flags.String("since", "provision",
-		"artifact boundary: provision|boot|auto, a duration such as 24h, or an RFC3339 time")
-	flags.Duration("timeout", 120*time.Second, "budget of the whole collection in seconds")
 }
 
 // graphFlags is the option set a relation graph answers to.
 func graphFlags(flags *pflag.FlagSet) {
+	collectionFlags(flags)
 	flags.Bool("json", false, "print the graph as one JSON object")
-	flags.String("since", "provision",
-		"artifact boundary: provision|boot|auto, a duration such as 24h, or an RFC3339 time")
-	flags.Duration("timeout", 120*time.Second, "budget of the whole collection in seconds")
 }
 
 // showFlags is the option set a raw inventory answers to.
 func showFlags(flags *pflag.FlagSet) {
+	collectionFlags(flags)
 	flags.Bool("json", false, "print the section's collected structures as one JSON object")
-	flags.String("since", "provision",
-		"artifact boundary: provision|boot|auto, a duration such as 24h, or an RFC3339 time")
-	flags.Duration("timeout", 120*time.Second, "budget of the whole collection in seconds")
 }
 
 func auditOptions(flags *pflag.FlagSet) (auditFlags, error) {
@@ -45,8 +50,8 @@ func auditOptions(flags *pflag.FlagSet) (auditFlags, error) {
 	if budget < time.Second {
 		return auditFlags{}, fmt.Errorf("--timeout must be at least 1s")
 	}
-	since := stringFlag(flags, "since")
-	if err := validateSince(since); err != nil {
+	since, err := parseSince(stringFlag(flags, "since"))
+	if err != nil {
 		return auditFlags{}, err
 	}
 	return auditFlags{
@@ -58,9 +63,6 @@ func auditOptions(flags *pflag.FlagSet) (auditFlags, error) {
 }
 
 func durationFlag(flags *pflag.FlagSet, name string) time.Duration {
-	if flags.Lookup(name) == nil {
-		return 120 * time.Second
-	}
 	value, _ := flags.GetDuration(name)
 	return value
 }

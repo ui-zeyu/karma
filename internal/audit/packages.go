@@ -11,10 +11,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"runtime"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"karma/internal/prov"
@@ -61,10 +59,10 @@ type packageEntry struct {
 
 // collectPackages stats every recorded package file and records the edges the
 // package transaction no longer explains.
-func collectPackages(ctx context.Context, snapshot *Snapshot) []string {
+func collectPackages(ctx context.Context, snapshot *Snapshot) []Coverage {
 	catalog := snapshot.catalog
 	if catalog == nil || catalog.Kind() == "none" {
-		return []string{"no package database: the package sweep cannot run"}
+		return []Coverage{coverageAbsent("packages", "no package database: the package sweep cannot run")}
 	}
 	state := &snapshot.Packages
 	state.Kind = catalog.Kind()
@@ -72,21 +70,21 @@ func collectPackages(ctx context.Context, snapshot *Snapshot) []string {
 	if len(owners) == 0 {
 		for _, gap := range catalog.Gaps() {
 			if strings.Contains(gap, "file list") {
-				return []string{gap}
+				return []Coverage{coverageGap("packages", gap)}
 			}
 		}
-		return []string{"package file list is empty: the package sweep cannot run"}
+		return []Coverage{coverageAbsent("packages", "package file list is empty: the package sweep cannot run")}
 	}
 	state.Packages = catalog.PackageCount()
 	boundary := snapshot.Boundary.Time
-	var gaps []string
+	var gaps []Coverage
 	entries := make([]packageEntry, 0, len(owners))
 	for path, ownership := range owners {
 		if !snapshot.plan.Filter.touchesPath(path) {
 			continue
 		}
 		if len(entries) >= packageSweepLimit {
-			gaps = append(gaps, fmt.Sprintf("package sweep stopped at %d files", packageSweepLimit))
+			gaps = append(gaps, coverageGap("packages", fmt.Sprintf("package sweep stopped at %d files", packageSweepLimit)))
 			break
 		}
 		// A package-recorded directory has no execution edge. Existing ones
@@ -97,64 +95,45 @@ func collectPackages(ctx context.Context, snapshot *Snapshot) []string {
 		}
 		entries = append(entries, packageEntry{Path: path, Pkg: ownership.Name})
 	}
-	workers := min(max(runtime.GOMAXPROCS(0)*2, 2), 16)
-	chunk := (len(entries) + workers - 1) / workers
-	var (
-		mu        sync.Mutex
-		anomalies []PackageFile
-		files     int
-		wg        sync.WaitGroup
-	)
-	for worker := 0; worker < workers; worker++ {
-		start := worker * chunk
-		end := min(start+chunk, len(entries))
-		if start >= end {
-			break
+	workers := workerCount(2)
+	locals := make([][]PackageFile, workers)
+	counts := make([]int, workers)
+	each(ctx, len(entries), workers, func(w, i int) {
+		entry := entries[i]
+		stamp, known := snapshot.PackageTimes[entry.Pkg]
+		if !known || stamp.IsZero() {
+			if boundary.IsZero() {
+				return
+			}
+			stamp = boundary
 		}
-		wg.Add(1)
-		go func(start, end int) {
-			defer wg.Done()
-			var local []PackageFile
-			localFiles := 0
-			for _, entry := range entries[start:end] {
-				if ctx.Err() != nil {
-					break
-				}
-				stamp, known := snapshot.PackageTimes[entry.Pkg]
-				if !known || stamp.IsZero() {
-					if boundary.IsZero() {
-						continue
-					}
-					stamp = boundary
-				}
-				info, err := os.Lstat(entry.Path)
-				if err != nil {
-					if os.IsNotExist(err) {
-						local = append(local, PackageFile{
-							Path: entry.Path, Package: entry.Pkg, Missing: true, Transaction: stamp,
-						})
-					}
-					continue
-				}
-				if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-					continue
-				}
-				ctime := trust.CTime(info)
-				localFiles++
-				if ctime <= stamp.Unix() {
-					continue
-				}
-				local = append(local, PackageFile{
-					Path: entry.Path, Package: entry.Pkg, CTime: ctime, Transaction: stamp,
+		info, err := os.Lstat(entry.Path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				locals[w] = append(locals[w], PackageFile{
+					Path: entry.Path, Package: entry.Pkg, Missing: true, Transaction: stamp,
 				})
 			}
-			mu.Lock()
-			anomalies = append(anomalies, local...)
-			files += localFiles
-			mu.Unlock()
-		}(start, end)
+			return
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return
+		}
+		ctime := trust.CTime(info)
+		counts[w]++
+		if ctime <= stamp.Unix() {
+			return
+		}
+		locals[w] = append(locals[w], PackageFile{
+			Path: entry.Path, Package: entry.Pkg, CTime: ctime, Transaction: stamp,
+		})
+	})
+	var anomalies []PackageFile
+	files := 0
+	for w := range locals {
+		anomalies = append(anomalies, locals[w]...)
+		files += counts[w]
 	}
-	wg.Wait()
 	state.Anomalies = anomalies
 	state.Files = files
 	sort.Slice(state.Anomalies, func(i, j int) bool {
@@ -188,17 +167,15 @@ func packageOwnerSkipPath(path string) bool {
 // judgePackages turns broken package edges into findings. Severity follows the
 // path's execution role: a system binary or library is root-reachable; a
 // package file elsewhere is lower.
-func judgePackages(snapshot *Snapshot, filter Filter, add func(Finding)) []string {
+func judgePackages(j *judgePass) []Coverage {
+	snapshot, add := j.snapshot, j.add
 	state := &snapshot.Packages
-	if state.Kind == "" || len(state.Anomalies) == 0 {
+	if state.Kind == "" || len(j.view.PackageFiles) == 0 {
 		return nil
 	}
 	boundary := snapshot.Boundary.Time
 	var anomalies []PackageFile
-	for _, anomaly := range state.Anomalies {
-		if !pathInScope(anomaly.Path, filter) {
-			continue
-		}
+	for _, anomaly := range j.view.PackageFiles {
 		// A file older than the artifact edge came with the image, even when
 		// the image layer rebuilt its ctime after the package transaction.
 		if !anomaly.Missing && !boundary.IsZero() && anomaly.CTime <= boundary.Unix() {
@@ -206,15 +183,10 @@ func judgePackages(snapshot *Snapshot, filter Filter, add func(Finding)) []strin
 		}
 		anomalies = append(anomalies, anomaly)
 	}
-	var coverage []string
-	shown := 0
+	var coverage []Coverage
+	anomalies, coverage = shownMore(anomalies, 100, "packages", "package-file anomalies")
 	for _, anomaly := range anomalies {
-		if shown >= 100 {
-			coverage = append(coverage, fmt.Sprintf("%d more package-file anomalies than the report shows", len(anomalies)-shown))
-			break
-		}
-		shown++
-		class := "package-file-modified"
+		class := Class("package-file-modified")
 		title := "package file changed after its package transaction"
 		origin := Modified
 		evidence := []string{
@@ -223,7 +195,7 @@ func judgePackages(snapshot *Snapshot, filter Filter, add func(Finding)) []strin
 				ctimeString(anomaly.CTime), anomaly.Transaction.Format(stampLayout)),
 		}
 		if anomaly.Missing {
-			class = "package-file-missing"
+			class = Class("package-file-missing")
 			title = "package file missing from disk"
 			origin = Unknown
 			evidence = []string{
@@ -237,14 +209,14 @@ func judgePackages(snapshot *Snapshot, filter Filter, add func(Finding)) []strin
 			Path: anomaly.Path, Origin: origin, Reach: packageFileReach(anomaly.Path),
 			Detail:   fmt.Sprintf("package %s's ownership edge is broken", anomaly.Package),
 			Evidence: evidence,
-			Trace:    steps("package "+anomaly.Package, "file "+anomaly.Path, class),
+			Trace:    steps("package "+anomaly.Package, "file "+anomaly.Path, string(class)),
 		})
 	}
 	return coverage
 }
 
 func packageFileSeverity(path string) Severity {
-	if underAny(path, trustedExecutionRoots) {
+	if trust.UnderAny(path, programTrees) {
 		return High
 	}
 	switch {
@@ -260,25 +232,11 @@ func packageFileSeverity(path string) Severity {
 }
 
 func packageFileReach(path string) Reach {
-	if underAny(path, trustedExecutionRoots) {
+	if trust.UnderAny(path, programTrees) {
 		return RootAsset
 	}
 	if strings.HasPrefix(path, "/etc/") {
 		return RootAsset
 	}
 	return ServiceAsset
-}
-
-var trustedExecutionRoots = []string{
-	"/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/libexec",
-	"/lib", "/lib64", "/usr/lib64",
-}
-
-func underAny(path string, roots []string) bool {
-	for _, root := range roots {
-		if path == root || strings.HasPrefix(path, root+"/") {
-			return true
-		}
-	}
-	return false
 }

@@ -1,6 +1,7 @@
 package startup
 
 import (
+	"context"
 	"testing"
 
 	"karma/internal/trust"
@@ -15,7 +16,7 @@ func TestAnalyzeStatesTheEdgeAndBothEndsFacts(t *testing.T) {
 			CTime: 1200, PackageKnown: true,
 		})
 	}
-	corpus := NewCorpus([]File{{
+	corpus := NewCorpus(context.Background(), OSFS{}, []File{{
 		Path: unit, Unit: "agent.service", Surface: SurfaceSystemd, Dialect: UnitDialect, Body: body,
 	}}, nil, facts)
 	edges := Analyze(corpus)
@@ -39,7 +40,7 @@ func TestAnalyzeStatesTheEdgeAndBothEndsFacts(t *testing.T) {
 
 func TestAnalyzeKeepsTheDynamicTargetAsCoverage(t *testing.T) {
 	unit := "/etc/systemd/system/dynamic.service"
-	corpus := NewCorpus([]File{{
+	corpus := NewCorpus(context.Background(), OSFS{}, []File{{
 		Path: unit, Unit: "dynamic.service", Surface: SurfaceSystemd, Dialect: UnitDialect,
 		Body: "[Service]\nExecStart=$BIN --serve\n",
 	}}, nil, func(path string) trust.Facts { return trust.Facts{Path: path, Kind: trust.Missing} })

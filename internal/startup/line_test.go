@@ -1,6 +1,7 @@
 package startup
 
 import (
+	"context"
 	"testing"
 
 	"karma/internal/trust"
@@ -15,7 +16,7 @@ func TestPAMEdgeCitesTheModuleLine(t *testing.T) {
 	facts := func(path string) trust.Facts {
 		return trust.Build(path, trust.Attrs{Kind: trust.File, Mode: 0o644, UID: 0, Real: path, CTime: 900})
 	}
-	edges := Analyze(NewCorpus([]File{{
+	edges := Analyze(NewCorpus(context.Background(), OSFS{}, []File{{
 		Path: path, Surface: SurfacePAM, Dialect: PAMDialect, Body: body,
 	}}, nil, facts))
 	edge, ok := findEdge(edges, "pam", "/lib/security/pam_unix.so")
@@ -29,7 +30,7 @@ func TestPAMEdgeCitesTheModuleLine(t *testing.T) {
 
 func TestEvalEdgeCitesTheOuterLine(t *testing.T) {
 	body := "#!/bin/sh\n# header\neval 'source /opt/vendor/env.sh'\n"
-	edges := shellEdges(body, rawEdge{surface: SurfaceProfile, trigger: "/etc/profile"})
+	edges := mustShellEdges(t, body, rawEdge{surface: SurfaceProfile, trigger: "/etc/profile"})
 	if len(edges) != 1 || edges[0].line != 3 {
 		t.Errorf("eval edges = %+v, want one edge on line 3", edges)
 	}
@@ -41,7 +42,7 @@ func TestFstabEdgeCitesTheMountRow(t *testing.T) {
 	facts := func(path string) trust.Facts {
 		return trust.Build(path, trust.Attrs{Kind: trust.File, Mode: 0o644, UID: 0, Real: path, CTime: 900})
 	}
-	edges := Analyze(NewCorpus([]File{{
+	edges := Analyze(NewCorpus(context.Background(), OSFS{}, []File{{
 		Path: path, Surface: SurfaceSystem, Dialect: SystemDialect, Body: body,
 	}}, nil, facts))
 	edge, ok := findEdge(edges, "fstab", "/usr")
@@ -59,7 +60,7 @@ func TestCrypttabEdgeCitesTheVolumeRow(t *testing.T) {
 	facts := func(path string) trust.Facts {
 		return trust.Build(path, trust.Attrs{Kind: trust.File, Mode: 0o644, UID: 0, Real: path, CTime: 900})
 	}
-	edges := Analyze(NewCorpus([]File{{
+	edges := Analyze(NewCorpus(context.Background(), OSFS{}, []File{{
 		Path: path, Surface: SurfaceSystem, Dialect: SystemDialect, Body: body,
 	}}, nil, facts))
 	edge, ok := findEdge(edges, "crypttab", "/dev/mapper/crypt")
@@ -80,12 +81,11 @@ func TestNSSEdgeCitesTheSwitchLine(t *testing.T) {
 		}
 		return trust.Build(path, trust.Attrs{Kind: trust.File, Mode: 0o644, UID: 0, Real: path, CTime: 900})
 	}
-	corpus := NewCorpus([]File{{
+	corpus := NewCorpus(context.Background(), fakeFS{globs: map[string][]string{
+		"/lib/libnss_files.so.2": {"/lib/libnss_files.so.2"},
+	}}, []File{{
 		Path: path, Surface: SurfaceSystem, Dialect: SystemDialect, Body: body,
 	}}, nil, facts)
-	corpus.fs = fakeFS{globs: map[string][]string{
-		"/lib/libnss_files.so.2": {"/lib/libnss_files.so.2"},
-	}}
 	edges := Analyze(corpus)
 	edge, ok := findEdge(edges, "nss", "/lib/libnss_files.so.2")
 	if !ok {

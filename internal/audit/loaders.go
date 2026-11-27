@@ -9,6 +9,7 @@ package audit
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -26,21 +27,19 @@ var capabilityNames = map[uint]string{
 
 func processCapabilities(mask uint64) []string {
 	var names []string
-	for bit := uint(0); bit < 64; bit++ {
-		if mask&(1<<bit) == 0 {
-			continue
-		}
-		if name, ok := capabilityNames[bit]; ok {
+	for bit, name := range capabilityNames {
+		if mask&(1<<uint(bit)) != 0 {
 			names = append(names, name)
 		}
 	}
+	slices.Sort(names)
 	return names
 }
 
 // judgeLoaders states the process-to-library edges the environment declares.
-func judgeLoaders(snapshot *Snapshot, a *assessor, filter Filter, add func(Finding)) {
-	for _, process := range snapshot.Processes {
-		if process.PID == selfPID() || !processInScope(process, filter) {
+func judgeLoaders(j *judgePass) {
+	for _, process := range j.snapshot.Processes {
+		if process.PID == selfPID() || !processInScope(process, j.filter) {
 			continue
 		}
 		reach := processReach(process)
@@ -56,12 +55,12 @@ func judgeLoaders(snapshot *Snapshot, a *assessor, filter Filter, add func(Findi
 			detail := "the process preloads a library without a service unit declaring it"
 			origin := Unknown
 			if filepath.IsAbs(target.Path) && target.Facts.Path != "" {
-				story := a.read(target.Facts, false)
+				story := j.a.read(target.Facts)
 				origin = story.origin
 				evidence = append(evidence, fmt.Sprintf("library %s: %s (%s)", target.Path, story.origin, story.why))
 				evidence = append(evidence, story.evidence...)
 				switch {
-				case story.origin == Runtime || story.origin == Modified:
+				case story.origin.arrived():
 					severity = severityFor(story.origin, reach)
 					detail = "the preloaded library is outside the artifact"
 				case target.Facts.PackageKnown && target.Facts.Package == "":
@@ -76,7 +75,7 @@ func judgeLoaders(snapshot *Snapshot, a *assessor, filter Filter, add func(Findi
 			} else if process.Unit != "" {
 				continue
 			}
-			add(Finding{
+			j.add(Finding{
 				Class: "process-preload", Severity: severity,
 				Title: "process preloads a dynamic library",
 				Path:  target.Path, Origin: origin, Reach: reach,
@@ -87,16 +86,13 @@ func judgeLoaders(snapshot *Snapshot, a *assessor, filter Filter, add func(Findi
 		}
 		if badLibraryPath(process.LibraryPath) {
 			_, interpreter := interpreterClass(process)
-			if !interpreter && process.ExeFacts.PackageKnown && process.ExeFacts.Package != "" {
-				// A package-owned runtime (containerd shims, Java launchers)
-				// often sets a trailing colon; the shell/runtime case below is
-				// the one that changes what code can be loaded.
-			} else {
+			packageRuntime := !interpreter && process.ExeFacts.PackageKnown && process.ExeFacts.Package != ""
+			if !packageRuntime {
 				severity := Medium
 				if interpreter {
 					severity = High
 				}
-				add(Finding{
+				j.add(Finding{
 					Class: "process-library-path", Severity: severity,
 					Title: "library search path contains the current directory",
 					Path:  process.Exe, Origin: Unknown, Reach: reach,
@@ -108,7 +104,7 @@ func judgeLoaders(snapshot *Snapshot, a *assessor, filter Filter, add func(Findi
 		}
 		if uid := processUID(process); uid != 0 {
 			if names := processCapabilities(process.CapEff); len(names) > 0 {
-				add(Finding{
+				j.add(Finding{
 					Class: "process-capability", Severity: High,
 					Title: "non-root process holds a privilege capability",
 					Path:  process.Exe, Origin: Unknown, Reach: RootAsset,

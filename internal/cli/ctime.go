@@ -71,7 +71,7 @@ func runCtime(ctx context.Context, w io.Writer, dirs []string) error {
 	kept := &ctimeHeap{}
 	heap.Init(kept)
 	total := 0
-	err := walkCtime(ctx, dirs, func(row ctimeRow) {
+	unread, err := walkCtime(ctx, dirs, func(row ctimeRow) {
 		total++
 		if kept.Len() < ctimeLimit {
 			heap.Push(kept, row)
@@ -99,6 +99,9 @@ func runCtime(ctx context.Context, w io.Writer, dirs []string) error {
 	if total > len(rows) {
 		fmt.Fprintf(w, "... %d more rows\n", total-len(rows))
 	}
+	if unread > 0 {
+		fmt.Fprintf(w, "... %d entries unread\n", unread)
+	}
 	switch {
 	case err == nil:
 		return nil
@@ -116,10 +119,15 @@ func newer(left, right ctimeRow) bool {
 	return left.path < right.path
 }
 
-func walkCtime(ctx context.Context, dirs []string, visit func(ctimeRow)) error {
+// walkCtime visits every file under the roots and counts the entries it had
+// to skip: a failed directory read and a failed stat are both unread, not
+// missing — the operator should know the listing has holes.
+func walkCtime(ctx context.Context, dirs []string, visit func(ctimeRow)) (int, error) {
+	unread := 0
 	for _, root := range dirs {
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
+				unread++
 				return nil
 			}
 			if err := ctx.Err(); err != nil {
@@ -134,6 +142,7 @@ func walkCtime(ctx context.Context, dirs []string, visit func(ctimeRow)) error {
 			}
 			info, err := entry.Info()
 			if err != nil {
+				unread++
 				return nil
 			}
 			visit(ctimeRow{
@@ -146,10 +155,10 @@ func walkCtime(ctx context.Context, dirs []string, visit func(ctimeRow)) error {
 		})
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return err
+				return unread, err
 			}
-			return readError("ctime", root, err)
+			return unread, readError("ctime", root, err)
 		}
 	}
-	return nil
+	return unread, nil
 }

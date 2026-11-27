@@ -25,3 +25,22 @@ func TestSafeTextLeavesPlainUnicodeAlone(t *testing.T) {
 		t.Errorf("SafeText changed plain text: %q", got)
 	}
 }
+
+func TestEscapeScannerAgreesOnOSCSequences(t *testing.T) {
+	link := "\x1b]8;;http://example.test\x1b\\link\x1b]8;;\x1b\\"
+	if got := DisplayWidth(link); got != 4 {
+		t.Errorf("width with an OSC hyperlink = %d, want 4", got)
+	}
+	if got := StripANSI(link); got != "link" {
+		t.Errorf("stripped = %q, want link", got)
+	}
+	if got := SafeText(link); got != "link" {
+		t.Errorf("safe = %q, want link", got)
+	}
+	if got := DisplayWidth("\x1b[31mpainted\x1b[0m"); got != 7 {
+		t.Errorf("width with SGR = %d, want 7", got)
+	}
+	if got := DisplayWidth("trailing\x1b"); got != 8 {
+		t.Errorf("width with a lone ESC = %d, want 8", got)
+	}
+}

@@ -25,26 +25,20 @@ func RenderGraph(w io.Writer, view *GraphView, options RenderOptions) {
 			len(view.Nodes), len(view.Edges), len(view.Findings)), full: true},
 	}, nil)
 	if len(view.Findings) == 0 {
-		fmt.Fprintln(w, rail(band(" QUIET", "", width-2, subBandBG, subBandFG, false, options.Color),
-			[]string{"no finding touches this graph; the edges below are its evidence"},
-			width, mutedColor, options.Color))
+		fmt.Fprintln(w, quietPanel("no finding touches this graph; the edges below are its evidence", options, width))
 		fmt.Fprintln(w)
 	}
 	for _, group := range groupFindings(view.Findings) {
-		fmt.Fprintln(w, findingPanel(group, true, options, width))
+		fmt.Fprintln(w, findingPanel(panelGroup{findings: group}, true, options, width))
 		fmt.Fprintln(w)
 	}
-	fmt.Fprintln(w, band(" GRAPH", chrome.SafeText(root), width, bannerBG, bannerFG, true, options.Color))
+	fmt.Fprintln(w, chrome.Band(" GRAPH", chrome.SafeText(root), width, bannerBG, bannerFG, true, options.Color))
 	for _, line := range graphTree(view, options, width) {
 		fmt.Fprintln(w, line)
 	}
 	fmt.Fprintln(w)
 	if len(view.Coverage) > 0 {
-		coverage := make([]string, len(view.Coverage))
-		for index, line := range view.Coverage {
-			coverage[index] = chrome.SafeText(line)
-		}
-		fmt.Fprintln(w, evidencePanel("COVERAGE", coverage, len(coverage), options, width))
+		fmt.Fprintln(w, coveragePanel(view.Coverage, options, width))
 	}
 }
 
@@ -102,7 +96,7 @@ func graphTree(view *GraphView, options RenderOptions, width int) []string {
 	var renderChildren func(id, prefix string, depth int)
 	renderChildren = func(id, prefix string, depth int) {
 		if depth > 8 {
-			lines = append(lines, prefix+paintText(options.Color, fg(mutedColor), "… deeper edges omitted"))
+			lines = append(lines, prefix+chrome.Paint(options.Color, chrome.Fg(mutedColor), "… deeper edges omitted"))
 			return
 		}
 		edges := outgoing[id]
@@ -120,12 +114,12 @@ func graphTree(view *GraphView, options RenderOptions, width int) []string {
 				branch, childPrefix = "└─ ", prefix+"   "
 			}
 			edgeText := edge.Kind + "[" + edge.Source + "] "
-			room := width - displayWidth(prefix) - displayWidth(branch) - displayWidth(edgeText)
+			room := width - chrome.DisplayWidth(prefix) - chrome.DisplayWidth(branch) - chrome.DisplayWidth(edgeText)
 			lines = append(lines, prefix+branch+
-				paintText(options.Color, fg(mutedColor), edgeText)+
+				chrome.Paint(options.Color, chrome.Fg(mutedColor), edgeText)+
 				nodeLine(child, options.Color, room))
 			if visited[child.ID] {
-				lines = append(lines, childPrefix+paintText(options.Color, fg(mutedColor), "(shown above)"))
+				lines = append(lines, childPrefix+chrome.Paint(options.Color, chrome.Fg(mutedColor), "(shown above)"))
 				continue
 			}
 			visited[child.ID] = true
@@ -146,7 +140,7 @@ func graphTree(view *GraphView, options RenderOptions, width int) []string {
 			continue
 		}
 		visited[node.ID] = true
-		lines = append(lines, paintText(options.Color, fg(mutedColor), "· ")+
+		lines = append(lines, chrome.Paint(options.Color, chrome.Fg(mutedColor), "· ")+
 			nodeLine(node, options.Color, width-2))
 		renderChildren(node.ID, "  ", 0)
 	}
@@ -170,27 +164,32 @@ func nodeLine(node *GraphNode, color bool, width int) string {
 			detail = strings.TrimSpace("content mismatch · " + detail)
 		}
 	}
-	origin := chrome.SafeText(node.Origin)
+	// A context node is structure, not evidence: it states no origin word,
+	// whatever the builder stored.
+	origin := ""
+	if !node.Context {
+		origin = chrome.SafeText(node.Origin)
+	}
 	if width > 0 {
 		// marker + space + label, then "  origin" when present, then
 		// "  detail": the optional origin shifts the detail's room by two.
-		used := 2 + displayWidth(label)
+		used := 2 + chrome.DisplayWidth(label)
 		if origin != "" {
-			used += 2 + displayWidth(origin)
+			used += 2 + chrome.DisplayWidth(origin)
 		}
 		room := width - used - 2
 		if room > 0 {
-			detail = truncate(detail, room)
+			detail = chrome.Truncate(detail, room)
 		} else {
 			detail = ""
 		}
 	}
-	line := paintText(color, fg(colorCode), marker) + " " + label
+	line := chrome.Paint(color, chrome.Fg(colorCode), marker) + " " + label
 	if origin != "" {
-		line += paintText(color, fg(originHue(node.typedOrigin())), "  "+origin)
+		line += chrome.Paint(color, chrome.Fg(originHue(node.typedOrigin())), "  "+origin)
 	}
 	if detail != "" {
-		line += paintText(color, fg(mutedColor), "  "+detail)
+		line += chrome.Paint(color, chrome.Fg(mutedColor), "  "+detail)
 	}
 	return line
 }
@@ -229,7 +228,7 @@ func WriteGraphJSON(w io.Writer, view *GraphView) error {
 		Nodes    []GraphNode   `json:"nodes"`
 		Edges    []GraphEdge   `json:"edges"`
 		Findings []findingData `json:"findings"`
-		Coverage []string      `json:"coverage,omitempty"`
+		Coverage []Coverage    `json:"coverage,omitempty"`
 	}{
 		Root: view.Root, RootKind: view.RootKind,
 		Boundary: boundaryDataOf(view.Boundary),

@@ -3,6 +3,7 @@ package startup
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -57,15 +58,20 @@ type Corpus struct {
 	unreadable map[string]bool
 	masked     map[string]bool
 	gaps       map[string]bool
+	// initSystemd memoizes the one /proc/1/comm read a collection makes.
+	initSystemd *bool
 }
 
-// NewCorpus builds a corpus from a source's collection. The enabled map is
-// keyed by unit name and states the link that enables it.
-func NewCorpus(files []File, enabled map[string]string, facts FactSource) *Corpus {
+// NewCorpus builds a corpus from a source's collection. The context stops the
+// walk between surfaces and before every file read; the filesystem is the one
+// the collectors and the named-unit lookup read. The enabled map is keyed by
+// unit name and states the link that enables it.
+func NewCorpus(ctx context.Context, fsys FS, files []File, enabled map[string]string, facts FactSource) *Corpus {
 	if enabled == nil {
 		enabled = map[string]string{}
 	}
 	return &Corpus{
+		ctx: ctx, fs: fsys,
 		files: files, enabled: enabled, facts: facts,
 		seen: map[string]bool{}, unreadable: map[string]bool{}, masked: map[string]bool{},
 		gaps: map[string]bool{},
@@ -76,9 +82,8 @@ func NewCorpus(files []File, enabled map[string]string, facts FactSource) *Corpu
 // The audit reports these as coverage.
 func (c *Corpus) addGap(line string) { c.gaps[line] = true }
 
-// stopped reports whether the run's context already asked collection to stop;
-// a corpus assembled without one never stops.
-func (c *Corpus) stopped() bool { return c.ctx != nil && c.ctx.Err() != nil }
+// stopped reports whether the run's context already asked collection to stop.
+func (c *Corpus) stopped() bool { return c.ctx.Err() != nil }
 
 // Gaps lists the coverage lines the analysis produced, sorted.
 func (c *Corpus) Gaps() []string {
@@ -89,7 +94,7 @@ func (c *Corpus) Gaps() []string {
 	for line := range c.gaps {
 		lines = append(lines, line)
 	}
-	sort.Strings(lines)
+	slices.Sort(lines)
 	return lines
 }
 
@@ -104,11 +109,11 @@ func (c *Corpus) Unreadable() []string {
 	for path := range c.unreadable {
 		paths = append(paths, path)
 	}
-	sort.Strings(paths)
+	slices.Sort(paths)
 	return paths
 }
 
-// Analyze turns a corpus into judged edges, most severe first. The parse and
+// Analyze turns a corpus into judged edges, ordered by surface and citation. The parse and
 // the judgment are separate passes so every target's facts can be read once,
 // and so the two sources judge the same structure the same way.
 func Analyze(corpus *Corpus) []Edge {
@@ -116,18 +121,12 @@ func Analyze(corpus *Corpus) []Edge {
 		return nil
 	}
 	raw := analyzeSystemd(corpus)
+	// The per-file dispatch covers every surface including systemd: unit
+	// files are folded by analyzeSystemd and their parse answers nothing,
+	// generator files state their own edge through parseSystemdFile.
 	for _, file := range corpus.files {
 		if corpus.stopped() {
 			break
-		}
-		if file.Surface == SurfaceSystemd {
-			if file.Dialect == GeneratorsDialect {
-				raw = append(raw, generatorEdges(file)...)
-			}
-			continue
-		}
-		if file.Dialect == ShellDialect && !ShellParses(file.Body) {
-			corpus.addGap("shell parse failed: " + file.Path)
 		}
 		surface, ok := surfaceSpecFor(file.Surface)
 		if !ok || surface.parse == nil {
@@ -241,8 +240,8 @@ func surfaceSpecFor(surface Surface) (surfaceRun, bool) {
 }
 
 // parseSystemdFile states the generator edge a systemd surface file owns.
-// Unit files are folded by analyzeSystemd before this loop, because a unit's
-// files and drop-ins state one list of edges together.
+// Unit files answer nothing here: analyzeSystemd folds each unit's files and
+// drop-ins, because a unit's files state one list of edges together.
 func parseSystemdFile(file File, _ *Corpus) []rawEdge {
 	if file.Dialect == GeneratorsDialect {
 		return generatorEdges(file)
@@ -250,23 +249,23 @@ func parseSystemdFile(file File, _ *Corpus) []rawEdge {
 	return nil
 }
 
-func parseProfile(file File, _ *Corpus) []rawEdge {
+func parseProfile(file File, corpus *Corpus) []rawEdge {
 	base := rawEdge{
 		surface: SurfaceProfile, phase: Login,
 		subject: accountFor(file.Path), trigger: file.Path,
 	}
 	switch file.Dialect {
 	case ShellDialect:
-		return shellEdges(file.Body, base)
+		return shellFileEdges(corpus, file, base)
 	case EnvDialect:
 		return environmentEdges(file.Body, base)
 	}
 	return nil
 }
 
-func parseCron(file File, _ *Corpus) []rawEdge {
+func parseCron(file File, corpus *Corpus) []rawEdge {
 	if file.Dialect == ShellDialect {
-		return shellEdges(file.Body, rawEdge{
+		return shellFileEdges(corpus, file, rawEdge{
 			surface: SurfaceCron, phase: Scheduled,
 			subject: cronShellSubject(file.Path), trigger: file.Path,
 		})
@@ -279,7 +278,7 @@ func parseInit(file File, corpus *Corpus) []rawEdge {
 	if _, enabled := corpus.enabled[filepath.Base(file.Path)]; enabled {
 		reach = BootEnabled
 	}
-	return shellEdges(file.Body, rawEdge{
+	return shellFileEdges(corpus, file, rawEdge{
 		surface: SurfaceInit, phase: reach,
 		subject: Subject{Class: AccountRoot}, trigger: file.Path,
 	})
@@ -289,14 +288,14 @@ func parseLoader(file File, _ *Corpus) []rawEdge { return loaderEdges(file) }
 
 func parseUdev(file File, _ *Corpus) []rawEdge { return udevEdges(file) }
 
-func parseSSH(file File, _ *Corpus) []rawEdge {
+func parseSSH(file File, corpus *Corpus) []rawEdge {
 	switch file.Dialect {
 	case AuthorizedKeysDialect:
 		return authorizedKeysEdges(file)
 	case SSHConfigDialect:
 		return sshConfigEdges(file)
 	}
-	return shellEdges(file.Body, rawEdge{
+	return shellFileEdges(corpus, file, rawEdge{
 		surface: SurfaceSSH, phase: Login,
 		subject: accountFor(file.Path), trigger: file.Path,
 	})
@@ -304,13 +303,20 @@ func parseSSH(file File, _ *Corpus) []rawEdge {
 
 func parsePAM(file File, corpus *Corpus) []rawEdge {
 	if file.Dialect == ShellDialect {
-		return motdEdges(file)
+		return motdEdges(file, corpus)
 	}
 	return pamEdges(file, corpus)
 }
 
-func parseSupervisor(file File, _ *Corpus) []rawEdge {
-	if file.Dialect == XinetdDialect {
+func parseSupervisor(file File, corpus *Corpus) []rawEdge {
+	switch file.Dialect {
+	case ShellDialect:
+		// An s6 run script or an entrypoint script is a shell file, read as
+		// the shell it is.
+		return shellFileEdges(corpus, file, rawEdge{
+			surface: SurfaceSupervisor, phase: BootStaged, subject: Subject{Class: AccountRoot}, trigger: file.Path,
+		})
+	case XinetdDialect:
 		return xinetdEdges(file)
 	}
 	return supervisorEdges(file)
@@ -376,16 +382,15 @@ func analyzeSystemd(corpus *Corpus) []rawEdge {
 					kind = Exec
 				}
 				edges = append(edges, rawEdge{
-					surface:        SurfaceSystemd,
-					phase:          reach,
-					subject:        subject,
-					trigger:        ref.file,
-					line:           ref.line,
-					mechanism:      Mechanism(key),
-					target:         target.target,
-					kind:           kind,
-					viaInterpreter: target.viaInterpreter,
-					dynamic:        target.dynamic,
+					surface:   SurfaceSystemd,
+					phase:     reach,
+					subject:   subject,
+					trigger:   ref.file,
+					line:      ref.line,
+					mechanism: Mechanism(key),
+					target:    target.target,
+					kind:      kind,
+					dynamic:   target.dynamic,
 				})
 			}
 		}

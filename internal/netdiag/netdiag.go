@@ -21,17 +21,13 @@ type Socket struct {
 	LocalPort uint16
 	Peer      net.IP
 	PeerPort  uint16
-	IfIndex   int
 	Inode     uint64
 	UID       uint32
-	RQueue    uint32
-	WQueue    uint32
 }
 
 // Owner is one process holding a socket.
 type Owner struct {
 	PID  int
-	FD   int
 	Comm string
 }
 
@@ -67,15 +63,11 @@ func StateWord(netid string, state uint8) string {
 }
 
 // Endpoint renders one address:port cell the way ss does: port 0 prints "*",
-// a v6 address is bracketed, and a socket bound to a device carries the
-// interface name between the address and the port.
-func Endpoint(ip net.IP, port uint16, ifname string) string {
+// a v6 address is bracketed.
+func Endpoint(ip net.IP, port uint16) string {
 	host := ip.String()
 	if ip.To4() == nil {
 		host = "[" + host + "]"
-	}
-	if ifname != "" {
-		host += "%" + ifname
 	}
 	if port == 0 {
 		return host + ":*"

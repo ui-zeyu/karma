@@ -21,7 +21,7 @@ func highlightTokens(text string, base int, color bool) string {
 		if base == 0 {
 			return segment
 		}
-		return paintText(true, fg(base), segment)
+		return chrome.Paint(true, chrome.Fg(base), segment)
 	}
 	var out strings.Builder
 	for index := 0; index < len(text); {
@@ -47,10 +47,10 @@ func highlightTokens(text string, base int, color bool) string {
 		switch {
 		case isPath:
 			out.WriteString(paintBase(prefix))
-			out.WriteString(paintText(true, fg(hueInformation), core))
+			out.WriteString(chrome.Paint(true, chrome.Fg(hueInformation), core))
 			out.WriteString(paintBase(suffix))
 		case known && parenFollows(text, end):
-			out.WriteString(paintText(true, fg(originHue(origin)), core))
+			out.WriteString(chrome.Paint(true, chrome.Fg(originHue(origin)), core))
 			out.WriteString(paintBase(suffix))
 		default:
 			out.WriteString(paintBase(token))
@@ -114,7 +114,7 @@ func originByName(name string) (Origin, bool) {
 }
 
 func padRight(text string, width int) string {
-	if n := displayWidth(text); n < width {
+	if n := chrome.DisplayWidth(text); n < width {
 		return text + strings.Repeat(" ", width-n)
 	}
 	return text

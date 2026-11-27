@@ -7,14 +7,12 @@ package audit
 
 import (
 	"context"
-	"os"
+	"fmt"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
-
-	"karma/internal/trust"
 )
 
 // Account is one passwd row joined to its shadow row.
@@ -74,15 +72,18 @@ type SSHDConfig struct {
 	KeyFile string
 	KeyLine int
 	KeyRaw  string
-	// MatchBlocks counts conditional blocks; their directives apply to the
+	// match counts conditional blocks; their directives apply to the
 	// matched connections only, so the parser keeps them out of the global
 	// posture.
-	MatchBlocks int
+	match int
 }
 
 // AuthorizedKeyCommand is one authorized_keys row with a forced command.
 type AuthorizedKeyCommand struct {
-	File    string
+	File string
+	// Line and Text cite the authorized_keys row the command was read from.
+	Line    int
+	Text    string
 	Account string
 	Command string
 }
@@ -94,6 +95,50 @@ type IdentityState struct {
 	Sudo        []SudoGrant
 	SSHD        SSHDConfig
 	KeyCommands []AuthorizedKeyCommand
+
+	// groupIndex is the membership index behind groupsFor, built once on
+	// the first call instead of once per judgment.
+	groupIndex *groupIndex
+}
+
+// groupIndex maps a primary gid and a member name to the group's position in
+// Groups, so membership is an index lookup rather than a scan per question.
+type groupIndex struct {
+	byGID    map[int][]int
+	byMember map[string][]int
+}
+
+// groupsFor answers the groups an account belongs to: every group that lists
+// the account by name, plus its primary group, in Groups order and deduped
+// by name — the same answer the membership scan gave, at index cost.
+func (s *IdentityState) groupsFor(account Account) []Group {
+	if s.groupIndex == nil {
+		index := &groupIndex{byGID: map[int][]int{}, byMember: map[string][]int{}}
+		for position, group := range s.Groups {
+			index.byGID[group.GID] = append(index.byGID[group.GID], position)
+			for _, member := range group.Members {
+				index.byMember[member] = append(index.byMember[member], position)
+			}
+		}
+		s.groupIndex = index
+	}
+	picks := map[int]bool{}
+	for _, position := range s.groupIndex.byGID[account.GID] {
+		picks[position] = true
+	}
+	for _, position := range s.groupIndex.byMember[account.Name] {
+		picks[position] = true
+	}
+	var out []Group
+	seen := map[string]bool{}
+	for position, group := range s.Groups {
+		if !picks[position] || seen[group.Name] {
+			continue
+		}
+		seen[group.Name] = true
+		out = append(out, group)
+	}
+	return out
 }
 
 // privilegedGroups are group names whose membership is an authority edge.
@@ -106,7 +151,8 @@ var privilegedGroups = map[string]Severity{
 var passwordKinds = map[string]bool{"x": true, "*": true, "!": true, "!!": true}
 
 // collectIdentity reads the identity files and parses their records.
-func collectIdentity(ctx context.Context, snapshot *Snapshot, facts func(string) trust.Facts) []string {
+func collectIdentity(ctx context.Context, snapshot *Snapshot) []Coverage {
+	facts := snapshot.classify
 	state := &snapshot.Identity
 	var paths []string
 	read := func(path string) (string, bool) {
@@ -117,18 +163,18 @@ func collectIdentity(ctx context.Context, snapshot *Snapshot, facts func(string)
 		paths = append(paths, path)
 		return string(data), true
 	}
-	var gaps []string
+	var gaps []Coverage
 	passwd, ok := read("/etc/passwd")
 	if !ok {
-		gaps = append(gaps, "identity: /etc/passwd is unreadable")
+		gaps = append(gaps, coverageAbsent("identity", "identity: /etc/passwd is unreadable"))
 	}
 	shadow, shadowOK := read("/etc/shadow")
 	group, groupOK := read("/etc/group")
 	if !shadowOK {
-		gaps = append(gaps, "identity: /etc/shadow is unreadable; empty-password checks are skipped")
+		gaps = append(gaps, coverageGap("identity", "identity: /etc/shadow is unreadable; empty-password checks are skipped"))
 	}
 	if !groupOK {
-		gaps = append(gaps, "identity: /etc/group is unreadable; group membership checks are skipped")
+		gaps = append(gaps, coverageGap("identity", "identity: /etc/group is unreadable; group membership checks are skipped"))
 	}
 	state.Accounts = parsePasswd(passwd, "/etc/passwd")
 	applyShadow(state.Accounts, parseShadow(shadow, "/etc/shadow"))
@@ -138,21 +184,34 @@ func collectIdentity(ctx context.Context, snapshot *Snapshot, facts func(string)
 	if matches, _ := filepath.Glob("/etc/sudoers.d/*"); len(matches) > 0 {
 		sudoers = append(sudoers, matches...)
 	}
-	state.Sudo = parseSudoersFiles(sudoers, 0)
 	for _, file := range sudoers {
-		if _, err := os.Stat(file); err == nil {
-			paths = append(paths, file)
+		if _, err := readCapped(file, 1<<20); err != nil {
+			// An unreadable sudoers include hides every grant it carries:
+			// the check says so instead of going quiet.
+			gaps = append(gaps, coverageGap("identity", "identity: sudoers file is unreadable; its grants are skipped: "+file))
+			continue
 		}
+		paths = append(paths, file)
 	}
+	state.Sudo = parseSudoersFiles(sudoers, 0)
 
 	sshdFiles := []string{"/etc/ssh/sshd_config"}
 	if matches, _ := filepath.Glob("/etc/ssh/sshd_config.d/*.conf"); len(matches) > 0 {
 		sshdFiles = append(sshdFiles, matches...)
 	}
+	for _, file := range sshdFiles {
+		if _, err := readCapped(file, 1<<20); err != nil && file != "/etc/ssh/sshd_config" {
+			gaps = append(gaps, coverageGap("identity", "identity: sshd_config include is unreadable; its directives are skipped: "+file))
+		}
+	}
 	state.SSHD = parseSSHD(sshdFiles, 0)
+	paths = append(paths, state.SSHD.Files...)
 	state.KeyCommands = parseAuthorizedKeyCommands()
+	for _, key := range state.KeyCommands {
+		paths = append(paths, key.File)
+	}
 	if len(state.SSHD.Files) == 0 {
-		gaps = append(gaps, "identity: no sshd_config was readable")
+		gaps = append(gaps, coverageAbsent("identity", "identity: no sshd_config was readable"))
 	}
 
 	if len(paths) > 0 {
@@ -268,41 +327,184 @@ func newSudoersTables() *sudoersTables {
 	}
 }
 
-// parseSudoersFiles reads sudoers and its includes, collecting the alias
-// definitions first so a grant in one file can name an alias in another.
+// parseSudoersFiles reads sudoers and its includes in one pass, then expands
+// the aliases across the whole statement set. A grant may name an alias
+// declared in another include, and an include's own grants resolve exactly
+// once — the two-pass re-read dropped both.
 func parseSudoersFiles(files []string, depth int) []SudoGrant {
-	return parseSudoersFilesTables(files, depth, newSudoersTables())
+	return resolveSudoers(collectSudoers(files, depth), newSudoersTables())
 }
 
-func parseSudoersFilesTables(files []string, depth int, tables *sudoersTables) []SudoGrant {
+// sudoersStmt is one parsed sudoers row: an alias definition, a grant, or an
+// include. Statements are collected first and resolved second, so alias
+// order across files stops mattering.
+type sudoersStmt struct {
+	kind    string // user-alias, cmnd-alias, grant, include
+	alias   sudoersAliasRow
+	grant   rawGrant
+	include string
+}
+
+// rawGrant is one grant row before its user and command aliases expand.
+type rawGrant struct {
+	users    []string
+	host     string
+	runAs    string
+	segments []grantSegment
+	file     string
+	line     int
+	raw      string
+}
+
+type grantSegment struct {
+	command  string
+	noPasswd bool
+}
+
+// collectSudoers reads the file set and its includes into statements. Each
+// file is read exactly once; includes recurse under the same depth cap.
+func collectSudoers(files []string, depth int) []sudoersStmt {
 	if depth > 4 {
 		return nil
 	}
+	var stmts []sudoersStmt
 	for _, file := range files {
 		data, err := readCapped(file, 1<<20)
 		if err != nil {
 			continue
 		}
-		for _, path := range sudoersIncludes(string(data)) {
-			matches, _ := filepath.Glob(path)
-			sort.Strings(matches)
-			parseSudoersFilesTables(matches, depth+1, tables)
+		for _, stmt := range sudoersStatements(string(data), file) {
+			stmts = append(stmts, stmt)
+			if stmt.kind == "include" {
+				matches, _ := filepath.Glob(stmt.include)
+				slices.Sort(matches)
+				stmts = append(stmts, collectSudoers(matches, depth+1)...)
+			}
 		}
-		parseSudoers(string(data), file, tables)
 	}
-	return collectSudoersFiles(files, tables)
+	return stmts
 }
 
-// collectSudoersFiles re-reads the files now that the alias tables are full;
-// a second pass costs one more small read and keeps the expansion one pass.
-func collectSudoersFiles(files []string, tables *sudoersTables) []SudoGrant {
-	var grants []SudoGrant
-	for _, file := range files {
-		data, err := readCapped(file, 1<<20)
-		if err != nil {
+// sudoersStatements parses one sudoers file's rows into statements. Alias
+// values and grant segments stay unexpanded; resolution owns them.
+func sudoersStatements(text, file string) []sudoersStmt {
+	var stmts []sudoersStmt
+	lines := strings.Split(text, "\n")
+	for index := 0; index < len(lines); index++ {
+		line := strings.TrimSpace(lines[index])
+		for strings.HasSuffix(line, "\\") && index+1 < len(lines) {
+			index++
+			line = strings.TrimSpace(strings.TrimSuffix(line, "\\") + " " + strings.TrimSpace(lines[index]))
+		}
+		if line == "" {
 			continue
 		}
-		grants = append(grants, parseSudoers(string(data), file, tables)...)
+		if isSudoersInclude(line) {
+			paths := sudoersIncludes(line)
+			if len(paths) > 0 {
+				stmts = append(stmts, sudoersStmt{kind: "include", include: paths[0]})
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "#") || strings.HasPrefix(line, "@") {
+			continue
+		}
+		if aliasRow, aliasKind, ok := sudoersAlias(line); ok {
+			kind := map[string]string{
+				"User_Alias": "user-alias",
+				"Cmnd_Alias": "cmnd-alias",
+			}[aliasKind]
+			stmts = append(stmts, sudoersStmt{kind: kind, alias: aliasRow})
+			continue
+		}
+		if strings.HasPrefix(line, "Defaults") {
+			continue
+		}
+		left, right, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		leftFields := strings.Fields(left)
+		if len(leftFields) == 0 {
+			continue
+		}
+		grant := rawGrant{
+			users: strings.Split(leftFields[0], ","),
+			host:  strings.Join(leftFields[1:], " "),
+			file:  file,
+			line:  index + 1,
+			raw:   line,
+		}
+		right = strings.TrimSpace(right)
+		if strings.HasPrefix(right, "(") {
+			if end := strings.IndexByte(right, ')'); end >= 0 {
+				grant.runAs = strings.TrimSpace(right[1:end])
+				right = strings.TrimSpace(right[end+1:])
+			}
+		}
+		for _, segment := range strings.Split(right, ",") {
+			segment = strings.TrimSpace(segment)
+			if segment == "" {
+				continue
+			}
+			part := grantSegment{}
+			if value, ok := strings.CutPrefix(segment, "NOPASSWD:"); ok {
+				part.noPasswd = true
+				segment = strings.TrimSpace(value)
+			} else if value, ok := strings.CutPrefix(segment, "PASSWD:"); ok {
+				segment = strings.TrimSpace(value)
+			}
+			if segment == "" {
+				continue
+			}
+			part.command = segment
+			grant.segments = append(grant.segments, part)
+		}
+		if len(grant.segments) > 0 {
+			stmts = append(stmts, sudoersStmt{kind: "grant", grant: grant})
+		}
+	}
+	return stmts
+}
+
+// resolveSudoers fills the alias tables from the whole statement set, then
+// expands every grant against them.
+func resolveSudoers(stmts []sudoersStmt, tables *sudoersTables) []SudoGrant {
+	for _, stmt := range stmts {
+		switch stmt.kind {
+		case "user-alias":
+			tables.userAliases[stmt.alias.name] = stmt.alias.values
+		case "cmnd-alias":
+			tables.cmdAliases[stmt.alias.name] = stmt.alias.values
+		}
+	}
+	var grants []SudoGrant
+	seen := map[string]bool{}
+	add := func(grant SudoGrant) {
+		key := fmt.Sprintf("%s:%d:%s:%s", grant.File, grant.Line, grant.User, grant.Command)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		grants = append(grants, grant)
+	}
+	for _, stmt := range stmts {
+		if stmt.kind != "grant" {
+			continue
+		}
+		grant := stmt.grant
+		users := expandSudoers(grant.users, tables.userAliases, nil)
+		for _, segment := range grant.segments {
+			for _, command := range expandSudoers([]string{segment.command}, tables.cmdAliases, nil) {
+				for _, user := range users {
+					add(SudoGrant{
+						User: user, Host: grant.host, RunAs: grant.runAs,
+						Command: command, NoPasswd: segment.noPasswd,
+						File: grant.file, Line: grant.line, Raw: grant.raw,
+					})
+				}
+			}
+		}
 	}
 	return grants
 }
@@ -321,79 +523,16 @@ func sudoersIncludes(text string) []string {
 	return paths
 }
 
-// parseSudoers reads one sudoers file's grants, expanding user and command
-// aliases against the shared tables. A `User_Alias`/`Cmnd_Alias` row fills a
-// table; a grant row names concrete users or an alias, and every expansion
-// carries the same file, line and NOPASSWD state.
+// isSudoersInclude answers whether the row is an include or includedir.
+func isSudoersInclude(line string) bool {
+	return sudoersInclude.MatchString(line)
+}
+
+// parseSudoers reads one file's grants, expanded against the caller's alias
+// tables. The file-set entry point is parseSudoersFiles; this shape stays
+// for single-file callers and tests.
 func parseSudoers(text, file string, tables *sudoersTables) []SudoGrant {
-	var grants []SudoGrant
-	lines := strings.Split(text, "\n")
-	for index := 0; index < len(lines); index++ {
-		line := strings.TrimSpace(lines[index])
-		for strings.HasSuffix(line, "\\") && index+1 < len(lines) {
-			index++
-			line = strings.TrimSpace(strings.TrimSuffix(line, "\\") + " " + strings.TrimSpace(lines[index]))
-		}
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "@") {
-			continue
-		}
-		if alias, kind, ok := sudoersAlias(line); ok {
-			switch kind {
-			case "User_Alias":
-				tables.userAliases[alias.name] = alias.values
-			case "Cmnd_Alias":
-				tables.cmdAliases[alias.name] = alias.values
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "Defaults") {
-			continue
-		}
-		left, right, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		leftFields := strings.Fields(left)
-		if len(leftFields) == 0 {
-			continue
-		}
-		users := expandSudoers(strings.Split(leftFields[0], ","), tables.userAliases, nil)
-		host := strings.Join(leftFields[1:], " ")
-		runAs := ""
-		right = strings.TrimSpace(right)
-		if strings.HasPrefix(right, "(") {
-			if end := strings.IndexByte(right, ')'); end >= 0 {
-				runAs = strings.TrimSpace(right[1:end])
-				right = strings.TrimSpace(right[end+1:])
-			}
-		}
-		noPasswd := false
-		for _, segment := range strings.Split(right, ",") {
-			segment = strings.TrimSpace(segment)
-			if segment == "" {
-				continue
-			}
-			if value, ok := strings.CutPrefix(segment, "NOPASSWD:"); ok {
-				noPasswd = true
-				segment = strings.TrimSpace(value)
-			} else if value, ok := strings.CutPrefix(segment, "PASSWD:"); ok {
-				noPasswd = false
-				segment = strings.TrimSpace(value)
-			}
-			if segment == "" {
-				continue
-			}
-			for _, command := range expandSudoers([]string{segment}, tables.cmdAliases, nil) {
-				for _, user := range users {
-					grants = append(grants, SudoGrant{
-						User: user, Host: host, RunAs: runAs,
-						Command: command, NoPasswd: noPasswd, File: file, Line: index + 1, Raw: line,
-					})
-				}
-			}
-		}
-	}
-	return grants
+	return resolveSudoers(sudoersStatements(text, file), tables)
 }
 
 type sudoersAliasRow struct {
@@ -496,7 +635,7 @@ func parseSSHDFile(state *sshdState, file string, depth int) {
 			// A conditional block: every directive until the next Match or
 			// the end of file applies to the matched connections only.
 			state.match++
-			state.config.MatchBlocks = state.match
+			state.config.match = state.match
 			continue
 		case "include":
 			pattern := fields[1]
@@ -504,7 +643,7 @@ func parseSSHDFile(state *sshdState, file string, depth int) {
 				pattern = filepath.Join("/etc/ssh", pattern)
 			}
 			matches, _ := filepath.Glob(pattern)
-			sort.Strings(matches)
+			slices.Sort(matches)
 			for _, match := range matches {
 				parseSSHDFile(state, match, depth+1)
 			}
@@ -556,8 +695,8 @@ func parseAuthorizedKeyCommands() []AuthorizedKeyCommand {
 			continue
 		}
 		account := accountForPath(file)
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
+		for index, raw := range strings.Split(string(data), "\n") {
+			line := strings.TrimSpace(raw)
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
@@ -565,7 +704,10 @@ func parseAuthorizedKeyCommands() []AuthorizedKeyCommand {
 			if len(match) != 2 || match[1] == "" {
 				continue
 			}
-			commands = append(commands, AuthorizedKeyCommand{File: file, Account: account, Command: match[1]})
+			commands = append(commands, AuthorizedKeyCommand{
+				File: file, Line: index + 1, Text: line,
+				Account: account, Command: match[1],
+			})
 		}
 	}
 	return commands

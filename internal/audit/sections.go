@@ -6,7 +6,8 @@ package audit
 // cannot drift from what the sections print.
 
 import (
-	"sort"
+	"reflect"
+	"slices"
 
 	"karma/internal/startup"
 )
@@ -32,8 +33,10 @@ type Section struct {
 	// Plain marks rows that carry no palette; they are sanitized before a
 	// terminal sees them.
 	Plain bool
-	// Rows builds the section's rows from the run's view. Count is the number
-	// the panel head prints; it is data, not a function of the rendered rows.
+	// Rows builds the section's rows from the run's view. Count overrides the
+	// number the panel head prints when the inventory is more than its data
+	// length (the process and kernel sections); every other section prints
+	// its data length.
 	Rows  func(view *View, options RenderOptions) []string
 	Count func(view *View, options RenderOptions) int
 	// JSONKey and Data are the section's machine-readable answer: the key
@@ -77,20 +80,15 @@ var sections = []*Section{
 		Panel:       "ACTIVATION",
 		Domains:     DomainPersistence,
 		AllSurfaces: true,
-		Rows: func(view *View, options RenderOptions) []string {
-			return activationRows(view, options)
-		},
-		Count:   func(view *View, _ RenderOptions) int { return len(view.Activations) },
-		JSONKey: "activations",
-		Data:    func(view *View, options RenderOptions) any { return view.Activations },
+		Rows:        activationRows,
+		JSONKey:     "activations",
+		Data:        func(view *View, options RenderOptions) any { return view.Activations },
 	},
 	{
 		Words:   []string{"process", "processes", "activity"},
 		Panel:   "PROCESS",
 		Domains: DomainProcesses | DomainNetwork,
-		Rows: func(view *View, options RenderOptions) []string {
-			return processRows(view, options)
-		},
+		Rows:    processRows,
 		Count:   processCount,
 		JSONKey: "processes",
 		Data:    func(view *View, options RenderOptions) any { return view.Processes },
@@ -99,10 +97,7 @@ var sections = []*Section{
 		Words:   []string{"services", "service"},
 		Panel:   "SERVICE",
 		Domains: DomainServices,
-		Rows: func(view *View, options RenderOptions) []string {
-			return serviceRows(view, options)
-		},
-		Count:   func(view *View, _ RenderOptions) int { return len(view.Services) },
+		Rows:    serviceRows,
 		JSONKey: "services",
 		Data:    func(view *View, options RenderOptions) any { return view.Services },
 	},
@@ -110,10 +105,7 @@ var sections = []*Section{
 		Words:   []string{"listeners", "sockets", "listen"},
 		Panel:   "LISTEN",
 		Domains: DomainProcesses | DomainNetwork,
-		Rows: func(view *View, options RenderOptions) []string {
-			return socketRows(view, options)
-		},
-		Count:   func(view *View, _ RenderOptions) int { return len(view.Sockets) },
+		Rows:    socketRows,
 		JSONKey: "listeners",
 		Data:    func(view *View, options RenderOptions) any { return view.Sockets },
 	},
@@ -121,10 +113,7 @@ var sections = []*Section{
 		Words:   []string{"connections", "connection", "network"},
 		Panel:   "CONNECTION",
 		Domains: DomainProcesses | DomainNetwork,
-		Rows: func(view *View, options RenderOptions) []string {
-			return connectionRows(view, options)
-		},
-		Count:   func(view *View, _ RenderOptions) int { return len(view.Connections) },
+		Rows:    connectionRows,
 		JSONKey: "connections",
 		Data:    func(view *View, options RenderOptions) any { return view.Connections },
 	},
@@ -132,9 +121,7 @@ var sections = []*Section{
 		Words:   []string{"kernel"},
 		Panel:   "KERNEL",
 		Domains: DomainKernel,
-		Rows: func(view *View, options RenderOptions) []string {
-			return kernelRows(view, options)
-		},
+		Rows:    kernelRows,
 		Count:   kernelCount,
 		JSONKey: "kernel",
 		Data:    func(view *View, options RenderOptions) any { return view.Kernel },
@@ -143,10 +130,7 @@ var sections = []*Section{
 		Words:   []string{"authority"},
 		Panel:   "AUTHORITY",
 		Domains: DomainAuthority,
-		Rows: func(view *View, options RenderOptions) []string {
-			return authorityRows(view, options)
-		},
-		Count:   func(view *View, _ RenderOptions) int { return len(view.Authority) },
+		Rows:    authorityRows,
 		JSONKey: "authority",
 		Data:    func(view *View, options RenderOptions) any { return view.Authority },
 	},
@@ -154,10 +138,7 @@ var sections = []*Section{
 		Words:   []string{"mounts"},
 		Panel:   "MOUNTS",
 		Domains: 0,
-		Rows: func(view *View, options RenderOptions) []string {
-			return mountRows(view, options)
-		},
-		Count:   func(view *View, _ RenderOptions) int { return len(view.Mounts) },
+		Rows:    mountRows,
 		JSONKey: "mounts",
 		Data:    func(view *View, options RenderOptions) any { return view.Mounts },
 	},
@@ -166,12 +147,9 @@ var sections = []*Section{
 		Panel:      "TRAIL",
 		Domains:    DomainTrail | DomainIdentity,
 		PIDContext: true,
-		Rows: func(view *View, options RenderOptions) []string {
-			return trailRows(view, options)
-		},
-		Count:   func(view *View, _ RenderOptions) int { return len(view.Trail) },
-		JSONKey: "trail",
-		Data:    func(view *View, options RenderOptions) any { return view.Trail },
+		Rows:       trailRows,
+		JSONKey:    "trail",
+		Data:       func(view *View, options RenderOptions) any { return view.Trail },
 	},
 	{
 		Words:        []string{"coverage"},
@@ -181,16 +159,41 @@ var sections = []*Section{
 		SkipEvidence: true,
 		Plain:        true,
 		Rows: func(view *View, options RenderOptions) []string {
-			return Judge(view.Snapshot, options.Filter).Coverage
-		},
-		Count: func(view *View, options RenderOptions) int {
-			return len(Judge(view.Snapshot, options.Filter).Coverage)
+			return coverageRows(reportCoverage(view.Snapshot, options.Filter))
 		},
 		JSONKey: "coverage",
 		Data: func(view *View, options RenderOptions) any {
-			return Judge(view.Snapshot, options.Filter).Coverage
+			return reportCoverage(view.Snapshot, options.Filter)
 		},
 	},
+}
+
+// reportCoverage answers the coverage section's records. Coverage is a
+// judgment answer — the module judges append to it as they run — so the
+// section reads it through the one Judge pass rather than a second assembly.
+func reportCoverage(snapshot *Snapshot, filter Filter) []Coverage {
+	return Judge(snapshot, filter).Coverage
+}
+
+// coverageRows reads the records as the panel's lines.
+func coverageRows(records []Coverage) []string {
+	rows := make([]string, 0, len(records))
+	for _, record := range records {
+		rows = append(rows, record.Detail)
+	}
+	return rows
+}
+
+// count answers the number a panel head prints: the section's override, or
+// the length of its machine answer.
+func (s *Section) count(view *View, options RenderOptions) int {
+	if s.Count != nil {
+		return s.Count(view, options)
+	}
+	if value := reflect.ValueOf(s.Data(view, options)); value.Kind() == reflect.Slice {
+		return value.Len()
+	}
+	return 0
 }
 
 // SectionFor answers the section a `karma show` word selects.
@@ -209,6 +212,6 @@ func ShowWords() []string {
 	for _, section := range sections {
 		words = append(words, section.Words...)
 	}
-	sort.Strings(words)
+	slices.Sort(words)
 	return words
 }

@@ -96,6 +96,16 @@ func newUnitState() *unitState {
 // program; the others run around it, and all of them name a file.
 var execOrder = []string{"ExecStartPre", "ExecStart", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost"}
 
+// execKey is the set of Exec keys the unit fold reads, derived from the order
+// above, so the two cannot drift.
+var execKey = func() map[string]bool {
+	set := make(map[string]bool, len(execOrder))
+	for _, key := range execOrder {
+		set[key] = true
+	}
+	return set
+}()
+
 func (u *unitState) apply(file string, d directive) {
 	if d.section == "Mount" || d.section == "Swap" {
 		switch d.key {
@@ -109,14 +119,16 @@ func (u *unitState) apply(file string, d directive) {
 	if d.section != "Service" {
 		return
 	}
-	switch d.key {
-	case "ExecStart", "ExecStartPre", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost":
+	if execKey[d.key] {
 		// An empty assignment clears the list the earlier files built.
 		if d.value == "" {
 			delete(u.exec, d.key)
 			return
 		}
 		u.exec[d.key] = append(u.exec[d.key], valueRef{file: file, line: d.line, value: d.value})
+		return
+	}
+	switch d.key {
 	case "Environment":
 		if d.value == "" {
 			u.env = nil
@@ -154,18 +166,22 @@ func (u *unitState) apply(file string, d directive) {
 	}
 }
 
+// contextBases are the fixed roots systemd's short directory names resolve
+// against.
+var contextBases = map[string]string{
+	"RuntimeDirectory":       "/run",
+	"StateDirectory":         "/var/lib",
+	"CacheDirectory":         "/var/cache",
+	"LogsDirectory":          "/var/log",
+	"ConfigurationDirectory": "/etc",
+}
+
 // contextPaths turns one directory key into the absolute paths the unit
 // declares. systemd's short directory names are relative to a fixed base
 // (/run, /var/lib, ...); WorkingDirectory and the read-only/read-write lists
 // are already absolute. A value the static read cannot place is skipped.
 func contextPaths(key, value string) []string {
-	base := map[string]string{
-		"RuntimeDirectory":       "/run",
-		"StateDirectory":         "/var/lib",
-		"CacheDirectory":         "/var/cache",
-		"LogsDirectory":          "/var/log",
-		"ConfigurationDirectory": "/etc",
-	}[key]
+	base := contextBases[key]
 	var paths []string
 	words := splitWords(value)
 	if key == "WorkingDirectory" {
@@ -242,21 +258,119 @@ func unitPrecedence(path string) int {
 
 // commandTarget is what one ExecStart (or a shell command) says to run.
 type commandTarget struct {
-	target         string
-	kind           Kind
-	viaInterpreter bool
-	dynamic        bool
+	target  string
+	kind    Kind
+	dynamic bool
 }
 
 // execTarget reads one ExecStart value. The prefix characters systemd allows
-// (-@+!:) are dropped, the finite wrapper vocabulary (env, nohup, setsid,
-// timeout, nice, ionice, sudo) is unwrapped, and an interpreter holding a
-// script names the script rather than the interpreter. A target that is not a
-// literal path is stated as dynamic; the static read cannot resolve it and the
-// runtime view is where it belongs.
+// (-@+!:) are dropped, the wrapper vocabulary is unwrapped through the table
+// below, and an interpreter holding a script names the script rather than the
+// interpreter. A target that is not a literal path is stated as dynamic; the
+// static read cannot resolve it and the runtime view is where it belongs.
 func execTarget(value string) commandTarget {
 	words := splitWords(strings.TrimLeft(value, "-@+!:"))
 	return commandTargetFor(words)
+}
+
+// wrapperUnwraps is the one table of launch wrappers whose first non-option
+// argument is the program that actually runs: commandTargetFor unwraps
+// through it and isWrapper reads it, so the vocabulary cannot drift between
+// the two.
+var wrapperUnwraps = map[string]func([]string) []string{
+	"env":      unwrapEnv,
+	"nohup":    unwrapFlags,
+	"setsid":   unwrapFlags,
+	"unbuffer": unwrapFlags,
+	"ionice":   unwrapFlags,
+	"timeout":  unwrapTimeout,
+	"nice":     unwrapNice,
+	"sudo":     unwrapSudo,
+}
+
+// unwrapEnv strips env's own arguments: the flag forms, and the NAME=VALUE
+// assignments that are not absolute paths.
+func unwrapEnv(words []string) []string {
+	words = words[1:]
+envOptions:
+	for len(words) > 0 {
+		switch {
+		case words[0] == "--":
+			words = words[1:]
+			break envOptions
+		case words[0] == "-u" || words[0] == "--unset":
+			if len(words) > 1 {
+				words = words[2:]
+			} else {
+				words = nil
+			}
+		case strings.HasPrefix(words[0], "--unset="):
+			words = words[1:]
+		case strings.HasPrefix(words[0], "-"):
+			words = words[1:]
+		case !strings.HasPrefix(words[0], "/") && strings.Contains(words[0], "="):
+			words = words[1:]
+		default:
+			break envOptions
+		}
+	}
+	return words
+}
+
+// unwrapFlags strips the wrapper word and the option flags that follow it.
+func unwrapFlags(words []string) []string {
+	words = words[1:]
+	for len(words) > 0 && strings.HasPrefix(words[0], "-") {
+		words = words[1:]
+	}
+	return words
+}
+
+// unwrapTimeout strips timeout's options and the duration word. A timeout
+// with nothing left to run names the wrapper itself as the dynamic target.
+func unwrapTimeout(words []string) []string {
+	words = words[1:]
+	for len(words) > 0 {
+		switch {
+		case (words[0] == "-s" || words[0] == "--signal" || words[0] == "-k" || words[0] == "--kill-after") && len(words) > 1:
+			words = words[2:]
+		case strings.HasPrefix(words[0], "-"):
+			words = words[1:]
+		default:
+			return words[1:] // the duration
+		}
+	}
+	return []string{"(timeout)"}
+}
+
+// unwrapNice strips nice's -n and the option flags that follow it.
+func unwrapNice(words []string) []string {
+	words = words[1:]
+	for len(words) > 0 {
+		if words[0] == "-n" && len(words) > 1 {
+			words = words[2:]
+			continue
+		}
+		if strings.HasPrefix(words[0], "-") {
+			words = words[1:]
+			continue
+		}
+		break
+	}
+	return words
+}
+
+// unwrapSudo strips sudo's options, whose -u and -g take their own value.
+func unwrapSudo(words []string) []string {
+	words = words[1:]
+	for len(words) > 0 && strings.HasPrefix(words[0], "-") {
+		if (words[0] == "-u" || words[0] == "-g") && len(words) > 1 {
+			words = words[2:]
+			continue
+		}
+		words = words[1:]
+	}
+	return words
 }
 
 // commandTargetFor reads a command word list: a unit key's value or a shell
@@ -266,85 +380,12 @@ func execTarget(value string) commandTarget {
 // how a PATH-hijack backdoor names its payload.
 func commandTargetFor(words []string) commandTarget {
 	for len(words) > 0 {
-		switch filepath.Base(words[0]) {
-		case "env":
-			words = words[1:]
-		envOptions:
-			for len(words) > 0 {
-				switch {
-				case words[0] == "--":
-					words = words[1:]
-					break envOptions
-				case words[0] == "-u" || words[0] == "--unset":
-					if len(words) > 1 {
-						words = words[2:]
-					} else {
-						words = nil
-					}
-				case strings.HasPrefix(words[0], "--unset="):
-					words = words[1:]
-				case strings.HasPrefix(words[0], "-"):
-					words = words[1:]
-				case !strings.HasPrefix(words[0], "/") && strings.Contains(words[0], "="):
-					words = words[1:]
-				default:
-					break envOptions
-				}
-			}
-		case "nohup", "setsid", "unbuffer":
-			words = words[1:]
-			for len(words) > 0 && strings.HasPrefix(words[0], "-") {
-				words = words[1:]
-			}
-		case "timeout":
-			words = words[1:]
-		timeoutOptions:
-			for len(words) > 0 {
-				switch {
-				case (words[0] == "-s" || words[0] == "--signal" || words[0] == "-k" || words[0] == "--kill-after") && len(words) > 1:
-					words = words[2:]
-				case strings.HasPrefix(words[0], "-"):
-					words = words[1:]
-				default:
-					break timeoutOptions
-				}
-			}
-			if len(words) == 0 {
-				return commandTarget{dynamic: true, target: "(timeout)"}
-			}
-			words = words[1:] // the duration
-		case "nice":
-			words = words[1:]
-			for len(words) > 0 {
-				if words[0] == "-n" && len(words) > 1 {
-					words = words[2:]
-					continue
-				}
-				if strings.HasPrefix(words[0], "-") {
-					words = words[1:]
-					continue
-				}
-				break
-			}
-		case "ionice":
-			words = words[1:]
-			for len(words) > 0 && strings.HasPrefix(words[0], "-") {
-				words = words[1:]
-			}
-		case "sudo":
-			words = words[1:]
-			for len(words) > 0 && strings.HasPrefix(words[0], "-") {
-				if (words[0] == "-u" || words[0] == "-g") && len(words) > 1 {
-					words = words[2:]
-					continue
-				}
-				words = words[1:]
-			}
-		default:
-			goto program
+		unwrap, ok := wrapperUnwraps[filepath.Base(words[0])]
+		if !ok {
+			break
 		}
+		words = unwrap(words)
 	}
-program:
 	if len(words) == 0 {
 		return commandTarget{}
 	}
@@ -367,24 +408,20 @@ program:
 // through PATH and names no file. This is the shell grammar's word list, the
 // same kind of finite list as the wrappers above — a threat keyword list is a
 // different thing and stays out.
-var shellBuiltins = []string{
-	"!", ":", "[", "alias", "bg", "break", "cd", "continue", "declare",
-	"dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export",
-	"false", "fc", "fg", "getopts", "hash", "help", "history", "jobs",
-	"kill", "let", "local", "logout", "popd", "printf", "pushd", "pwd",
-	"read", "readonly", "return", "set", "shift", "shopt", "suspend",
-	"test", "times", "trap", "true", "type", "ulimit", "umask", "unalias",
-	"unset", "wait",
+var shellBuiltins = map[string]bool{
+	"!": true, ":": true, "[": true, "alias": true, "bg": true, "break": true,
+	"cd": true, "continue": true, "declare": true, "dirs": true, "disown": true,
+	"echo": true, "enable": true, "eval": true, "exec": true, "exit": true,
+	"export": true, "false": true, "fc": true, "fg": true, "getopts": true,
+	"hash": true, "help": true, "history": true, "jobs": true, "kill": true,
+	"let": true, "local": true, "logout": true, "popd": true, "printf": true,
+	"pushd": true, "pwd": true, "read": true, "readonly": true, "return": true,
+	"set": true, "shift": true, "shopt": true, "suspend": true, "test": true,
+	"times": true, "trap": true, "true": true, "type": true, "ulimit": true,
+	"umask": true, "unalias": true, "unset": true, "wait": true,
 }
 
-func shellBuiltin(word string) bool {
-	for _, name := range shellBuiltins {
-		if word == name {
-			return true
-		}
-	}
-	return false
-}
+func shellBuiltin(word string) bool { return shellBuiltins[word] }
 
 // interpreterTarget reads the arguments of an interpreter. -c holds inline
 // code, whose first literal local target is the script it runs; a -m module and
@@ -401,13 +438,13 @@ func interpreterTarget(program string, args []string) commandTarget {
 			if !ok {
 				return commandTarget{dynamic: true, target: "(inline code)"}
 			}
-			return commandTarget{target: target, kind: kind, viaInterpreter: true}
+			return commandTarget{target: target, kind: kind}
 		case arg == "-m":
 			return commandTarget{}
 		case strings.HasPrefix(arg, "-"):
 			continue
 		case filepath.IsAbs(arg):
-			return commandTarget{target: arg, kind: Exec, viaInterpreter: true}
+			return commandTarget{target: arg, kind: Exec}
 		default:
 			return commandTarget{dynamic: true, target: arg}
 		}
@@ -418,7 +455,7 @@ func interpreterTarget(program string, args []string) commandTarget {
 // inlineTarget reads the first local target of a shell -c string: a source, an
 // exec, or a command whose program is a literal path.
 func inlineTarget(code string) (string, Kind, bool) {
-	for _, edge := range shellEdges(code, rawEdge{}) {
+	for _, edge := range shellSnippetEdges(code, rawEdge{}) {
 		if edge.dynamic || edge.target == "" {
 			continue
 		}
@@ -568,13 +605,20 @@ func ScriptArgv(args []string) string {
 	return ""
 }
 
+// ProgramName is an executable's basename with the version suffix the
+// runtimes carry stripped: python3.12 and python3 are one program. The
+// activation reader and the audit's socket shape share it, so the two cannot
+// disagree about what an interpreter is called.
+func ProgramName(path string) string {
+	return strings.TrimRight(filepath.Base(path), "0123456789.")
+}
+
 // IsInterpreter reports whether path names one of the shell or scripting
 // interpreters whose first non-option argument is a script. The static edge
 // reader and the live watcher share this list, so a new interpreter cannot be
 // known to one and unknown to the other.
 func IsInterpreter(path string) bool {
-	base := filepath.Base(path)
-	base = strings.TrimRight(base, "0123456789.")
+	base := ProgramName(path)
 	for _, name := range interpreterNames {
 		if base == name {
 			return true
@@ -584,13 +628,10 @@ func IsInterpreter(path string) bool {
 }
 
 // isWrapper names the launch wrappers whose first non-option argument is the
-// program that actually runs.
+// program that actually runs; the vocabulary is wrapperUnwraps.
 func isWrapper(program string) bool {
-	switch filepath.Base(program) {
-	case "env", "nohup", "setsid", "unbuffer", "timeout", "nice", "ionice", "sudo":
-		return true
-	}
-	return false
+	_, ok := wrapperUnwraps[filepath.Base(program)]
+	return ok
 }
 
 // looksLikePath reports whether a shell word that is not absolute names a path

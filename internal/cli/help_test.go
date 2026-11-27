@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -30,13 +31,27 @@ func helpTree(buf *bytes.Buffer) *cobra.Command {
 	return root
 }
 
+// startTree adds the commands the entry guide names, so the derived START
+// panel has spellings to draw.
+func startTree(buf *bytes.Buffer) *cobra.Command {
+	root := helpTree(buf)
+	for _, sub := range []*cobra.Command{
+		{Use: "graph <domain|object>", Short: "Print one relation graph", RunE: func(*cobra.Command, []string) error { return nil }},
+		{Use: "show <section> [scope...]", Short: "Print one collected inventory without judging it", RunE: func(*cobra.Command, []string) error { return nil }},
+		{Use: "watch", Short: "Watch live process and socket events", RunE: func(*cobra.Command, []string) error { return nil }},
+	} {
+		root.AddCommand(sub)
+	}
+	return root
+}
+
 // TestRootHelpWearsTheReportPanels pins the help screen's shape: the level-one
 // band with the command path and byline, the version head over the
 // description, and the usage/commands/flags rail panels.
 func TestRootHelpWearsTheReportPanels(t *testing.T) {
 	t.Setenv("USER", "yuyy")
 	var buf bytes.Buffer
-	root := helpTree(&buf)
+	root := startTree(&buf)
 	rootHelp(root)
 	root.InitDefaultHelpFlag()
 	if err := root.Help(); err != nil {
@@ -45,7 +60,8 @@ func TestRootHelpWearsTheReportPanels(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"KARMA", "yuyy", "9.9.9", "Read-only collection over every bounded domain.",
-		"▌ START", "karma graph <word>", "one domain or object as relations",
+		"▌ START", "karma graph <domain|object>", "one domain or object as relations",
+		"karma show <section> [scope...]", "one raw inventory, unjudged", "karma watch", "live events",
 		"▌ SCOPE", "domain      services processes", "exclusion   !network",
 		"▌ USAGE", "karma [scope...] [flags]", "▌ COMMANDS", "▌ FLAGS",
 		"audit", "Audit the local host", "-h, --help", "--json",
@@ -157,7 +173,7 @@ func TestListPageWearsThePanels(t *testing.T) {
 
 // TestBareShowOpensThePage pins that a subcommand that needs an argument
 // presents its own page instead of a bare list of words.
-func TestBareShowOpensThePage(t *testing.T) {
+func TestBareShowIsAUsageError(t *testing.T) {
 	var buf bytes.Buffer
 	root := helpTree(&buf)
 	root.AddCommand(newShowCmd())
@@ -166,13 +182,18 @@ func TestBareShowOpensThePage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find show: %v", err)
 	}
-	if err := show.RunE(show, nil); err != nil {
-		t.Fatalf("bare show: %v", err)
+	// A bare show is a usage mistake like a bare cat or ctime: the page
+	// stays on `karma help show`, the exit code answers 2.
+	err = show.RunE(show, nil)
+	var usage usageError
+	if err == nil || !errors.As(err, &usage) {
+		t.Fatalf("bare show = %v, want a usage error", err)
 	}
+	writePage(&buf, show, helpSections(show, 80, false), helpFooter(show))
 	out := buf.String()
 	for _, want := range []string{"KARMA SHOW", "▌ SCOPE", "▌ USAGE", "▌ EXAMPLES"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("bare show lacks %q:\n%s", want, out)
+			t.Errorf("show page lacks %q:\n%s", want, out)
 		}
 	}
 }

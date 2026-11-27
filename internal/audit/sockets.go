@@ -9,31 +9,25 @@ import (
 
 // collectSockets reads the listening surface and the established connections.
 // The owner is resolved through /proc, so a privileged run attributes more rows
-// than an unprivileged one; a row without an owner is still listed. The
-// outbound count answers per process how many established connections it
-// holds, the context that turns a quiet image into a live one.
-func collectSockets(ctx context.Context) ([]Socket, []Connection, map[int]int, []string) {
+// than an unprivileged one; a row without an owner is still listed. A pid set
+// reads only those fd tables — a one-service graph does not pay for the whole
+// host's owners — and drops the rows nothing in the set holds. The outbound
+// count answers per process how many established connections it holds, the
+// context that turns a quiet image into a live one.
+func collectSockets(ctx context.Context, pids map[int]bool) ([]Socket, []Connection, map[int]int, []Coverage) {
 	dump, err := netdiag.Snapshot(ctx)
 	if err != nil {
-		return nil, nil, nil, []string{"socket table unavailable: " + err.Error()}
+		return nil, nil, nil, []Coverage{coverageAbsent("network", "socket table unavailable: "+err.Error())}
 	}
 	inodes, established := socketInodes(dump)
-	return buildSocketRows(dump, netdiag.Owners(ctx, inodes), established, false)
-}
-
-// collectSocketsScoped answers the same table for an object graph's selected pids.
-// It reads only those fd tables, so a one-service graph does not pay for the
-// whole host's socket owners.
-func collectSocketsScoped(ctx context.Context, pids map[int]bool) ([]Socket, []Connection, map[int]int, []string) {
-	if len(pids) == 0 {
-		return nil, nil, nil, nil
+	var owners map[uint64][]netdiag.Owner
+	scoped := len(pids) > 0
+	if scoped {
+		owners = netdiag.OwnersFor(ctx, inodes, pids)
+	} else {
+		owners = netdiag.Owners(ctx, inodes)
 	}
-	dump, err := netdiag.Snapshot(ctx)
-	if err != nil {
-		return nil, nil, nil, []string{"socket table unavailable: " + err.Error()}
-	}
-	inodes, established := socketInodes(dump)
-	return buildSocketRows(dump, netdiag.OwnersFor(ctx, inodes, pids), established, true)
+	return buildSocketRows(dump, owners, established, scoped)
 }
 
 func socketInodes(dump []netdiag.Socket) (map[uint64]bool, map[uint64]bool) {
@@ -51,7 +45,7 @@ func socketInodes(dump []netdiag.Socket) (map[uint64]bool, map[uint64]bool) {
 	return inodes, established
 }
 
-func buildSocketRows(dump []netdiag.Socket, owners map[uint64][]netdiag.Owner, established map[uint64]bool, scoped bool) ([]Socket, []Connection, map[int]int, []string) {
+func buildSocketRows(dump []netdiag.Socket, owners map[uint64][]netdiag.Owner, established map[uint64]bool, scoped bool) ([]Socket, []Connection, map[int]int, []Coverage) {
 	outbound := map[int]int{}
 	for inode := range established {
 		for _, owner := range owners[inode] {
@@ -69,8 +63,8 @@ func buildSocketRows(dump []netdiag.Socket, owners map[uint64][]netdiag.Owner, e
 			entry := Socket{
 				Proto: socket.Netid,
 				State: netdiag.StateWord(socket.Netid, socket.State),
-				Local: netdiag.Endpoint(socket.Local, socket.LocalPort, ""),
-				Peer:  netdiag.Endpoint(socket.Peer, socket.PeerPort, ""),
+				Local: netdiag.Endpoint(socket.Local, socket.LocalPort),
+				Peer:  netdiag.Endpoint(socket.Peer, socket.PeerPort),
 			}
 			if len(held) > 0 {
 				entry.PID = held[0].PID
@@ -84,8 +78,8 @@ func buildSocketRows(dump []netdiag.Socket, owners map[uint64][]netdiag.Owner, e
 		}
 		connection := Connection{
 			Proto: "tcp",
-			Local: netdiag.Endpoint(socket.Local, socket.LocalPort, ""),
-			Peer:  netdiag.Endpoint(socket.Peer, socket.PeerPort, ""),
+			Local: netdiag.Endpoint(socket.Local, socket.LocalPort),
+			Peer:  netdiag.Endpoint(socket.Peer, socket.PeerPort),
 		}
 		for _, owner := range held {
 			connection.PIDs = append(connection.PIDs, owner.PID)

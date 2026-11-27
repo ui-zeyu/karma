@@ -2,11 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"karma/internal/audit"
 	"karma/internal/startup"
@@ -47,31 +49,23 @@ type groupScope struct {
 
 var groups = map[string]groupScope{
 	"persistence": {domains: audit.DomainPersistence, surfaces: startup.SurfaceWords()},
-	"boot": {domains: audit.DomainPersistence, surfaces: []string{
-		"systemd", "init", "loader", "udev", "apt", "module", "system",
-	}},
-	"login":    {domains: audit.DomainPersistence, surfaces: []string{"profile", "ssh", "pam", "xdg"}},
-	"schedule": {domains: audit.DomainPersistence, surfaces: []string{"cron"}},
+	"boot":        {domains: audit.DomainPersistence, surfaces: startup.GroupWords("boot")},
+	"login":       {domains: audit.DomainPersistence, surfaces: startup.GroupWords("login")},
+	"schedule":    {domains: audit.DomainPersistence, surfaces: startup.GroupWords("schedule")},
 	"service": {domains: audit.DomainServices | audit.DomainPersistence,
-		surfaces: []string{"systemd", "supervisor"}},
-	"device":   {domains: audit.DomainPersistence, surfaces: []string{"udev"}},
+		surfaces: startup.GroupWords("service")},
+	"device":   {domains: audit.DomainPersistence, surfaces: startup.GroupWords("device")},
 	"activity": {domains: audit.DomainProcesses | audit.DomainNetwork, excludedDomains: audit.DomainProcesses | audit.DomainNetwork},
 }
 
 // groupWords lists the surface groups, sorted, so the vocabulary has one
 // canonical order.
-func groupWords() []string {
-	words := make([]string, 0, len(groups))
-	for word := range groups {
-		words = append(words, word)
-	}
-	sort.Strings(words)
-	return words
-}
+func groupWords() []string { return slices.Sorted(maps.Keys(groups)) }
 
 // domainWords is derived from the audit registry, so the CLI vocabulary and
-// the collection/judgment table cannot drift.
-func domainWords() map[string]audit.Domain {
+// the collection/judgment table cannot drift. The registry is static, so the
+// map is built once.
+var domainWords = sync.OnceValue(func() map[string]audit.Domain {
 	words := map[string]audit.Domain{}
 	for _, word := range audit.DomainWords() {
 		if module, ok := audit.ModuleForWord(word); ok {
@@ -79,7 +73,7 @@ func domainWords() map[string]audit.Domain {
 		}
 	}
 	return words
-}
+})
 
 func parseScope(words []string) (scope, error) {
 	parsed := scope{}
@@ -132,7 +126,7 @@ func parseScope(words []string) (scope, error) {
 			parsed.addGroup(group, excluded)
 			continue
 		}
-		if contains(startup.SurfaceWords(), name) {
+		if slices.Contains(startup.SurfaceWords(), name) {
 			if excluded {
 				parsed.excludedSurface |= startup.ScopeForWords([]string{name})
 			} else {
@@ -249,7 +243,7 @@ func cleanScopePath(name string) (string, error) {
 // applied last so the result does not depend on word order.
 func (s scope) plan() audit.Plan {
 	paths := s.paths
-	rootPath := contains(paths, "/")
+	rootPath := slices.Contains(paths, "/")
 	if rootPath {
 		// The root prefix covers every path; keeping it as a positive filter
 		// would also suppress the host-level checks. A root path is the bare
@@ -297,13 +291,4 @@ func (s scope) plan() audit.Plan {
 		plan.InventoryRoots = paths
 	}
 	return plan
-}
-
-func contains(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
 }

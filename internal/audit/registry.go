@@ -13,9 +13,9 @@ import (
 	"karma/internal/startup"
 )
 
-// JudgeFunc judges one domain over a collected snapshot. Report is available
-// for the domains that count their own rows.
-type JudgeFunc func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string
+// JudgeFunc judges one domain over a collected snapshot and answers the
+// domain's coverage records.
+type JudgeFunc func(*judgePass) []Coverage
 
 // GraphSpec is the relation graph a domain draws: the word it answers to,
 // the findings it shows, what its collection needs, and the builder.
@@ -56,8 +56,12 @@ type Module struct {
 	// context. They are collected but not judged; a network finding can use
 	// the process table without turning a processes audit into this one.
 	Needs Domain
+	// ScopeNeeds names the domains a pid or unit scope adds to a selected
+	// module's collection, so a scoped module still sees its owning rows: a
+	// trail row's owner is a process, whatever the scope judged.
+	ScopeNeeds Domain
 	// Collect fills the domain's part of the snapshot and answers coverage.
-	Collect func(context.Context, *Snapshot) []string
+	Collect func(context.Context, *Snapshot) []Coverage
 	// Judge turns the collected state into findings and coverage.
 	Judge JudgeFunc
 	// GraphBuilder draws the domain as relations.
@@ -65,36 +69,26 @@ type Module struct {
 }
 
 // modules is the registry, in collection order. A later module may read an
-// earlier one's rows (the socket owners read the process table), so the
-// order is part of the contract.
-var modules = []Module{
+// earlier one's rows (the socket owners read the process table); init sorts
+// the table by Needs, so the order stays correct when entries move.
+var modules = orderModules([]Module{
 	{
 		Name: "services", Bit: DomainServices, Selects: DomainPersistence,
 		Startup: func() startup.Scope { return startup.Systemd },
-		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectServicesModule(ctx, snapshot)
-		},
+		Collect: collectServicesModule,
 	},
 	{
-		Name: "processes", Bit: DomainProcesses,
-		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectProcessesModule(ctx, snapshot)
-		},
-		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
-			judgeLoaders(snapshot, a, filter, add)
-			return nil
-		},
+		Name:    "processes",
+		Bit:     DomainProcesses,
+		Collect: collectProcessesModule,
+		Judge:   judgeProcesses,
 	},
 	{
-		Name: "network", Bit: DomainNetwork,
-		Needs: DomainProcesses,
-		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectSocketsModule(ctx, snapshot)
-		},
-		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
-			judgeConnections(snapshot, filter, add)
-			return nil
-		},
+		Name:    "network",
+		Bit:     DomainNetwork,
+		Needs:   DomainProcesses,
+		Collect: collectSocketsModule,
+		Judge:   judgeConnections,
 		GraphBuilder: &GraphSpec{
 			Domain: DomainProcesses | DomainNetwork,
 			Build:  networkGraph,
@@ -113,70 +107,84 @@ var modules = []Module{
 		},
 	},
 	{
-		Name: "authority", Bit: DomainAuthority,
-		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectAuthorityModule(ctx, snapshot)
-		},
+		Name:         "authority",
+		Bit:          DomainAuthority,
+		Collect:      collectAuthorityModule,
 		Judge:        judgeAuthority,
 		GraphBuilder: &GraphSpec{Domain: DomainAuthority, Build: authorityGraph},
 	},
 	{
-		Name: "files", Bit: DomainFiles,
-		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectFiles(ctx, snapshot, snapshot.plan)
-		},
-		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
-			for _, finding := range unownedFindings(snapshot, a, filter) {
-				add(finding)
-			}
-			return nil
-		},
+		Name:    "files",
+		Bit:     DomainFiles,
+		Collect: collectFiles,
+		Judge:   judgeFiles,
 	},
 	{
-		Name: "kernel", Bit: DomainKernel,
-		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectKernel(ctx, snapshot, snapshot.classify)
-		},
-		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
-			return judgeKernel(snapshot, a, filter, add)
-		},
+		Name:         "kernel",
+		Bit:          DomainKernel,
+		Collect:      collectKernel,
+		Judge:        judgeKernel,
 		GraphBuilder: &GraphSpec{Domain: DomainKernel, Build: kernelGraph},
 	},
 	{
-		Name: "packages", Bit: DomainPackages,
-		Collect: collectPackages,
-		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
-			return judgePackages(snapshot, filter, add)
-		},
+		Name:         "packages",
+		Bit:          DomainPackages,
+		Collect:      collectPackages,
+		Judge:        judgePackages,
 		GraphBuilder: &GraphSpec{Domain: DomainPackages, Build: packageGraph},
 	},
 	{
-		Name: "web", Bit: DomainWeb,
-		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectWeb(ctx, snapshot, snapshot.classify)
-		},
-		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
-			return judgeWeb(snapshot, a, filter, add)
-		},
+		Name:         "web",
+		Bit:          DomainWeb,
+		Collect:      collectWeb,
+		Judge:        judgeWeb,
 		GraphBuilder: &GraphSpec{Domain: DomainWeb, Build: webGraph},
 	},
 	{
-		Name: "identity", Bit: DomainIdentity,
-		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectIdentity(ctx, snapshot, snapshot.classify)
-		},
-		Judge: func(snapshot *Snapshot, report *Report, a *assessor, filter Filter, add func(Finding)) []string {
-			return judgeIdentity(snapshot, a, filter, add)
-		},
+		Name:         "identity",
+		Bit:          DomainIdentity,
+		Collect:      collectIdentity,
+		Judge:        judgeIdentity,
 		GraphBuilder: &GraphSpec{Domain: DomainIdentity, Build: identityGraph},
 	},
 	{
-		Name: "trail", Bit: DomainTrail,
-		Needs: DomainIdentity,
-		Collect: func(ctx context.Context, snapshot *Snapshot) []string {
-			return collectTrail(ctx, snapshot)
-		},
+		Name:       "trail",
+		Bit:        DomainTrail,
+		Needs:      DomainIdentity,
+		ScopeNeeds: DomainProcesses,
+		Collect:    collectTrail,
 	},
+})
+
+// orderModules stable-sorts the registry so every module's Needs are collected
+// before it runs. Declaration order breaks ties, so a table that already
+// satisfies its dependencies keeps its vocabulary order.
+func orderModules(in []Module) []Module {
+	ordered := make([]Module, 0, len(in))
+	placed := make([]bool, len(in))
+	have := Domain(0)
+	for {
+		progressed := false
+		for index, module := range in {
+			if placed[index] || module.Needs&^have != 0 {
+				continue
+			}
+			ordered = append(ordered, module)
+			placed[index] = true
+			have |= module.Bit
+			progressed = true
+		}
+		if !progressed {
+			break
+		}
+	}
+	// A cycle keeps the declaration order rather than dropping a module.
+	for index, module := range in {
+		if !placed[index] {
+			ordered = append(ordered, module)
+		}
+	}
+	return ordered
 }
 
 // Modules returns a copy of the registry in collection order.
@@ -210,15 +218,11 @@ func GraphTarget(word string) (Module, *GraphSpec, bool) {
 	return Module{}, nil, false
 }
 
-// OffDomains names the bounded domains a run did not judge, in registry order.
-// It reads the same domain set the judges and the views read.
-func OffDomains(domains Domain) []string {
-	if domains == 0 || domains == AllDomains {
-		return nil
-	}
+// off names the bounded domains the set leaves out, in registry order.
+func (d Domain) off() []string {
 	var off []string
 	for _, module := range modules {
-		if domains&module.Bit == 0 {
+		if d&module.Bit == 0 {
 			off = append(off, module.Name)
 		}
 	}

@@ -77,7 +77,7 @@ func cronEdges(file File) []rawEdge {
 		}
 		// The command is one shell line; the offset makes its edges report the
 		// crontab line they came from.
-		edges = append(edges, shellEdges(command, rawEdge{
+		edges = append(edges, shellSnippetEdges(command, rawEdge{
 			surface: SurfaceCron, phase: phase, subject: subject,
 			trigger: file.Path, line: index + 1,
 		})...)

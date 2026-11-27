@@ -81,7 +81,7 @@ func TestRootScriptFindingNamesTheRootLayer(t *testing.T) {
 			Total: 10, Owned: 9,
 		}},
 	}
-	findings := unownedFindings(snapshot, newAssessor(snapshot), Filter{})
+	findings := unownedFindings(snapshot, snapshot.Unowned, snapshot.Assessor())
 	if len(findings) != 1 {
 		t.Fatalf("findings = %+v", findings)
 	}

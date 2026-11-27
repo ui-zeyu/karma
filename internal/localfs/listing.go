@@ -6,9 +6,6 @@ package localfs
 import (
 	"os"
 	"strings"
-
-	"karma/internal/script"
-	"karma/internal/section"
 )
 
 // Ls lists a path list with listingRows: a directory operand gets no head cap,
@@ -34,9 +31,9 @@ func Ls(paths []string) (string, error) {
 			continue
 		}
 		if len(paths) > 1 {
-			b.WriteString(section.Line(path))
+			b.WriteString(sectionLine(path))
 		}
-		for _, row := range script.AlignLsBodies(rows) {
+		for _, row := range alignLsBodies(rows) {
 			b.WriteString(row)
 			b.WriteByte('\n')
 		}
@@ -68,3 +65,7 @@ func lsPath(path string, names *NameCache) ([]string, error) {
 	}
 	return bodies, nil
 }
+
+// sectionLine renders the "== title" header a listing prints above each
+// operand, newline included.
+func sectionLine(title string) string { return "== " + title + "\n" }

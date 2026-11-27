@@ -20,36 +20,20 @@ type processScope struct {
 	pids  map[int]bool
 }
 
-func unitMatches(unit string, units map[string]bool) bool {
-	if len(units) == 0 {
-		return true
-	}
-	if units[unit] || units[templateUnit(unit)] {
-		return true
-	}
-	for wanted := range units {
-		if templateUnit(unit) == templateUnit(wanted) {
-			return true
-		}
-	}
-	return false
-}
-
 // collectProcesses reads the running principals. The image and the script an
 // interpreter carries are judged by origin later; here they are only facts.
 // The catalog answers ownership from its loaded index, so a host with
 // hundreds of processes costs one facts read per image, not one package-
 // manager call.
-func collectProcesses(ctx context.Context, facts func(string) trust.Facts, scope processScope) ([]Process, []string) {
+func collectProcesses(ctx context.Context, facts func(string) trust.Facts, scope processScope) ([]Process, []Coverage) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil, []string{"running processes could not be read: " + err.Error()}
+		return nil, []Coverage{coverageAbsent("processes", "running processes could not be read: "+err.Error())}
 	}
 	processes := make([]Process, 0, len(entries))
-	var gaps []string
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
-			return processes, gaps
+			return processes, nil
 		}
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
@@ -97,7 +81,7 @@ func collectProcesses(ctx context.Context, facts func(string) trust.Facts, scope
 		}
 	}
 	sort.Slice(processes, func(i, j int) bool { return processes[i].PID < processes[j].PID })
-	return processes, gaps
+	return processes, nil
 }
 
 // readCgroupUnit answers the systemd unit for a pid without reading the rest
@@ -130,7 +114,10 @@ func readProcess(pid int) (Process, bool) {
 	process.State = fields[0]
 	process.PPID, _ = strconv.Atoi(fields[1])
 	process.Start, _ = strconv.ParseUint(fields[19], 10, 64)
-	process.UID, process.GID, process.EUID, process.EGID, process.CapEff, process.Seccomp, process.NoNewPrivs = readStatus(pid)
+	id := readStatus(pid)
+	process.UID, process.GID = id.uid, id.gid
+	process.EUID, process.EGID = id.euid, id.egid
+	process.CapEff, process.Seccomp, process.NoNewPrivs = id.caps, id.seccomp, id.noNewPrivs
 
 	base := "/proc/" + strconv.Itoa(pid)
 	if data, err := os.ReadFile(base + "/environ"); err == nil {
@@ -185,7 +172,7 @@ func argv0(cmdline, cwd string) string {
 		}
 		return ""
 	}
-	for _, dir := range []string{"/bin", "/usr/bin", "/sbin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin"} {
+	for _, dir := range fallbackProgramDirs {
 		path := filepath.Join(dir, name)
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			return path
@@ -193,6 +180,10 @@ func argv0(cmdline, cwd string) string {
 	}
 	return ""
 }
+
+// fallbackProgramDirs are the program directories argv0 looks a bare command
+// name up in, the widest PATH a service unit carries.
+var fallbackProgramDirs = []string{"/bin", "/usr/bin", "/sbin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin"}
 
 // unitFromCgroup names the deepest systemd unit a cgroup path holds. cgroup
 // v2 is `0::/system.slice/ssh.service`; v1 repeats the path per controller.
@@ -213,14 +204,28 @@ func unitFromCgroup(text string) string {
 	return unit
 }
 
-// readStatus reads the identity and the kernel-enforced context in one pass:
-// uid/gid, the effective capability mask, the seccomp mode and no_new_privs.
-func readStatus(pid int) (uid, gid, euid, egid int, caps uint64, seccomp int, noNewPrivs bool) {
+// procIdentity is one process's identity and kernel-enforced context: the
+// ids, the effective capability mask, the seccomp mode and no_new_privs.
+type procIdentity struct {
+	uid, gid   int
+	euid, egid int
+	caps       uint64
+	seccomp    int
+	noNewPrivs bool
+}
+
+func missingIdentity() procIdentity {
+	return procIdentity{uid: -1, gid: -1, euid: -1, egid: -1}
+}
+
+// readStatus reads the identity and the kernel-enforced context in one pass.
+func readStatus(pid int) procIdentity {
+	id := missingIdentity()
 	status, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/status")
 	if err != nil {
-		return -1, -1, -1, -1, 0, 0, false
+		return id
 	}
-	uid, gid, euid, egid = -1, -1, -1, -1
+	uid, gid, euid, egid := id.uid, id.gid, id.euid, id.egid
 	for _, line := range strings.Split(string(status), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
@@ -243,14 +248,15 @@ func readStatus(pid int) (uid, gid, euid, egid int, caps uint64, seccomp int, no
 				egid, _ = strconv.Atoi(fields[2])
 			}
 		case "CapEff:":
-			caps, _ = strconv.ParseUint(fields[1], 16, 64)
+			id.caps, _ = strconv.ParseUint(fields[1], 16, 64)
 		case "Seccomp:":
-			seccomp, _ = strconv.Atoi(fields[1])
+			id.seccomp, _ = strconv.Atoi(fields[1])
 		case "NoNewPrivs:":
-			noNewPrivs = fields[1] != "0"
+			id.noNewPrivs = fields[1] != "0"
 		}
 	}
-	return uid, gid, euid, egid, caps, seccomp, noNewPrivs
+	id.uid, id.gid, id.euid, id.egid = uid, gid, euid, egid
+	return id
 }
 
 // loaderEnvironment reads the dynamic-loader variables out of a /proc

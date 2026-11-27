@@ -52,7 +52,7 @@ func newRootCmd(version string) *cobra.Command {
 		if err != nil {
 			return usagef(cmd, "%s", err)
 		}
-		return runAudit(cmd.Context(), cmd.OutOrStdout(), args, flags)
+		return runAudit(cmd.Context(), cmd, cmd.OutOrStdout(), args, flags)
 	}
 	root.SetOut(os.Stdout)
 	root.SetErr(os.Stderr)
@@ -89,7 +89,7 @@ func newAuditCmd() *cobra.Command {
 			if err != nil {
 				return usagef(cmd, "%s", err)
 			}
-			return runAudit(cmd.Context(), cmd.OutOrStdout(), args, flags)
+			return runAudit(cmd.Context(), cmd, cmd.OutOrStdout(), args, flags)
 		},
 	}
 	addRunFlags(cmd)
@@ -108,13 +108,13 @@ func newShowCmd() *cobra.Command {
 		Example: "karma show activation\nkarma show listeners\nkarma show coverage",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return cmd.Help()
+				return usagef(cmd, "show needs a section: karma show <section> [scope...]")
 			}
 			flags, err := auditOptions(cmd.Flags())
 			if err != nil {
 				return usagef(cmd, "%s", err)
 			}
-			return runShow(cmd.Context(), cmd.OutOrStdout(), args, flags)
+			return runShow(cmd.Context(), cmd, cmd.OutOrStdout(), args, flags)
 		},
 	}
 	showFlags(cmd.Flags())
@@ -138,7 +138,7 @@ func newListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List the audit vocabulary",
-		Args:  cobra.NoArgs,
+		Args:  noArgsUsage("karma list"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			writePage(cmd.OutOrStdout(), cmd, listSections(cmd), listFooter)
 			return nil
@@ -153,19 +153,19 @@ func listSections(cmd *cobra.Command) []pageSection {
 	line := func(words ...string) []string { return []string{strings.Join(words, " ")} }
 	modes := []string{"audit (default)"}
 	for _, sub := range cmd.Root().Commands() {
-		if !sub.IsAvailableCommand() || sub.Name() == "completion" {
+		if !sub.IsAvailableCommand() || reservedNames[sub.Name()] {
 			continue
 		}
 		modes = append(modes, sub.Name())
 	}
 	return []pageSection{
-		{"start", startRows},
-		{"modes", line(modes...)},
-		{"domains", line(audit.DomainWords()...)},
-		{"graph", line(audit.GraphWords()...)},
-		{"show", line(audit.ShowWords()...)},
-		{"surfaces", line(surfaceWords...)},
-		{"groups", line(groupWords()...)},
+		{kind: "start", title: "start", rows: startRows(cmd)},
+		{kind: "modes", title: "modes", rows: line(modes...)},
+		{kind: "domains", title: "domains", rows: line(audit.DomainWords()...)},
+		{kind: "graph", title: "graph", rows: line(audit.GraphWords()...)},
+		{kind: "show", title: "show", rows: line(audit.ShowWords()...)},
+		{kind: "surfaces", title: "surfaces", rows: line(surfaceWords...)},
+		{kind: "groups", title: "groups", rows: line(groupWords()...)},
 	}
 }
 
@@ -176,7 +176,7 @@ func newVersionCmd(version string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print the karma version",
-		Args:  cobra.NoArgs,
+		Args:  noArgsUsage("karma version"),
 		RunE:  func(cmd *cobra.Command, args []string) error { cmd.Printf("karma %s\n", version); return nil },
 	}
 }
@@ -184,6 +184,27 @@ func newVersionCmd(version string) *cobra.Command {
 func atLeastOneArg(spelling string) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
+			return usagef(cmd, "%s", spelling)
+		}
+		return nil
+	}
+}
+
+// exactlyOneArg states the command's own spelling when the argument count is
+// wrong, in the page language every other usage failure wears.
+func exactlyOneArg(spelling string) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) != 1 {
+			return usagef(cmd, "%s", spelling)
+		}
+		return nil
+	}
+}
+
+// noArgsUsage states the command's own spelling when it was handed arguments.
+func noArgsUsage(spelling string) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) != 0 {
 			return usagef(cmd, "%s", spelling)
 		}
 		return nil

@@ -6,11 +6,22 @@ package panel
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
+
+// Byline is the band's right edge: the operator's name when the environment
+// carries one, the tool's own name otherwise. The report's masthead and the
+// command pages share it.
+func Byline() string {
+	if user := os.Getenv("USER"); user != "" {
+		return SafeText(user) + " "
+	}
+	return "karma "
+}
 
 // The report's chrome palette: a dark level-one band, a lighter level-two
 // band, and muted grey. Severity hues stay with the report.
@@ -201,16 +212,10 @@ func styledRunes(text string) []styledRune {
 	out := make([]styledRune, 0, len(text))
 	state := ""
 	for index := 0; index < len(text); {
-		if text[index] == 0x1b && index+1 < len(text) && text[index+1] == '[' {
-			end := index + 2
-			for end < len(text) && (text[end] < 0x40 || text[end] > 0x7e) {
-				end++
-			}
-			if end < len(text) {
-				end++
-			}
+		if text[index] == 0x1b {
+			end := escapeEnd(text, index)
 			sequence := text[index:end]
-			if sequence[len(sequence)-1] == 'm' {
+			if strings.HasSuffix(sequence, "m") {
 				if sequence == Reset || sequence == "\x1b[m" {
 					state = ""
 				} else {
@@ -296,7 +301,7 @@ func SafeText(text string) string {
 	out.Grow(len(text))
 	for index := 0; index < len(text); {
 		if text[index] == 0x1b {
-			index = skipEscape(text, index)
+			index = escapeEnd(text, index)
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(text[index:])
@@ -320,49 +325,49 @@ func SafeText(text string) string {
 	return out.String()
 }
 
-// skipEscape consumes one ESC sequence: CSI to its final byte, OSC to BEL or
-// ST, and any other two-byte escape. A lone ESC is consumed alone.
-func skipEscape(text string, index int) int {
-	index++
-	if index >= len(text) {
-		return index
+// escapeEnd consumes one ESC sequence from index, which names the ESC, and
+// answers the index just past it. CSI runs to its final byte, OSC runs to
+// BEL or ST, and any other escape is the two-byte form; a lone ESC at the
+// end of the text consumes itself. It is the one scanner for width,
+// stripping, styling and sanitizing, so the four cannot disagree about where
+// a sequence ends.
+func escapeEnd(text string, index int) int {
+	if index+1 >= len(text) {
+		return index + 1
 	}
-	switch text[index] {
+	switch text[index+1] {
 	case '[':
-		index++
-		for index < len(text) {
-			c := text[index]
-			index++
-			if c >= 0x40 && c <= 0x7e {
-				break
-			}
+		end := index + 2
+		for end < len(text) && (text[end] < 0x40 || text[end] > 0x7e) {
+			end++
 		}
+		if end < len(text) {
+			end++
+		}
+		return end
 	case ']':
-		index++
-		for index < len(text) {
-			if text[index] == 0x07 {
-				return index + 1
+		end := index + 2
+		for end < len(text) {
+			if text[end] == 0x07 {
+				return end + 1
 			}
-			if text[index] == 0x1b && index+1 < len(text) && text[index+1] == '\\' {
-				return index + 2
+			if text[end] == 0x1b && end+1 < len(text) && text[end+1] == '\\' {
+				return end + 2
 			}
-			index++
+			end++
 		}
+		return end
 	default:
-		index++
+		return index + 2
 	}
-	return index
 }
 
-// DisplayWidth is a string's printed width: ANSI escapes take no column.
+// DisplayWidth is a string's printed width: terminal escapes take no column.
 func DisplayWidth(text string) int {
 	width := 0
 	for index := 0; index < len(text); {
 		if text[index] == 0x1b {
-			for index < len(text) && text[index] != 'm' {
-				index++
-			}
-			index++
+			index = escapeEnd(text, index)
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(text[index:])
@@ -399,16 +404,13 @@ func runeWidth(r rune) int {
 	return 1
 }
 
-// StripANSI drops SGR sequences: a line that has to wrap loses its paint
-// rather than letting a wrap land inside an escape.
+// StripANSI drops terminal escape sequences: a line that has to wrap loses
+// its paint rather than letting a wrap land inside an escape.
 func StripANSI(text string) string {
 	var out strings.Builder
 	for index := 0; index < len(text); {
 		if text[index] == 0x1b {
-			for index < len(text) && text[index] != 'm' {
-				index++
-			}
-			index++
+			index = escapeEnd(text, index)
 			continue
 		}
 		out.WriteByte(text[index])

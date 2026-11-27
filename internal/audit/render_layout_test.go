@@ -25,7 +25,7 @@ func layoutFinding(severity Severity, title, path string) Finding {
 	return layoutClassFinding(severity, "test", title, path)
 }
 
-func layoutClassFinding(severity Severity, class, title, path string) Finding {
+func layoutClassFinding(severity Severity, class Class, title, path string) Finding {
 	return Finding{
 		Class: class, Severity: severity, Title: title, Path: path,
 		Origin: Runtime, Reach: RootAsset,
@@ -61,11 +61,11 @@ func TestMastheadCountsTheFindingsBySeverity(t *testing.T) {
 	}
 	painted := renderText(t, layoutReport(findings), RenderOptions{Width: 100, Color: true})
 	for _, chip := range []string{
-		bg(1) + fg(15) + "\x1b[1m 2 critical ",
-		bg(9) + fg(0) + "\x1b[1m 1 high ",
-		bg(11) + fg(0) + "\x1b[1m 2 medium ",
-		bg(14) + fg(15) + "\x1b[1m 2 low ",
-		bg(mutedColor) + fg(0) + "\x1b[1m 2 info ",
+		chrome.Bg(1) + chrome.Fg(15) + "\x1b[1m 2 critical ",
+		chrome.Bg(9) + chrome.Fg(0) + "\x1b[1m 1 high ",
+		chrome.Bg(11) + chrome.Fg(0) + "\x1b[1m 2 medium ",
+		chrome.Bg(14) + chrome.Fg(15) + "\x1b[1m 2 low ",
+		chrome.Bg(mutedColor) + chrome.Fg(0) + "\x1b[1m 2 info ",
 	} {
 		if !strings.Contains(painted, chip) {
 			t.Errorf("the counts line misses the badge %q", chip)
@@ -94,17 +94,17 @@ func TestFindingHeadWearsTheSeverityBadge(t *testing.T) {
 	}
 	for _, test := range batch {
 		head := findingHead(layoutFinding(test.severity, "judgment", "/etc/x"), 98, true)
-		want := bg(test.ground) + fg(test.ink) + "\x1b[1m " +
+		want := chrome.Bg(test.ground) + chrome.Fg(test.ink) + "\x1b[1m " +
 			strings.ToUpper(test.severity.String()) + " "
 		if !strings.Contains(head, want) {
 			t.Errorf("%s badge = %q, want the ground %d and ink %d", test.severity, head, test.ground, test.ink)
 		}
-		if width := displayWidth(head); width > 98 {
+		if width := chrome.DisplayWidth(head); width > 98 {
 			t.Errorf("%s head is %d columns wide: %q", test.severity, width, head)
 		}
 	}
 	long := findingHead(layoutFinding(Low, "judgment", "/var/lib/vendor/runtime/.attach-loader.sh"), 40, false)
-	if width := displayWidth(long); width > 40 {
+	if width := chrome.DisplayWidth(long); width > 40 {
 		t.Errorf("a truncated head is %d columns wide: %q", width, long)
 	}
 }
@@ -113,9 +113,9 @@ func TestHighlightTokensPaintsPathsAndOrigins(t *testing.T) {
 	line := "trigger /etc/ld.so.preload: runtime (created after the boundary)"
 	painted := highlightTokens(line, mutedColor, true)
 	for _, want := range []string{
-		fg(mutedColor) + "trigger",
-		fg(hueInformation) + "/etc/ld.so.preload",
-		fg(hueAlert) + "runtime",
+		chrome.Fg(mutedColor) + "trigger",
+		chrome.Fg(hueInformation) + "/etc/ld.so.preload",
+		chrome.Fg(hueAlert) + "runtime",
 	} {
 		if !strings.Contains(painted, want) {
 			t.Errorf("the line misses %q:\n%q", want, painted)
@@ -125,8 +125,8 @@ func TestHighlightTokensPaintsPathsAndOrigins(t *testing.T) {
 		t.Errorf("an uncolored line changed: %q", plain)
 	}
 	prose := highlightTokens("the base files stay quiet", mutedColor, true)
-	if strings.Contains(prose, fg(hueAlert)) || strings.Contains(prose, fg(hueCaution)) ||
-		strings.Contains(prose, fg(hueProvisioned)) {
+	if strings.Contains(prose, chrome.Fg(hueAlert)) || strings.Contains(prose, chrome.Fg(hueCaution)) ||
+		strings.Contains(prose, chrome.Fg(hueProvisioned)) {
 		t.Errorf("a prose origin word took a verdict hue: %q", prose)
 	}
 }
@@ -150,7 +150,7 @@ func TestFindingPanelsGroupOneObjectRelations(t *testing.T) {
 	if len(groups) != 1 || len(groups[0]) != 2 {
 		t.Fatalf("panel groups = %v, want one group of two", groups)
 	}
-	plain := chrome.StripANSI(findingPanel(groups[0], true, RenderOptions{}, 100))
+	plain := chrome.StripANSI(findingPanel(panelGroup{findings: groups[0]}, true, RenderOptions{}, 100))
 	body := strings.Join(strings.Split(plain, "\n")[1:], "\n")
 	for _, want := range []string{
 		first.Title,
@@ -193,7 +193,7 @@ func TestGroupedPanelDrawsASharedRootAsATree(t *testing.T) {
 	if len(groups) != 1 || len(groups[0]) != 3 {
 		t.Fatalf("panel groups = %v, want one group of three", groups)
 	}
-	plain := chrome.StripANSI(findingPanel(groups[0], false, RenderOptions{}, 100))
+	plain := chrome.StripANSI(findingPanel(panelGroup{findings: groups[0]}, false, RenderOptions{}, 100))
 	for _, want := range []string{
 		"· chain  " + path,
 		"         ├─ libnss_one.so",
@@ -224,7 +224,7 @@ func TestGroupedPanelKeepsDistinctRootsFlat(t *testing.T) {
 	if len(groups) != 1 || len(groups[0]) != 2 {
 		t.Fatalf("panel groups = %v, want one group of two", groups)
 	}
-	plain := chrome.StripANSI(findingPanel(groups[0], false, RenderOptions{}, 100))
+	plain := chrome.StripANSI(findingPanel(panelGroup{findings: groups[0]}, false, RenderOptions{}, 100))
 	for _, want := range []string{
 		"· chain  account www-data → passwordless sudo ALL",
 		"· chain  account svc-backup → passwordless sudo ALL",
@@ -288,7 +288,7 @@ func TestGroupedPanelDedupesRepeatedLines(t *testing.T) {
 	if len(groups) != 1 || len(groups[0]) != 2 {
 		t.Fatalf("panel groups = %v, want one group of two", groups)
 	}
-	plain := chrome.StripANSI(findingPanel(groups[0], false, RenderOptions{}, 100))
+	plain := chrome.StripANSI(findingPanel(panelGroup{findings: groups[0]}, false, RenderOptions{}, 100))
 	body := strings.Join(strings.Split(plain, "\n")[1:], "\n")
 	for _, once := range []string{"same detail", "· same evidence", "origin runtime · reach root", "· chain  profile → " + path} {
 		if n := strings.Count(body, once); n != 1 {
@@ -314,7 +314,7 @@ func TestFindingPanelKeepsTheHierarchy(t *testing.T) {
 		Trace:    []Step{{Text: "profile"}, {Text: path}, {Text: "runtime"}},
 		Evidence: []string{"no package owns it"},
 	}
-	plain := chrome.StripANSI(findingPanel(findingGroup{finding}, true, RenderOptions{}, 100))
+	plain := chrome.StripANSI(findingPanel(panelGroup{findings: findingGroup{finding}}, true, RenderOptions{}, 100))
 	lines := strings.Split(plain, "\n")
 	if !strings.Contains(lines[0], "CRITICAL  "+path) {
 		t.Errorf("the head misses the badge or object: %q", lines[0])
@@ -340,7 +340,7 @@ func TestFindingPanelKeepsTheHierarchy(t *testing.T) {
 
 func TestFindingPanelWithoutAPathHasNoNextLine(t *testing.T) {
 	finding := layoutFinding(Info, "structural only", "")
-	plain := chrome.StripANSI(findingPanel(findingGroup{finding}, true, RenderOptions{}, 100))
+	plain := chrome.StripANSI(findingPanel(panelGroup{findings: findingGroup{finding}}, true, RenderOptions{}, 100))
 	if strings.Contains(plain, "· next") {
 		t.Errorf("a pathless finding offers a graph to open:\n%s", plain)
 	}
@@ -407,7 +407,7 @@ func TestSortFindingsOrdersSeverityPathClass(t *testing.T) {
 	}
 	for index, expected := range want {
 		got := findings[index]
-		if got.Severity != expected.severity || got.Path != expected.path || got.Class != expected.class {
+		if got.Severity != expected.severity || got.Path != expected.path || string(got.Class) != expected.class {
 			t.Errorf("finding %d = %s %s %s, want %s %s %s", index,
 				got.Severity, got.Path, got.Class, expected.severity, expected.path, expected.class)
 		}
@@ -434,10 +434,10 @@ func TestFindingBodyWrapsProseWithoutCuttingTokens(t *testing.T) {
 				"payload /var/lib/vendor/runtime/.attach-loader.sh timestamp 2026-11-25T06:33:28",
 		},
 	}
-	panel := findingPanel(findingGroup{finding}, true, RenderOptions{Color: true}, 80)
+	panel := findingPanel(panelGroup{findings: findingGroup{finding}}, true, RenderOptions{Color: true}, 80)
 	lines := strings.Split(panel, "\n")
 	for index, line := range lines {
-		if width := displayWidth(line); width > 80 {
+		if width := chrome.DisplayWidth(line); width > 80 {
 			t.Errorf("line %d is %d columns wide: %q", index, width, line)
 		}
 	}
@@ -492,7 +492,7 @@ func TestFindingPanelCitesItsSourceLines(t *testing.T) {
 	findings := []Finding{first, second}
 	sortFindings(findings)
 	groups := groupFindings(findings)
-	panel := findingPanel(groups[0], false, RenderOptions{Color: true}, 80)
+	panel := findingPanel(panelGroup{findings: groups[0]}, false, RenderOptions{Color: true}, 80)
 	plain := chrome.StripANSI(panel)
 	if n := strings.Count(plain, "· cite  "+path); n != 1 {
 		t.Errorf("the cited path prints %d headers, want one:\n%s", n, plain)
@@ -500,17 +500,17 @@ func TestFindingPanelCitesItsSourceLines(t *testing.T) {
 	if !strings.Contains(plain, "2 │ preload /var/lib/vendor/runtime/.attach-loader.sh") {
 		t.Errorf("the quote line is missing:\n%s", plain)
 	}
-	if !strings.Contains(panel, fg(hueInformation)+path) {
+	if !strings.Contains(panel, chrome.Fg(hueInformation)+path) {
 		t.Errorf("the cited path lost its information hue:\n%s", panel)
 	}
-	if !strings.Contains(panel, fg(mutedColor)+" │ ") {
+	if !strings.Contains(panel, chrome.Fg(mutedColor)+" │ ") {
 		t.Errorf("the quote bar is not muted:\n%s", panel)
 	}
-	if strings.Contains(panel, fg(mutedColor)+"preload") {
+	if strings.Contains(panel, chrome.Fg(mutedColor)+"preload") {
 		t.Errorf("the quoted text is painted like evidence:\n%s", panel)
 	}
 	for index, line := range strings.Split(panel, "\n") {
-		if width := displayWidth(line); width > 80 {
+		if width := chrome.DisplayWidth(line); width > 80 {
 			t.Errorf("line %d is %d columns wide: %q", index, width, line)
 		}
 	}
@@ -522,9 +522,9 @@ func TestQuoteLineWrapsProse(t *testing.T) {
 	quote := Quote{Path: path, Line: 4, Text: text}
 	finding := layoutFinding(Critical, "runtime object", path)
 	finding.Quotes = []Quote{quote}
-	panel := findingPanel(findingGroup{finding}, false, RenderOptions{}, 72)
+	panel := findingPanel(panelGroup{findings: findingGroup{finding}}, false, RenderOptions{}, 72)
 	for index, line := range strings.Split(panel, "\n") {
-		if width := displayWidth(line); width > 72 {
+		if width := chrome.DisplayWidth(line); width > 72 {
 			t.Errorf("line %d is %d columns wide: %q", index, width, line)
 		}
 	}

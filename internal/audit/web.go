@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	chrome "karma/internal/panel"
 	"os"
 	"path/filepath"
 	"sort"
@@ -48,9 +49,10 @@ var webScriptSuffixes = []string{
 	".py", ".pl", ".rb", ".sh", ".cgi", ".asp", ".aspx",
 }
 
-func collectWeb(ctx context.Context, snapshot *Snapshot, facts func(string) trust.Facts) []string {
+func collectWeb(ctx context.Context, snapshot *Snapshot) []Coverage {
+	facts := snapshot.classify
 	state := &snapshot.Web
-	var gaps []string
+	var gaps []Coverage
 	visited := 0
 	for _, root := range webRoots {
 		if !snapshot.plan.Filter.touchesPath(root) {
@@ -69,7 +71,7 @@ func collectWeb(ctx context.Context, snapshot *Snapshot, facts func(string) trus
 				return filepath.SkipAll
 			}
 			if visited > webFileLimit {
-				gaps = append(gaps, fmt.Sprintf("web sweep stopped at %d entries", webFileLimit))
+				gaps = append(gaps, coverageGap("web", fmt.Sprintf("web sweep stopped at %d entries", webFileLimit)))
 				return filepath.SkipAll
 			}
 			visited++
@@ -100,7 +102,7 @@ func collectWeb(ctx context.Context, snapshot *Snapshot, facts func(string) trus
 			return nil
 		})
 		if err != nil {
-			gaps = append(gaps, "web sweep of "+root+": "+err.Error())
+			gaps = append(gaps, coverageGap("web", "web sweep of "+root+": "+err.Error()))
 		}
 	}
 	if len(state.Files) == 0 {
@@ -127,7 +129,7 @@ func webHead(path string) []Quote {
 		if line == "" {
 			continue
 		}
-		quotes = append(quotes, Quote{Path: path, Line: index + 1, Text: truncate(line, 200)})
+		quotes = append(quotes, Quote{Path: path, Line: index + 1, Text: chrome.Truncate(line, 200)})
 		if len(quotes) == 5 {
 			break
 		}
@@ -152,26 +154,28 @@ func webScript(path string, entry fs.DirEntry) bool {
 	return false
 }
 
-func judgeWeb(snapshot *Snapshot, a *assessor, filter Filter, add func(Finding)) []string {
+func judgeWeb(j *judgePass) []Coverage {
+	snapshot, a, add := j.snapshot, j.a, j.add
 	state := &snapshot.Web
 	if len(state.Files) == 0 {
 		return nil
 	}
-	var coverage []string
-	shown := 0
-	for _, file := range state.Files {
-		if !pathInScope(file.Path, filter) {
-			continue
+	type hit struct {
+		file  WebFile
+		story verdict
+	}
+	var hits []hit
+	for _, file := range j.view.WebFiles {
+		story := a.read(file.Facts)
+		if story.origin.arrived() {
+			hits = append(hits, hit{file: file, story: story})
 		}
-		if shown >= 100 {
-			coverage = append(coverage, fmt.Sprintf("%d more web script(s) than the report shows", len(state.Files)-shown))
-			break
-		}
-		story := a.read(file.Facts, false)
-		if story.origin != Runtime && story.origin != Modified {
-			continue
-		}
-		shown++
+	}
+	var coverage []Coverage
+	var shown []hit
+	shown, coverage = shownMore(hits, 100, "web", "web script(s)")
+	for _, entry := range shown {
+		file, story := entry.file, entry.story
 		severity := severityFor(story.origin, ServiceAsset)
 		evidence := []string{
 			fmt.Sprintf("web root %s", file.Root),
@@ -196,9 +200,9 @@ func webGraph(snapshot *Snapshot) *GraphView {
 		node := graph.Node("dir", dir, dir, dir, Unknown, ServiceAsset, "web root")
 		graph.link(graph.root, node.ID, "contains", "web", "high", "")
 	}
-	a := newAssessor(snapshot)
+	a := snapshot.Assessor()
 	for _, file := range snapshot.Web.Files {
-		story := a.read(file.Facts, false)
+		story := a.read(file.Facts)
 		node := graph.Node("file", file.Path, file.Path, file.Path, story.origin, ServiceAsset, story.why)
 		graph.link(nodeKey("dir", file.Root), node.ID, "contains", "tree", "high", "")
 	}

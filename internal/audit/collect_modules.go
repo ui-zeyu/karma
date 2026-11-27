@@ -7,14 +7,13 @@ package audit
 import (
 	"context"
 	"sort"
-	"strconv"
 )
 
 // collectServicesModule reads systemd's inventory, scoped to one unit when
 // the plan named exactly one.
-func collectServicesModule(ctx context.Context, snapshot *Snapshot) []string {
+func collectServicesModule(ctx context.Context, snapshot *Snapshot) []Coverage {
 	var services []Service
-	var gaps []string
+	var gaps []Coverage
 	switch {
 	case snapshot.plan.seedUnit() != "":
 		services, gaps = collectServiceScoped(ctx, snapshot.plan.seedUnit())
@@ -34,7 +33,7 @@ func collectServicesModule(ctx context.Context, snapshot *Snapshot) []string {
 
 // collectProcessesModule reads the running principals, scoped by the plan's
 // pids, one unit or one object graph's process.
-func collectProcessesModule(ctx context.Context, snapshot *Snapshot) []string {
+func collectProcessesModule(ctx context.Context, snapshot *Snapshot) []Coverage {
 	scope := processScope{}
 	if unit := snapshot.plan.seedUnit(); unit != "" {
 		scope.units = map[string]bool{unit: true}
@@ -42,10 +41,8 @@ func collectProcessesModule(ctx context.Context, snapshot *Snapshot) []string {
 	if len(snapshot.plan.Units) > 0 {
 		scope.units = snapshot.plan.Units
 	}
-	if snapshot.plan.Seed.Kind == "pid" {
-		if pid, err := strconv.Atoi(snapshot.plan.Seed.Value); err == nil {
-			scope.pids = map[int]bool{pid: true}
-		}
+	if pid, ok := snapshot.plan.Seed.pid(); ok {
+		scope.pids = map[int]bool{pid: true}
 	}
 	if len(snapshot.plan.PIDs) > 0 {
 		scope.pids = snapshot.plan.PIDs
@@ -61,7 +58,7 @@ func collectProcessesModule(ctx context.Context, snapshot *Snapshot) []string {
 
 // collectSocketsModule reads the listening surface and the established
 // connections, scoped to the plan's pids or an object graph's processes.
-func collectSocketsModule(ctx context.Context, snapshot *Snapshot) []string {
+func collectSocketsModule(ctx context.Context, snapshot *Snapshot) []Coverage {
 	var scopePIDs map[int]bool
 	if snapshot.plan.Seed.Kind != "" {
 		scopePIDs = seedPids(snapshot.plan.Seed, snapshot.Processes)
@@ -77,15 +74,7 @@ func collectSocketsModule(ctx context.Context, snapshot *Snapshot) []string {
 	if len(snapshot.plan.PIDs) > 0 {
 		scopePIDs = snapshot.plan.PIDs
 	}
-	var sockets []Socket
-	var connections []Connection
-	var outbound map[int]int
-	var gaps []string
-	if scopePIDs != nil {
-		sockets, connections, outbound, gaps = collectSocketsScoped(ctx, scopePIDs)
-	} else {
-		sockets, connections, outbound, gaps = collectSockets(ctx)
-	}
+	sockets, connections, outbound, gaps := collectSockets(ctx, scopePIDs)
 	snapshot.Sockets = sockets
 	snapshot.Connections = connections
 	for index := range snapshot.Processes {
@@ -96,7 +85,7 @@ func collectSocketsModule(ctx context.Context, snapshot *Snapshot) []string {
 
 // collectAuthorityModule walks the authority trees and reads the facts of
 // every authority object it names.
-func collectAuthorityModule(ctx context.Context, snapshot *Snapshot) []string {
+func collectAuthorityModule(ctx context.Context, snapshot *Snapshot) []Coverage {
 	authority, gaps := collectAuthority(ctx, snapshot.plan.Filter)
 	snapshot.Authority = authority
 	for _, path := range authority {

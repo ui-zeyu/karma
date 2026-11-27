@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"io"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -23,13 +24,13 @@ func newGraphCmd() *cobra.Command {
 			"the application tree, lexical path mentions, each file's package and content verdict. " +
 			"Findings come first, then the nodes and edges the evidence built.",
 		Example: "karma graph boot\nkarma graph ssh.service\nkarma graph pid:1234\nkarma graph /etc/ssh/sshd_config",
-		Args:    cobra.ExactArgs(1),
+		Args:    exactlyOneArg("karma graph <domain|object>"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			flags, err := auditOptions(cmd.Flags())
 			if err != nil {
 				return usagef(cmd, "%s", err)
 			}
-			return runGraph(cmd.Context(), cmd.OutOrStdout(), args[0], flags)
+			return runGraph(cmd.Context(), cmd, cmd.OutOrStdout(), args[0], flags)
 		},
 	}
 	graphFlags(cmd.Flags())
@@ -38,34 +39,28 @@ func newGraphCmd() *cobra.Command {
 
 // runGraph builds one relation graph: a domain word draws that domain, and
 // any other word names one object the graph grows from.
-func runGraph(ctx context.Context, w io.Writer, word string, flags auditFlags) error {
+func runGraph(ctx context.Context, cmd *cobra.Command, w io.Writer, word string, flags auditFlags) error {
 	module, spec, ok := audit.GraphTarget(word)
 	if !ok {
 		if _, isDomain := audit.ModuleForWord(word); isDomain {
-			return usagef(nil, "graph has no domain view for %q; audit or show it instead", word)
+			return usagef(cmd, "graph has no domain view for %q; audit or show it instead", word)
 		}
-		if contains(surfaceWords, word) || contains(groupWords(), word) {
-			return usagef(nil, "graph has no domain view for %q; name an object or a graph domain", word)
+		if slices.Contains(surfaceWords, word) || slices.Contains(groupWords(), word) {
+			return usagef(cmd, "graph has no domain view for %q; name an object or a graph domain", word)
 		}
-		return runObjectGraph(ctx, w, word, flags)
+		return runObjectGraph(ctx, cmd, w, word, flags)
 	}
 	plan := spec.Plan(module.Bit)
-	snapshot, collectErr := collectSnapshot(ctx, plan, flags.timeout, flags.json)
+	snapshot, collectErr := collect(ctx, cmd, flags, plan, flags.json)
 	if snapshot == nil {
 		return collectErr
-	}
-	if err := applySince(snapshot, flags.since); err != nil {
-		return err
 	}
 	report := audit.Judge(snapshot, plan.Filter)
 	view := spec.Build(snapshot)
 	view.AttachFindings(spec.Domain, report.Findings, report.Coverage)
-	if flags.json {
-		if err := audit.WriteGraphJSON(w, view); err != nil {
-			return err
-		}
-		return collectErr
-	}
-	audit.RenderGraph(w, view, renderOptions(w, flags, plan.Filter))
-	return collectErr
+	options := renderOptions(w, flags, plan.Filter)
+	return present(w, flags, pageFuncs{
+		write: func(w io.Writer) error { return audit.WriteGraphJSON(w, view) },
+		draw:  func(w io.Writer, options audit.RenderOptions) { audit.RenderGraph(w, view, options) },
+	}, options, collectErr)
 }

@@ -12,12 +12,11 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"karma/internal/localfs"
@@ -89,11 +88,11 @@ const logLedgerPkg = prov.LogPackage
 // ledgerFile is one package metadata file the catalog carried.
 type ledgerFile = prov.LedgerFile
 
-// ledgerEntry is the hash one package's ledger records for one path.
-type ledgerEntry struct {
-	pkg  string
-	hash string
-}
+// ledgerLookup is the one ledger row probe: the catalog answers it under
+// every spelling it indexes (usrmerge pairs included). The batch pass and
+// the graph's late discoveries both call it, so a file cannot verify one way
+// in the report and the other way in a graph.
+type ledgerLookup func(path string) (prov.HashEntry, bool)
 
 // mountTable answers a path's filesystem by longest prefix.
 type mountTable []Mount
@@ -144,28 +143,38 @@ func readMounts() []Mount {
 
 const hashSizeCap = 128 << 20
 
-func hashFile(path string) (string, bool) {
+// hashFile reads and md5s one regular file. The second answer names why the
+// comparison could not run — an unreadable file, or one past the size cap —
+// and is empty on success, so the caller can state the failure instead of
+// reporting the file as unrecorded.
+func hashFile(path string) (string, string) {
 	file, err := localfs.Open(path)
 	if err != nil {
-		return "", false
+		return "", "unreadable: " + err.Error()
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || info.Size() > hashSizeCap {
-		return "", false
+	if err != nil {
+		return "", "unreadable: " + err.Error()
+	}
+	if info.Size() > hashSizeCap {
+		return "", fmt.Sprintf("larger than the %dMiB comparison cap", hashSizeCap>>20)
 	}
 	hash := md5.New()
 	if _, err := io.Copy(hash, file); err != nil {
-		return "", false
+		return "", "read stopped: " + err.Error()
 	}
-	return hex.EncodeToString(hash.Sum(nil)), true
+	return hex.EncodeToString(hash.Sum(nil)), ""
 }
 
-func hashFiles(ctx context.Context, objects map[string]trust.Facts, expected map[string]ledgerEntry) map[string]string {
+// hashFiles hashes the judged files the ledger records. The second answer
+// maps the files whose comparison could not run to the reason, so the
+// assessor can name the failure — the ledger rows for them exist.
+func hashFiles(ctx context.Context, objects map[string]trust.Facts, lookup ledgerLookup) (map[string]string, map[string]string) {
 	seen := map[string]bool{}
 	var paths []string
 	for _, facts := range objects {
-		if facts.Kind != trust.File || facts.Real == "" || seen[facts.Real] || !ledgerCandidate(facts, expected) {
+		if facts.Kind != trust.File || facts.Real == "" || seen[facts.Real] || !ledgerCandidate(facts, lookup) {
 			continue
 		}
 		// The object map carries both the asked and the resolved spelling; one
@@ -174,53 +183,41 @@ func hashFiles(ctx context.Context, objects map[string]trust.Facts, expected map
 		paths = append(paths, facts.Real)
 	}
 	actual := map[string]string{}
+	failed := map[string]string{}
 	if len(paths) == 0 {
-		return actual
+		return actual, failed
 	}
-	workers := min(max(runtime.GOMAXPROCS(0), 2), 8)
-	if workers > len(paths) {
-		workers = len(paths)
+	reasons := make([]string, len(paths))
+	each(ctx, len(paths), workerCount(1), func(_, i int) {
+		hash, reason := hashFile(paths[i])
+		if hash != "" {
+			actual[paths[i]] = hash
+		} else {
+			reasons[i] = reason
+		}
+	})
+	for index, reason := range reasons {
+		if reason != "" {
+			failed[paths[index]] = reason
+		}
 	}
-	var (
-		mu sync.Mutex
-		wg sync.WaitGroup
-	)
-	for worker := 0; worker < workers; worker++ {
-		wg.Add(1)
-		go func(worker int) {
-			defer wg.Done()
-			for index := worker; index < len(paths); index += workers {
-				if ctx.Err() != nil {
-					return
-				}
-				hash, ok := hashFile(paths[index])
-				if !ok {
-					continue
-				}
-				mu.Lock()
-				actual[paths[index]] = hash
-				mu.Unlock()
-			}
-		}(worker)
-	}
-	wg.Wait()
-	return actual
+	return actual, failed
 }
 
 // ledgerCandidate reports whether the ledger records a hash under either
 // spelling of the file.
-func ledgerCandidate(facts trust.Facts, expected map[string]ledgerEntry) bool {
-	if len(expected) == 0 {
+func ledgerCandidate(facts trust.Facts, lookup ledgerLookup) bool {
+	if lookup == nil {
 		return false
 	}
 	for _, key := range usrKeys(facts.Real) {
-		if _, ok := expected[key]; ok {
+		if _, ok := lookup(key); ok {
 			return true
 		}
 	}
 	if facts.Path != facts.Real {
 		for _, key := range usrKeys(facts.Path) {
-			if _, ok := expected[key]; ok {
+			if _, ok := lookup(key); ok {
 				return true
 			}
 		}
@@ -228,97 +225,14 @@ func ledgerCandidate(facts trust.Facts, expected map[string]ledgerEntry) bool {
 	return false
 }
 
-// joinContent pairs each actual hash with the ledger entry recorded for the
-// same file, under any spelling the ledger may have used.
-func joinContent(actual map[string]string, expected map[string]ledgerEntry) map[string]Content {
-	verify := map[string]Content{}
-	for path, hash := range actual {
-		content := Content{Actual: hash, State: Unverified, Method: methodMD5}
-		for _, key := range usrKeys(path) {
-			if entry, hit := expected[key]; hit {
-				content.Package = entry.pkg
-				content.Expected = entry.hash
-				if content.Expected == hash {
-					content.State = Verified
-				} else {
-					content.State = Mismatched
-				}
-				break
-			}
-		}
-		verify[path] = content
-	}
-	return verify
-}
-
-// overlayRpm folds rpm -Va's deviations into the judged content table. rpm
-// carries no per-file digest, so a flagged row is a mismatch with no expected
-// hash to quote; the assessor cites the flag word instead. Only judged paths
-// enter the table, so an unrelated deviation cannot inflate the summary.
-func overlayRpm(verify map[string]Content, flags map[string]string, objects map[string]trust.Facts) {
-	if len(flags) == 0 {
-		return
-	}
-	// rpm names the package's spelling; the assessor looks up the resolved
-	// spelling. Keep one map from either spelling to the resolved path.
-	resolved := make(map[string]string, len(objects)*2)
-	for _, facts := range objects {
-		if facts.Real == "" {
-			continue
-		}
-		resolved[facts.Real] = facts.Real
-		resolved[facts.Path] = facts.Real
-	}
-	for path, flag := range flags {
-		real, judged := resolved[path]
-		if !judged {
-			continue
-		}
-		content := verify[real]
-		if content.State == Verified {
-			// A hash match outranks rpm's own flag: the file may have moved
-			// without its content changing.
-			continue
-		}
-		content.State = Mismatched
-		content.Method = methodRPM
-		content.Actual = "rpm -Va " + flag
-		verify[real] = content
-	}
-}
-
-// overlayRpmVerified records the positive half of rpm -Va: a judged package
-// file with no deviation row was checked and matched. Without this, every rpm
-// file without a deviation fell back to time and the ledger read 0 verified.
-func overlayRpmVerified(verify map[string]Content, objects map[string]trust.Facts, flags map[string]string) {
-	for _, facts := range objects {
-		if facts.Kind != trust.File || facts.Real == "" || !facts.PackageKnown || facts.Package == "" {
-			continue
-		}
-		if flagged(facts, flags) {
-			continue
-		}
-		if _, seen := verify[facts.Real]; seen {
-			continue
-		}
-		verify[facts.Real] = Content{Package: facts.Package, State: Verified, Method: methodRPM}
-	}
-}
-
-// flagged reports whether rpm named either spelling of a judged file.
-func flagged(facts trust.Facts, flags map[string]string) bool {
-	if _, ok := flags[facts.Real]; ok {
-		return true
-	}
-	_, ok := flags[facts.Path]
-	return ok
-}
-
 // evidenceSet is everything the ledger pass gathered; attachEvidence turns it
 // into the snapshot fields the judge reads.
 type evidenceSet struct {
-	actual      map[string]string
-	expected    map[string]ledgerEntry
+	actual map[string]string
+	// failed names the judged files whose comparison could not run, with the
+	// reason; the ledger rows for them exist.
+	failed      map[string]string
+	lookup      ledgerLookup
 	conffiles   map[string]bool
 	rows        []ledgerFile
 	mounts      []Mount
@@ -327,27 +241,103 @@ type evidenceSet struct {
 	objects     map[string]trust.Facts
 	kind        string
 	note        string
-	entries     int
 	// packages is how many packages the ledger covered. dpkg counts the
 	// packages among the judged hash entries; rpm's ledger is a whole-system
 	// verify, so it counts every installed package.
 	packages int
 }
 
-// attachEvidence joins the collected hashes with the ledger, dates the
-// packages, and records the tamper verdict.
+// ledgerAnswer is the bulk state one content verdict reads: which ledger
+// answered, and rpm's verify flags when rpm is the ledger.
+type ledgerAnswer struct {
+	kind     string
+	flags    map[string]string
+	verified bool
+}
+
+func (s *Snapshot) answer() ledgerAnswer {
+	ans := ledgerAnswer{kind: s.Ledger.Kind}
+	if ans.kind == "rpm" {
+		ans.flags = s.catalog.RPMFlags()
+		ans.verified = s.catalog.RPMVerified()
+	}
+	return ans
+}
+
+// contentAnswer is the one content verdict the ledger gives a judged file.
+// It is the single source for both the batch pass and the graph's late
+// discoveries, so a file cannot verify one way in the report and the other
+// way in a graph. actual is the file's md5 when the caller has one (the dpkg
+// batch hashes in parallel); rpm verifies by its own flag list and ignores
+// it. An empty actual answers no dpkg verdict: the caller states separately
+// whether the ledger lacked the row or the read failed. ok answers whether
+// the ledger had a verdict at all — without one the assessor falls back to
+// time.
+func contentAnswer(ans ledgerAnswer, lookup ledgerLookup, facts trust.Facts, actual string) (Content, bool) {
+	switch ans.kind {
+	case "dpkg":
+		entry, ok := lookup(facts.Real)
+		if !ok && facts.Path != facts.Real {
+			entry, ok = lookup(facts.Path)
+		}
+		if !ok || actual == "" {
+			return Content{}, false
+		}
+		content := Content{Package: entry.Pkg, Expected: entry.Hash, Actual: actual, Method: methodMD5}
+		if actual == entry.Hash {
+			content.State = Verified
+		} else {
+			content.State = Mismatched
+		}
+		return content, true
+	case "rpm":
+		// A deviation row is direct evidence even when the verify never ran
+		// to its end, and it names directories as well as files; only the
+		// positive verdict needs a completed verify and a regular file.
+		if flag, ok := ans.flags[facts.Real]; ok {
+			return Content{Package: facts.Package, State: Mismatched, Method: methodRPM, Actual: "rpm -Va " + flag}, true
+		}
+		if flag, ok := ans.flags[facts.Path]; ok {
+			return Content{Package: facts.Package, State: Mismatched, Method: methodRPM, Actual: "rpm -Va " + flag}, true
+		}
+		if !ans.verified || facts.Kind != trust.File {
+			return Content{}, false
+		}
+		if facts.PackageKnown && facts.Package != "" {
+			return Content{Package: facts.Package, State: Verified, Method: methodRPM}, true
+		}
+	}
+	return Content{}, false
+}
+
+// attachEvidence answers every judged file through the one content verdict,
+// dates the packages, and records the tamper verdict.
 func (s *Snapshot) attachEvidence(evidence evidenceSet) {
-	s.Verify = joinContent(evidence.actual, evidence.expected)
-	if evidence.kind == "rpm" {
-		overlayRpm(s.Verify, evidence.rpmFlag, evidence.objects)
-		if evidence.rpmVerified {
-			overlayRpmVerified(s.Verify, evidence.objects, evidence.rpmFlag)
+	ans := ledgerAnswer{kind: evidence.kind, flags: evidence.rpmFlag, verified: evidence.rpmVerified}
+	s.Verify = map[string]Content{}
+	for _, facts := range evidence.objects {
+		// The rpm flags branch names directories too; the dpkg branch only
+		// answers files, and its hash pass already filtered the candidates.
+		if facts.Real == "" {
+			continue
+		}
+		hash := evidence.actual[facts.Real]
+		if content, ok := contentAnswer(ans, evidence.lookup, facts, hash); ok {
+			s.Verify[facts.Real] = content
 		}
 	}
 	s.Mounts = evidence.mounts
 	s.conffiles = evidence.conffiles
 	s.ledgerRows = evidence.rows
 	s.tamper = ledgerTamper(s.Boundary, s.PackageTimes, s.ledgerRows)
+	// The unreadable set is the snapshot's one map, so files the graph
+	// discovers later join the same answer the assessor reads.
+	if s.unhashable == nil {
+		s.unhashable = map[string]string{}
+	}
+	for path, reason := range evidence.failed {
+		s.unhashable[path] = reason
+	}
 	verified, mismatched := 0, 0
 	for _, content := range s.Verify {
 		switch content.State {
@@ -357,13 +347,14 @@ func (s *Snapshot) attachEvidence(evidence evidenceSet) {
 			mismatched++
 		}
 	}
-	entries := evidence.entries
-	if evidence.kind == "rpm" {
-		entries = len(s.Verify)
+	packages := evidence.packages
+	entries := len(s.Verify)
+	if evidence.kind == "dpkg" {
+		entries, packages = judgedLedgerRows(evidence.lookup, evidence.objects)
 	}
 	s.Ledger = LedgerSummary{
 		Kind:       evidence.kind,
-		Packages:   evidence.packages,
+		Packages:   packages,
 		Entries:    entries,
 		Verified:   verified,
 		Mismatched: mismatched,
@@ -371,6 +362,31 @@ func (s *Snapshot) attachEvidence(evidence evidenceSet) {
 		Note:       evidence.note,
 	}
 	s.ledgerReady = true
+}
+
+// judgedLedgerRows counts the ledger rows the judged set can compare against
+// and the packages they belong to. It probes the catalog's index directly —
+// the whole-database scan the old prebuilt expected map needed is gone.
+func judgedLedgerRows(lookup ledgerLookup, objects map[string]trust.Facts) (entries, packages int) {
+	keys := map[string]bool{}
+	for _, facts := range objects {
+		if facts.Kind != trust.File {
+			continue
+		}
+		for _, path := range []string{facts.Path, facts.Real} {
+			for _, key := range usrKeys(path) {
+				keys[key] = true
+			}
+		}
+	}
+	owners := map[string]bool{}
+	for key := range keys {
+		if entry, ok := lookup(key); ok {
+			owners[entry.Pkg] = true
+			entries++
+		}
+	}
+	return entries, len(owners)
 }
 
 // ensureContent fills the ledger's answer for paths discovered after the
@@ -384,6 +400,7 @@ func (s *Snapshot) ensureContent(paths []string) {
 	if s.Verify == nil {
 		s.Verify = map[string]Content{}
 	}
+	ans := s.answer()
 	for _, path := range paths {
 		facts := s.Facts(path)
 		if facts.Kind != trust.File || facts.Real == "" {
@@ -392,59 +409,41 @@ func (s *Snapshot) ensureContent(paths []string) {
 		if _, seen := s.Verify[facts.Real]; seen {
 			continue
 		}
-		if content, ok := s.contentFor(facts); ok {
+		// A late discovery costs one lookup and one hash; the rpm ledger
+		// answers from its flags without a read.
+		hash := ""
+		if ans.kind == "dpkg" {
+			_, known := s.catalog.Hash(facts.Real)
+			if !known && facts.Path != facts.Real {
+				_, known = s.catalog.Hash(facts.Path)
+			}
+			if !known {
+				continue
+			}
+			var reason string
+			hash, reason = hashFile(facts.Real)
+			if hash == "" {
+				s.noteUnhashable(facts.Real, reason)
+				continue
+			}
+		}
+		if content, ok := contentAnswer(ans, s.catalog.Hash, facts, hash); ok {
 			s.Verify[facts.Real] = content
 		}
 	}
 }
 
-// contentFor asks the catalog for one judged file's content answer.
-func (s *Snapshot) contentFor(facts trust.Facts) (Content, bool) {
-	switch s.Ledger.Kind {
-	case "dpkg":
-		entry, ok := s.catalog.Hash(facts.Real)
-		if !ok && facts.Path != facts.Real {
-			entry, ok = s.catalog.Hash(facts.Path)
-		}
-		if !ok {
-			return Content{}, false
-		}
-		hash, ok := hashFile(facts.Real)
-		if !ok {
-			return Content{}, false
-		}
-		state := Unverified
-		if hash == entry.Hash {
-			state = Verified
-		} else {
-			state = Mismatched
-		}
-		return Content{Package: entry.Pkg, Expected: entry.Hash, Actual: hash, State: state, Method: methodMD5}, true
-	case "rpm":
-		if !s.catalog.RPMVerified() {
-			return Content{}, false
-		}
-		flags := s.catalog.RPMFlags()
-		if flag, ok := flags[facts.Real]; ok {
-			return Content{Package: facts.Package, State: Mismatched, Method: methodRPM, Actual: "rpm -Va " + flag}, true
-		}
-		if flag, ok := flags[facts.Path]; ok {
-			return Content{Package: facts.Package, State: Mismatched, Method: methodRPM, Actual: "rpm -Va " + flag}, true
-		}
-		if facts.PackageKnown && facts.Package != "" {
-			return Content{Package: facts.Package, State: Verified, Method: methodRPM}, true
-		}
+// noteUnhashable records one judged file whose content comparison could not
+// run, so the assessor states the failure instead of blaming a missing
+// ledger row.
+func (s *Snapshot) noteUnhashable(path, reason string) {
+	if path == "" || reason == "" {
+		return
 	}
-	return Content{}, false
-}
-
-// ledgerPackages counts the packages a dpkg hash table covers.
-func ledgerPackages(expected map[string]ledgerEntry) int {
-	seen := map[string]bool{}
-	for _, entry := range expected {
-		seen[entry.pkg] = true
+	if s.unhashable == nil {
+		s.unhashable = map[string]string{}
 	}
-	return len(seen)
+	s.unhashable[path] = reason
 }
 
 // tamperedPackages names the packages whose ledger files moved, one name per
@@ -499,44 +498,14 @@ func ledgerTamper(boundary Boundary, times map[string]time.Time, rows []ledgerFi
 	return out
 }
 
-// dpkgExpected keeps the hash rows for paths the snapshot judged, under every
-// spelling the ledger may use. No file facts means no expected rows.
-func dpkgExpected(hashes map[string]prov.HashEntry, objects map[string]trust.Facts) map[string]ledgerEntry {
-	keys := map[string]bool{}
-	for _, facts := range objects {
-		if facts.Kind != trust.File {
-			continue
-		}
-		for _, path := range []string{facts.Path, facts.Real} {
-			if path == "" {
-				continue
-			}
-			for _, key := range usrKeys(path) {
-				keys[key] = true
-			}
-		}
-	}
-	expected := map[string]ledgerEntry{}
-	if len(keys) == 0 {
-		return expected
-	}
-	for key, entry := range hashes {
-		if !keys[key] {
-			continue
-		}
-		expected[key] = ledgerEntry{pkg: entry.Pkg, hash: entry.Hash}
-	}
-	return expected
-}
-
-// usrKeys is a path's ledger spellings: dpkg hashes files relative to / and
-// records the spelling it installed, which on a usrmerge host may be the
-// /usr-less one.
+// usrKeys answers the ledger's own spellings for a path: the keys are
+// relative, without the leading slash, and both sides of the usrmerge pair
+// are tried — dpkg records the spelling it installed, which on a usrmerge
+// host may be the /usr-less one.
 func usrKeys(path string) []string {
-	trimmed := strings.TrimPrefix(path, "/")
-	keys := []string{trimmed}
-	if rest, ok := strings.CutPrefix(trimmed, "usr/"); ok {
-		keys = append(keys, rest)
+	keys := make([]string, 0, 2)
+	for _, variant := range trust.UsrVariants(path) {
+		keys = append(keys, strings.TrimPrefix(variant, "/"))
 	}
 	return keys
 }

@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"os"
 	"syscall"
 	"time"
@@ -57,7 +56,7 @@ type connectorSource struct {
 	pending []netlink.Message
 }
 
-func newConnector(opt Options) (Source, error) {
+func newConnector(ctx context.Context, opt Options) (Source, error) {
 	fs, err := procfs.NewDefaultFS()
 	if err != nil {
 		return nil, ErrUnsupported
@@ -87,7 +86,7 @@ func newConnector(opt Options) (Source, error) {
 	}
 	// The baseline is what an exit event for a process that predates the
 	// subscription still has to print.
-	if prev, err := scanProcs(context.Background(), fs, nil, source.self); err == nil {
+	if prev, err := scanProcs(ctx, fs, nil, source.self); err == nil {
 		for _, state := range prev {
 			source.states[state.Key.PID] = state
 		}
@@ -101,10 +100,18 @@ func (s *connectorSource) subscribe() error {
 	binary.NativeEndian.PutUint32(data[4:], cnValProc)
 	binary.NativeEndian.PutUint16(data[16:], 4)
 	binary.NativeEndian.PutUint32(data[20:], procCnMcastListen)
-	if _, err := s.conn.Send(netlink.Message{
+	// The subscribe write is one small send; a kernel that never drains it,
+	// like one that never answers the ack below, must not park the open past
+	// the same bound.
+	if err := s.conn.SetWriteDeadline(time.Now().Add(connectorAckLimit)); err != nil {
+		return err
+	}
+	_, err := s.conn.Send(netlink.Message{
 		Header: netlink.Header{Type: netlink.Done, Flags: netlink.Request | netlink.Acknowledge},
 		Data:   data,
-	}); err != nil {
+	})
+	_ = s.conn.SetWriteDeadline(time.Time{})
+	if err != nil {
 		return err
 	}
 	// The kernel answers the subscription with an ack. A short read deadline
@@ -138,7 +145,7 @@ func (s *connectorSource) subscribe() error {
 
 func (s *connectorSource) Name() string { return "connector" }
 
-func (s *connectorSource) Caps() Caps { return Caps{Process: true} }
+func (s *connectorSource) Caps() Caps { return Caps{Process: true, Push: true} }
 
 func (s *connectorSource) Run(ctx context.Context, out chan<- Event) error {
 	defer s.conn.Close()
@@ -160,7 +167,7 @@ func (s *connectorSource) Run(ctx context.Context, out chan<- Event) error {
 			return err
 		}
 		for _, event := range events {
-			if !send(ctx, out, event) {
+			if !deliver(ctx, out, event) {
 				return nil
 			}
 		}
@@ -180,7 +187,7 @@ func (s *connectorSource) Run(ctx context.Context, out chan<- Event) error {
 				return err
 			}
 			for _, event := range events {
-				if !send(ctx, out, event) {
+				if !deliver(ctx, out, event) {
 					return nil
 				}
 			}
@@ -317,10 +324,4 @@ func at32(payload []byte, offset int) int {
 // timeout reports a netlink read that ended on the read deadline.
 func timeout(err error) bool {
 	return errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, syscall.EAGAIN)
-}
-
-// connectorUnavailable formats the refusal so an explicit --source connector
-// says what the kernel said.
-func connectorUnavailable(err error) error {
-	return fmt.Errorf("proc connector unavailable: %w", err)
 }

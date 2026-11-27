@@ -57,7 +57,7 @@ func TestScopeAcceptsEveryUnitKind(t *testing.T) {
 
 func TestGraphRejectsADomainWithoutAGraphView(t *testing.T) {
 	for _, word := range []string{"persistence", "processes", "services"} {
-		err := runGraph(context.Background(), io.Discard, word, auditFlags{})
+		err := runGraph(context.Background(), nil, io.Discard, word, auditFlags{})
 		if err == nil || !strings.Contains(err.Error(), "no domain view") {
 			t.Errorf("graph %q = %v, want a no-domain-view error", word, err)
 		}
@@ -65,21 +65,48 @@ func TestGraphRejectsADomainWithoutAGraphView(t *testing.T) {
 }
 
 func TestSinceBootRetargetsTheBoundary(t *testing.T) {
-	if err := validateSince("boot"); err != nil {
+	if _, err := parseSince("boot"); err != nil {
 		t.Fatalf("boot is not accepted: %v", err)
 	}
-	if err := validateSince("nonsense"); err == nil {
+	if _, err := parseSince("nonsense"); err == nil {
 		t.Fatal("a mistyped boundary was accepted")
 	}
 	boot := time.Unix(1234, 0)
 	snapshot := &audit.Snapshot{Boot: boot}
-	if err := applySince(snapshot, "boot"); err != nil {
+	if err := applySince(snapshot, sinceSpec{kind: sinceBoot}); err != nil {
 		t.Fatal(err)
 	}
 	if !snapshot.Boundary.Time.Equal(boot) || snapshot.Boundary.Source != "boot" {
 		t.Errorf("boot boundary = %+v", snapshot.Boundary)
 	}
-	if err := applySince(&audit.Snapshot{}, "boot"); err == nil {
+	if err := applySince(&audit.Snapshot{}, sinceSpec{kind: sinceBoot}); err == nil {
 		t.Fatal("an unreadable boot time was accepted")
+	}
+}
+
+func TestSinceDurationAnchorsAtParseTime(t *testing.T) {
+	before := time.Now()
+	spec, err := parseSince("24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.kind != sinceOperator {
+		t.Fatalf("kind = %q, want operator", spec.kind)
+	}
+	// The parse-time anchor is now; the boundary is a day before it.
+	if spec.at.Before(before.Add(-24*time.Hour).Add(-time.Second)) ||
+		spec.at.After(time.Now().Add(-24*time.Hour).Add(time.Second)) {
+		t.Fatalf("a duration anchored at %v, not at parse time", spec.at)
+	}
+	stamp := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	spec, err = parseSince(stamp.Format(time.RFC3339))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.kind != sinceOperator || !spec.at.Equal(stamp) {
+		t.Fatalf("an RFC3339 stamp parsed as %+v", spec)
+	}
+	if _, err := parseSince("provision"); err != nil {
+		t.Fatal(err)
 	}
 }

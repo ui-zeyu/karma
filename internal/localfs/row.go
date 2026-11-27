@@ -1,10 +1,10 @@
-// The ls -l row: one directory entry rendered in the shape the collection
-// prints (`script.LSBodyPrintf`), the permission string find's %M spells, the
+// The ls -l row: one directory entry rendered in the nine-column shape
+// SplitLsBody reads (permissions links owner group size date clock path),
+// the permission string find's %M spells, the
 // epoch fields find's %T@/%C@ spell, and the account-name lookup behind %u/%g.
-//
-// The rows are the contract with the report: the ls-l pseudo-lexer reads them,
-// cluster's listing normalizer lines them up, and the styles/attributes here
-// come from lstat in process rather than a hooked libc.
+// The columns are the contract with the row's one parser, SplitLsBody, and
+// with the cli colorizer that reads it back; the account names come from
+// lstat in process rather than a hooked libc.
 
 package localfs
 
@@ -124,10 +124,10 @@ func (n *NameCache) Group(gid int) string {
 	return name
 }
 
-// LsBody renders one entry in script.LSBodyPrintf shape — the row the ls-l
-// pseudo-lexer speaks: permissions links owner group size month day clock
+// LsBody renders one entry in the nine-column ls -l shape — the row
+// SplitLsBody speaks: permissions links owner group size month day clock
 // path, a symlink row appending " -> target". find's %l prints the target
-// alone, so the reading side (script.linkPath) adds the arrow to a collected
+// alone, so the reading side (linkPath) adds the arrow to a collected
 // row; spelling it here keeps the local rows in the same shape.
 func LsBody(info os.FileInfo, path string, names *NameCache) string {
 	st := StatOf(info)

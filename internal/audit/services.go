@@ -28,28 +28,41 @@ func toolEnv() []string {
 	}
 }
 
-// collectServices reads systemd's own service inventory. It is the raw list
-// behind the activation edges, and it names a running service whose unit file
-// the filesystem collector did not find.
+// systemctl runs one systemctl query on a bounded budget. Empty output with
+// an error is an absent answer; partial output with an error still names what
+// systemd said, and the error becomes a stated degradation — the two callers
+// no longer disagree about that policy.
+func systemctl(ctx context.Context, budget time.Duration, coverage []Coverage, args ...string) ([]byte, []Coverage) {
+	binary := systemctlBinary()
+	if binary == "" {
+		return nil, append(coverage, coverageAbsent("services",
+			"systemd is running but systemctl is not in the system directories; the service inventory is missing"))
+	}
+	bound, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	cmd := exec.CommandContext(bound, binary, args...)
+	cmd.Env = toolEnv()
+	out, err := cmd.Output()
+	if err != nil && len(out) == 0 {
+		return nil, append(coverage, coverageAbsent("services", "systemctl "+args[0]+" did not answer: "+err.Error()))
+	}
+	if err != nil {
+		coverage = append(coverage, coverageGap("services", "systemctl "+args[0]+" answered partly: "+err.Error()))
+	}
+	return out, coverage
+}
+
 // collectServiceScoped answers one unit's state with `systemctl show`. A
 // graph of one unit does not need the host's whole unit inventory, and
 // listing every unit can take seconds on a busy host.
-func collectServiceScoped(ctx context.Context, name string) ([]Service, []string) {
+func collectServiceScoped(ctx context.Context, name string) ([]Service, []Coverage) {
 	if _, err := os.Stat("/run/systemd/system"); err != nil {
 		return nil, nil
 	}
-	binary := systemctlBinary()
-	if binary == "" {
-		return nil, []string{"systemd is running but systemctl is not in the system directories; the service state is missing"}
-	}
-	bound, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(bound, binary, "show", name, "--no-pager",
+	out, coverage := systemctl(ctx, 3*time.Second, nil, "show", name, "--no-pager",
 		"--property=LoadState,ActiveState,SubState,Description")
-	cmd.Env = toolEnv()
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, []string{"systemctl show " + name + " did not answer: " + err.Error()}
+	if out == nil {
+		return nil, coverage
 	}
 	service := Service{Unit: name}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -71,22 +84,17 @@ func collectServiceScoped(ctx context.Context, name string) ([]Service, []string
 	return []Service{service}, nil
 }
 
-func collectServices(ctx context.Context) ([]Service, []string) {
+// collectServices reads systemd's own service inventory. It is the raw list
+// behind the activation edges, and it names a running service whose unit file
+// the filesystem collector did not find.
+func collectServices(ctx context.Context) ([]Service, []Coverage) {
 	if _, err := os.Stat("/run/systemd/system"); err != nil {
 		return nil, nil
 	}
-	binary := systemctlBinary()
-	if binary == "" {
-		return nil, []string{"systemd is running but systemctl is not in the system directories; the service inventory is missing"}
-	}
-	bound, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(bound, binary,
+	out, coverage := systemctl(ctx, 8*time.Second, nil,
 		"list-units", "--type=service", "--all", "--no-pager", "--no-legend")
-	cmd.Env = toolEnv()
-	out, err := cmd.Output()
-	if len(out) == 0 && err != nil {
-		return nil, []string{"systemctl list-units did not answer: " + err.Error()}
+	if out == nil {
+		return nil, coverage
 	}
 	var services []Service
 	for _, line := range strings.Split(string(out), "\n") {

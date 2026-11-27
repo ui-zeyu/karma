@@ -344,3 +344,54 @@ func TestInterruptedLoadAnswersUnknownOwnership(t *testing.T) {
 		t.Fatalf("gaps = %v, want the truncation line", catalog.Gaps())
 	}
 }
+
+// TestTruncatedRowReadAnswersUnknownOwnership pins the read-error contract: a
+// table that dies mid-file (an oversized row, an I/O error) is a truncated
+// table — the gap states it and ownership answers unknown, never unowned.
+func TestTruncatedRowReadAnswersUnknownOwnership(t *testing.T) {
+	dir := t.TempDir()
+	long := "/" + strings.Repeat("x", 1<<20+16) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "a.list"), []byte("/usr/bin/a\n"+long), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog := &Catalog{kind: "dpkg"}
+	catalog.loadDpkgOwners(dir)
+	if ownership := catalog.Ownership("/usr/bin/zzz"); ownership.Known {
+		t.Fatalf("a table that died mid-file answered %+v, want unknown", ownership)
+	}
+	gaps := strings.Join(catalog.Gaps(), "\n")
+	if !strings.Contains(gaps, "package file lists unreadable") || !strings.Contains(gaps, "stopped at a read error") {
+		t.Fatalf("gaps = %q", gaps)
+	}
+}
+
+// A conffile table that cannot be read states its gap and cuts the catalog
+// with the rest, instead of answering an empty set as if it were complete.
+func TestConffileReadErrorStatesTheGap(t *testing.T) {
+	catalog := &Catalog{kind: "dpkg"}
+	catalog.loadDpkgConffiles(filepath.Join(t.TempDir(), "absent"))
+	if catalog.conffileGap == "" || !catalog.truncated {
+		t.Fatalf("gap = %q truncated = %t, want a stated gap and the cut", catalog.conffileGap, catalog.truncated)
+	}
+	if gaps := catalog.Gaps(); !strings.Contains(strings.Join(gaps, "\n"), "package conffile records unreadable") {
+		t.Fatalf("gaps = %v", gaps)
+	}
+}
+
+func TestReadPackageLogStatesReadErrors(t *testing.T) {
+	if err := readPackageLog(filepath.Join(t.TempDir(), "absent"), map[string]time.Time{}, func() bool { return false }); err == nil {
+		t.Fatal("a missing transaction log read as success")
+	}
+}
+
+func TestRPMTableFailureAnswersUnknownOwnership(t *testing.T) {
+	writeRPMFake(t, "exit 1")
+	catalog := &Catalog{kind: "rpm"}
+	catalog.loadRPMOwners()
+	if ownership := catalog.Ownership("/usr/bin/zzz"); ownership.Known {
+		t.Fatalf("a failed rpm -qa answered %+v, want unknown", ownership)
+	}
+	if !strings.Contains(strings.Join(catalog.Gaps(), "\n"), "rpm file lists unreadable") {
+		t.Fatalf("gaps = %v", catalog.Gaps())
+	}
+}

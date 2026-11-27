@@ -8,8 +8,6 @@ package audit
 // surfaces; mounts follow a path scope through their mount point.
 
 import (
-	"strings"
-
 	"karma/internal/startup"
 	"karma/internal/trust"
 )
@@ -20,8 +18,6 @@ type View struct {
 	Snapshot *Snapshot
 	Filter   Filter
 
-	assessor *assessor
-
 	Activations []startup.Edge
 	Processes   []Process
 	Services    []Service
@@ -31,13 +27,27 @@ type View struct {
 	Authority   []string
 	Kernel      *KernelState
 	Trail       []TrailFile
+	// Unowned, PackageFiles and WebFiles are the three inventories whose
+	// rows are judged, not printed: the static inventory, the package-file
+	// sweep and the web-root sweep. The projection and the judges read the
+	// same predicate family (filter.go), so a row and its finding cannot
+	// answer to two different filters.
+	Unowned      []UnownedFile
+	PackageFiles []PackageFile
+	WebFiles     []WebFile
 }
 
-// NewView applies the run's scope to the snapshot once. The judges keep their
-// own reading of the snapshot — a finding's scope is judgment policy — while
-// every printed inventory comes from here.
+// Assessor reads origins through the snapshot's one assessor, so the panel
+// rows and the judgment share the same verdicts.
+func (v *View) Assessor() *assessor { return v.Snapshot.Assessor() }
+
+// NewView applies the run's scope to the snapshot once. The projection gates
+// its rows by the judged domains — these inventories are what the report
+// prints — while a judge that consumes another domain's rows as context
+// (network over processes, trail over processes) reads the snapshot through
+// the same predicates in filter.go.
 func NewView(snapshot *Snapshot, filter Filter) *View {
-	view := &View{Snapshot: snapshot, Filter: filter, assessor: newAssessor(snapshot)}
+	view := &View{Snapshot: snapshot, Filter: filter}
 	view.Activations = scopeActivations(snapshot.Activations, filter)
 	view.Processes = scopeProcesses(snapshot.Processes, filter)
 	view.Services = scopeServices(snapshot.Services, filter)
@@ -51,6 +61,9 @@ func NewView(snapshot *Snapshot, filter Filter) *View {
 	view.Authority = scopeAuthority(snapshot.Authority, filter)
 	view.Mounts = scopeMounts(snapshot.Mounts, filter)
 	view.Trail = scopeTrail(snapshot.Trail, view.Processes, filter)
+	view.Unowned = scopeUnowned(snapshot.Unowned, filter)
+	view.PackageFiles = scopePackageFiles(snapshot.Packages.Anomalies, filter)
+	view.WebFiles = scopeWebFiles(snapshot.Web.Files, filter)
 	if snapshot.Kernel.Collected && filter.judges(DomainKernel) {
 		view.Kernel = scopeKernel(snapshot.Kernel, filter)
 	}
@@ -70,16 +83,9 @@ func scopeActivations(edges []startup.Edge, filter Filter) []startup.Edge {
 	}
 	var out []startup.Edge
 	for _, edge := range edges {
-		if !surfaceInScope(edge.Surface, filter) || !unitInScope(edge.Trigger, filter) {
-			continue
+		if activationInScope(edge, filter) {
+			out = append(out, edge)
 		}
-		if filter.pathExcluded(edge.Trigger) || filter.pathExcluded(edge.Target) {
-			continue
-		}
-		if len(filter.Paths) > 0 && !pathInScope(edge.Trigger, filter) && !pathInScope(edge.Target, filter) {
-			continue
-		}
-		out = append(out, edge)
 	}
 	return out
 }
@@ -93,19 +99,9 @@ func scopeProcesses(processes []Process, filter Filter) []Process {
 	}
 	var out []Process
 	for _, process := range processes {
-		if len(filter.PIDs) > 0 {
-			if filter.PIDs[process.PID] && !filter.ExcludePIDs[process.PID] {
-				out = append(out, process)
-			}
-			continue
+		if processInScope(process, filter) {
+			out = append(out, process)
 		}
-		if filter.ExcludePIDs[process.PID] || !unitAllowed(process.Unit, filter) {
-			continue
-		}
-		if len(filter.Paths) > 0 && !pathInScope(process.Exe, filter) && !pathInScope(process.Script, filter) && !pathInScope(process.Cwd, filter) {
-			continue
-		}
-		out = append(out, process)
 	}
 	return out
 }
@@ -174,21 +170,18 @@ func scopeMounts(mounts []Mount, filter Filter) []Mount {
 	}
 	var out []Mount
 	for _, mount := range mounts {
-		if pathInScope(mount.Path, filter) || underAnyPath(mount.Path, filter.Paths) {
+		backed := false
+		for _, selected := range filter.Paths {
+			if trust.Under(selected, mount.Path) {
+				backed = true
+				break
+			}
+		}
+		if pathInScope(mount.Path, filter) || backed {
 			out = append(out, mount)
 		}
 	}
 	return out
-}
-
-// underAnyPath reports whether one selected path sits under the mount point.
-func underAnyPath(mount string, paths []string) bool {
-	for _, path := range paths {
-		if path == mount || mount == "/" || strings.HasPrefix(path, mount+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // scopeAuthority keeps the authority objects the scope answers: the
@@ -290,4 +283,50 @@ func scopeKernel(state KernelState, filter Filter) *KernelState {
 		}
 	}
 	return &copied
+}
+
+// scopeUnowned keeps the static inventory's executables the scope answers.
+// A pid or a unit names a running object, and the inventory judges files on
+// disk, so those scopes leave it out — the rule the files judge applied.
+func scopeUnowned(files []UnownedFile, filter Filter) []UnownedFile {
+	if !filter.judges(DomainFiles) || filter.hasPIDScope() || filter.hasUnitScope() {
+		return nil
+	}
+	var out []UnownedFile
+	for _, file := range files {
+		if pathInScope(file.Path, filter) {
+			out = append(out, file)
+		}
+	}
+	return out
+}
+
+// scopePackageFiles keeps the package sweep's anomalies under the path scope.
+// The boundary filter stays at the judge: it compares times, not scope.
+func scopePackageFiles(anomalies []PackageFile, filter Filter) []PackageFile {
+	if !filter.judges(DomainPackages) {
+		return nil
+	}
+	var out []PackageFile
+	for _, anomaly := range anomalies {
+		if pathInScope(anomaly.Path, filter) {
+			out = append(out, anomaly)
+		}
+	}
+	return out
+}
+
+// scopeWebFiles keeps the web sweep's scripts under the path scope. The
+// origin filter stays at the judge.
+func scopeWebFiles(files []WebFile, filter Filter) []WebFile {
+	if !filter.judges(DomainWeb) {
+		return nil
+	}
+	var out []WebFile
+	for _, file := range files {
+		if pathInScope(file.Path, filter) {
+			out = append(out, file)
+		}
+	}
+	return out
 }

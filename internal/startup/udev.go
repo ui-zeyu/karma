@@ -22,7 +22,7 @@ func udevEdges(file File) []rawEdge {
 			if value == "" {
 				continue
 			}
-			edges = append(edges, shellEdges(value, rawEdge{
+			edges = append(edges, shellSnippetEdges(value, rawEdge{
 				surface:   SurfaceUdev,
 				phase:     Device,
 				subject:   Subject{Class: AccountRoot},

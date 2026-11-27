@@ -4,7 +4,6 @@
 package audit
 
 import (
-	"context"
 	"time"
 
 	"karma/internal/prov"
@@ -230,9 +229,14 @@ type Snapshot struct {
 	tamper      []ledgerFile
 	ledgerRows  []ledgerFile
 	catalog     *prov.Catalog
-	Unreadable  []string
-	Coverage    []string
-	Source      string
+	// unhashable names the judged files whose content comparison could not
+	// run, with the reason: the ledger records a hash for them, the read
+	// failed. The assessor quotes it, so the failure never reads as a
+	// missing ledger row.
+	unhashable map[string]string
+	Unreadable []string
+	Coverage   []Coverage
+	Source     string
 	// Unowned is the static inventory's dormant executables: files in the
 	// program directories no package's file list records.
 	Unowned []UnownedFile
@@ -258,6 +262,21 @@ type Snapshot struct {
 	// plan is the selection this snapshot was collected under. The module
 	// collectors read its scoping fields.
 	plan Plan
+	// assessor is the snapshot's one origin reader, built on first use.
+	assessor *assessor
+}
+
+// Assessor answers the snapshot's one origin reader. Judges, views and
+// renderers share the instance, so its coverage accumulators hold one run's
+// facts and repeated reads are memoized rather than recomputed.
+func (s *Snapshot) Assessor() *assessor {
+	if s == nil {
+		return nil
+	}
+	if s.assessor == nil {
+		s.assessor = newAssessor(s)
+	}
+	return s.assessor
 }
 
 // Facts returns the collected facts for path, or zero facts.
@@ -306,10 +325,15 @@ type Quote struct {
 	Text string `json:"text"`
 }
 
+// Class is the finding's kind: one string per judgment shape, routed to its
+// bounded domain through classDomain. A defined type keeps the routing table
+// and the report JSON from accepting arbitrary words.
+type Class string
+
 // Finding is one judged relation. Path is the object the operator should look
 // at; Detail names what it activates or what activates it.
 type Finding struct {
-	Class string
+	Class Class
 	// Domain is the bounded domain the class belongs to; a graph command
 	// selects findings by it, so a class never needs a second vocabulary.
 	Domain   Domain
@@ -367,7 +391,7 @@ type Report struct {
 	Host        Host
 	Source      string
 	Findings    []Finding
-	Coverage    []string
+	Coverage    []Coverage
 	Activated   int
 	Processes   int
 	Services    []Service
@@ -402,29 +426,23 @@ func (s *Snapshot) classify(path string) trust.Facts {
 }
 
 // Filter is the run's scope: the domains it judges, the startup surfaces it
-// reads, and the path, pid and unit relations it selects or excludes. A zero
-// domain set means every domain, which keeps a hand-built snapshot in a test
-// on the same path as a bare run.
-type Filter struct {
-	Domains      Domain
-	Surfaces     *startup.Scope // nil means every startup surface
-	Paths        []string
-	ExcludePaths []string
-	PIDs         map[int]bool // positive pids only
-	ExcludePIDs  map[int]bool
-	Units        map[string]bool // positive units only
-	ExcludeUnits map[string]bool
-}
+// reads, and the path, pid and unit relations it selects or excludes. The
+// type and its predicate family live in filter.go — the one home the view's
+// projections and the judges' row filters share.
+
+// OffDomains names the bounded domains the filter leaves unjudged, in
+// registry order; a bare run answers none.
+func (f Filter) OffDomains() []string { return f.domains().off() }
 
 // judges reports whether the filter selects a domain for judgment.
 func (f Filter) judges(domain Domain) bool {
-	return f.Domains == 0 || f.Domains&domain != 0
+	return f.domains()&domain != 0
 }
 
 // narrowed reports whether the filter selects less than the whole bounded
 // host: a scope word, a path, pid, unit or a domain left unjudged.
 func (f Filter) narrowed() bool {
-	if f.Domains != 0 && f.Domains != AllDomains {
+	if f.domains() != AllDomains {
 		return true
 	}
 	if f.Surfaces != nil && *f.Surfaces != startup.AllScope() {
@@ -440,11 +458,6 @@ func (f Filter) narrowed() bool {
 // hashing). CollectLocal calls it from the collecting goroutine before each
 // stage; a run without a reporter passes nil.
 type Progress func(stage string)
-
-// CollectLocal reads the domains the plan selected in process.
-func CollectLocal(ctx context.Context, plan Plan, progress Progress) (*Snapshot, error) {
-	return collectLocal(ctx, plan, progress)
-}
 
 // SetBoundary replaces the artifact edge after collection (--since) and
 // re-dates the ledger rows against it, so the tamper set follows the edge the

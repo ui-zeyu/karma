@@ -29,7 +29,7 @@ func TestEveryFindingClassIsRoutedToADomain(t *testing.T) {
 			token = strings.Trim(token, `"`)
 			for _, prefix := range classPrefixes {
 				if strings.HasPrefix(token, prefix) {
-					if classDomain[token] == 0 {
+					if classDomain[Class(token)] == 0 {
 						missing = append(missing, path+": "+token)
 					}
 					break

@@ -8,7 +8,7 @@ package audit
 import (
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -70,7 +70,8 @@ func readClockState() ClockState {
 // and object ctimes the wall clock has not reached. The first two make every
 // time comparison suspect; the third names the objects that carry the
 // inconsistency.
-func judgeClock(snapshot *Snapshot, filter Filter, add func(Finding)) {
+func judgeClock(j *judgePass) {
+	snapshot, filter, add := j.snapshot, j.filter, j.add
 	if !filter.globalScope() {
 		return
 	}
@@ -113,7 +114,7 @@ func judgeClock(snapshot *Snapshot, filter Filter, add func(Finding)) {
 			future = append(future, path)
 		}
 	}
-	sort.Strings(future)
+	slices.Sort(future)
 	const shown = 20
 	for index, path := range future {
 		if index == shown {

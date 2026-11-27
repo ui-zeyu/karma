@@ -16,22 +16,33 @@ const (
 	evilHash = "0123456789abcdef0123456789abcdef"
 )
 
-func TestDPKGExpectedIsEmptyWithoutJudgedFiles(t *testing.T) {
-	hashes := map[string]prov.HashEntry{
+// mapLookup adapts a ledger-row map to the probe the content verdict takes.
+// The keys are the ledger's own relative spellings; the lookup answers
+// absolute and relative asks alike.
+func mapLookup(rows map[string]prov.HashEntry) ledgerLookup {
+	return func(path string) (prov.HashEntry, bool) {
+		entry, ok := rows[strings.TrimPrefix(path, "/")]
+		return entry, ok
+	}
+}
+
+func TestJudgedLedgerRowsFollowTheJudgedSet(t *testing.T) {
+	rows := map[string]prov.HashEntry{
 		"usr/bin/bash": {Pkg: "bash", Hash: testHash},
 		"etc/passwd":   {Pkg: "passwd", Hash: testHash},
 	}
-	expected := dpkgExpected(hashes, map[string]trust.Facts{
+	lookup := mapLookup(rows)
+	entries, packages := judgedLedgerRows(lookup, map[string]trust.Facts{
 		"/etc": {Path: "/etc", Real: "/etc", Kind: trust.Dir},
 	})
-	if len(expected) != 0 {
-		t.Fatalf("expected rows = %+v, want an empty ledger", expected)
+	if entries != 0 || packages != 0 {
+		t.Fatalf("rows = %d/%d, want an empty ledger", entries, packages)
 	}
-	expected = dpkgExpected(hashes, map[string]trust.Facts{
+	entries, packages = judgedLedgerRows(lookup, map[string]trust.Facts{
 		"/bin/bash": {Path: "/bin/bash", Real: "/usr/bin/bash", Kind: trust.File},
 	})
-	if len(expected) != 1 || expected["usr/bin/bash"].pkg != "bash" {
-		t.Errorf("expected rows = %+v, want the judged bash file", expected)
+	if entries != 1 || packages != 1 {
+		t.Errorf("rows = %d/%d, want the judged bash file", entries, packages)
 	}
 }
 
@@ -42,24 +53,27 @@ func pkgFacts(path string, ctime int64, pkg string) trust.Facts {
 	})
 }
 
-func TestJoinContentSurvivesTheUsrmerge(t *testing.T) {
-	expected := map[string]ledgerEntry{
-		"usr/bin/ls": {pkg: "coreutils", hash: testHash},
-		"bin/ls":     {pkg: "oldpkg", hash: testHash},
+func TestContentAnswerSurvivesTheUsrmerge(t *testing.T) {
+	lookup := mapLookup(map[string]prov.HashEntry{
+		"usr/bin/ls": {Pkg: "coreutils", Hash: testHash},
+		"bin/ls":     {Pkg: "oldpkg", Hash: testHash},
+	})
+	ans := ledgerAnswer{kind: "dpkg"}
+	verify := func(path, hash string) Content {
+		content, ok := contentAnswer(ans, lookup, pkgFacts(path, 900, ""), hash)
+		if !ok {
+			t.Fatalf("%s answered no content", path)
+		}
+		return content
 	}
-	verify := joinContent(map[string]string{
-		"/usr/bin/ls": testHash,
-		"/bin/ls":     evilHash,
-	}, expected)
-	if got := verify["/usr/bin/ls"]; got.State != Verified || got.Package != "coreutils" {
+	if got := verify("/usr/bin/ls", testHash); got.State != Verified || got.Package != "coreutils" {
 		t.Errorf("usr spelling = %+v", got)
 	}
-	if got := verify["/bin/ls"]; got.State != Mismatched || got.Package != "oldpkg" {
+	if got := verify("/bin/ls", evilHash); got.State != Mismatched || got.Package != "oldpkg" {
 		t.Errorf("pre-merge spelling = %+v", got)
 	}
-	verify = joinContent(map[string]string{"/opt/tool": testHash}, expected)
-	if got := verify["/opt/tool"]; got.State != Unverified {
-		t.Errorf("unknown file = %+v", got)
+	if _, ok := contentAnswer(ans, lookup, pkgFacts("/opt/tool", 900, ""), testHash); ok {
+		t.Errorf("a file the ledger never names answered content; the assessor should fall back to time")
 	}
 }
 
@@ -72,34 +86,38 @@ func TestHashFilesAndJoinContent(t *testing.T) {
 	if err := os.WriteFile(binary, []byte("ELF"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	hash, ok := hashFile(binary)
-	if !ok || len(hash) != 32 {
-		t.Fatalf("hashFile = %q %t", hash, ok)
+	hash, reason := hashFile(binary)
+	if reason != "" || len(hash) != 32 {
+		t.Fatalf("hashFile = %q (%s)", hash, reason)
 	}
 	stripped := strings.TrimPrefix(binary, "/")
-	expected := map[string]ledgerEntry{
-		stripped: {pkg: "coreutils", hash: hash},
-	}
-	actual := hashFiles(t.Context(), map[string]trust.Facts{
+	lookup := mapLookup(map[string]prov.HashEntry{stripped: {Pkg: "coreutils", Hash: hash}})
+	actual, failed := hashFiles(t.Context(), map[string]trust.Facts{
 		binary: pkgFacts(binary, 900, "coreutils"),
-	}, expected)
-	if actual[binary] != hash {
-		t.Errorf("hashFiles = %v", actual)
+	}, lookup)
+	if actual[binary] != hash || len(failed) != 0 {
+		t.Errorf("hashFiles = %v failed=%v", actual, failed)
 	}
-	verify := joinContent(actual, expected)
-	if content := verify[binary]; content.State != Verified || content.Package != "coreutils" {
-		t.Errorf("content = %+v, want verified against coreutils", content)
+	content, ok := contentAnswer(ledgerAnswer{kind: "dpkg"}, lookup,
+		pkgFacts(binary, 900, "coreutils"), actual[binary])
+	if !ok || content.State != Verified || content.Package != "coreutils" {
+		t.Errorf("content = %+v ok=%t, want verified against coreutils", content, ok)
 	}
 }
 
 func TestLedgerPackagesCountsDistinctJudgedPackages(t *testing.T) {
-	expected := map[string]ledgerEntry{
-		"usr/bin/a": {pkg: "coreutils", hash: testHash},
-		"usr/bin/b": {pkg: "coreutils", hash: evilHash},
-		"usr/bin/c": {pkg: "bash", hash: testHash},
-	}
-	if got := ledgerPackages(expected); got != 2 {
-		t.Fatalf("ledger packages = %d, want 2", got)
+	lookup := mapLookup(map[string]prov.HashEntry{
+		"usr/bin/a": {Pkg: "coreutils", Hash: testHash},
+		"usr/bin/b": {Pkg: "coreutils", Hash: evilHash},
+		"usr/bin/c": {Pkg: "bash", Hash: testHash},
+	})
+	entries, packages := judgedLedgerRows(lookup, map[string]trust.Facts{
+		"/usr/bin/a": pkgFacts("/usr/bin/a", 900, "coreutils"),
+		"/usr/bin/b": pkgFacts("/usr/bin/b", 900, "coreutils"),
+		"/usr/bin/c": pkgFacts("/usr/bin/c", 900, "bash"),
+	})
+	if entries != 3 || packages != 2 {
+		t.Fatalf("ledger rows = %d/%d, want 3 entries over 2 packages", entries, packages)
 	}
 }
 
@@ -158,7 +176,7 @@ func TestRPMConffileDeviationSoftens(t *testing.T) {
 	if content.State != Mismatched || content.Method != methodRPM {
 		t.Fatalf("content = %+v, want an rpm mismatch", content)
 	}
-	story := newAssessor(snapshot).read(facts, false)
+	story := newAssessor(snapshot).read(facts)
 	if story.origin != Modified || !story.softened {
 		t.Fatalf("story = %+v, want modified and softened", story)
 	}
@@ -176,15 +194,15 @@ func TestHashFilesKeepsTheResolvedSpelling(t *testing.T) {
 	if err := os.WriteFile(binary, []byte("ELF"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	hash, ok := hashFile(binary)
-	if !ok {
-		t.Fatal("hashFile failed")
+	hash, reason := hashFile(binary)
+	if reason != "" {
+		t.Fatal("hashFile failed:", reason)
 	}
 	stripped := strings.TrimPrefix(binary, "/")
 	facts := pkgFacts("/bin/ls", 900, "coreutils")
 	facts.Real = binary
-	actual := hashFiles(t.Context(), map[string]trust.Facts{"/bin/ls": facts},
-		map[string]ledgerEntry{stripped: {pkg: "coreutils", hash: hash}})
+	actual, _ := hashFiles(t.Context(), map[string]trust.Facts{"/bin/ls": facts},
+		mapLookup(map[string]prov.HashEntry{stripped: {Pkg: "coreutils", Hash: hash}}))
 	if len(actual) != 1 || actual[binary] != hash {
 		t.Fatalf("actual = %v, want one resolved key", actual)
 	}
@@ -264,7 +282,7 @@ func verifiedSnapshot() *Snapshot {
 
 func readStory(t *testing.T, name string, snapshot *Snapshot, facts trust.Facts, authority bool) verdict {
 	t.Helper()
-	story := newAssessor(snapshot).read(facts, authority)
+	story := newAssessor(snapshot).story(facts, authority)
 	t.Logf("%s: origin=%s why=%s evidence=%v", name, story.origin, story.why, story.evidence)
 	return story
 }
@@ -365,8 +383,8 @@ func TestVerdictReinstalledFileCountsAsRemodified(t *testing.T) {
 		},
 	}
 	a := newAssessor(snapshot)
-	story := a.read(pkgFacts("/bin/bash", 1200, "bash"), false)
-	a.read(pkgFacts("/bin/bash", 1200, "bash"), false)
+	story := a.read(pkgFacts("/bin/bash", 1200, "bash"))
+	a.read(pkgFacts("/bin/bash", 1200, "bash"))
 	if story.origin != Base || len(a.remodifiedSet) != 1 {
 		t.Errorf("origin = %s remodified = %d, want base and one re-modified file", story.origin, len(a.remodifiedSet))
 	}
@@ -382,7 +400,7 @@ func TestJudgeLedgerTamperedIsItsOwnFinding(t *testing.T) {
 		{Pkg: logLedgerPkg, Stamp: time.Unix(5000, 0), Path: "/var/log/dpkg.log"},
 	}
 	report := Judge(snapshot, Filter{})
-	classes := map[string]bool{}
+	classes := map[Class]bool{}
 	for _, finding := range report.Findings {
 		classes[finding.Class] = true
 		if finding.Class == "ledger-tampered" && finding.Severity != Medium {
@@ -399,8 +417,8 @@ func TestJudgeLedgerCoverageLines(t *testing.T) {
 	snapshot.Ledger = LedgerSummary{Kind: "none"}
 	report := Judge(snapshot, Filter{})
 	found := false
-	for _, line := range report.Coverage {
-		if strings.Contains(line, "no package content ledger") {
+	for _, record := range report.Coverage {
+		if strings.Contains(record.Detail, "no package content ledger") {
 			found = true
 		}
 	}

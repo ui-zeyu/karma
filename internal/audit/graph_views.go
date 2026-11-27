@@ -25,7 +25,7 @@ func domainRoot(kind, name, detail string, reach Reach) *GraphBuilder {
 // origin on the node.
 func networkGraph(snapshot *Snapshot) *GraphView {
 	graph := domainRoot("domain", "network", "processes, listeners and established peers", NoAsset)
-	a := newAssessor(snapshot)
+	a := snapshot.Assessor()
 	byListener := map[int][]Socket{}
 	byConnection := map[int][]Connection{}
 	for _, socket := range snapshot.Sockets {
@@ -47,7 +47,7 @@ func networkGraph(snapshot *Snapshot) *GraphView {
 		if len(listeners) == 0 && len(connections) == 0 {
 			continue
 		}
-		story := a.read(process.ExeFacts, false)
+		story := a.read(process.ExeFacts)
 		name := valueOr(process.Comm, strconv.Itoa(process.PID))
 		node := graph.Node("process", strconv.Itoa(process.PID), name, process.Exe,
 			story.origin, processReach(process),
@@ -108,9 +108,9 @@ func packageGraph(snapshot *Snapshot) *GraphView {
 // kernelGraph is module -> file/registry state.
 func kernelGraph(snapshot *Snapshot) *GraphView {
 	graph := domainRoot("domain", "kernel", "module registries, taint and hidden pids", KernelAsset)
-	a := newAssessor(snapshot)
+	a := snapshot.Assessor()
 	for _, module := range snapshot.Kernel.Modules {
-		story := a.read(module.Facts, false)
+		story := a.read(module.Facts)
 		detail := fmt.Sprintf("%s used %d", valueOr(module.State, "loaded"), module.Used)
 		if module.Taint != "" {
 			detail += " · loader flags " + module.Taint
@@ -126,7 +126,7 @@ func kernelGraph(snapshot *Snapshot) *GraphView {
 		graph.link(graph.root, node.ID, "loaded", "kernel", "high", module.FileState)
 	}
 	for _, module := range snapshot.Kernel.Dormant {
-		story := a.read(module.Facts, false)
+		story := a.read(module.Facts)
 		key := module.Name
 		if module.File != "" {
 			key = module.File
@@ -153,10 +153,10 @@ func kernelGraph(snapshot *Snapshot) *GraphView {
 // authorityGraph is the setuid/setgid/capability surface with its bits.
 func authorityGraph(snapshot *Snapshot) *GraphView {
 	graph := domainRoot("domain", "authority", "setuid, setgid and capability objects", RootAsset)
-	a := newAssessor(snapshot)
+	a := snapshot.Assessor()
 	for _, path := range snapshot.Authority {
 		facts := snapshot.Facts(path)
-		story := a.read(facts, true)
+		story := a.readAuthority(facts)
 		bit := authorityBit(facts)
 		node := graph.Node("authority", path, path, path, story.origin, authorityReach(facts),
 			fmt.Sprintf("mode %s · %s", facts.Mode.Perm(), bit))
@@ -175,21 +175,20 @@ func authorityGraph(snapshot *Snapshot) *GraphView {
 // from the same edges' judge.
 func bootGraph(snapshot *Snapshot) *GraphView {
 	graph := domainRoot("domain", "boot", "the activation surfaces the host acts on", RootAsset)
-	a := newAssessor(snapshot)
+	a := snapshot.Assessor()
 	surfaces := map[string]*GraphNode{}
 	for _, edge := range snapshot.Activations {
 		surface, ok := surfaces[string(edge.Surface)]
 		if !ok {
 			surface = graph.Node("surface", string(edge.Surface), string(edge.Surface), "",
 				Unknown, RootAsset, "")
-			// A surface is the graph's structure, so it is context: no origin
-			// to read and no unknown marker to carry.
+			// A surface is the graph's structure; Context states that and the
+			// renderer answers with the quiet marker and no origin word.
 			surface.Context = true
-			surface.Origin = ""
 			surfaces[string(edge.Surface)] = surface
 			graph.link(graph.root, surface.ID, "acts-at", "boot", "high", "")
 		}
-		triggerStory := a.read(edge.TriggerFacts, false)
+		triggerStory := a.read(edge.TriggerFacts)
 		trigger := graph.Node("trigger", edge.Trigger, edge.Trigger, edge.Trigger,
 			triggerStory.origin, edgeReach(edge),
 			edge.Phase.String()+" · runs as "+valueOr(edge.Subject.String(), "-"))
@@ -218,7 +217,7 @@ func bootGraph(snapshot *Snapshot) *GraphView {
 			// the mechanism stays on the link to it.
 			continue
 		}
-		targetStory := a.read(edge.TargetFacts, false)
+		targetStory := a.read(edge.TargetFacts)
 		target := graph.Node("target", edge.Target, edge.Target, edge.Target,
 			targetStory.origin, edgeReach(edge), string(edge.Mechanism))
 		graph.link(trigger.ID, target.ID, "runs", "startup", "high", string(edge.Mechanism))
@@ -229,7 +228,7 @@ func bootGraph(snapshot *Snapshot) *GraphView {
 // AttachFindings attaches the findings the domain stamped and the coverage
 // the run answered. The graph is the picture; the findings are its broken
 // edges.
-func (p *GraphView) AttachFindings(domain Domain, findings []Finding, coverage []string) {
+func (p *GraphView) AttachFindings(domain Domain, findings []Finding, coverage []Coverage) {
 	p.Findings = domainFindings(domain, findings)
 	p.Coverage = coverage
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"testing"
+	"time"
 
 	"karma/internal/trust"
 )
@@ -48,6 +49,26 @@ func (f fakeFS) Readlink(name string) (string, error) {
 	}
 	return "", fs.ErrNotExist
 }
+
+func (f fakeFS) Stat(name string) (fs.FileInfo, error) {
+	if err, ok := f.fail[name]; ok {
+		return nil, err
+	}
+	if _, ok := f.files[name]; ok {
+		return fakeInfo{}, nil
+	}
+	return nil, fs.ErrNotExist
+}
+
+// fakeInfo is the minimal answer Stat needs: existence, not metadata.
+type fakeInfo struct{}
+
+func (fakeInfo) Name() string       { return "" }
+func (fakeInfo) Size() int64        { return 0 }
+func (fakeInfo) Mode() fs.FileMode  { return 0 }
+func (fakeInfo) ModTime() time.Time { return time.Time{} }
+func (fakeInfo) IsDir() bool        { return false }
+func (fakeInfo) Sys() any           { return nil }
 
 func TestCollectSystemd(t *testing.T) {
 	tree := fakeFS{
@@ -227,7 +248,10 @@ func TestClassifyPathCoversEverySurface(t *testing.T) {
 		{"/etc/hosts.allow", SurfaceSystem, SystemDialect},
 	}
 	for _, c := range cases {
-		surface, dialect := classifyPath(c.path)
+		surface, dialect, ok := classifyPath(c.path)
+		if !ok {
+			t.Errorf("classifyPath(%q): no surface claims the path", c.path)
+		}
 		if surface != c.surface || dialect != c.dialect {
 			t.Errorf("classifyPath(%q) = %s/%d, want %s/%d",
 				c.path, surface, dialect, c.surface, c.dialect)

@@ -96,7 +96,7 @@ func TestParseGraphSeedReadsOneGrammar(t *testing.T) {
 			t.Errorf("ParseGraphSeed(%q): %v", test.word, err)
 			continue
 		}
-		if seed.Kind != test.kind || seed.Value != test.value {
+		if seed.Kind != seedKind(test.kind) || seed.Value != test.value {
 			t.Errorf("ParseGraphSeed(%q) = %+v, want %s %q", test.word, seed, test.kind, test.value)
 		}
 	}

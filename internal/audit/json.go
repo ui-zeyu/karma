@@ -8,6 +8,7 @@ package audit
 import (
 	"encoding/json"
 	"io"
+	"reflect"
 	"time"
 )
 
@@ -46,7 +47,7 @@ func boundaryDataOf(boundary Boundary) boundaryData {
 
 func findingDataOf(finding Finding) findingData {
 	return findingData{
-		Class:    finding.Class,
+		Class:    string(finding.Class),
 		Severity: finding.Severity.String(),
 		Title:    finding.Title,
 		Path:     finding.Path,
@@ -61,6 +62,16 @@ func findingDataOf(finding Finding) findingData {
 }
 
 // encode writes one JSON document, indented the way every karma answer is.
+// nonNil answers a slice-valued payload with an empty slice instead of a nil
+// one: a section or graph with no rows encodes [], the same answer every
+// other empty inventory in the report gives.
+func nonNil(v any) any {
+	if value := reflect.ValueOf(v); value.Kind() == reflect.Slice && value.IsNil() {
+		return reflect.MakeSlice(value.Type(), 0, 0).Interface()
+	}
+	return v
+}
+
 func encode(w io.Writer, document any) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
@@ -83,7 +94,7 @@ func WriteJSON(w io.Writer, report *Report) error {
 		Mounts      []Mount        `json:"mounts,omitempty"`
 		Ledger      *LedgerSummary `json:"ledger,omitempty"`
 		Kernel      *KernelState   `json:"kernel,omitempty"`
-		Coverage    []string       `json:"coverage,omitempty"`
+		Coverage    []Coverage     `json:"coverage,omitempty"`
 	}{
 		Source:      report.Source,
 		Host:        report.Host,

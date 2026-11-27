@@ -5,13 +5,8 @@ import "strings"
 // supervisorEdges reads the process supervisors and the container entrypoint.
 // A supervisor INI states one command per program/eventlistener section, run as
 // root unless the section names a user. An s6 run script or an entrypoint
-// script is a shell file, read as the shell it is.
+// script is a shell file; parseSupervisor reads it as the shell it is.
 func supervisorEdges(file File) []rawEdge {
-	if file.Dialect == ShellDialect {
-		return shellEdges(file.Body, rawEdge{
-			surface: SurfaceSupervisor, phase: BootStaged, subject: Subject{Class: AccountRoot}, trigger: file.Path,
-		})
-	}
 	directives := parseUnit(file.Body)
 	users := map[string]string{}
 	for _, d := range directives {
@@ -28,7 +23,7 @@ func supervisorEdges(file File) []rawEdge {
 		if user, ok := users[d.section]; ok {
 			subject = Account(user)
 		}
-		edges = append(edges, shellEdges(d.value, rawEdge{
+		edges = append(edges, shellSnippetEdges(d.value, rawEdge{
 			surface: SurfaceSupervisor, phase: BootStaged, subject: subject,
 			trigger: file.Path, line: d.line, mechanism: "command",
 		})...)
@@ -57,7 +52,7 @@ func desktopEdges(file File) []rawEdge {
 			if d.value == "" {
 				continue
 			}
-			edges = append(edges, shellEdges(d.value, rawEdge{
+			edges = append(edges, shellSnippetEdges(d.value, rawEdge{
 				surface: SurfaceXdg, phase: Session, subject: subject,
 				trigger: file.Path, line: d.line, mechanism: Mechanism(d.key),
 			})...)

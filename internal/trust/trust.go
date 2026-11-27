@@ -29,16 +29,12 @@ type Attrs struct {
 	Real string
 	// ParentWritable is whether a directory on the resolved path's chain can
 	// be replaced by someone other than root: group/other write, or a non-root
-	// owner with the owner bit. PathParentWritable is the same question for the
-	// path as it was named, which is where a symlink itself can be replaced.
-	// ParentOpen is the narrower fact — group/other write alone — and is what a
-	// user-owned surface must be judged by; PathParentOpen is its lexical pair.
-	ParentWritable     bool
-	ParentOpen         bool
-	PathParentWritable bool
-	PathParentOpen     bool
-	Package            string
-	PackageKnown       bool
+	// owner with the owner bit. ParentOpen is the narrower fact — group/other
+	// write alone — and is what a user-owned surface must be judged by.
+	ParentWritable bool
+	ParentOpen     bool
+	Package        string
+	PackageKnown   bool
 	// Diverted is dpkg's own record that this path is a local diversion: the
 	// file is the administrator's declared replacement, and a known-empty
 	// ownership answer for it reads as declared, not as a dropped binary.
@@ -79,30 +75,19 @@ type Facts struct {
 	// ParentWritable is whether a non-sticky directory above the resolved path
 	// is writable by someone who is not root (an owner other than root with the
 	// owner bit, or any group/other write bit). ParentOpen is the narrower
-	// group/other-write fact. PathParentWritable and PathParentOpen ask the same
-	// about the path as named, so a link inside a writable directory is
-	// replaceable even when its target is not.
-	ParentWritable     bool
-	ParentOpen         bool
-	PathParentWritable bool
-	PathParentOpen     bool
+	// group/other-write fact.
+	ParentWritable bool
+	ParentOpen     bool
 	// Executable is a regular file with an execute bit.
 	Executable bool
 	// Hidden is a dot-led component in the resolved path; PathHidden is one in
 	// the path as named.
 	Hidden     bool
 	PathHidden bool
-	// TrustedRoot is the resolved path under a distribution program or library
-	// tree.
-	TrustedRoot bool
 	// AdminLayer is the resolved path under an administrator-writable startup or
 	// application tree; PathAdmin is the lexical path under one.
 	AdminLayer bool
 	PathAdmin  bool
-	// Startup is the resolved path being a startup surface; PathStartup is the
-	// lexical path being one.
-	Startup     bool
-	PathStartup bool
 	// Setuid is the resolved file's setuid bit: the image runs with the file
 	// owner's authority, not the caller's. Setgid is the same for the group.
 	Setuid bool
@@ -122,49 +107,157 @@ type Facts struct {
 	Caps bool
 }
 
-// TrustedRoots are the trees a distribution owns end to end. A file here that
-// the package database does not carry is a different fact (unowned-files), not
-// an administrator's install.
-var TrustedRoots = []string{
-	"/bin", "/sbin", "/usr/bin", "/usr/sbin",
-	"/lib", "/lib64", "/usr/lib", "/usr/lib64", "/usr/libexec",
-	"/lib/systemd/system", "/usr/lib/systemd/system",
+// startupTreeRow is one row of the startupTree table.
+type startupTreeRow struct {
+	dir     string
+	admin   bool
+	startup bool
+}
+
+// startupTree is the one table of the trees the startup collector reads: the
+// first flag marks a tree an administrator installs into or edits (an
+// AdminLayer), the second a tree a boot, login or device event reads (a
+// StartupRoot). AdminLayers and StartupRoots derive from it, so the two
+// vocabularies cannot drift and a new collector path has one row to add.
+// Per-user home files are not rows: a home tree holds many non-startup files,
+// so those paths answer through startupHomeFiles instead.
+var startupTree = []startupTreeRow{
+	// systemd: the admin layers shadow the vendor layers, and the generators
+	// run before the units they synthesize.
+	{"/etc/systemd/system", true, true},
+	{"/run/systemd/system", true, true},
+	{"/usr/local/lib/systemd/system", true, true},
+	{"/usr/lib/systemd/system", false, true},
+	{"/lib/systemd/system", false, true},
+	{"/etc/systemd/user", true, true},
+	{"/root/.config/systemd/user", true, true},
+	{"/etc/systemd/system-generators", true, true},
+	{"/run/systemd/system-generators", true, true},
+	{"/usr/local/lib/systemd/system-generators", true, true},
+	{"/usr/lib/systemd/system-generators", false, true},
+	{"/lib/systemd/system-generators", false, true},
+	{"/etc/systemd/user-generators", true, true},
+	{"/run/systemd/user-generators", true, true},
+	{"/usr/local/lib/systemd/user-generators", true, true},
+	{"/usr/lib/systemd/user-generators", false, true},
+
+	// login and interactive-shell files.
+	{"/etc/profile", true, true},
+	{"/etc/profile.d", true, true},
+	{"/etc/bash.bashrc", true, true},
+	{"/etc/bashrc", true, true},
+	{"/etc/bash.bash_logout", true, true},
+	{"/etc/environment", true, true},
+	{"/etc/zsh", true, true},
+	{"/etc/fish", true, true},
+	{"/etc/skel", true, true},
+
+	// scheduled surfaces: the tables, the drop-ins, the run-parts directories
+	// and both spools.
+	{"/etc/crontab", true, true},
+	{"/etc/anacrontab", true, true},
+	{"/etc/cron.d", true, true},
+	{"/etc/cron.daily", true, true},
+	{"/etc/cron.hourly", true, true},
+	{"/etc/cron.weekly", true, true},
+	{"/etc/cron.monthly", true, true},
+	{"/var/spool/cron", true, true},
+	{"/var/spool/at", true, true},
+
+	// SysV boot: the scripts, the classic hooks and the runlevel link
+	// directories whose S-links enable a script.
+	{"/etc/rc.local", true, true},
+	{"/etc/init.d", true, true},
+	{"/etc/rc.d", true, true},
+	{"/etc/init.sh", true, true},
+	{"/etc/rc0.d", true, true},
+	{"/etc/rc1.d", true, true},
+	{"/etc/rc2.d", true, true},
+	{"/etc/rc3.d", true, true},
+	{"/etc/rc4.d", true, true},
+	{"/etc/rc5.d", true, true},
+	{"/etc/rc6.d", true, true},
+	{"/etc/rcS.d", true, true},
+
+	// dynamic loader: the preload list is an administrator's file; the cache
+	// is ldconfig's output, read by every process.
+	{"/etc/ld.so.preload", true, true},
+	{"/etc/ld.so.cache", false, true},
+
+	// device events.
+	{"/etc/udev/rules.d", true, true},
+	{"/run/udev/rules.d", true, true},
+
+	// process supervisors, the internet superservers and container
+	// entrypoints.
+	{"/etc/supervisor", true, true},
+	{"/etc/supervisord.conf", true, true},
+	{"/etc/supervisord.d", true, true},
+	{"/etc/services.d", true, true},
+	{"/etc/s6", true, true},
+	{"/etc/s6-overlay", true, true},
+	{"/etc/runit", true, true},
+	{"/etc/xinetd.conf", true, true},
+	{"/etc/xinetd.d", true, true},
+	{"/docker-entrypoint.d", true, true},
+	{"/docker-entrypoint-initdb.d", true, true},
+	{"/entrypoint.d", true, true},
+
+	// session autostart.
+	{"/etc/xdg/autostart", true, true},
+
+	// the login banner.
+	{"/etc/motd", true, true},
+	{"/etc/update-motd.d", true, true},
+
+	// PAM stacks, ssh program hooks and the apt hooks apt runs as root.
+	{"/etc/pam.d", true, true},
+	{"/etc/ssh", true, true},
+	{"/etc/apt/apt.conf", true, true},
+	{"/etc/apt/apt.conf.d", true, true},
+
+	// modprobe configuration layers.
+	{"/etc/modprobe.d", true, true},
+	{"/run/modprobe.d", true, true},
+	{"/usr/local/lib/modprobe.d", true, true},
+
+	// the boot and name-resolution tables the kernel and libc read by
+	// position.
+	{"/etc/fstab", true, true},
+	{"/etc/crypttab", true, true},
+	{"/etc/nsswitch.conf", true, true},
+	{"/etc/hosts.allow", true, true},
+	{"/etc/hosts.deny", true, true},
+
+	// application trees an administrator installs into; nothing a boot or a
+	// login reads by position lives here, but a payload does.
+	{"/opt", true, false},
+	{"/srv", true, false},
+	{"/var/lib", true, false},
+	{"/usr/local", true, false},
+	{"/etc/ld.so.conf", true, false},
+	{"/etc/ld.so.conf.d", true, false},
 }
 
 // AdminLayers are the trees an administrator installs into or edits. A target
 // here is not untrusted by itself; it is outside the distribution's provenance
 // and needs the package check to tell a local build from a dropped payload.
-var AdminLayers = []string{
-	"/etc/profile", "/etc/profile.d", "/etc/bash.bashrc", "/etc/bashrc",
-	"/etc/bash.bash_logout", "/etc/environment", "/etc/zsh", "/etc/fish",
-	"/etc/systemd/system", "/run/systemd/system", "/usr/local/lib/systemd/system",
-	"/etc/cron.d", "/etc/cron.daily", "/etc/cron.hourly", "/etc/cron.weekly",
-	"/etc/cron.monthly", "/var/spool/cron", "/etc/crontab", "/etc/anacrontab",
-	"/etc/rc.local", "/etc/init.d", "/etc/rc.d",
-	"/etc/udev/rules.d", "/run/udev/rules.d",
-	"/etc/ld.so.preload", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
-	"/etc/supervisor", "/etc/supervisord.conf", "/etc/s6", "/etc/runit",
-	"/etc/apt/apt.conf.d", "/etc/pam.d", "/etc/ssh",
-	"/etc/xdg/autostart", "/etc/motd", "/etc/update-motd.d", "/etc/skel",
-	"/opt", "/srv", "/var/lib", "/usr/local",
-}
+var AdminLayers = treeRoots(func(row startupTreeRow) bool { return row.admin })
 
 // StartupRoots are the trees whose files a boot, login or device event reads.
 // A startup file's real location is expected to stay inside one of them: a
 // symlink out of these trees runs bytes the surface's listing never shows.
-var StartupRoots = []string{
-	"/etc/systemd", "/run/systemd", "/usr/local/lib/systemd",
-	"/usr/lib/systemd", "/lib/systemd",
-	"/etc/profile", "/etc/profile.d", "/etc/bash.bashrc", "/etc/bashrc",
-	"/etc/bash.bash_logout", "/etc/zsh", "/etc/fish", "/etc/environment",
-	"/etc/cron.d", "/etc/cron.daily", "/etc/cron.hourly", "/etc/cron.weekly",
-	"/etc/cron.monthly", "/var/spool/cron", "/etc/crontab", "/etc/anacrontab",
-	"/etc/rc.local", "/etc/init.d", "/etc/rc.d", "/etc/rcS.d",
-	"/etc/udev/rules.d", "/run/udev/rules.d",
-	"/etc/ld.so.preload", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
-	"/etc/supervisor", "/etc/s6", "/etc/runit",
-	"/etc/apt/apt.conf.d", "/etc/pam.d", "/etc/ssh", "/etc/xdg/autostart",
-	"/etc/motd", "/etc/update-motd.d", "/etc/skel",
+var StartupRoots = treeRoots(func(row startupTreeRow) bool { return row.startup })
+
+// treeRoots collects the table's dirs whose flag holds.
+func treeRoots(flag func(startupTreeRow) bool) []string {
+	var roots []string
+	for _, row := range startupTree {
+		if flag(row) {
+			roots = append(roots, row.dir)
+		}
+	}
+	return roots
 }
 
 // startupHomeFiles are the per-user files a shell reads at login or for an
@@ -189,35 +282,30 @@ type PackageResolver interface {
 // same way.
 func Build(path string, attrs Attrs) Facts {
 	facts := Facts{
-		Path:               path,
-		Real:               attrs.Real,
-		Kind:               attrs.Kind,
-		Link:               attrs.Link,
-		Mode:               attrs.Mode,
-		Owner:              attrs.UID,
-		Group:              attrs.GID,
-		ParentWritable:     attrs.ParentWritable,
-		ParentOpen:         attrs.ParentOpen,
-		PathParentWritable: attrs.PathParentWritable,
-		PathParentOpen:     attrs.PathParentOpen,
-		Package:            attrs.Package,
-		PackageKnown:       attrs.PackageKnown,
-		Diverted:           attrs.Diverted,
-		PackageShared:      attrs.PackageShared,
-		CTime:              attrs.CTime,
-		Inode:              attrs.Inode,
-		Caps:               attrs.Caps,
+		Path:           path,
+		Real:           attrs.Real,
+		Kind:           attrs.Kind,
+		Link:           attrs.Link,
+		Mode:           attrs.Mode,
+		Owner:          attrs.UID,
+		Group:          attrs.GID,
+		ParentWritable: attrs.ParentWritable,
+		ParentOpen:     attrs.ParentOpen,
+		Package:        attrs.Package,
+		PackageKnown:   attrs.PackageKnown,
+		Diverted:       attrs.Diverted,
+		PackageShared:  attrs.PackageShared,
+		CTime:          attrs.CTime,
+		Inode:          attrs.Inode,
+		Caps:           attrs.Caps,
 	}
 	if facts.Real == "" {
 		facts.Real = path
 	}
 	facts.PathHidden = HiddenPath(path)
 	facts.PathAdmin = UnderAny(path, AdminLayers)
-	facts.PathStartup = StartupPath(path)
 	facts.Hidden = HiddenPath(facts.Real)
 	facts.AdminLayer = UnderAny(facts.Real, AdminLayers)
-	facts.TrustedRoot = UnderAny(facts.Real, TrustedRoots)
-	facts.Startup = StartupPath(facts.Real)
 	facts.RootOwned = facts.Owner == 0
 	facts.Writable = facts.Mode.Perm()&0o022 != 0
 	bits := uint32(facts.Mode)
@@ -289,7 +377,6 @@ func classify(path string, resolver PackageResolver, dirs map[string]dirFlags) F
 	}
 
 	attrs.ParentWritable, attrs.ParentOpen = parentFlags(attrs.Real, dirs)
-	attrs.PathParentWritable, attrs.PathParentOpen = parentFlags(path, dirs)
 	if resolver != nil {
 		attrs.Package, attrs.PackageKnown, attrs.PackageShared = owned(resolver, attrs.Real)
 		if attrs.Real != path && !attrs.PackageKnown {
@@ -427,6 +514,25 @@ func StartupPath(path string) bool {
 
 // UnderAny reports whether path is one of roots or inside one, on a path
 // boundary: /optfoo is not under /opt.
+
+// UsrVariants answers the two absolute spellings usrmerge creates for one
+// path: the asked spelling and its counterpart across the /usr merge point.
+// The package database, the content ledger and the active-object set all
+// match files under both spellings through this one pair, so a lookup cannot
+// agree under one spelling and miss under the other.
+func UsrVariants(path string) []string {
+	if path == "" {
+		return nil
+	}
+	if rest, ok := strings.CutPrefix(path, "/usr/"); ok {
+		return []string{path, "/" + rest}
+	}
+	if path == "/" || path == "/usr" {
+		return []string{path}
+	}
+	return []string{path, "/usr" + path}
+}
+
 func UnderAny(path string, roots []string) bool {
 	for _, root := range roots {
 		if Under(path, root) {

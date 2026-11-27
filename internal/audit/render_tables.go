@@ -9,16 +9,15 @@ import (
 )
 
 func activationRows(view *View, options RenderOptions) []string {
-	rows := []string{columnHeader([]string{"SURFACE", "REACH", "AS", "ORIGIN", "TRIGGER"}, []int{10, 12, 10, 10})}
+	rows := []string{activationSpec.header()}
 	for _, edge := range view.Activations {
 		target := edge.Target
 		if edge.Dynamic {
 			target = "(dynamic)"
 		}
-		origin := view.assessor.read(edge.TargetFacts, false).origin
-		prefix := columnRowHued(options.Color, []string{
-			string(edge.Surface), edge.Phase.String(), valueOr(edge.Subject.String(), "-"), origin.String(),
-		}, []int{10, 12, 10, 10}, []int{0, 0, 0, originHue(origin)})
+		origin := view.Assessor().read(edge.TargetFacts).origin
+		prefix := activationSpec.row(options.Color, []int{0, 0, 0, originHue(origin)},
+			[]string{string(edge.Surface), edge.Phase.String(), valueOr(edge.Subject.String(), "-"), origin.String()})
 		rows = append(rows, fmt.Sprintf("%s%s:%d", prefix, chrome.SafeText(edge.Trigger), edge.Line))
 		rows = append(rows, fmt.Sprintf("    %s -> %s", edge.Mechanism, chrome.SafeText(target)))
 	}
@@ -29,14 +28,14 @@ func activationRows(view *View, options RenderOptions) []string {
 }
 
 func processRows(view *View, options RenderOptions) []string {
-	rows := []string{columnHeader([]string{"PID", "PPID", "UID", "ORIGIN", "REACH", "COMMAND"}, []int{7, 7, 6, 10, 8})}
+	rows := []string{processSpec.header()}
 	for _, process := range view.Processes {
 		if process.PID == 0 || process.PID == selfPID() {
 			continue
 		}
-		origin := view.assessor.read(process.ExeFacts, false).origin
+		origin := view.Assessor().read(process.ExeFacts).origin
 		if process.Script != "" {
-			origin = weaker(origin, view.assessor.read(process.ScriptFacts, false).origin)
+			origin = weaker(origin, view.Assessor().read(process.ScriptFacts).origin)
 		}
 		command := process.Cmdline
 		if command == "" {
@@ -48,10 +47,9 @@ func processRows(view *View, options RenderOptions) []string {
 		if process.Outbound > 0 {
 			command += fmt.Sprintf("  [%d estab]", process.Outbound)
 		}
-		prefix := columnRowHued(options.Color, []string{
-			strconv.Itoa(process.PID), strconv.Itoa(process.PPID), strconv.Itoa(process.UID),
-			origin.String(), processReach(process).String(),
-		}, []int{7, 7, 6, 10, 8}, []int{0, 0, 0, originHue(origin), 0})
+		prefix := processSpec.row(options.Color, []int{0, 0, 0, originHue(origin), 0},
+			[]string{strconv.Itoa(process.PID), strconv.Itoa(process.PPID), strconv.Itoa(process.UID),
+				origin.String(), processReach(process).String()})
 		rows = append(rows, prefix+chrome.SafeText(valueOr(command, valueOr(process.Exe, process.Comm))))
 	}
 	if len(rows) == 1 {
@@ -61,11 +59,10 @@ func processRows(view *View, options RenderOptions) []string {
 }
 
 func serviceRows(view *View, options RenderOptions) []string {
-	rows := []string{columnHeader([]string{"UNIT", "LOAD", "ACTIVE", "SUB", "DESCRIPTION"}, []int{28, 8, 8, 8})}
+	rows := []string{serviceSpec.header()}
 	for _, service := range view.Services {
-		rows = append(rows, columnRowHued(options.Color, []string{
-			service.Unit, service.Load, service.Active, service.Sub,
-		}, []int{28, 8, 8, 8}, []int{0, 0, serviceStateHue(service.Active), 0})+chrome.SafeText(service.Description))
+		rows = append(rows, serviceSpec.row(options.Color, []int{0, 0, serviceStateHue(service.Active), 0},
+			[]string{service.Unit, service.Load, service.Active, service.Sub})+chrome.SafeText(service.Description))
 	}
 	if len(rows) == 1 {
 		return nil
@@ -74,12 +71,12 @@ func serviceRows(view *View, options RenderOptions) []string {
 }
 
 func socketRows(view *View, options RenderOptions) []string {
-	rows := []string{columnHeader([]string{"PROTO", "STATE", "LOCAL", "PEER", "PID", "COMM"}, []int{6, 9, 24, 24, 7})}
+	rows := []string{socketSpec.header()}
 	for _, socket := range view.Sockets {
-		rows = append(rows, columnRowHued(options.Color, []string{
+		rows = append(rows, socketSpec.row(options.Color, []int{0, socketStateHue(socket.State), 0, 0, 0, 0}, []string{
 			socket.Proto, socket.State, socket.Local, socket.Peer,
 			strconv.Itoa(socket.PID), socket.Comm,
-		}, []int{6, 9, 24, 24, 7}, []int{0, socketStateHue(socket.State), 0, 0, 0, 0}))
+		}))
 	}
 	if len(rows) == 1 {
 		return nil
@@ -99,13 +96,12 @@ func connectionRows(view *View, options RenderOptions) []string {
 	for _, process := range view.Snapshot.Processes {
 		processes[process.PID] = process
 	}
-	rows := []string{columnHeader([]string{"PROTO", "LOCAL", "PEER", "PID", "COMM"}, []int{6, 24, 24, 7, 16})}
+	rows := []string{connectionSpec.header()}
 	for _, connection := range view.Connections {
-		rows = append(rows, columnRowHued(options.Color, []string{
+		rows = append(rows, connectionSpec.row(options.Color, []int{0, 0, hueInformation, 0, connectionHue(connection, processes)}, []string{
 			connection.Proto, connection.Local, connection.Peer,
 			strconv.Itoa(connection.PID), connection.Comm,
-		}, []int{6, 24, 24, 7, 16},
-			[]int{0, 0, hueInformation, 0, connectionHue(connection, processes)}))
+		}))
 	}
 	return rows
 }
@@ -141,15 +137,12 @@ func kernelRows(view *View, options RenderOptions) []string {
 	if state == nil || !state.Collected {
 		return nil
 	}
-	rows := []string{columnHeader([]string{"MODULE", "USED", "STATE", "TAINT", "ORIGIN"}, []int{26, 5, 10, 6, 10})}
+	rows := []string{kernelSpec.header()}
 	scoped := !view.Filter.globalScope()
 	for _, module := range state.Modules {
-		if scoped && (module.File == "" || !pathOrRealInScope(module.File, module.Facts.Real, view.Filter)) {
-			continue
-		}
 		origin, originCode := "-", 0
 		if module.File != "" {
-			verdict := view.assessor.read(module.Facts, false)
+			verdict := view.Assessor().read(module.Facts)
 			origin, originCode = verdict.origin.String(), originHue(verdict.origin)
 		}
 		file := module.File
@@ -159,28 +152,27 @@ func kernelRows(view *View, options RenderOptions) []string {
 			// database belongs to another kernel.
 			if module.FileState == ModuleFileMissing ||
 				module.FileState == ModuleFileUnmapped && !state.MappingStale {
-				file = paintText(options.Color, fg(hueCaution), file)
+				file = chrome.Paint(options.Color, chrome.Fg(hueCaution), file)
 			}
 		}
-		rows = append(rows, columnRowHued(options.Color, []string{
+		rows = append(rows, kernelSpec.row(options.Color, []int{0, 0, moduleStateHue(module.State), taintHue(module.Taint), originCode}, []string{
 			module.Name, strconv.Itoa(module.Used), valueOr(module.State, "-"), valueOr(module.Taint, "-"), origin,
-		}, []int{26, 5, 10, 6, 10},
-			[]int{0, 0, moduleStateHue(module.State), taintHue(module.Taint), originCode})+chrome.SafeText(file))
+		})+chrome.SafeText(file))
 	}
 	if !scoped {
 		for _, module := range state.Dormant {
-			rows = append(rows, paintText(options.Color, fg(mutedColor), "dormant module "+chrome.SafeText(module.Name))+"  "+chrome.SafeText(module.File))
+			rows = append(rows, chrome.Paint(options.Color, chrome.Fg(mutedColor), "dormant module "+chrome.SafeText(module.Name))+"  "+chrome.SafeText(module.File))
 		}
 		if state.Tainted != 0 {
-			rows = append(rows, paintText(options.Color, fg(hueCaution),
+			rows = append(rows, chrome.Paint(options.Color, chrome.Fg(hueCaution),
 				fmt.Sprintf("taint %d: %s", state.Tainted, strings.Join(state.TaintNames, ", "))))
 		}
 		for _, hidden := range state.Hidden {
-			rows = append(rows, paintText(options.Color, fg(hueAlert),
+			rows = append(rows, chrome.Paint(options.Color, chrome.Fg(hueAlert),
 				"hidden module "+chrome.SafeText(hidden.Name)+" ("+strings.Join(hidden.Views, ", ")+")"))
 		}
 		for _, pid := range state.HiddenPIDs {
-			rows = append(rows, paintText(options.Color, fg(hueAlert), fmt.Sprintf("hidden pid %d", pid)))
+			rows = append(rows, chrome.Paint(options.Color, chrome.Fg(hueAlert), fmt.Sprintf("hidden pid %d", pid)))
 		}
 	}
 	if len(state.LoaderDirs) > 0 {
@@ -193,14 +185,14 @@ func kernelRows(view *View, options RenderOptions) []string {
 }
 
 func authorityRows(view *View, options RenderOptions) []string {
-	rows := []string{columnHeader([]string{"PATH", "ORIGIN", "REACH", "SETUID", "CAPS"}, []int{44, 10, 8, 7, 5})}
+	rows := []string{authoritySpec.header()}
 	for _, path := range view.Authority {
 		facts := view.Facts(path)
-		origin := view.assessor.read(facts, true).origin
-		rows = append(rows, columnRowHued(options.Color, []string{
+		origin := view.Assessor().readAuthority(facts).origin
+		rows = append(rows, authoritySpec.row(options.Color, []int{0, originHue(origin), 0, 0, 0}, []string{
 			path, origin.String(), authorityReach(facts).String(),
 			strconv.FormatBool(facts.Setuid), strconv.FormatBool(facts.Caps),
-		}, []int{44, 10, 8, 7, 5}, []int{0, originHue(origin), 0, 0, 0}))
+		}))
 	}
 	if len(rows) == 1 {
 		return nil
@@ -214,67 +206,68 @@ func mountRows(view *View, options RenderOptions) []string {
 	if len(view.Mounts) == 0 {
 		return nil
 	}
-	rows := []string{columnHeader([]string{"FSTYPE", "PATH", "OPTS"}, []int{12, 26, 34})}
+	rows := []string{mountSpec.header()}
 	for _, mount := range view.Mounts {
-		rows = append(rows, columnRowHued(options.Color, []string{mount.FSType, mount.Path, mount.Opts},
-			[]int{12, 26, 34}, []int{mountTypeHue(mount.FSType), 0, 0}))
+		rows = append(rows, mountSpec.row(options.Color, []int{mountTypeHue(mount.FSType), 0, 0}, []string{mount.FSType, mount.Path, mount.Opts}))
 	}
 	return rows
 }
 
-func severityColor(severity Severity) int {
-	switch severity {
-	case Critical:
-		return 1
-	case High:
-		return 9
-	case Medium:
-		return 11
-	case Low:
-		return 14
-	}
-	return mutedColor
+// severityColors is the severity ladder's one hue table, indexed by the
+// Severity the panel language already orders.
+var severityColors = [...]int{Info: mutedColor, Low: 14, Medium: 11, High: 9, Critical: 1}
+
+func severityColor(severity Severity) int { return severityColors[severity] }
+
+// tableSpec is one inventory table's column vocabulary: the headers and the
+// widths they print at, stated once. The header is the row with no hues, so
+// a column changes in one place.
+type tableSpec struct {
+	headers []string
+	widths  []int
 }
 
-func columnHeader(columns []string, widths []int) string {
-	return columnRow(columns, widths)
-}
+func (t tableSpec) header() string { return t.row(false, nil, t.headers) }
 
-func columnRow(values []string, widths []int) string {
+// row renders one row at the spec's widths. A cell with a hue set is painted
+// with its padding, so the columns stay aligned; a zero hue leaves it plain.
+func (t tableSpec) row(color bool, hues []int, values []string) string {
 	var out strings.Builder
 	for index, value := range values {
-		if index >= len(widths) {
+		if index >= len(t.widths) {
 			out.WriteString(value)
 			break
 		}
-		width := widths[index]
+		width := t.widths[index]
 		value = chrome.SafeText(value)
-		out.WriteString(padRight(truncate(value, width), width))
-		out.WriteString("  ")
-	}
-	return out.String()
-}
-
-// columnRowHued is columnRow with one hue per cell: the padding is painted
-// with the cell, so the columns stay aligned; a zero hue leaves it plain.
-func columnRowHued(color bool, values []string, widths []int, hues []int) string {
-	var out strings.Builder
-	for index, value := range values {
-		if index >= len(widths) {
-			out.WriteString(value)
-			break
-		}
-		width := widths[index]
-		value = chrome.SafeText(value)
-		cell := padRight(truncate(value, width), width)
+		cell := padRight(chrome.Truncate(value, width), width)
 		if index < len(hues) && hues[index] != 0 {
-			cell = paintText(color, fg(hues[index]), cell)
+			cell = chrome.Paint(color, chrome.Fg(hues[index]), cell)
 		}
 		out.WriteString(cell)
 		out.WriteString("  ")
 	}
 	return out.String()
 }
+
+var activationSpec = tableSpec{
+	headers: []string{"SURFACE", "REACH", "AS", "ORIGIN", "TRIGGER"}, widths: []int{10, 12, 10, 10}}
+var processSpec = tableSpec{
+	headers: []string{"PID", "PPID", "UID", "ORIGIN", "REACH", "COMMAND"}, widths: []int{7, 7, 6, 10, 8}}
+var serviceSpec = tableSpec{
+	headers: []string{"UNIT", "LOAD", "ACTIVE", "SUB", "DESCRIPTION"}, widths: []int{28, 8, 8, 8}}
+var socketSpec = tableSpec{
+	headers: []string{"PROTO", "STATE", "LOCAL", "PEER", "PID", "COMM"}, widths: []int{6, 9, 24, 24, 7}}
+var connectionSpec = tableSpec{
+	headers: []string{"PROTO", "LOCAL", "PEER", "PID", "COMM"}, widths: []int{6, 24, 24, 7, 16}}
+var kernelSpec = tableSpec{
+	headers: []string{"MODULE", "USED", "STATE", "TAINT", "ORIGIN"}, widths: []int{26, 5, 10, 6, 10}}
+var authoritySpec = tableSpec{
+	headers: []string{"PATH", "ORIGIN", "REACH", "SETUID", "CAPS"}, widths: []int{44, 10, 8, 7, 5}}
+var mountSpec = tableSpec{
+	headers: []string{"FSTYPE", "PATH", "OPTS"}, widths: []int{12, 26, 34}}
+var trailSpec = tableSpec{
+	headers: []string{"PATH", "OWNER", "ORIGIN", "LINES", "LAST"}, widths: []int{44, 7, 10, 7}}
 
 // originHue is the row palette's temporal verdict, the same language the
 // relation tree marks its nodes with: a runtime object warm red, a modified
